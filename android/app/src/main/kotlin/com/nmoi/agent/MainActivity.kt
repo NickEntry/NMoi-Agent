@@ -11,11 +11,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppIconSwitcher
+import com.nmoi.agent.ui.AppearanceScreen
+import com.nmoi.agent.ui.DebugScreen
 import com.nmoi.agent.ui.ChatScreen
 import com.nmoi.agent.ui.ConversationListScreen
 import com.nmoi.agent.ui.ConversationDrawer
 import com.nmoi.agent.ui.ConversationRepository
 import com.nmoi.agent.ui.ConversationSnapshot
+import com.nmoi.agent.ui.GroupScreen
 import com.nmoi.agent.ui.LogChannelScreen
 import com.nmoi.agent.ui.LogKind
 import com.nmoi.agent.ui.LogListScreen
@@ -23,7 +26,8 @@ import com.nmoi.agent.ui.LogSettingsScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
 import com.nmoi.agent.ui.PromptsScreen
-import com.nmoi.agent.ui.SettingsScreen
+import com.nmoi.agent.ui.SettingsGroup
+import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.theme.NMoiTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -36,7 +40,11 @@ private sealed interface Route {
     /** 只带标题，等 load_units 接上再带会话 id。 */
     data class Chat(val title: String) : Route
 
+    /** 设置索引页：六行分组入口，本身不摆开关。 */
     data object Settings : Route
+
+    /** 设置的分组子页（外观 / 调试 各自有自己的实现，其余走 GroupScreen）。 */
+    data class SettingsGroupRoute(val group: SettingsGroup) : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
     data object Prompts : Route
@@ -69,8 +77,8 @@ class MainActivity : ComponentActivity() {
                 val route = backStack.last()
                 var iconChoice by remember { mutableStateOf(AppIconSwitcher.load(context)) }
                 var iconWarning by remember { mutableStateOf<String?>(null) }
-                // 这个开关现在只管「调试日志」这一路；另外两路在日志设置页里各自开关。
-                var logEnabled by remember { mutableStateOf(NLog.isEnabled(LogKind.Debug)) }
+                // 日志摘要给设置索引页那一行用；三种通道各自的开关在「日志 → 齿轮」里。
+                val logSummary = "3 通道 · 调试" + if (NLog.isEnabled(LogKind.Debug)) "开" else "关"
                 // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
                 var drawerOpen by remember { mutableStateOf(false) }
 
@@ -138,29 +146,43 @@ class MainActivity : ComponentActivity() {
                         onBack = { backStack = backStack.dropLast(1) },
                     )
 
-                    Route.Settings -> SettingsScreen(
-                        choice = iconChoice,
-                        warning = iconWarning,
-                        nativeStatus = nativeStatus,
-                        logEnabled = logEnabled,
-                        onPick = { picked ->
-                            if (AppIconSwitcher.apply(context, picked)) {
-                                iconChoice = picked
-                                iconWarning = null
-                            } else {
-                                iconWarning = "切换没生效，详情看 logcat（tag: NMoiIcon）"
-                            }
-                        },
-                        onLogToggle = { enabled ->
-                            logEnabled = enabled
-                            NLog.setEnabled(context, LogKind.Debug, enabled)
-                            // 打开的那一刻先写一条，证明开关真的生效了；关的时候什么都不打。
-                            NLog.i("Settings", "调试日志已开启")
-                        },
-                        onOpenLogs = { backStack = backStack + Route.Logs },
-                        onOpenPrompts = { backStack = backStack + Route.Prompts },
+                    Route.Settings -> SettingsIndexScreen(
+                        iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label}",
+                        logSummary = logSummary,
+                        onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
                         onBack = { backStack = backStack.dropLast(1) },
                     )
+
+                    is Route.SettingsGroupRoute -> when (val group = route.group) {
+                        // 外观与调试已有真实现，其余四组先给"还没接线"的清单。
+                        SettingsGroup.Appearance -> AppearanceScreen(
+                            choice = iconChoice,
+                            warning = iconWarning,
+                            onPick = { picked ->
+                                if (AppIconSwitcher.apply(context, picked)) {
+                                    iconChoice = picked
+                                    iconWarning = null
+                                } else {
+                                    iconWarning = "切换没生效，详情看 logcat（tag: NMoiIcon）"
+                                }
+                            },
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        SettingsGroup.Debug -> DebugScreen(
+                            logSummary = logSummary,
+                            nativeStatus = nativeStatus,
+                            onOpenLogs = { backStack = backStack + Route.Logs },
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        else -> GroupScreen(
+                            group = group,
+                            onOpenPrompts = { backStack = backStack + Route.Prompts },
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+                    }
+
                 }
                 }
             }

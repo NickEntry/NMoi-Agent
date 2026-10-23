@@ -72,6 +72,9 @@ environment secret（`docs/signing.md`），现在一个都没有，所以不出
   （`putSettingsJson` / `getSettingsJson` / `listSettingsJson` / `deleteSettingsJson`）。
   **包含设置面之后的新体积还没量过**：本机打不了 Android 包，等 CI 出包再填，别拿旧数字当准。
 - 会话列表显示**真数据**（库空就显示空状态），退回去时会在界面上写清"这是占位数据 + 原因"
+- **设置是索引页**：六行分组（外观 / 会话与上下文 / 模型与提示词 / 工具与工作区 / 调试 / 关于），
+  行右侧写当前值，本身不摆开关。外观（图标网格）与调试（日志入口 + 原生层状态）是真子页；
+  其余四组是灰行清单，每行写"待接哪个 P"——**不给假开关、不给假表单**。形状见 `docs/ui/structure.md`。
 - **应用内日志**（设置 → 调试 → 日志）：**三种通道**——上下文 `context` / 请求 `request` /
   调试 `debug`，各自一个文件（`files/logs/*.log`）、各自的开关、各自的上限。
   `NLog.i/w/e` 进调试通道，另有 `NLog.context()` / `NLog.request()` 两个入口。
