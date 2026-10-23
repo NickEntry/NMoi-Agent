@@ -67,15 +67,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 日志开关必须在**第一行日志之前**就读到，所以放在最前。
         NLog.init(this)
-        // 窗口底色跟着主题走：不设的话，强制浅色时冷启动那一帧是深色（一次明显的黑闪）。
-        val darkAtLaunch = ThemeStore.isDarkNow(this)
-        window.setBackgroundDrawable(
-            android.graphics.drawable.ColorDrawable(
-                if (darkAtLaunch) 0xFF101014.toInt() else 0xFFF7F7FA.toInt(),
-            ),
-        )
-        // 系统栏图标深浅也要在第一帧之前定好，否则会先闪一下白图标。
-        applySystemBars(window, lightBackground = !darkAtLaunch)
+        // 窗口底色 + 状态栏底色 + 系统栏图标深浅：这三件必须在第一帧之前一次做完，
+        // 否则冷启动会先闪一帧错色（浅色主题闪黑、深色主题闪白图标）。
+        applySystemBars(window, dark = ThemeStore.isDarkNow(this))
         // alias 启动时 componentName 是那个 alias，不是 MainActivity。
         // 这条日志同时回答两件事：入口是不是别名、现在生效的是哪一个图标。
         NLog.i("App", "启动入口：$componentName")
