@@ -16,7 +16,10 @@ import com.nmoi.agent.ui.ConversationListScreen
 import com.nmoi.agent.ui.ConversationDrawer
 import com.nmoi.agent.ui.ConversationRepository
 import com.nmoi.agent.ui.ConversationSnapshot
-import com.nmoi.agent.ui.LogScreen
+import com.nmoi.agent.ui.LogChannelScreen
+import com.nmoi.agent.ui.LogKind
+import com.nmoi.agent.ui.LogListScreen
+import com.nmoi.agent.ui.LogSettingsScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
 import com.nmoi.agent.ui.PromptsScreen
@@ -38,8 +41,14 @@ private sealed interface Route {
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
     data object Prompts : Route
 
-    /** 应用内日志页（查看 / 复制 / 导出 / 清除 + 上限）。 */
+    /** 日志索引页：三种通道各一行，右上角齿轮进设置。 */
     data object Logs : Route
+
+    /** 单个日志通道的子页：查看 / 复制 / 导出 / 清除。 */
+    data class LogChannel(val kind: LogKind) : Route
+
+    /** 日志设置页：三种通道各自的开关与上限。 */
+    data object LogSettings : Route
 }
 
 class MainActivity : ComponentActivity() {
@@ -60,7 +69,8 @@ class MainActivity : ComponentActivity() {
                 val route = backStack.last()
                 var iconChoice by remember { mutableStateOf(AppIconSwitcher.load(context)) }
                 var iconWarning by remember { mutableStateOf<String?>(null) }
-                var logEnabled by remember { mutableStateOf(NLog.enabled) }
+                // 这个开关现在只管「调试日志」这一路；另外两路在日志设置页里各自开关。
+                var logEnabled by remember { mutableStateOf(NLog.isEnabled(LogKind.Debug)) }
                 // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
                 var drawerOpen by remember { mutableStateOf(false) }
 
@@ -109,7 +119,18 @@ class MainActivity : ComponentActivity() {
                         onOpenDrawer = { drawerOpen = true },
                     )
 
-                    Route.Logs -> LogScreen(
+                    Route.Logs -> LogListScreen(
+                        onOpen = { kind -> backStack = backStack + Route.LogChannel(kind) },
+                        onOpenSettings = { backStack = backStack + Route.LogSettings },
+                        onBack = { backStack = backStack.dropLast(1) },
+                    )
+
+                    is Route.LogChannel -> LogChannelScreen(
+                        kind = route.kind,
+                        onBack = { backStack = backStack.dropLast(1) },
+                    )
+
+                    Route.LogSettings -> LogSettingsScreen(
                         onBack = { backStack = backStack.dropLast(1) },
                     )
 
@@ -132,7 +153,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onLogToggle = { enabled ->
                             logEnabled = enabled
-                            NLog.setEnabled(context, enabled)
+                            NLog.setEnabled(context, LogKind.Debug, enabled)
                             // 打开的那一刻先写一条，证明开关真的生效了；关的时候什么都不打。
                             NLog.i("Settings", "调试日志已开启")
                         },

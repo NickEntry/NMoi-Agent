@@ -115,3 +115,67 @@ internal fun MenuButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/**
+ * 通用图标按钮（D103 那三条：**视觉 22dp、热区 48dp** 分开算、`contentDescription` 必填、
+ * 长按给一句人话提示）。
+ *
+ * 不跟返回键合成一个：返回键还要 AutoMirrored 方向翻转，合在一起就成了"通用里夹特例"，
+ * 后面每加一个图标都得回头想清楚会不会影响返回键。这里只留最常用的一条。
+ */
+@Composable
+internal fun IconActionButton(
+    image: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var hintVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(hintVisible) {
+        if (hintVisible) {
+            delay(1600)
+            hintVisible = false
+        }
+    }
+
+    Box(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onClick() },
+                        onLongPress = { hintVisible = true },
+                    )
+                }
+                .semantics { contentDescription = description },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = image,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+
+        if (hintVisible) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 52.dp),
+            ) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+    }
+}

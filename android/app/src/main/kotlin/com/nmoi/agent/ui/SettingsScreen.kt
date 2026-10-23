@@ -167,9 +167,9 @@ internal fun SettingsScreen(
                         )
                         Text(
                             text = if (logEnabled) {
-                                "当前开启。一路进 logcat，一路写进下面的「日志」页（ROM 吞 I 级时只剩它能看）。"
+                                "只关/开「调试日志」这一路。它双写：logcat + 应用内文件（ROM 吞 I 级时只剩文件能看）。"
                             } else {
-                                "当前关闭：logcat 与文件都不写。崩溃堆栈由系统打，不受影响。"
+                                "调试日志已关：logcat 与文件都不写。另外两路在「日志」页的齿轮里各自开关。"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -179,7 +179,7 @@ internal fun SettingsScreen(
                 }
                 NavRow(
                     title = "日志",
-                    subtitle = "应用内保存，默认上限 8 MB；超了自动丢最旧的。可查看 / 复制 / 导出 / 清除",
+                    subtitle = "上下文 / 请求 / 调试三种通道各自一个文件，默认上限 8 MB；点进去看、复制、导出、清除",
                     onClick = onOpenLogs,
                 )
 

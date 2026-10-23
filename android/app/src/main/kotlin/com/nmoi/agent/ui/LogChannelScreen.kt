@@ -5,7 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,7 +30,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -41,7 +39,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /** 查看窗口取多少字节：够看一次启动，又不至于让 Compose 排版一屏大文本卡住。 */
 private const val VIEW_BYTES = 64 * 1024
@@ -50,41 +47,44 @@ private const val VIEW_BYTES = 64 * 1024
 private const val COPY_BYTES = 256 * 1024
 
 /**
- * 日志页（设置 → 调试 → 日志）。
+ * 单个通道的子页：**四个动作，只作用在这一种日志上**。
  *
- * 四个动作对应四件不同的事，别混：
- * - **查看**：在页面里读尾部，不跳出应用（跳出就没有"边看边改"的手感了）；
- * - **复制**：进剪贴板，能直接贴给我——不用 adb、不用数据线；
- * - **导出**：写进用户自己选的位置（SAF），整份，适合留档或发邮件；
- * - **清除**：真的删文件，所以有二次确认。
+ * - **查看**：页内读尾部，不跳出应用（跳出就没有"边看边改"的手感）；
+ * - **复制**：进剪贴板，能直接贴出来，不用 adb、不用数据线；
+ * - **导出**：SAF 写进用户选的位置，整份，适合留档；
+ * - **清除**：真删文件，所以有二次确认。
  *
- * 上限那排档位是**写进 SharedPreferences 就生效**的：下一次 `NLog` 写入就会按新上限轮转，
- * 不需要重启应用，也不需要清理已经写下的内容。
+ * 开关与上限**不在这页**：它们在齿轮页（日志设置）里。一页一件事。
  */
 @Composable
-internal fun LogScreen(onBack: () -> Unit) {
+internal fun LogChannelScreen(kind: LogKind, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     var sizeBytes by remember { mutableStateOf(0L) }
-    var limitBytes by remember { mutableStateOf(NLog.limitBytes) }
+    var limitBytes by remember { mutableStateOf(NLog.limitBytes(kind)) }
     var preview by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
 
-    suspend fun refreshSize(): Long = withContext(Dispatchers.IO) { NLog.fileSize(context) }
+    suspend fun refreshSize() {
+        sizeBytes = withContext(Dispatchers.IO) { NLog.fileSize(context, kind) }
+        limitBytes = NLog.limitBytes(kind)
+    }
 
     fun reloadPreview() {
         scope.launch {
-            val text = withContext(Dispatchers.IO) { NLog.readTail(context, VIEW_BYTES) }
-            preview = text.ifEmpty { "（还没有日志：先把上面的开关打开，再回来）" }
-            sizeBytes = refreshSize()
+            val text = withContext(Dispatchers.IO) { NLog.readTail(context, kind, VIEW_BYTES) }
+            preview = text.ifEmpty {
+                "（这一类还没有内容：${kind.pendingProducer ?: "先做点会产生日志的操作"}）"
+            }
+            refreshSize()
         }
     }
 
-    LaunchedEffect(Unit) { sizeBytes = refreshSize() }
+    LaunchedEffect(kind) { refreshSize() }
 
-    // 导出：SAF 让用户自己挑位置。这里不自己拼路径——Android 10 之后乱写外部存储会被拒。
+    // 导出走 SAF：Android 10 之后自己拼外部存储路径会被拒。
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/plain"),
     ) { uri ->
@@ -94,7 +94,7 @@ internal fun LogScreen(onBack: () -> Unit) {
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
-                        val text = NLog.readAll(context)
+                        val text = NLog.readAll(context, kind)
                         context.contentResolver.openOutputStream(uri)?.use { stream ->
                             stream.write(text.toByteArray(Charsets.UTF_8))
                         } ?: error("打不开目标文件")
@@ -102,7 +102,7 @@ internal fun LogScreen(onBack: () -> Unit) {
                     }
                 }
                 message = result.fold(
-                    onSuccess = { "已导出 ${it} 个字符" },
+                    onSuccess = { "已导出 $it 个字符" },
                     onFailure = { "导出失败：${it.message ?: it.javaClass.simpleName}" },
                 )
             }
@@ -117,7 +117,7 @@ internal fun LogScreen(onBack: () -> Unit) {
             ) {
                 BackButton(onBack = onBack)
                 Text(
-                    text = "日志",
+                    text = kind.label,
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
@@ -125,41 +125,30 @@ internal fun LogScreen(onBack: () -> Unit) {
             }
 
             Text(
-                text = "当前 ${formatBytes(sizeBytes)} / 上限 ${formatBytes(limitBytes)}" +
+                text = "${formatBytes(sizeBytes)} / ${formatBytes(limitBytes)}" +
                     "（超了自动丢最旧的，保留最新一半）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             )
             Text(
-                text = "文件：files/logs/${LogFile.FILE_NAME}",
+                text = "文件：files/logs/${kind.fileName}" +
+                    if (NLog.isEnabled(kind)) "" else " · 这一通道现在是关的，不会再写入",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (NLog.isEnabled(kind)) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
-
-            Text(
-                text = "上限",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
-            )
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                NLog.LIMIT_CHOICES_MB.forEach { megabytes ->
-                    LimitChip(
-                        label = "$megabytes MB",
-                        selected = limitBytes == megabytes * 1024L * 1024L,
-                        onClick = {
-                            val bytes = megabytes * 1024L * 1024L
-                            NLog.setLimitBytes(context, bytes)
-                            limitBytes = bytes
-                            message = "上限改成 $megabytes MB，下一次写入就按它轮转"
-                        },
-                    )
-                }
+            if (kind.pendingProducer != null) {
+                Text(
+                    text = "还没有产生者：${kind.pendingProducer}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp),
+                )
             }
 
             Row(
@@ -179,13 +168,13 @@ internal fun LogScreen(onBack: () -> Unit) {
                 OutlinedButton(
                     onClick = {
                         scope.launch {
-                            val text = withContext(Dispatchers.IO) { NLog.readTail(context, COPY_BYTES) }
+                            val text = withContext(Dispatchers.IO) { NLog.readTail(context, kind, COPY_BYTES) }
                             if (text.isEmpty()) {
-                                message = "还没有日志可复制"
+                                message = "这一类还没有日志可复制"
                             } else {
                                 val clipboard = context
                                     .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.setPrimaryClip(ClipData.newPlainText("NMoi 日志", text))
+                                clipboard.setPrimaryClip(ClipData.newPlainText("NMoi ${kind.label}", text))
                                 message = "已复制 ${text.length} 个字符（尾部）"
                             }
                         }
@@ -201,7 +190,7 @@ internal fun LogScreen(onBack: () -> Unit) {
                     onClick = {
                         val stamp = LocalDateTime.now()
                             .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
-                        exportLauncher.launch("nmoi-log-$stamp.log")
+                        exportLauncher.launch("nmoi-${kind.id}-$stamp.log")
                     },
                     modifier = Modifier.weight(1f),
                 ) { Text("导出日志") }
@@ -211,16 +200,17 @@ internal fun LogScreen(onBack: () -> Unit) {
                 ) { Text("清除日志") }
             }
 
-            if (message != null) {
+            val note = message
+            if (note != null) {
                 Text(
-                    text = message.orEmpty(),
+                    text = note,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
             }
 
-            // 预览区自己滚：外层不能也包 verticalScroll，两个无限高会打架（同设置页网格那条注释）。
+            // 预览区自己滚：外层不能也包 verticalScroll，两个无限高会打架。
             val previewText = preview
             if (previewText != null) {
                 Surface(
@@ -253,15 +243,15 @@ internal fun LogScreen(onBack: () -> Unit) {
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            title = { Text("清除日志？") },
+            title = { Text("清除${kind.label}？") },
             text = { Text("${formatBytes(sizeBytes)} 会被删掉，收不回来。需要留档就先用「导出日志」。") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
                     scope.launch {
-                        withContext(Dispatchers.IO) { NLog.clear(context) }
+                        withContext(Dispatchers.IO) { NLog.clear(context, kind) }
                         preview = null
-                        sizeBytes = refreshSize()
+                        refreshSize()
                         message = "已清除"
                     }
                 }) { Text("清除") }
@@ -271,32 +261,4 @@ internal fun LogScreen(onBack: () -> Unit) {
             },
         )
     }
-}
-
-@Composable
-private fun LimitChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(10.dp)
-    Surface(
-        shape = shape,
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceVariant
-        },
-        modifier = Modifier.clip(shape).clickable(onClick = onClick),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        )
-    }
-}
-
-/** 人看的体积。日志页上出现 `8380416 字节` 没人愿意换算。 */
-private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
-    bytes >= 1024L -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
-    else -> "$bytes B"
 }

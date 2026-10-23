@@ -5,26 +5,25 @@ import android.util.Log
 import java.io.File
 
 /**
- * 日志门面。**默认开**，设置里可关；**同时落一份到应用内文件**（`files/logs/nmoi.log`）。
+ * 日志门面。**三种通道**（[LogKind]），每路双写：logcat + 应用内文件。
  *
- * 为什么要包一层：`Log.*` 散在各处之后就没法统一关掉了，用户装个正式版还得看我们的调试输出。
- * 现在只有三个入口（i / w / e），开关一拉全部静默。
+ * 为什么包一层：`Log.*` 散在各处之后就没法统一关掉了，用户装个正式版还得看我们的调试输出。
+ * 为什么落盘：2026-10-23 在一台真机上，开关是开的、进程是新的，`logcat -d` 里
+ * `NMoi/` 前缀的日志一条都没有（`I` 级被 ROM 吞了）。排查时"日志拿不到"比"日志少"更糟。
  *
- * 为什么还要落盘：logcat 不是我们能保证的通道——2026-10-23 在一台真机上，
- * 开关是开的、进程是新的，`logcat -d` 里 `NMoi/` 前缀的日志一条都没有（`I` 级被 ROM 吞了，
- * 同一台机器上更早只出现过 `E` 级）。排查时"日志拿不到"比"日志少"更糟，
- * 所以证据另存一份，用户在应用内就能看、能复制、能导出。
+ * 三条入口，**调用点自己选通道**，不要靠"这条看起来像调试"来猜：
+ * - `NLog.i/w/e` → 调试通道（应用事件）
+ * - `NLog.context(...)` → 上下文通道（组装、token、压缩）
+ * - `NLog.request(...)` → 请求通道（HTTP；**默认脱敏**，body 只在详细模式下写）
  *
- * 关掉之后**连 e 也不打、也不写文件**——那是用户的意愿，不是我们能替他决定的。
- * 崩溃堆栈由系统打（`AndroidRuntime`），不受这个开关影响，所以关日志不等于关诊断。
- *
- * 用 SharedPreferences 而不是 settings 表（D86）：开关与上限必须在**第一行日志之前**
- * 就读到，而 settings 表要开库、要线程，够不上。
+ * 关掉某一通道之后，那一通道**连 logcat 也不打、文件也不写**——那是用户的意愿，
+ * 不是我们能替他决定的。崩溃堆栈由系统打（`AndroidRuntime`），不受影响。
  */
 internal object NLog {
     private const val PREFS = "app_log"
-    private const val KEY_ENABLED = "enabled"
-    private const val KEY_LIMIT = "limit_bytes"
+
+    /** 旧版只有一个全局开关，键名没有后缀。迁移时当三个通道的初值。 */
+    private const val LEGACY_ENABLED = "enabled"
 
     private const val MIB = 1024L * 1024L
 
@@ -34,14 +33,15 @@ internal object NLog {
     /** 界面给用户选的几档（MB）。不给任意输入：没人真的需要 7.3 MB。 */
     val LIMIT_CHOICES_MB = listOf(2, 4, 8, 16, 32)
 
-    /** 缓存一份，避免每条日志都读一次 SharedPreferences。 */
+    /**
+     * 开关与上限各存一份**不可变快照**：读的人（界面、日志调用点）永远看到一致的组合，
+     * 不用加锁；改的时候整份替换。三个枚举项的规模，复制一次不值一提。
+     */
     @Volatile
-    var enabled: Boolean = true
-        private set
+    private var enabledMap: Map<LogKind, Boolean> = LogKind.entries.associateWith { true }
 
     @Volatile
-    var limitBytes: Long = DEFAULT_LIMIT_BYTES
-        private set
+    private var limitMap: Map<LogKind, Long> = LogKind.entries.associateWith { DEFAULT_LIMIT_BYTES }
 
     /** 日志目录，`init` 之前是 null（那时候的日志只进 logcat）。 */
     @Volatile
@@ -49,53 +49,77 @@ internal object NLog {
 
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        enabled = prefs.getBoolean(KEY_ENABLED, true)
-        limitBytes = prefs.getLong(KEY_LIMIT, DEFAULT_LIMIT_BYTES).coerceIn(1 * MIB, 64 * MIB)
+        // 旧版那个全局开关是"全部日志"的总闸；迁移成三个通道的初值，
+        // 否则老用户升级上来会突然发现日志全没了（他会以为自己关过）。
+        val legacy = prefs.getBoolean(LEGACY_ENABLED, true)
+        enabledMap = LogKind.entries.associateWith { kind ->
+            prefs.getBoolean("enabled.${kind.id}", legacy)
+        }
+        limitMap = LogKind.entries.associateWith { kind ->
+            prefs.getLong("limit.${kind.id}", DEFAULT_LIMIT_BYTES).coerceIn(1 * MIB, 64 * MIB)
+        }
         dir = File(context.filesDir, "logs")
     }
 
-    fun setEnabled(context: Context, value: Boolean) {
-        enabled = value
+    fun isEnabled(kind: LogKind): Boolean = enabledMap[kind] ?: true
+
+    fun setEnabled(context: Context, kind: LogKind, value: Boolean) {
+        enabledMap = enabledMap + (kind to value)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_ENABLED, value).apply()
+            .edit().putBoolean("enabled.${kind.id}", value).apply()
     }
 
-    fun setLimitBytes(context: Context, value: Long) {
-        limitBytes = value
+    fun limitBytes(kind: LogKind): Long = limitMap[kind] ?: DEFAULT_LIMIT_BYTES
+
+    fun setLimitBytes(context: Context, kind: LogKind, value: Long) {
+        limitMap = limitMap + (kind to value)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putLong(KEY_LIMIT, value).apply()
+            .edit().putLong("limit.${kind.id}", value).apply()
     }
 
-    fun i(tag: String, message: String) = emit('I', tag, message)
+    // ---- 三个通道的写入口 ---------------------------------------------------
 
-    fun w(tag: String, message: String) = emit('W', tag, message)
+    fun i(tag: String, message: String) = emit(LogKind.Debug, 'I', tag, message)
 
-    fun e(tag: String, message: String) = emit('E', tag, message)
+    fun w(tag: String, message: String) = emit(LogKind.Debug, 'W', tag, message)
+
+    fun e(tag: String, message: String) = emit(LogKind.Debug, 'E', tag, message)
+
+    fun context(tag: String, message: String) = emit(LogKind.Context, 'I', tag, message)
+
+    fun request(tag: String, message: String) = emit(LogKind.Request, 'I', tag, message)
 
     // ---- 给日志页用的读接口（调用方放 IO 线程） ----------------------------
 
-    fun fileSize(context: Context): Long = LogFile.size(logDir(context))
+    fun fileSize(context: Context, kind: LogKind): Long =
+        LogFile.size(logDir(context), kind.fileName)
 
-    fun readTail(context: Context, maxBytes: Int): String = LogFile.tail(logDir(context), maxBytes)
+    fun readTail(context: Context, kind: LogKind, maxBytes: Int): String =
+        LogFile.tail(logDir(context), kind.fileName, maxBytes)
 
     /** 整份读出来（导出用）。上限就是 [limitBytes]，所以能一次塞进内存。 */
-    fun readAll(context: Context): String = LogFile.tail(logDir(context), limitBytes.toInt())
+    fun readAll(context: Context, kind: LogKind): String =
+        LogFile.tail(logDir(context), kind.fileName, limitBytes(kind).toInt())
 
-    fun clear(context: Context) = LogFile.clear(logDir(context))
+    fun clear(context: Context, kind: LogKind) = LogFile.clear(logDir(context), kind.fileName)
 
     private fun logDir(context: Context): File = File(context.filesDir, "logs")
 
     /**
      * 一路进 logcat、一路进文件。文件那一路在 ROM 吞 `I` 级时仍然有效；
      * logcat 那一路在文件写不进去（没权限、磁盘满）时仍然有效。两条腿各断各的。
+     *
+     * logcat 的 tag 带上通道名（`NMoi/req/Http`），这样 `adb logcat -s NMoi/req:V`
+     * 还能按通道过滤。
      */
-    private fun emit(level: Char, tag: String, message: String) {
-        if (!enabled) return
+    private fun emit(kind: LogKind, level: Char, tag: String, message: String) {
+        if (!isEnabled(kind)) return
+        val logcatTag = "NMoi/${kind.id}/$tag"
         when (level) {
-            'I' -> Log.i("NMoi/$tag", message)
-            'W' -> Log.w("NMoi/$tag", message)
-            else -> Log.e("NMoi/$tag", message)
+            'W' -> Log.w(logcatTag, message)
+            'E' -> Log.e(logcatTag, message)
+            else -> Log.i(logcatTag, message)
         }
-        LogFile.append(dir, tag, level, message, limitBytes)
+        LogFile.append(dir, kind.fileName, tag, level, message, limitBytes(kind))
     }
 }
