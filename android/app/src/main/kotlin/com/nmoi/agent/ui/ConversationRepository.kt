@@ -26,6 +26,37 @@ internal data class ConversationSnapshot(
 internal object ConversationRepository {
     private val timeFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
 
+    /**
+     * 新建一个会话，返回它的 id。
+     *
+     * 为什么必须有这个：全新安装的库里一条会话都没有，列表是空的、聊天页进不去，
+     * 消息区就永远验不了（2026-10-23 用户指出：不能要求先跑桌面 CLI 造库）。
+     */
+    suspend fun create(databasePath: String, title: String): Result<String> {
+        if (!NativeBridge.loaded) {
+            return Result.failure(NmoiFfiException("not_loaded", "原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）"))
+        }
+        val opened = runCatching { JSONObject(NativeBridge.openStorageJson(databasePath)) }
+            .getOrElse { return Result.failure(NmoiFfiException("native_call", "打开库时报错：${it.message}")) }
+        if (!opened.ok()) {
+            return Result.failure(NmoiFfiException(opened.errorKind(), "打开库失败：${opened.errorText()}"))
+        }
+        val state = opened.optString("state", "")
+        if (state != "ready") {
+            return Result.failure(NmoiFfiException("blocked", "库没通过校验（state=$state），没有句柄可用"))
+        }
+        val handle = opened.optLong("handle", 0L)
+        return try {
+            NmoiFfi.createConversation(handle, title).mapCatching { envelope ->
+                val session = envelope.optString("session", "")
+                if (session.isEmpty()) error("原生层没给会话 id")
+                session
+            }
+        } finally {
+            runCatching { NativeBridge.closeStorageJson(handle) }
+        }
+    }
+
     fun load(databasePath: String, limit: Long = 50): ConversationSnapshot = try {
         loadInner(databasePath, limit)
     } catch (failure: Throwable) {

@@ -338,3 +338,74 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_loadUnitsJson<'local>
     });
     to_jstring(&mut env, text)
 }
+
+/// `Native.appendTextJson(handle, session, role, text, nowMs)`：把一句话存成一条消息（不发模型）。
+///
+/// 这是 UI 唯一的**写入口**：在接入 `turn_run` 之前，没有它就造不出内容，
+/// 消息区在真机上永远验不了（"验证步骤要先有桌面工具造库"是上一轮的真缺口）。
+///
+/// `role` 只收 `user` / `assistant` / `system`——词表由 C ABI 挡，这里不重复判。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_appendTextJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    role: JString<'local>,
+    text: JString<'local>,
+    now_ms: jlong,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let role = read_string(&mut env, &role);
+    let text = read_string(&mut env, &text);
+    let guarded_text = guarded(move || match (session, role, text) {
+        (Some(session), Some(role), Some(text)) => {
+            let (Ok(c_session), Ok(c_role), Ok(c_text)) = (
+                CString::new(session),
+                CString::new(role),
+                CString::new(text),
+            ) else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::storage::nmoi_storage_append_text_json(
+                handle as u64,
+                c_session.as_ptr(),
+                c_role.as_ptr(),
+                c_text.as_ptr(),
+                now_ms,
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, guarded_text)
+}
+
+/// `Native.createConversationJson(handle, title)`：新建一个会话，回 `{"session":"<id>"}`。
+///
+/// 没有它，全新安装的列表永远是空的：没有会话就没有入口，消息区连"空会话"都进不去。
+/// 标题由 UI 给（现在是"新会话"，以后可以按首句生成）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_createConversationJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    title: JString<'local>,
+) -> jstring {
+    let title = read_string(&mut env, &title);
+    let text = guarded(move || match title {
+        Some(title) => {
+            let Ok(c_title) = CString::new(title) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `title` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_create_conversation_json(
+                handle as u64,
+                c_title.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppIconSwitcher
@@ -33,6 +34,7 @@ import com.nmoi.agent.ui.theme.SystemBarsForTheme
 import com.nmoi.agent.ui.theme.ThemeStore
 import com.nmoi.agent.ui.theme.applySystemBars
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -94,10 +96,14 @@ class MainActivity : ComponentActivity() {
                 var drawerOpen by remember { mutableStateOf(false) }
 
                 val nativeStatus = remember { NativeBridge.status() }
+                val databasePath = remember { File(filesDir, "nmoi.db").absolutePath }
+                // 新建会话之后要让列表重读：produceState 只有 key 变了才会重跑。
+                var listReload by remember { mutableStateOf(0) }
+                val scope = rememberCoroutineScope()
                 // 开库和列表读盘都碰磁盘，不许在主线程上做。
-                val snapshot by produceState<ConversationSnapshot?>(initialValue = null) {
+                val snapshot by produceState<ConversationSnapshot?>(initialValue = null, listReload) {
                     value = withContext(Dispatchers.IO) {
-                        ConversationRepository.load(File(filesDir, "nmoi.db").absolutePath)
+                        ConversationRepository.load(databasePath)
                     }
                 }
 
@@ -134,6 +140,24 @@ class MainActivity : ComponentActivity() {
                         onOpenDrawer = { drawerOpen = true },
                         onOpenConversation = { row ->
                             backStack = backStack + Route.Chat(row.title, row.id.ifEmpty { null })
+                        },
+                        onCreateConversation = {
+                            scope.launch {
+                                val title = "新会话"
+                                val created = withContext(Dispatchers.IO) {
+                                    ConversationRepository.create(databasePath, title)
+                                }
+                                created.fold(
+                                    onSuccess = { session ->
+                                        listReload += 1
+                                        backStack = backStack + Route.Chat(title, session)
+                                    },
+                                    onFailure = {
+                                        // 失败也要留痕：设置 → 调试 → 日志里能看到这一行。
+                                        NLog.w("Storage", "新建会话失败：${it.message}")
+                                    },
+                                )
+                            }
                         },
                     )
 

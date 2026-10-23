@@ -46,6 +46,26 @@ internal object NmoiFfi {
     suspend fun loadUnits(handle: Long, session: String, limit: Long = 80L): Result<JSONObject> =
         call("load_units") { NativeBridge.loadUnitsJson(handle, session, limit) }
 
+    /** 新建会话。返回的信封里 `session` 是会话 id。 */
+    suspend fun createConversation(handle: Long, title: String): Result<JSONObject> =
+        call("create_conversation") { NativeBridge.createConversationJson(handle, title) }
+
+    /**
+     * 把一段文本存成一条消息。`role` 只收 `user` / `assistant` / `system`。
+     *
+     * **不发模型**：这是"先记下来、晚点再发"的那条路（PLAN §3.12 发送键长按菜单）。
+     * 存成 assistant 会让历史变成"以助手结尾"——那是用户要的语义，别在 UI 层"顺手修正"。
+     */
+    suspend fun appendText(
+        handle: Long,
+        session: String,
+        role: String,
+        text: String,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Result<JSONObject> = call("append_text") {
+        NativeBridge.appendTextJson(handle, session, role, text, nowMs)
+    }
+
     suspend fun settingsList(
         handle: Long,
         scope: SettingsScope,

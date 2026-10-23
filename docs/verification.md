@@ -210,28 +210,106 @@ HH:mm:ss.SSS I/Settings: settings_list 通了：roles 返回 0 条（truncated=f
 再回来——调试那一行变大了就说明落盘这条路是通的。上下文 / 请求两行现在会明写
 「还没有产生者」，**那是对的**（HTTP 层与压缩线还没接）。
 
-### V4.6 消息区（`load_units`）
+### V4.6 消息区（`load_units`）+ 新建会话 + 存入
 
-先造一条会话（V4 的办法：桌面 `nmoi-cli` 造库 → `adb push` → `run-as` 覆盖），列表里点进去。
+**这一条现在只用手机就能做完**——2026-10-23 用户指出：不能要求先跑桌面 CLI 造库，
+否则消息区在真机上永远验不了。为此加了两个写入口：列表页左上「＋」新建会话、
+输入岛「存入」（点 = 存为用户消息，长按 = 存为助手消息）。
 
-**通过判据**：
-- 用户消息靠右、助手消息靠左；
-- 有思考的回复里，思考是一块默认收起的东西，点一下展开；
-- 工具往返是一个折叠卡，标题带「调用 × N · 结果 M 条」，展开能看到参数与结果；
-- 打开会话时停在**最新一条**，不是最早一条；
-- 库里一整轮被中断的那条，气泡底部有红字「未完成 · 这一轮被中断」。
+步骤：
+1. 打开应用 → 列表页左上「＋」→ 自动进入一个新会话（标题「新会话」）；
+2. 输入一句话，点「存入」→ 消息应**立刻出现在右侧**，草稿清空，下面一行小字说"已存为用户消息"；
+3. 再输入一句，**长按**「存入」→ 这条应出现在左侧（助手侧）——这是"先记下来、晚点再发"的语义，
+   不是 bug；
+4. 返回列表：新会话排在最上面，「预览」是最后那句话；
+5. 再点进去：内容还在（说明真落库了，不是内存里的）。
+
+**通过判据**：以上五步都对；思考块/工具卡/断块这几条只有在导入真实会话之后才有内容
+（`nmoi-cli` 造库那条路仍在，但不是验这一条的前提）。
 
 失败对照：
 
 | 现象 | 意思 | 下一步 |
 |---|---|---|
-| 「这一段历史还没被读出来：原生层没加载」 | `.so` 没进包 | 走 V1 |
-| 「这一段历史还没被读出来：JNI 符号对不上」 | 少 `loadUnitsJson` 这个符号 | 别自己拼名字，logcat 里有 `(tried …)` 原文 |
-| 「打开库失败 / 库没通过校验」 | 库本身的问题，不是消息区 | 走 V2 / V3 |
-| 有内容但一条都看不见 | 渲染分支走错了 | 把 `NMoi/Chat` 那几行 logcat 贴我 |
+| 点「＋」没反应，日志里有「新建会话失败」 | 库没开成 / 没过校验 | 设置 → 调试 → 日志 看那一行；走 V2 / V3 |
+| 「这一段历史还没被读出来」 | 原生层没通（`.so` / 符号 / 句柄） | 走 V1 |
+| 存入后消息没出现 | 写进去了但重读没发生，或渲染分支走错 | 看 `NMoi/Chat`、`NMoi/Storage` 那几行 |
 
-**已知没做**：压缩分界线（FFI 还没给）、往上翻页、Markdown。
+**已知没做**：压缩分界线（FFI 还没给）、往上翻页、Markdown、真正的发送（`turn_run` 未接）。
 
+### V5.5 图标切换（设置 → 外观）
+
+八格里逐个点一遍。
+
+**通过判据**：桌面图标跟着变；杀进程重开，设置里高亮的那个与桌面上的图标是同一个。
+
+- 部分厂商桌面不会立刻刷新，可能要重启桌面甚至重启手机，这是桌面自己的缓存。
+- 点了没反应且界面出现一行红字「切换没生效」→ 看 `adb logcat -d | grep NMoiIcon`。
+  最常见的原因是 alias 名与包里的类名对不上（`Component class ... does not exist`）。
+- 桌面上的图标变成两个 → 有别的 alias 没被关掉；再进一次设置页会自动清干净
+  （`apply` 会把其余全部关一遍）。
+
+### V5 重开与旋转
+
+- 旋转屏幕（横竖各一次）
+- 从最近任务里划掉，重新打开
+
+**通过判据**：列表还在、时间不变、没有闪退；`adb logcat -d | grep -i "panic"` 没有输出。
+（旋转会重建 Activity——我们没声明 `configChanges`，这是有意的，见 D111。）
+
+### V6 数据可靠性（暂时不做）
+
+想验 `storage::recover`（启动收口）得在**写库的过程中**杀进程，而现在没有写入口。
+等输入岛能发一句话了再回来补这一条，别现在硬造。
+
+## 4. 证据怎么给我
+
+按这个顺序贴，别写"都通过了"：
+
+1. **每条的命令 + 原始输出**（文本，不要截图命令输出）
+2. `adb logcat -d > logcat.txt`，先按关键词过滤再贴：
+   ```bash
+   grep -iE "nmoi|UnsatisfiedLink|SQLite|AndroidRuntime" logcat.txt | tail -80
+   ```
+3. **一张截图**：标题下方版本行 + 列表区 + 底部数据源那行，一张就够
+4. 设备信息：`adb shell getprop ro.product.cpu.abi`、`adb shell getprop ro.build.version.sdk`
+
+打码：序列号、用户名路径、任何 token。路径里的 `/data/user/0/com.nmoi.agent/...` 不用码。
+
+## 5. 现象 → 先看哪里（省时间用）
+
+| 现象 | 第一手线索 | 大概原因 |
+|---|---|---|
+| 装了打不开，直接闪退 | `adb logcat -d \| grep AndroidRuntime` | Kotlin 侧异常；`System.loadLibrary` 失败不该崩（已 try/catch），所以多半是别处 |
+| 界面正常但没有版本行 | V1 的 logcat 三类 | `.so` 或符号名 |
+| 版本行正常，列表是红字占位 | 底部那行括号里的原因 | 开库失败（路径/权限）、或 blocked |
+| 库建出来了，列表是空的 | V3 的 `user_version` | 库真是空的（新建的库本来就没有会话） |
+| 列表空白、无报错 | `adb logcat -d \| grep -iE "sqlite|nmoi"` | SQL 报错被兜成了空数组 |
+| 设置里点图标就闪退 | `grep -A10 "FATAL EXCEPTION"`，看 `Component class … does not exist` | alias 类名对不上：类名按 **namespace**（`com.nmoi.agent`）解析，不是 applicationId（`com.nmoi.agent`） |
+
+## 6. 不需要实机的验证（已经跑过，记录在这）
+
+```bash
+cargo test -q -p nmoi-core --lib --locked        # 492
+cargo test -q -p nmoi-storage --locked           # 28 + 5/17/9
+cargo test -q -p nmoi-ffi --lib --locked         # 24
+./scripts/ffi_smoke.sh                           # C 侧 277
+cargo fmt --all -- --check
+cargo clippy -q --workspace --all-targets --locked
+cargo check -q -p nmoi-core --no-default-features
+```
+
+Android 侧只有 CI 能跑（本机没有 SDK / NDK / JDK 之外的任何东西）：
+
+```bash
+gradle -p android :app:assembleDebug            # 需要 JDK 17 + Gradle 8.7
+cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
+  build --release -p nmoi-ffi --features jni    # 需要 NDK + rustup target
+```
+
+`--features jni` 是必须的：JNI 那层默认不编（`jni` / `jni-sys` 的 MSRV ≥ 1.76，
+工作区 MSRV 是 1.75，见 D110/D112）。忘了这个参数会得到一个**没有 JNI 符号的 .so**，
+装上去表现就是 V1 不过。
 ### V5.5 图标切换（设置 → 外观）
 
 八格里逐个点一遍。

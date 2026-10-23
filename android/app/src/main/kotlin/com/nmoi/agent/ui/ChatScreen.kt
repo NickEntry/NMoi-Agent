@@ -5,6 +5,7 @@ import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,10 +29,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -60,9 +64,14 @@ internal fun ChatScreen(
 ) {
     var draft by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // 存完一条要重读：`produceState` 只有 key 变了才会重跑，所以用它当"刷新一下"。
+    var reloadKey by remember { mutableStateOf(0) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
 
     // 读单元要开库、读盘，不许在主线程上做。
-    val snapshot by produceState<ChatSnapshot?>(initialValue = null, sessionId) {
+    val snapshot by produceState<ChatSnapshot?>(initialValue = null, sessionId, reloadKey) {
         value = if (sessionId == null) {
             ChatSnapshot(
                 page = null,
@@ -98,8 +107,48 @@ internal fun ChatScreen(
             Composer(
                 draft = draft,
                 onDraftChange = { draft = it },
-                onSend = { /* 未接线：nmoi_turn_run_json 还没接进 Kotlin 侧 */ },
-                sendEnabled = false,
+                canSave = sessionId != null,
+                onSaveUser = {
+                    val text = draft.trim()
+                    val sid = sessionId
+                    when {
+                        text.isEmpty() -> notice = "先写点什么"
+                        sid == null -> notice = "这一行是占位会话，没有 id，存不进去"
+                        else -> scope.launch {
+                            val result = ChatRepository.append(databasePath, sid, "user", text)
+                            result.fold(
+                                onSuccess = {
+                                    draft = ""
+                                    reloadKey += 1
+                                    notice = "已存为用户消息（真正发给模型等引擎接线）"
+                                },
+                                onFailure = { notice = "存失败：${it.message}" },
+                            )
+                        }
+                    }
+                },
+                onSaveAssistant = {
+                    val text = draft.trim()
+                    val sid = sessionId
+                    when {
+                        text.isEmpty() -> notice = "先写点什么"
+                        sid == null -> notice = "这一行是占位会话，没有 id，存不进去"
+                        else -> scope.launch {
+                            // 存成 assistant 会让历史变成"以助手结尾"——那是用户要的语义，
+                            // 别在 UI 层"顺手修正"成 user（PLAN §3.12）。
+                            val result = ChatRepository.append(databasePath, sid, "assistant", text)
+                            result.fold(
+                                onSuccess = {
+                                    draft = ""
+                                    reloadKey += 1
+                                    notice = "已存为助手消息"
+                                },
+                                onFailure = { notice = "存失败：${it.message}" },
+                            )
+                        }
+                    }
+                },
+                notice = notice,
             )
         }
     }
@@ -350,42 +399,89 @@ private fun BrokenCard(declaration: String, reason: String) {
     }
 }
 
+/**
+ * 输入岛。**现在能做的是"存入"，不是"发送"**：`nmoi_turn_run_json` 还没接，
+ * 所以按钮上写"存入"，下面一行小字说清区别——写"发送"然后不发送才是骗人。
+ *
+ * 点 = 存为用户消息；长按 = 存为助手消息。这条长按菜单是 PLAN §3.12 的形状，
+ * 好处是"想法先记下来、晚点再发"。
+ */
 @Composable
 private fun Composer(
     draft: String,
     onDraftChange: (String) -> Unit,
-    onSend: () -> Unit,
-    sendEnabled: Boolean,
+    canSave: Boolean,
+    onSaveUser: () -> Unit,
+    onSaveAssistant: () -> Unit,
+    notice: String?,
 ) {
-    val shape = RoundedCornerShape(22.dp)
-    Surface(
-        shape = shape,
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            NativeEditText(
-                value = draft,
-                onValueChange = onDraftChange,
-                hint = "说点什么…（发送要等引擎接上）",
-                modifier = Modifier.weight(1f),
+    Column {
+        if (notice != null) {
+            Text(
+                text = notice,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
             )
-            // 加号：附件管线未接（P7.7），所以禁用而不是隐藏——
-            // 位置先占住，用户看到的是"这里以后能加东西"，而不是"没有这个功能"。
-            TextButton(onClick = {}, enabled = false) { Text("＋") }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = "${draft.length} 字",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        }
+        val shape = RoundedCornerShape(22.dp)
+        Surface(
+            shape = shape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                NativeEditText(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    hint = "说点什么…（点存入记下来，长按存为助手消息）",
+                    modifier = Modifier.weight(1f),
                 )
-                TextButton(onClick = onSend, enabled = sendEnabled) {
-                    Text(if (sendEnabled) "发送" else "待接")
+                // 加号：附件管线未接（P7.7），所以禁用而不是隐藏——
+                // 位置先占住，用户看到的是"这里以后能加东西"，而不是"没有这个功能"。
+                TextButton(onClick = {}, enabled = false) { Text("＋") }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "${draft.length} 字",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SaveButton(
+                        enabled = canSave && draft.isNotBlank(),
+                        onClick = onSaveUser,
+                        onLongPress = onSaveAssistant,
+                    )
                 }
             }
         }
+    }
+}
+
+/** 存入按钮：点 = 存为用户消息，长按 = 存为助手消息（手势不用 `combinedClickable`，那段还是 Experimental）。 */
+@Composable
+private fun SaveButton(enabled: Boolean, onClick: () -> Unit, onLongPress: () -> Unit) {
+    val background = if (enabled) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+    }
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = background,
+        modifier = Modifier.pointerInput(enabled) {
+            if (enabled) {
+                detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() })
+            }
+        },
+    ) {
+        Text(
+            text = "存入",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
     }
 }
 

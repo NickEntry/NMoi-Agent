@@ -13,6 +13,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -36,6 +38,7 @@ internal fun ConversationListScreen(
     nativeStatus: NativeStatus,
     onOpenDrawer: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
+    onCreateConversation: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -98,6 +101,12 @@ private fun Header(nativeStatus: NativeStatus, onOpenDrawer: () -> Unit) {
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            // 新建会话：全新安装的库里一条都没有，没有这个入口就进不去聊天页。
+            IconActionButton(
+                image = Icons.Filled.Add,
+                description = "新建会话",
+                onClick = onCreateConversation,
             )
         }
         Text(

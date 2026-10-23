@@ -26,6 +26,35 @@ internal object ChatRepository {
         empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
     }
 
+    /**
+     * 存一条消息（不发模型）。**这是接入 `turn_run` 之前唯一的写入口**——
+     * 没有它，消息区在真机上永远造不出内容来验。
+     *
+     * 失败把 `NmoiFfiException` 原样带出去：`kind` 能分清是"没加载"还是"库没过校验"。
+     */
+    suspend fun append(databasePath: String, sessionId: String, role: String, text: String): Result<Unit> {
+        if (!NativeBridge.loaded) {
+            return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
+        }
+        val opened = runCatching { JSONObject(NativeBridge.openStorageJson(databasePath)) }
+            .getOrElse { return Result.failure(NmoiFfiException("native_call", "打开库时报错：${it.message}")) }
+        if (!opened.ok()) {
+            return Result.failure(NmoiFfiException(opened.errorKind(), "打开库失败：${opened.errorText()}"))
+        }
+        val state = opened.optString("state", "")
+        if (state != "ready") {
+            return Result.failure(
+                NmoiFfiException("blocked", "库没通过校验（state=$state），没有句柄可用"),
+            )
+        }
+        val handle = opened.optLong("handle", 0L)
+        return try {
+            NmoiFfi.appendText(handle, sessionId, role, text).map { }
+        } finally {
+            runCatching { NativeBridge.closeStorageJson(handle) }
+        }
+    }
+
     private fun loadInner(databasePath: String, sessionId: String, limit: Long): ChatSnapshot {
         if (!NativeBridge.loaded) {
             return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")

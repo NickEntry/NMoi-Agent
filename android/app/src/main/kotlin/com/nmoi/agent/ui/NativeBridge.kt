@@ -41,6 +41,12 @@ internal object NativeBridge {
     /** 读会话的原子单元（消息区）。limit ≤ 0 = 全给。 */
     external fun loadUnitsJson(handle: Long, session: String, limit: Long): String
 
+    /** 新建会话，回 `{"session":"<id>"}`。 */
+    external fun createConversationJson(handle: Long, title: String): String
+
+    /** 存一句话为消息（不发模型）。这是接入 `turn_run` 之前唯一的写入口。 */
+    external fun appendTextJson(handle: Long, session: String, role: String, text: String, nowMs: Long): String
+
     // 设置面（D86）：四个动词、scope 当参数传——core 那边就是这么切的，
     // 客户端不再按 scope 各包一个函数（加第五类时两边必然对不上）。
     // 这一层只负责搬字符串，语义包装在 `NmoiFfi`。
