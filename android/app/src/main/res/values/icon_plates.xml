@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 由 scripts/gen_app_icons.py 生成。 -->
+<resources>
+    <color name="appicon_plate_dark">#14121C</color>
+    <!-- 白底不走纯色：见 res/drawable/bg_appicon_light.xml（中心白 → 外圈淡银的渐变） -->
+</resources>

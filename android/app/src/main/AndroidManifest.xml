@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_appicon_c4_dark"
+        android:roundIcon="@mipmap/ic_appicon_c4_dark"
+        android:theme="@style/Theme.NMoi"
+        android:supportsRtl="true"
+        android:allowBackup="false">
+        <!-- allowBackup=false 是有意的：自动备份会把 SQLite 主库和 -wal 分两次搬走，
+             恢复时可能拿到一个"账没平"的库。数据要搬就自己走导出（D45 / storage::backup）。
+             不声明 configChanges：旋转时按默认重建 Activity，正好让面板自然收起来（D109）。
+             android:icon 必须有：桌面图标由下面 8 个 activity-alias 各带一份，
+             但**安装器、设置里的应用信息、崩溃对话框**读的是 application 这一层，
+             少了它就会显示安卓默认的机器人图标。
+             主 Activity 自己不带 LAUNCHER，否则桌面上会出现两个图标（D114）。
+             exported 必须是 true：alias 是导出的，它指向的 Activity 若不导出，
+             部分系统会直接抛 SecurityException——表现就是"点开就退"。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 由 scripts/gen_app_icons.py 生成（docs/ui/icons/app/manifest-aliases.xml），
+             改图标请改脚本再重跑，别在这里手改：alias 名要和 AppIconCatalog.kt 一字不差，
+             scripts/check_app_icon_aliases.sh 会对账。
+
+             这里是**全名**，不是 `.icon.X`：相对名对着 namespace（com.nmoi.agent）解析，
+             而 Kotlin 侧曾经照着 applicationId（com.NMoi.agent）拼，两者差 4 个字母，
+             运行期就是 "Component class ... does not exist"（2026-10-23 真机踩到）。
+             默认开的是「许愿终端 · 星群 · 黑底」= DEFAULT_DESIGN / DEFAULT_PLATE。 -->
+        <!-- 许愿星 · 环轨 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.WishingStarDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c2_dark"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 许愿星 · 环轨 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.WishingStarLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c2_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 许愿终端 · 星群 · 黑底（默认） -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.TerminalStarsDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c4_dark"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 许愿终端 · 星群 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.TerminalStarsLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c4_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 无限环 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.InfinityRingDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c5_dark"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 无限环 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.InfinityRingLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c5_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 代码星屑 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.CodeStardustDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c6_dark"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 代码星屑 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.CodeStardustLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c6_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+    </application>
+
+</manifest>

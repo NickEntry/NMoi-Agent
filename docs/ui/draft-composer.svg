@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1600" viewBox="0 0 1080 1600">
+<rect width="1080" height="1600" fill="#FFFFFF"/>
+<text x="48" y="52" font-family="Noto Sans SC" font-size="20" fill="#111827" font-weight="500" text-anchor="start">输入岛草稿 · 思考强度 chip 与平台自适应</text>
+<text x="48" y="78" font-family="Noto Sans SC" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">字体：内置 Noto Sans SC + Inter（本图用 Lato 近似）+ 得意黑；三者都是 OFL-1.1</text>
+<text x="48" y="120" font-family="Noto Sans SC" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="start">实际尺寸（chip 高 30 / 图标 18 / 间距 6 / 名称 12px）</text>
+<g transform="translate(48,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#F3F4F6"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M12.0 16.0L4.47 13.98" stroke="#DC2626" stroke-width="2.2"/><circle cx="4.47" cy="13.98" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">min</text></g>
+<g transform="translate(148,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#F3F4F6"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M12.0 16.0L6.48 10.48" stroke="#DC2626" stroke-width="2.2"/><circle cx="6.48" cy="10.48" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">low</text></g>
+<g transform="translate(248,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#F3F4F6"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M12.0 16.0L9.98 8.47" stroke="#DC2626" stroke-width="2.2"/><circle cx="9.98" cy="8.47" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">mid</text></g>
+<g transform="translate(348,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#EEF2FF"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M6.30 16.0 A 5.70 5.70 0 0 1 17.70 16.0" stroke="#BFDBFE" stroke-width="1.5"/>
+  <path d="M12.0 16.0L14.02 8.47" stroke="#DC2626" stroke-width="2.2"/><circle cx="14.02" cy="8.47" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#3730A3" font-weight="500" text-anchor="start">high</text></g>
+<g transform="translate(448,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#F3F4F6"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M6.30 16.0 A 5.70 5.70 0 0 1 17.70 16.0" stroke="#BFDBFE" stroke-width="1.5"/>
+  <path d="M12.0 16.0L17.52 10.48" stroke="#DC2626" stroke-width="2.2"/><circle cx="17.52" cy="10.48" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">xhigh</text></g>
+<g transform="translate(548,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#F3F4F6"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <g><circle cx="22.04" cy="13.81" r="0.5" fill="#DC2626" stroke="none" opacity="0.79"/><circle cx="21.06" cy="11.26" r="0.5" fill="#DC2626" stroke="none" opacity="0.77"/><circle cx="20.85" cy="9.90" r="0.5" fill="#DC2626" stroke="none" opacity="0.82"/><circle cx="19.13" cy="8.69" r="0.5" fill="#DC2626" stroke="none" opacity="0.83"/><circle cx="18.15" cy="7.83" r="0.5" fill="#DC2626" stroke="none" opacity="0.71"/><circle cx="15.75" cy="6.68" r="0.5" fill="#DC2626" stroke="none" opacity="1.00"/><circle cx="14.77" cy="6.39" r="0.5" fill="#DC2626" stroke="none" opacity="0.72"/><circle cx="12.58" cy="5.24" r="0.5" fill="#DC2626" stroke="none" opacity="0.92"/><circle cx="10.62" cy="5.74" r="0.5" fill="#DC2626" stroke="none" opacity="0.85"/><circle cx="9.69" cy="5.94" r="0.5" fill="#DC2626" stroke="none" opacity="0.61"/><circle cx="6.94" cy="6.70" r="0.5" fill="#DC2626" stroke="none" opacity="0.68"/><circle cx="6.27" cy="6.97" r="0.5" fill="#DC2626" stroke="none" opacity="0.77"/><circle cx="4.45" cy="9.09" r="0.5" fill="#DC2626" stroke="none" opacity="0.86"/><circle cx="3.62" cy="10.68" r="0.5" fill="#DC2626" stroke="none" opacity="0.76"/><circle cx="3.02" cy="11.20" r="0.5" fill="#DC2626" stroke="none" opacity="0.65"/><circle cx="2.46" cy="13.28" r="0.5" fill="#DC2626" stroke="none" opacity="0.81"/></g>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#7C3AED" stroke-width="1.7"/>
+  <path d="M6.30 16.0 A 5.70 5.70 0 0 1 17.70 16.0" stroke="#3B82F6" stroke-width="1.6"/>
+  <path d="M7.80 16.0 A 4.20 4.20 0 0 1 16.20 16.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M12.0 16.0L19.53 13.98" stroke="#DC2626" stroke-width="2.2"/><circle cx="19.53" cy="13.98" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">max</text></g>
+<g transform="translate(648,136) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#F3F4F6"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <circle cx="12.0" cy="16.0" r="1.1" fill="#1D4ED8" stroke="none"/>
+  <path d="M7.0 8.0l10.0 8.0" stroke="#1D4ED8"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">off</text></g>
+<text x="48" y="240" font-family="Noto Sans SC" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="start">3×：文字那条线对齐图标中线（不是包围盒对齐）</text>
+<g transform="translate(60,264) scale(3)"><rect width="92" height="30" rx="15.0" fill="#EEF2FF"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M6.30 16.0 A 5.70 5.70 0 0 1 17.70 16.0" stroke="#BFDBFE" stroke-width="1.5"/>
+  <path d="M12.0 16.0L14.02 8.47" stroke="#DC2626" stroke-width="2.2"/><circle cx="14.02" cy="8.47" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#3730A3" font-weight="500" text-anchor="start">high</text></g>
+<line x1="60" y1="309" x2="376" y2="309" stroke="#F87171" stroke-width="1" stroke-dasharray="4 4"/>
+<text x="388" y="301" font-family="Noto Sans SC" font-size="10.5" fill="#DC2626" font-weight="normal" text-anchor="start">图标中线 = 文字视觉中线</text>
+<rect x="90" y="282" width="54" height="54" fill="none" stroke="#93C5FD" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="144" y1="368" x2="162" y2="368" stroke="#10B981" stroke-width="1.5"/>
+<text x="150" y="384" font-family="Lato" font-size="10" fill="#059669" font-weight="normal" text-anchor="start">6</text>
+<text x="600" y="256" font-family="Lato" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">icon</text>
+<text x="690" y="256" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">18 × 18，stroke 1.7（24 网格）</text>
+<text x="600" y="280" font-family="Lato" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">gap</text>
+<text x="690" y="280" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">6px（图标右边缘 → 文字左边缘）</text>
+<text x="600" y="304" font-family="Lato" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">label</text>
+<text x="690" y="304" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">12px / 500 / letter-spacing .01em</text>
+<text x="600" y="328" font-family="Lato" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">chip</text>
+<text x="690" y="328" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">高 30、圆角 15、左右内边距 10</text>
+<text x="600" y="352" font-family="Lato" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">光学修正</text>
+<text x="690" y="352" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">文字基线 = 中心 + 0.28em ≈ +3.4px</text>
+<text x="600" y="376" font-family="Lato" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">规则</text>
+<text x="690" y="376" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">名字 ≥ 6 字母就缩：minimal→min、medium→mid</text>
+<text x="48" y="420" font-family="Noto Sans SC" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="start">桌面 / 横屏：加号里的项**默认全部放出来**，窗口挤不下才收进 ⋯</text>
+<rect x="48" y="436" width="984" height="180" rx="20" fill="#FFFFFF" stroke="#E5E7EB"/>
+<rect x="72" y="456" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="100.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">图片</text><rect x="136" y="456" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="164.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">文件</text><rect x="200" y="456" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="228.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">技能</text><rect x="264" y="456" width="72" height="28" rx="9" fill="#F3F4F6"/><text x="300.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">指令注入</text><rect x="344" y="456" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="372.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">世界书</text><rect x="408" y="456" width="72" height="28" rx="9" fill="#F3F4F6"/><text x="444.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">视觉覆盖</text><rect x="488" y="456" width="86" height="28" rx="9" fill="#F3F4F6"/><text x="531.0" y="475" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">上下文</text>
+<text x="72" y="524" font-family="Noto Sans SC" font-size="13" fill="#9CA3AF" font-weight="normal" text-anchor="start">拖文件进来，或者直接说</text>
+<g transform="translate(752,540) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#EEF2FF"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M6.30 16.0 A 5.70 5.70 0 0 1 17.70 16.0" stroke="#BFDBFE" stroke-width="1.5"/>
+  <path d="M12.0 16.0L14.02 8.47" stroke="#DC2626" stroke-width="2.2"/><circle cx="14.02" cy="8.47" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#3730A3" font-weight="500" text-anchor="start">high</text></g>
+<rect x="856" y="540" width="152" height="32" rx="16" fill="#4F46E5"/>
+<text x="932" y="561" font-family="Noto Sans SC" font-size="13" fill="#FFFFFF" font-weight="normal" text-anchor="middle">发送</text>
+<text x="48" y="630" font-family="Noto Sans SC" font-size="10.5" fill="#9CA3AF" font-weight="normal" text-anchor="start">窄窗口（≤ 720）：第 4 个之后收进 ⋯，顺序不变</text>
+<text x="48" y="700" font-family="Noto Sans SC" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="start">安卓竖屏：保留底部弹层（照截图），「＋」在输入岛左侧</text>
+<rect x="48" y="716" width="420" height="820" rx="34" fill="#111827"/>
+<rect x="58" y="726" width="400" height="800" rx="26" fill="#FFFFFF"/>
+<text x="80" y="758" font-family="Lato" font-size="10.5" fill="#111827" font-weight="normal" text-anchor="start">9:41</text>
+<rect x="368" y="747" width="68" height="10" rx="3" fill="#E5E7EB"/>
+<text x="80" y="792" font-family="Noto Sans SC" font-size="15" fill="#111827" font-weight="500" text-anchor="start">重构输入岛</text>
+<rect x="292" y="778" width="140" height="22" rx="11" fill="#F3F4F6"/>
+<text x="302" y="793" font-family="Lato" font-size="10" fill="#374151" font-weight="normal" text-anchor="start">DeepSeek-V4.1</text>
+<rect x="230" y="820" width="208" height="46" rx="14" fill="#4F46E5"/>
+<text x="246" y="840" font-family="Noto Sans SC" font-size="11.5" fill="#FFFFFF" font-weight="normal" text-anchor="start">竖屏就按截图：加号</text>
+<text x="246" y="858" font-family="Noto Sans SC" font-size="11.5" fill="#FFFFFF" font-weight="normal" text-anchor="start">收着，横屏再放出来。</text>
+<rect x="80" y="882" width="250" height="64" rx="14" fill="#F9FAFB"/>
+<text x="94" y="904" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">弹层里那五项都对上了：</text>
+<text x="94" y="922" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">技能 / 指令注入 / 世界书 /</text>
+<text x="94" y="938" font-family="Noto Sans SC" font-size="11.5" fill="#111827" font-weight="normal" text-anchor="start">视觉覆盖 / 上下文管理。</text>
+<rect x="80" y="962" width="334" height="40" rx="12" fill="#FFFBEB" stroke="#FDE68A"/>
+<text x="94" y="987" font-family="Lato" font-size="9" fill="#92400E" font-weight="normal" text-anchor="start">16154544994949错误工具调用块原因:格式错误</text>
+<rect x="60" y="1340" width="396" height="150" rx="24" fill="#F9FAFB" stroke="#E5E7EB"/>
+<circle cx="88" cy="1372" r="15" fill="#FFFFFF" stroke="#D1D5DB"/>
+<path d="M88 1365v14M81 1372h14" stroke="#374151" stroke-width="1.8" stroke-linecap="round"/>
+<text x="116" y="1390" font-family="Noto Sans SC" font-size="12.5" fill="#9CA3AF" font-weight="normal" text-anchor="start">说点什么</text>
+<g transform="translate(316,1400) scale(1.0)"><rect width="70" height="26" rx="13.0" fill="#F3F4F6"/><g transform="translate(10,4.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M12.0 16.0L9.98 8.47" stroke="#DC2626" stroke-width="2.2"/><circle cx="9.98" cy="8.47" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="16.4" font-family="Lato" font-size="12" fill="#374151" font-weight="500" text-anchor="start">mid</text></g>
+<circle cx="424" cy="1413" r="17" fill="#4F46E5"/>
+<path d="M418 1413h12M425 1407l5 6-5 6" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="58" y="1130" width="400" height="372" rx="26" fill="#FFFFFF" stroke="#E5E7EB"/>
+<rect x="238" y="1140" width="40" height="4" rx="2" fill="#D1D5DB"/>
+<circle cx="134" cy="1200" r="26" fill="#F3F4F6"/>
+<rect x="124" y="1194" width="20" height="14" rx="3" fill="none" stroke="#374151" stroke-width="1.6"/>
+<circle cx="134" cy="1201" r="3.4" fill="none" stroke="#374151" stroke-width="1.6"/>
+<text x="134" y="1246" font-family="Noto Sans SC" font-size="10.5" fill="#374151" font-weight="normal" text-anchor="middle">拍照</text>
+<circle cx="258" cy="1200" r="26" fill="#F3F4F6"/>
+<rect x="248" y="1192" width="20" height="16" rx="3" fill="none" stroke="#374151" stroke-width="1.6"/>
+<path d="M251 1206l5-6 4 4 3-3 4 5" fill="none" stroke="#374151" stroke-width="1.6" stroke-linejoin="round"/>
+<text x="258" y="1246" font-family="Noto Sans SC" font-size="10.5" fill="#374151" font-weight="normal" text-anchor="middle">照片</text>
+<circle cx="382" cy="1200" r="26" fill="#F3F4F6"/>
+<path d="M386 1192l-9 9a4 4 0 0 0 5.6 5.6l9-9a2.8 2.8 0 0 0-4-4l-8 8" fill="none" stroke="#374151" stroke-width="1.6" stroke-linecap="round"/>
+<text x="382" y="1246" font-family="Noto Sans SC" font-size="10.5" fill="#374151" font-weight="normal" text-anchor="middle">上传文件</text>
+<rect x="78" y="1280" width="360" height="42" rx="10" fill="#FFFFFF"/>
+<circle cx="98" cy="1301" r="9" fill="#F3F4F6"/>
+<text x="120" y="1306" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">技能</text>
+<text x="418" y="1306" font-family="Lato" font-size="11.5" fill="#4F46E5" font-weight="normal" text-anchor="end">23/23</text>
+<rect x="78" y="1324" width="360" height="42" rx="10" fill="#FFFFFF"/>
+<circle cx="98" cy="1345" r="9" fill="#F3F4F6"/>
+<text x="120" y="1350" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">指令注入</text>
+<text x="418" y="1350" font-family="Noto Sans SC" font-size="11.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">›</text>
+<rect x="78" y="1368" width="360" height="42" rx="10" fill="#FFFFFF"/>
+<circle cx="98" cy="1389" r="9" fill="#F3F4F6"/>
+<text x="120" y="1394" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">世界书</text>
+<text x="418" y="1394" font-family="Lato" font-size="11.5" fill="#4F46E5" font-weight="normal" text-anchor="end">1/11</text>
+<rect x="78" y="1412" width="360" height="42" rx="10" fill="#FFFFFF"/>
+<circle cx="98" cy="1433" r="9" fill="#F3F4F6"/>
+<text x="120" y="1438" font-family="Noto Sans SC" font-size="12.5" fill="#4F46E5" font-weight="normal" text-anchor="start">视觉覆盖</text>
+<text x="418" y="1438" font-family="Noto Sans SC" font-size="11.5" fill="#4F46E5" font-weight="normal" text-anchor="end">✓</text>
+<rect x="78" y="1456" width="360" height="42" rx="10" fill="#FFFFFF"/>
+<circle cx="98" cy="1477" r="9" fill="#F3F4F6"/>
+<text x="120" y="1482" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">上下文管理</text>
+<text x="418" y="1482" font-family="Noto Sans SC" font-size="11.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">›</text>
+</svg>

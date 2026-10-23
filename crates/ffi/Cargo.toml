@@ -1,0 +1,32 @@
+[package]
+name = "nmoi-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "NMoi-Agent C ABI 边界：panic 不跨 FFI"
+
+[lib]
+name = "nmoi_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = []
+# Android 侧的 JNI 桥（P6.8）。**默认关**：`jni` / `jni-sys` 的 MSRV 都 ≥ 1.76，
+# 工作区 MSRV 是 1.75（D10）。默认开着的话，MSRV 那条 `cargo check --workspace` 会直接编不过。
+# 代价说清楚：本机永远编译不到这一层，只能靠 CI 的 android job。
+jni = ["dep:jni"]
+
+[dependencies]
+nmoi-core.workspace = true
+nmoi-storage.workspace = true
+# JSON 是这一层的边界格式（D53），不是"顺手用一下"。
+serde_json.workspace = true
+# 只在 `nmoi_context_breakdown_json` 的 extra 参数上用到 derive：那六个字段
+# 手写解析要二十行，还得自己处理"给了 0"和"没给"的区别。
+serde.workspace = true
+# 只有 `jni` feature 打开时才编（见上面 [features]）。
+jni = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

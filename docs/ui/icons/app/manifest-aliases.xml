@@ -1,0 +1,97 @@
+<!-- 由 scripts/gen_app_icons.py 生成：贴进 AndroidManifest.xml 的 <application> 里 -->
+        <!-- 许愿星 · 环轨 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.WishingStarDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c2_dark"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 许愿星 · 环轨 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.WishingStarLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c2_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 许愿终端 · 星群 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.TerminalStarsDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c4_dark"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 许愿终端 · 星群 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.TerminalStarsLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c4_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 无限环 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.InfinityRingDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c5_dark"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 无限环 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.InfinityRingLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c5_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 代码星屑 · 黑底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.CodeStardustDark"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c6_dark"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <!-- 代码星屑 · 白底 -->
+        <activity-alias
+            android:name="com.nmoi.agent.icon.CodeStardustLight"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_appicon_c6_light"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>

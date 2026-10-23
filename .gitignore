@@ -1,0 +1,41 @@
+# 构建产物
+/target/
+**/*.rs.bk
+
+# 运行时数据（本地库、WAL、备份、隔离导出）
+*.db
+*.db-wal
+*.db-shm
+*.quarantine.jsonl
+backup/
+nmoi-data/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Android 构建产物（Gradle 自己的坑：这两处不在 /target/ 下）
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/.kotlin/
+# cargo-ndk 的产物：CI 每次重新编译，不进仓库（.so 不能靠手抄）
+/android/app/src/main/jniLibs/
+
+# 本地环境
+.env
+
+# 签名材料：**永远不进仓库**。CI 里从 secret 解到 $RUNNER_TEMP，不落工作树（D65 / docs/signing.md）
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pepk
+signing/
+keystore.properties
+*.asc
+*.gpg
+!data/*.gpg

@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/storage",
+    "crates/ffi",
+    "crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "GPL-3.0-only"
+authors = ["NickEntry"]
+
+# 依赖版本全部锁死（=），原因见 docs/decisions.md D10：
+# 本地工具链是 1.75，必须让 `cargo check` 与 CI 解析到同一组版本。
+[workspace.dependencies]
+serde = { version = "=1.0.197", features = ["derive"] }
+serde_json = "=1.0.114"
+sha2 = "=0.10.8"
+uuid = { version = "=1.7.0", features = ["v4", "v7", "serde"] }
+thiserror = "=1.0.58"
+regex = "=1.10.4"
+rusqlite = { version = "=0.31.0", features = ["bundled", "backup"] }
+tempfile = "=3.10.1"
+# BPE 词表（D94）。0.5.9 是能在 rustc 1.75 上编过的版本，已实测；`optional` 由使用方声明。
+tiktoken-rs = "=0.5.9"
+# JNI 桥（P6.8）。**只有 Android 构建会编译它**：jni / jni-sys 的 MSRV 都 ≥ 1.76，
+# 而工作区 MSRV 是 1.75（D10），所以做成 nmoi-ffi 的可选 feature、默认关。
+# 注意：这意味着这一层在本机（1.75）**没法本地验证**，只能看 CI。
+jni = "=0.21.1"
+
+nmoi-core = { path = "crates/core" }
+nmoi-storage = { path = "crates/storage" }
+
+# 注意：不设 panic = "abort"。FFI 边界靠 catch_unwind 把 panic 转成错误码（计划 §3.2），
+# abort 会让这条硬约束失效。
+[profile.release]
+lto = "thin"
+codegen-units = 1

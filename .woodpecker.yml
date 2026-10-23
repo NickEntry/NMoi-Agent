@@ -1,0 +1,20 @@
+# Codeberg 托管的 CI 入口是 Woodpecker（Forgejo Actions 在 Codeberg 没有共享 runner，
+# 见 docs.codeberg.org/ci/actions/）。这份配置是给「Woodpecker 激活本仓库」后用的。
+# 语法是 Woodpecker 的，不是 GitHub Actions 的：不要和 .github/ 下的工作流混用。
+
+when:
+  - event: [push, pull_request, manual]
+
+steps:
+  test:
+    image: rust:1.83-bookworm
+    commands:
+      - cargo --version
+      - rustc --version
+      - cargo test --workspace --all-targets --locked
+      - cargo run --locked -p nmoi-cli -- version
+
+  msrv:
+    image: rust:1.75-bookworm
+    commands:
+      - cargo check --workspace --all-targets --locked

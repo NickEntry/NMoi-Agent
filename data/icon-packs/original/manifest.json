@@ -1,0 +1,958 @@
+{
+  "schema_version": 1,
+  "pack_id": "nmoi-original",
+  "name": "原版图标包",
+  "version": "1.0.0",
+  "created_at": 1790000000000,
+  "entries": [
+    {
+      "kind": "action",
+      "key": "archive",
+      "file": "actions/archive",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "arrow-right",
+      "file": "actions/arrow-right",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "arrow-up",
+      "file": "actions/arrow-up",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "book-open",
+      "file": "actions/book-open",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "check",
+      "file": "actions/check",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "chevron-down",
+      "file": "actions/chevron-down",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "copy",
+      "file": "actions/copy",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "cpu",
+      "file": "actions/cpu",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "divider",
+      "file": "actions/divider",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "ellipsis",
+      "file": "actions/ellipsis",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "folder",
+      "file": "actions/folder",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "gauge",
+      "file": "actions/gauge",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "image",
+      "file": "actions/image",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "lock",
+      "file": "actions/lock",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "message-square",
+      "file": "actions/message-square",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "mic",
+      "file": "actions/mic",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "minimize-2",
+      "file": "actions/minimize-2",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "panel-left",
+      "file": "actions/panel-left",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "paperclip",
+      "file": "actions/paperclip",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "pencil",
+      "file": "actions/pencil",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "pin",
+      "file": "actions/pin",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "plus",
+      "file": "actions/plus",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "puzzle",
+      "file": "actions/puzzle",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "rotate-ccw",
+      "file": "actions/rotate-ccw",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "search",
+      "file": "actions/search",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "settings",
+      "file": "actions/settings",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "share-2",
+      "file": "actions/share-2",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "square",
+      "file": "actions/square",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "trash-2",
+      "file": "actions/trash-2",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "wrench",
+      "file": "actions/wrench",
+      "tint": "auto"
+    },
+    {
+      "kind": "action",
+      "key": "x",
+      "file": "actions/x",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "alibaba",
+      "file": "providers/alibaba",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "anthropic",
+      "file": "providers/anthropic",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "aws",
+      "file": "providers/aws",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "baichuan",
+      "file": "providers/baichuan",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "bytedance",
+      "file": "providers/bytedance",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "deepseek",
+      "file": "providers/deepseek",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "google",
+      "file": "providers/google",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "groq",
+      "file": "providers/groq",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "meta",
+      "file": "providers/meta",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "microsoft",
+      "file": "providers/microsoft",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "minimax",
+      "file": "providers/minimax",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "mistral",
+      "file": "providers/mistral",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "moonshot",
+      "file": "providers/moonshot",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "nvidia",
+      "file": "providers/nvidia",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "ollama",
+      "file": "providers/ollama",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "openai",
+      "file": "providers/openai",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "openrouter",
+      "file": "providers/openrouter",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "perplexity",
+      "file": "providers/perplexity",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "sambanova",
+      "file": "providers/sambanova",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "siliconcloud",
+      "file": "providers/siliconcloud",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "stepfun",
+      "file": "providers/stepfun",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "tencent",
+      "file": "providers/tencent",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "together",
+      "file": "providers/together",
+      "tint": "none"
+    },
+    {
+      "kind": "provider",
+      "key": "xai",
+      "file": "providers/xai",
+      "tint": "auto"
+    },
+    {
+      "kind": "provider",
+      "key": "zhipu",
+      "file": "providers/zhipu",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "baichuan",
+      "file": "models/baichuan",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "chatglm",
+      "file": "models/chatglm",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "claude",
+      "file": "models/claude",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "commanda",
+      "file": "models/commanda",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "dbrx",
+      "file": "models/dbrx",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "deepseek",
+      "file": "models/deepseek",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "doubao",
+      "file": "models/doubao",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "gemini",
+      "file": "models/gemini",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "gemma",
+      "file": "models/gemma",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "glmv",
+      "file": "models/glmv",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "grok",
+      "file": "models/grok",
+      "tint": "auto"
+    },
+    {
+      "kind": "model",
+      "key": "hunyuan",
+      "file": "models/hunyuan",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "kimi",
+      "file": "models/kimi",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "ling",
+      "file": "models/ling",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "mistral",
+      "file": "models/mistral",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "nova",
+      "file": "models/nova",
+      "tint": "none",
+      "backing": "surface"
+    },
+    {
+      "kind": "model",
+      "key": "qwen",
+      "file": "models/qwen",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "reka",
+      "file": "models/reka",
+      "tint": "auto"
+    },
+    {
+      "kind": "model",
+      "key": "sensenova",
+      "file": "models/sensenova",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "spark",
+      "file": "models/spark",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "stepfun",
+      "file": "models/stepfun",
+      "tint": "none"
+    },
+    {
+      "kind": "model",
+      "key": "xiaomimimo",
+      "file": "models/xiaomimimo",
+      "tint": "auto"
+    },
+    {
+      "kind": "model",
+      "key": "yi",
+      "file": "models/yi",
+      "tint": "none"
+    }
+  ],
+  "defaults": {
+    "rules": [
+      {
+        "id": "preset-model-31ac0a93",
+        "pattern": "^(anthropic/)?claude",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "claude",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-4b3dad47",
+        "pattern": "^(google/)?gemini",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "gemini",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-19999745",
+        "pattern": "^(google/)?gemma",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "gemma",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-52699f19",
+        "pattern": "^deepseek|^deep-seek",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "deepseek",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-0ffa41ae",
+        "pattern": "^(alibaba/|dashscope/)?qwen|^qwq",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "qwen",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-e90f68f7",
+        "pattern": "^(moonshot/)?kimi|^moonshot",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "kimi",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-5bfe90a6",
+        "pattern": "^(bytedance/)?doubao|^seed-",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "doubao",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-98cb0521",
+        "pattern": "^hunyuan|^(tencent/)",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "hunyuan",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-fbfde953",
+        "pattern": "^glm-4v|^glmv|^cogvlm",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "glmv",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-11e8e578",
+        "pattern": "^glm|^chatglm|^zhipu",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "chatglm",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-4987f9a3",
+        "pattern": "^grok",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "grok",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-db7a51ed",
+        "pattern": "^command",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "commanda",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-16e0722c",
+        "pattern": "^dbrx",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "dbrx",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-dd29bfb4",
+        "pattern": "^ling-|^(ant/)",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "ling",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-8a484987",
+        "pattern": "^sensenova|^sense-",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "sensenova",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-18a88351",
+        "pattern": "^reka",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "reka",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-8d36356a",
+        "pattern": "^mistral|^mixtral|^codestral",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "mistral",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-1d125de9",
+        "pattern": "^spark",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "spark",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-3074c8d2",
+        "pattern": "^step-|^stepfun",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "stepfun",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-e6af5775",
+        "pattern": "^baichuan",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "baichuan",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-a4a1afb5",
+        "pattern": "^yi-|^01-ai",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "yi",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-model-42aaa14d",
+        "pattern": "^nova-|^(amazon/)",
+        "mode": "regex",
+        "field": "model",
+        "kind": "model",
+        "key": "nova",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-b081bd90",
+        "pattern": "^openai",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "openai",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-9aed9dc2",
+        "pattern": "^anthropic",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "anthropic",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-7e1657ac",
+        "pattern": "^gemini|^google",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "google",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-64642690",
+        "pattern": "^deepseek",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "deepseek",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-deea234b",
+        "pattern": "^zhipu|^bigmodel|^智谱",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "zhipu",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-eb0b2c17",
+        "pattern": "^moonshot|^kimi",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "moonshot",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-aeee9dbd",
+        "pattern": "^dashscope|^alibaba|^qwen",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "alibaba",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-f8179e3c",
+        "pattern": "^volc|^bytedance|^ark|^豆包",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "bytedance",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-bdc66027",
+        "pattern": "^baichuan",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "baichuan",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-60e22979",
+        "pattern": "^minimax",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "minimax",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-87c745df",
+        "pattern": "^hunyuan|^tencent",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "tencent",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-60748c26",
+        "pattern": "^stepfun|^阶跃",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "stepfun",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-c7a3e3fe",
+        "pattern": "^mistral",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "mistral",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-baaf3c19",
+        "pattern": "^xai|^grok",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "xai",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-2949fb6e",
+        "pattern": "^meta|^llama",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "meta",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-78bdf74c",
+        "pattern": "^ollama",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "ollama",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-5f50b963",
+        "pattern": "^openrouter",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "openrouter",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-ac158f83",
+        "pattern": "^groq",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "groq",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-712a66c0",
+        "pattern": "^together",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "together",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-a70f639a",
+        "pattern": "^silicon|^硅基",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "siliconcloud",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-e82463a4",
+        "pattern": "^perplexity",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "perplexity",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-eca1460e",
+        "pattern": "^sambanova",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "sambanova",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-6f3c822d",
+        "pattern": "^nvidia",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "nvidia",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-f2fb6af3",
+        "pattern": "^microsoft|^azure",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "microsoft",
+        "priority": 500,
+        "source": "preset"
+      },
+      {
+        "id": "preset-provider-90447853",
+        "pattern": "^aws|^amazon|^bedrock",
+        "mode": "regex",
+        "field": "provider_name",
+        "kind": "provider",
+        "key": "aws",
+        "priority": 500,
+        "source": "preset"
+      }
+    ]
+  }
+}

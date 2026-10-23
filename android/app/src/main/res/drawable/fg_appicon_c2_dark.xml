@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 由 scripts/gen_app_icons.py 生成，别手改：改脚本再跑。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="16.88"
+        android:translateY="16.88"
+        android:scaleX="0.145"
+        android:scaleY="0.145">
+        <path android:pathData="M163.7,137.8 A150.0,150.0 0 0 1 388.4,185.6" android:fillColor="#00000000" android:strokeColor="#7C5CFF" android:strokeWidth="13" android:strokeLineCap="round" android:strokeLineJoin="round"/><path android:pathData="M416.8,327.6 A176.0,176.0 0 0 1 178.8,414.2" android:fillColor="#00000000" android:strokeColor="#2EC5E0" android:strokeWidth="11" android:strokeLineCap="round" android:strokeLineJoin="round"/><path android:pathData="M54.5,270.1 A202.0,202.0 0 0 1 220.9,57.1" android:fillColor="#00000000" android:strokeColor="#FF5FA2" android:strokeWidth="9" android:strokeLineCap="round" android:strokeLineJoin="round"/><path android:pathData="M144.0,256.0 A112.0,112.0 0 1 1 368.0,256.0 A112.0,112.0 0 1 1 144.0,256.0 Z"><aapt:attr name="android:fillColor"><gradient android:type="radial" android:centerX="256.0" android:centerY="256.0" android:gradientRadius="112"><item android:offset="0" android:color="#FF5FA28C"/><item android:offset="1" android:color="#FF5FA200"/></gradient></aapt:attr></path><path android:pathData="M256.0,144.0 C285.1,209.4 302.6,226.9 368.0,256.0 C302.6,285.1 285.1,302.6 256.0,368.0 C226.9,302.6 209.4,285.1 144.0,256.0 C209.4,226.9 226.9,209.4 256.0,144.0 Z"><aapt:attr name="android:fillColor"><gradient android:type="radial" android:centerX="256.0" android:centerY="256.0" android:gradientRadius="112"><item android:offset="0" android:color="#FFE3A3"/><item android:offset="0.45" android:color="#FFC24B"/><item android:offset="1" android:color="#FF5FA2"/></gradient></aapt:attr></path>
+    </group>
+</vector>

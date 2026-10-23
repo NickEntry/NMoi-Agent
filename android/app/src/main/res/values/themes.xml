@@ -1,0 +1,9 @@
+<resources>
+    <!-- 不引 AppCompat / Material Components：整屏都是 Compose，只借一个无 ActionBar 的底子。
+         windowBackground 定成深色，是为了冷启动那一瞬间不闪白（Compose 默认深色主题）。 -->
+    <style name="Theme.NMoi" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/nmoi_window_background</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

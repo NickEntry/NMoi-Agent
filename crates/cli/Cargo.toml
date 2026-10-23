@@ -1,0 +1,16 @@
+[package]
+name = "nmoi-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "NMoi-Agent 诊断入口（doctor / init / version）"
+
+[[bin]]
+name = "NMoi-Agent"
+path = "src/main.rs"
+
+[dependencies]
+nmoi-core.workspace = true
+nmoi-storage.workspace = true
+serde_json.workspace = true

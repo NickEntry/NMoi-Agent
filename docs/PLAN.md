@@ -1,0 +1,979 @@
+# NMoi-Agent 实施计划（含进度）
+
+> 本文件是主计划。**每完成一项就更新那一行的「进度」列**，不删历史、不空转。
+> 进度写法：`未开始` → `设计已定` → `已实现 core` → `已实现 storage` → `已接 UI` → `已实测`。
+> 每次开工先读本表，收工前把变动写回去。
+
+- 上游设计：`docs/design/context-modes-design-v1.1.md`、`docs/design/platform-client-plan.md`、`docs/design/context-experiments-report.md`
+- 决策记录：`docs/decisions.md`（D1–D9 来自计划文档，D10 起是本仓库新增）
+- 最近更新：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 docs/compression.md、D115）
+- 同轮：0.14（应用图标 4 款 × 黑白底、设置里可切、默认 4 号黑底；D114）
+- 同轮：0.13（JNI 桥接上原生层，列表读真库；D112；真机清单 docs/verification.md）
+- 上一轮：2026-10-22（0.12：Android 骨架 + CI 出 debug APK；D110 / D111）
+- 上一轮：2026-10-21（0.8：自动重试 —— `retry` 模块 + `complete_retrying`，D99）
+- 同轮：2026-10-21（0.7：双线压缩接线 —— `Threshold` 双单位、`decide` 动作表、造请求前拒绝、生成中截断，D97）
+- 同轮：0.6 token 估算 L1＝tiktoken-rs 双词表 + L2 校准，D94–D96；§3.22 换成实测数字
+- 上一轮：2026-10-21（D93 世界书格式定为酒馆格式、导入兼容 kelivo / RikkaHub；只记录未动工）
+- 上一轮：2026-10-21（断块修复 —— 断在半路的工具调用/思考块在**请求构造时**翻译成文字块，库里原样保留；UI 形状按截图冻结，加号面板与上下文窗口面板逐项对上已有能力）
+- 上一轮更新：2026-10-21（P4 压缩 / P10 数据可靠性 / P7 工具层 / P6 编排层；D44–D52）
+
+---
+
+## 0. 总览
+
+| # | 阶段 | 状态 | 进度 | 证据 / 备注 |
+|---|---|---|---|---|
+| S0 | 地基：核心模型 + 存储 + 事件流 | 进行中 | core/storage/ffi/cli 四个 crate 可 `cargo check --all-targets` 通过；存储往返、分界线、编辑审计、备份校验的测试已写好，**尚未在 CI 跑过** | `crates/*`；`cargo check` 本地绿 |
+| S0.5 | 工作区文件工具（不依赖容器） | 进行中 | `core::workspace` 已实现读/写/编辑/看目录/查找/搜索 + 分级截断 + `force_full`；测试已写，未跑 | `crates/core/src/workspace.rs` |
+| P1 | 锁定 / 分界线 / 块级编辑（模型层） | 进行中 | core + storage 已落地（`locked`、`dividers` 表、`edits` 表）；UI 未做 | `core/src/edit.rs`、`core/src/divider.rs` |
+| P2 | Provider / 模型配置层 | 已实现 core | `core::provider` + `core::model`（归一名、家族兜底、来源可解释）；**模型快照已接入**（1729 条家族-版本，1.2MB） | `crates/core/src/provider.rs`、`model.rs`、`data/models.snapshot.json` |
+| P2.1 | 传输层（明文 HTTP/1.1 + 分块/定长/关闭定界） | 已实现 core | `core::transport`：`Transport` trait + `PlainHttpTransport`（std 手写）。`https` 明确报 `Unsupported`（TLS 见 D38 的待定项）；有本机 socket 单测（CI 可跑，不需要外网） | `crates/core/src/transport.rs`、D38 |
+| P2.2 | SSE 帧解析 | 已实现 core | `core::sse`：空行断帧 / 多行 data 拼接 / 注释行 / EOF 前无空行不吞帧 / 单行上限 1 MiB；有"逐字节切碎"的测试 | `crates/core/src/sse.rs` |
+| P2.3 | 四端口流式适配 + usage 归一 | 已实现 core | `core::stream`：`StreamEvent` 统一形状；OpenAI 兼容 / Responses / Anthropic / Gemini；工具参数分片、`thought:true`、`[DONE]`、流内 error、无终止信号=Interrupted；usage 口径归一（D39） | `crates/core/src/stream.rs`、`docs/provider-runtime.md` |
+| P2.4 | 请求构造 / 错误映射 / 重试 | 已实现 core | `core::runtime`：四端口请求体、屏蔽顺序沿用 D33、`max_tokens` 字段按端口分、鉴权头按端口分、`OverflowHint` 两档线索、429/5xx 重试（只在零字节阶段） | `crates/core/src/runtime.rs`、D40 |
+| P2.4a | 真机冒烟 | 已实测 | `cargo run -p nmoi-core --example provider_smoke`（2026-10-20，`relay-b/DeepSeek-V4.1-Flash`）：正文/思考/usage/finish/done 全通，引擎落库 2 个原子单元 | `docs/provider-runtime.md` §1 |
+| P2.6 | 非流式回复 + 工具消息接线 | 已实现 core + 已实测 | `ChatClient::complete()` + `stream::parse_complete`（四端口解析）；`Completion { text, reasoning, tool_calls, finish, usage }`。工具消息四端口映射（D41）；工具声明三端口已做、Gemini 报 `Unsupported`。真机非流式实测通过 | `core::runtime`、`core::stream`、D41 |
+| P2.5 | 模型元数据抓取流水线 | 已跑通 | `scripts/fetch_models.py`（三源合并、只存事实字段、--offline 可复现）；来源与许可见 `docs/model-data.md` | `scripts/fetch_models.py` |
+| P2.7 | 逐参数覆盖（默认/已修改 + 恢复） | 已实现 core | `core::config`：`OverrideState`、`ModelOverrides`、跟随规则、`ThinkingChoice`；UI 未接（P6） | `crates/core/src/config.rs` |
+| P2.9 | 思考滑块语义（关闭显式 / 自动不发 / 滑块最少两格） | 已实现 core | `ThinkingChoice::slider`；关闭对 Anthropic 预算式走 `type: disabled`，其余走显式 `none` | `crates/core/src/config.rs` |
+| P2.8 | 思考档位数据（每模型支持哪些强度） | 已跑通 | 脚本从 `reasoning_options` 提取，**厂商数据优先**（DeepSeek 实测 low/high/max） | `data/models.snapshot.json` |
+| P3 | 五类模型角色（标题/压缩/翻译/视觉/建议） | 已实现 core | `core::roles`：角色配置与默认值、内置提示词、标题清洗、失败静默降级、单独计量账本（不进会话预算）；视觉角色按"未显式指定则置灰"实现门控 | `crates/core/src/roles.rs`、D42 |
+| P3.1 | 视觉图片通道（图片 → 文字描述） | 未开始 | 需要：`SourceTag::VisionBridge`（**已加**）、四种端口的图片内容块、工作区的二进制读、尺寸/格式限制。当前视觉角色只有门控，发不出图 | D22、D42 |
+| P3.3 | **视觉覆盖**（开着就由视觉模型看，主模型只收文字） | 契约已定 + 决策函数已实现 + FFI 可读默认提示词 | `core::vision`：`VisionOverride` / `VisionPlan` / `Task::request_text`；两套默认提示词（`data/vision.image.md` 逐字收用户给的 11888 字节、`data/vision.video.md` 另写），`nmoi_vision_defaults_json` 读给 UI。缺：附件库、真把媒体发出去（等 P3.4 的内容块） | §3.14、D62、D63 |
+| P3.4 | 多模态内容块 + Gemini 全模态 | 设计已定 + 探针可用 | 四端口能力矩阵见 §3.15；`scripts/modality_probe.sh` 已写并在本机跑通 text/image 两行（结果与"为什么不能读成支持"记在 `docs/model-data.md`）。Gemini Files API **未实测** | §3.15、D64 |
+| P6.3 | 聊天页 / 侧栏布局（形状冻结） | 设计已定 | §3.12：三层消息页 + 抽屉，每一块标出数据来自哪个调用。UI 本体等平台工具链 | §3.12 |
+| P4.1 | **断块修复**（不完整调用/思考 → 文字块） | 已实现 core | `core::repair`：`diagnose` / `BrokenBlock::declaration` / `normalize`；声明行 = ID+块类+原因、ID 稳定、信息保留。接在 `run_session_turn` 汇总历史那一步，**不动库** | §3.17、D66、D67 |
+| P6.4 | 上下文窗口面板（分段用量 + 三个操作） | 已实现 core + FFI | `budget::Segment`（八行，顺序固定、含 0 行）/ `breakdown_of_units` / `nmoi_context_breakdown_json`（库里算历史与工具，`extra` 由调用方给系统提示词/技能/世界书/工作区/草稿；未知字段报错，不静默双算）；core 7 项测试 + C 侧 19 项检查。面板 UI 本体仍等平台工具链 | §3.12、`crates/core/src/budget.rs`、`crates/ffi/src/storage.rs` |
+| P6.5 | 字体与图标（内置 OFL / 导入变单槽 / 系统字体） | 设计已定 + 图标已画 | `docs/fonts.md`：内置 Noto Sans SC + Inter + JetBrains Mono + 得意黑（全部 OFL-1.1），导入字体自动改名为 `Imported Font` 且换走即删；Android 只给系统默认，Windows DirectWrite + 搜索，Linux fontconfig。图标：`docs/ui/icons/thinking-*.svg` 七个（自绘，D69）+ `actions/` 31 个（Lucide ISC）+ `brands/` 14 个（Lobe Icons MIT）+ 规范 `docs/ui/icons/README.md`（D103/D104）；预览工具 `scripts/icon_preview.py`（支持 dark/light 两档）；运行时用 PNG 图标包（原版不可删、可导入导出、正则规则可自定义，D105），供应商 `providers/` 与模型 `models/` 两套、彩色标；第三方声明随每个产物走（D106，`THIRD-PARTY-NOTICES.md` + `LICENSES/`）；规则匹配与排序已在 `core::icons` 落地（20 项测试，D107）：优先级 0–1000、有效字面量长度、全序落 `id`、供应商按 kind→host→name 三字段查 | `docs/fonts.md`、`docs/ui/icons/README.md`、`docs/ui/icon-packs.md`、`docs/packaging.md`、§3.18、D68、D69、D103–D106 |
+| P6.7 | Android 骨架 + CI 出 debug APK | 骨架已实现（未接 JNI） | `android/`：Gradle 8.7 / AGP 8.5.2 / Kotlin 2.0.21（D110），`applicationId = com.nmoi.agent`（D102）；第一屏是会话列表的**形状**，数据写死在 `ui/PlaceholderData.kt`；CI 有 `android` job 出 debug APK（D111，release 无签名材料、不冒充）。**缺**：`crates/jni` + `cargo-ndk`、图标包进 assets、instrumentation 测试，全部未在真机跑过 | `android/`、`docs/android.md`、`.github/workflows/ci.yml` |
+| P6.9 | UI 骨架：会话 / 聊天 / 设置三页 + 日志门面 | 已实现（未真机验证） | `sealed interface Route` 三页切换 + `BackHandler` 只在非根注册；聊天页 = 顶栏 + 消息区空态 + 输入岛（`AndroidView` 包原生 `EditText`，D5）；**发送按钮禁用**（turn 面未接，不假装）；设置分「外观 / 调试 / 关于」；`NLog` 日志门面默认开、`app_log/enabled` 可关（D117）。缺：消息区数据（`load_units`）、图标按钮（等图标包进 assets） | `android/.../ui/{ChatScreen,SettingsScreen,NLog}.kt`、`MainActivity.kt` |
+| P6.9b | 应用内日志页（真机证据不再依赖 logcat） | 已实现（待 CI 编译确认；真机未验） | `NLog` 每条记录双写：logcat + `files/logs/nmoi.log`；上限默认 **8 MB**（2/4/8/16/32 可选，存 SharedPreferences `app_log/limit_bytes`），超限保留最新一半（`.tmp` → rename，D48）；新增 `LogScreen`：查看（尾 64 KB）/ 复制（尾 256 KB）/ 导出（SAF 整份）/ 清除（二次确认）。起因：2026-10-23 真机冷启动后 `NMoi/` 前缀日志整段消失（`I` 级被 ROM 吞）。**待拆**：按 `docs/ui/structure.md` §3 改成三种通道（上下文 / 请求 / 调试）+ 索引页 + 齿轮设置页 | `android/.../ui/{LogFile,NLog,LogScreen}.kt`、`SettingsScreen.kt`、`MainActivity.kt` |
+| P6.10 | 聊天页抽屉 + 面板契约第一批 | 已实现（未真机验证） | 会话列表收进左侧抽屉（宽 300dp、遮罩 alpha 0.60、点遮罩关闭、只位移不缩放、返回键在面板层先关抽屉）；落地与未落地清单见 D119。**缺**：拖动关闭/35% 阈值/8dp 阻尼/动画中不可点/令牌时长 | `android/.../ui/ConversationDrawer.kt`、`ChatScreen.kt`、D119 |
+| P6.8 | JNI 桥（Android ↔ Rust） | 已实现（未真机验证） | `crates/ffi/src/jni_bridge.rs`：4 个符号（版本 / 开库 / 关库 / 列会话），每个都转手调 C ABI（D112）；`jni` feature 默认关（MSRV 1.75 vs jni-sys 1.76+）；Kotlin 侧 `ui/NativeBridge.kt` + `ui/ConversationRepository.kt`，加载失败退回占位数据并在界面上直说；CI 用 cargo-ndk 编 `arm64-v8a/libnmoi_ffi.so`。**缺**：真机验证（V0–V5 在 `docs/verification.md`）、其它 ABI | `crates/ffi/src/jni_bridge.rs`、`android/.../ui/NativeBridge.kt`、`docs/verification.md` |
+| P6.6 | 平台自适应排版（竖屏 / 横屏 / 桌面） | 设计已定 + 草稿图 | §3.12 下半：Android 竖屏保留底部弹层；横屏与桌面把高频项提成输入岛按钮行、左栏常驻、右栏上下文窗口。草稿：`docs/ui/draft-composer.svg`、`docs/ui/draft-desktop.svg` | §3.12 |
+| P7.7 | 加号菜单与附件管线 | 设计已定 | §3.13：图片/拍照/文件/音频/粘贴/语音输入/视觉覆盖开关 + 内容寻址的附件库。缺：一个"点了图片就少一张图"的反面案例要靠置灰来防 | §3.13 |
+| P7.8 | 图片管线：上传压缩 + `view_image` + 历史摘图 | 设计已定（D72 / D73 / D74） | 原图不动、只生成发送副本（长边/总像素/字节三上限，Lanczos3，不超不重编码）；`view_image` 返回值是文字、分析在隔离子上下文里、思考落库；历史图片在下一次请求构造时换成占位引用（视觉覆盖开着才摘） | §3.20、D72–D74 |
+| P5.7 | token 估算（L0 / L1 / L2 校准） | L0 **已实测**，L1/L2 设计已定 | L0 对账结果（`relay-a/DeepSeek-V4-Flash`，1000/10000 字符各四类）：ASCII 0.62、中文 0.63、**混排 1.32（低估）**、代码 1.01。结论：不能乘全局系数，L2 按 (模型, 会话内容) 校准；未校准时绝对线判定乘 1.3。缺 L1 与 timing | `docs/token-estimation.md`、`scripts/token_check.py`、D91 |
+| P4.2 | 双线压缩（建议线 / 绝对线，单位可切） | 设计已定（D90） | 内部统一存 token；判定只在"造请求前"与"生成结束"；绝对线截断标 `incomplete`；压缩不可重入 | §3.22、D90 |
+| P9.1 | 签名密钥与 CI 注入 | 设计已定（`docs/signing.md`） | environment secret + tag-only + 即用即焚；主密钥离线保存，CI 只是副本。**没有任何签名材料，未实测** | §3.16 |
+| P3.2 | 设置持久化（模型覆盖 / 助手 / 会话 / 角色） | 已实现 storage + FFI + Kotlin 绑定 | `settings(scope, doc_key, doc_version, payload, updated_at)` + `settings_repair`；`put/get/load_setting/list/delete` + 三态 `Loaded::{Missing,Ready,Reset}`。版本过新与解析失败都记一条修复（摘要只存哈希前 16 位），**不硬读、不静默**。FFI 面 `nmoi_settings_{put,get,list,delete,repairs,trim_repairs}_json`（C 侧 242 项检查）。Android 侧：`jni_bridge.rs` 加四个符号 + `NmoiFfi.kt`（IO 线程、`Result`、`SettingsScope` 枚举），CI 对账 8 个符号。**缺**：`SettingsRepository` 与逐项界面接线（layer 2/3） | `crates/storage/src/settings.rs`、`crates/ffi/src/settings.rs`、`crates/ffi/src/jni_bridge.rs`、`android/.../ui/NmoiFfi.kt`、D86 |
+| P2.10 | 断流标记落库（`incomplete`） | 已实现 core + storage | `Message.incomplete`（`#[serde(default)]`，旧数据能读）；`MemoryEngine::finish_turn_incomplete`；`TurnCompleted` 事件带标记；schema v2 = `ALTER TABLE messages ADD COLUMN incomplete`；往返与迁移各有测试 | D21、D43 |
+| P2.11 | 自动重试（四张可编辑列表 + 范围时间点） | 设计已定（D70 / D71） | 判定顺序：停止项 → 可重试状态码 → 可重试关键词 → 放弃；只在零字节阶段重试（D40）；等待可中断、总时长上限 180s。时间点写成范围（两位小数），进项时 roll 一次、等完即丢，随机源可注入。缺 core 实现 | §3.19、D70、D71 |
+| P4 | 上下文压缩落地（草稿式 + 分界线） | **已完成 core，真机跑通** | `core::compress`：四件草稿工具（append/edit/read/done）+ 状态机 + 冻结快照 + 覆盖率校验（**宽松版**）+ 归档 + 分界线 + trace + 确定性兜底；覆盖率两级校验（D49） | `crates/core/src/compress.rs`、D44、本文件 §3.4 |
+| P5 | 世界书 / 提示词体系 | 已实现 core（格式要改） | 现有 `core::lorebook` 是 kelivo 格式解析/导出 + 确定性激活（常驻/关键词/正则/扫描深度）+ 按 5 个位置排序注入。**要改成以内核格式为准（D93）** | `crates/core/src/lorebook.rs`、D93 |
+| P5.8 | 世界书格式：内部存酒馆格式，导入兼容 kelivo / RikkaHub | 设计已定（D93） | 入口三种形状（酒馆 entries 对象 / 酒馆 character_book 数组 / kelivo-RikkaHub 外壳），出口只有酒馆一种。字段映射表在 D93，**`disable` 与 `enabled` 语义相反**是最大的坑。导入要出"丢了什么"的报告，不静默丢字段 | D93；样例在 `/workspace/世界书示例-*.json`（不进仓库） |
+| P5.5 | 技能系统（SKILL.md 自动发现） | 已实现 core | 发现深度 2、front matter + 标题兜底、开关只做提示、上下文只插 name+description、读取复用工作区规则、容器映射 `/skills` 只读 | `crates/core/src/skills.rs` |
+| P5.6 | TTS / ASR 预留扩展位 | 已实现 core（接口） | 只定形状：`TtsEngine` / `AsrEngine` trait + `SpeechConfig`（默认全关）；实现留平台侧 | `crates/core/src/speech.rs` |
+| P6 | UI（Android / Linux / Windows） | 编排层已实现 core，UI 未开始 | `core::session::run_session_turn`：用户消息先落库 → 工具循环 → 工具对闭合落库 → 正文落库 → 压缩判据（不落库）。UI 只剩画和接事件 | `crates/core/src/session.rs`、D52 |
+| P6.1 | FFI 接口面（手写 C ABI） | stage F1 + F2 已实现，真 C 程序验收 | 契约见 §3.11：JSON 信封 + 整数句柄 + 字符串所有权 + panic 不外传。F1：元信息/自检、storage（打开/体检/落单元/读单元/备份/收口）、workspace（读/写/改/列/stat）、工具声明表与直接调用、脱敏、token 估算。F2：`nmoi_turn_run_json`（整轮：发一句话 → 工具循环 → 落库 → 压缩判据）+ `nmoi_turn_cancel_json`（协作式取消）+ turn 期间 storage 句柄 `busy` 而不卡锁。缺：事件回调（逐字流式） | `crates/ffi/src/`、`crates/ffi/include/nmoi.h`、`crates/ffi/tests/c/abi_smoke.c`、`scripts/ffi_smoke.sh`、D53–D60；C 侧 178 项检查本机全过（含真端点整轮），顺带修了备份 `<dest>.tmp-wal` 残留（D48 补记） |
+| P6.2 | 会话列表（UI 第一屏的数据） | 已实现 storage + FFI | `Storage::list_conversations` → `nmoi_storage_list_conversations_json`：标题/时间/条数/用量/incomplete/最后一条预览，`updated_at DESC, id DESC`，`has_more` 而不是总数（D61） | `crates/storage/src/repo.rs`、本文件 §3.11；storage 往返测试 + C 侧 190 项检查（含真端点整轮） |
+| P7 | 工具生态（工作区 + 沙盒 + MCP） | 工具层 + 工具循环已实现 core，真机跑通 | `core::tools`：`Tool` / `ToolRegistry` / `ToolContext`；六个内置工作区工具 + 能力门控 + 按策略过滤声明表。缺：MCP、沙盒执行、UI 接线 | `crates/core/src/tools.rs`、D50 |
+| P7.5 | 密钥隔离 + 凭据代理（容器里跑 git / gh） | 设计已定 | Android 定透明代理（helper 兜底）；Linux/Windows 用系统原语不自研；实现未开始 | `docs/secrets.md`、D28–D30 |
+| P7.6 | 能力门控（默认关 + 工作区绑定） | 已实现 core | `core::policy`：7 项能力、两层门、拒绝原因带人话；有单测；UI 未接 | `crates/core/src/policy.rs` |
+| P8 | 云同步（变更日志，非文件同步） | 未开始 | 设计已在计划文档 §5 | — |
+| P11 | README 双语 + 名字由来 | 待做（不急） | `README.md` 保持中文为默认；新增英文版；名字的梗只在中文版写。见 §3.10 | 本文件 §3.10 |
+| P9 | CI / 发布 | 已跑通 | GitHub Actions 全绿（ubuntu + windows + MSRV 1.75 + rustfmt 阻塞 + clippy 建议性）；Codeberg 侧工作流已就位，等 runner | `.github/workflows/ci.yml`、`.woodpecker.yml` |
+| P10 | 数据可靠性（进程被杀 / 断电） | 前两批已实现 | WAL + busy_timeout + 单元/编辑事务（原有）；本轮补上：**启动收口**（`storage::recover`）、**压缩提交跨表事务**（`commit_compression`）、**`durable` 分级**（`OpenOptions`）。本轮再补**备份的原子发布**。缺：真 SIGKILL 测试、长任务后台 | 本文件 §3.8、D45、`crates/storage/src/recover.rs` |
+
+---
+
+## 1. S0 已完成的具体项（可验收）
+
+| 项 | 状态 | 位置 | 验收方式 |
+|---|---|---|---|
+| 消息 / 原子单元 / 形态 F1–F5 | 已实现 | `core::message` | 单元闭合、tool 配对不变量有单测 |
+| ID 命名空间（message_id / unit_id / ref） | 已实现 | `core::ids` | 类型级隔离 + 单测 |
+| 逻辑时钟（Lamport 简版）与单调性检查 | 已实现 | `core::clock` | 单测 |
+| 来源标签（12 类，模式 2/3 的地基） | 已实现 | `core::source` | 单测 |
+| 路由规则 R1–R9（含 protected、重复读取、超长行） | 已实现 | `core::router` | 9 条规则各有测试，确定性有测试 |
+| 归档层 + 内容寻址 ref + 描述符 | 已实现 | `core::archive` | 幂等 / 确定性取回 / 描述符长度 |
+| 写入时刻脱敏（6 类凭据） | 已实现 | `core::redact` | 6 类各有测试 + 幂等 |
+| 任务锚点（§2.3.0 强制项） | 已实现 | `core::anchor` | 保真、不概括、按字符截断 |
+| 预算 / 缓存代价 / 触发器 / 回灌成本 | 已实现 | `core::budget` | 附录 A 数值对照（11.5 / 24 轮） |
+| 退化检测（n-gram + 流式 + 相似度代理） | 已实现 | `core::degenerate` | 单测；语义卡死需上层信号 |
+| 事件流（EventBus + seq 顺序） | 已实现 | `core::events` | 多订阅者顺序、掉线剔除 |
+| 无头引擎（submit/delta/finish/snapshot/restore） | 已实现 | `core::engine` | 事件顺序、时钟单调、回滚 |
+| SQLite schema v2 + 迁移框架 | 已实现 | `storage::schema`/`migrate` | v1→v2 只加列（`messages.incomplete`）；迁移幂等、拒绝更高版本、升版不丢行（有测试） |
+| L0–L3 启动校验 | 已实现 | `storage`（`open`/`validate`） | 分层报告 + 阻塞返回 `Blocked` |
+| 隔离区 + 恢复默认 + 撤销 | 已实现 | `storage::heal` | 原值先入隔离区；`undo_last` |
+| 备份 + 在副本上验证 | 已实现 | `storage::backup` | `integrity_check` + `foreign_key_check` |
+| FFI：panic 不跨边界 | 已实现 | `crates/ffi` | `catch_unwind`，panic 探针返回 -3 |
+| CLI：doctor / init / backup | 已实现 | `crates/cli` | JSON 输出 + 退出码约定 |
+| 上下文压缩：草稿 + 确定性执行器 | 已实现 | `core::compress` | 四件草稿工具、覆盖率宽松版（漏项退回）、归档原文、画压缩线、确定性兜底；19 项单测 |
+
+**测试状态**：已实测。本地（2026-10-21，本机 PRoot / cargo 1.75）core **445 项**、
+storage 单测 **27 项** + 集成 **29 项**（calibrate 5 / roundtrip 15 / settings 9）、ffi **19 项**、
+C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
+`cargo clippy --workspace --all-targets` 无告警；`cargo check -p nmoi-core --no-default-features` 无告警
+（关掉 `bpe` 的那条路也得编得过，否则它会悄悄烂掉）。
+
+**本地跑测试的口径（2026-10-20 修订，见 `docs/decisions.md` D16.1）**：
+短测试本地跑（本次改动那个 crate 的 `--lib` 过滤测试，单次 ≤ 60s），全量留 CI。
+实测：core 单模块 2–3s，整个 `-p nmoi-core --lib`（238 项）3s，改一个文件后的增量重建约 21s——
+贵的是编译不是运行。新写的测试**推之前先在本机跑一次**（这条是被一轮 CI 换 20 秒能发现的两个 bug 换来的）。
+
+首轮 CI 暴露过 5 个测试失败 + 1 个真 bug（glob 的 `**` 结尾匹配不上），修法与原因记在
+提交 `0646ba1`、`c8cf832`、`7949d29` 里。
+
+---
+
+## 2. 新需求并入（本轮新增，全部来自 2026-11-07 的需求）
+
+### 2.1 消息锁定（已实现模型层）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `locked` 字段 + 持久化 | 已实现 | `messages.locked`，`storage.set_message_locked` |
+| 锁定拦截内容编辑 | 已实现 | `core::edit::apply_edit` 返回 `EditError::Locked` |
+| 锁定**不**拦截压缩 | 已实现 | 压缩走形态变化与分界线，不经过 `apply_edit` |
+| 与 `protected` / `pinned` 的正交关系 | 已实现 | 见 `docs/decisions.md` D11 |
+| UI：长按菜单里的锁定开关 | 未开始 | 等 P6 |
+
+### 2.2 上下文分界线（已实现模型层）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `dividers` 表 + `Divider` 模型 | 已实现 | `after_seq` 定位，`kind = user \| compression` |
+| 位置合法性（必须落在原子单元边界） | 已实现 | `validate_position` / `DividerError::SplitsUnit` |
+| 窗口计算（最新合法线之下才是当前窗口） | 已实现 | `active_window` / `window_start` |
+| 压缩工具自动画线 | 已实现（算法） | `choose_cut_for_budget` 保留最近预算 |
+| 用户手动插线 | 已实现（数据层） | `insert_divider`；UI 长按两条消息之间 |
+| 长按删除 + 确认弹窗 | 未开始 | `delete_divider` 已就绪，等 UI 的确认对话框 |
+| 删线后恢复完整窗口 | 已实现 | 有测试 |
+| L3 校验线的三查（越界 / 切开单元 / 下面为空） | 已实现 | `validate::check_dividers` |
+
+### 2.3 块级编辑（已实现模型层）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 编辑输出块 / 思考块 / 工具调用块 | 已实现 | `BlockSelector::{Output, Thinking, ToolCall{index}}` |
+| 编辑后重算 token + 递增 revision | 已实现 | `message_tokens`、`revision` |
+| 编辑审计（前后哈希、区块名、token 变化） | 已实现 | `edits` 表 + `save_message_edit` |
+| 消息下按钮：复制 / 重试 / 朗读 / 翻译 / 更多 | 未开始 | UI，见 §3.6 |
+| 「增强编辑」= 连思考块和工具块一起编辑 | 已实现（接口） | 同一 `EditRequest`，UI 决定入口 |
+| 分享：截图 / 导出 MD（可含思考与工具摘要） | 未开始 | 需要"工具摘要"渲染器（见 §3.6） |
+| 「工具/调用详细」开关联动灰化 | 未开始 | UI 状态，无后端依赖 |
+
+### 2.4 工作区文件工具（已实现，细节见 §3.5）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| read_file：行数 / 单行字节 / 总字节三级截断 | 已实现 | 默认 2000 行、单行 4 KiB、总 256 KiB |
+| 超长单行策略 | 已实现 | 保留头部 + 标注原始字节数 + 记入 `long_lines` |
+| `force_full` 最高优先级 | 已实现 | 忽略行数/字节/单行/二进制/大小上限 |
+| 路径越界防护 | 已实现 | 绝对路径、`..`、指向外部的软链一律拒绝 |
+| write_file / edit_file（唯一匹配要求） | 已实现 | 模糊匹配 > 1 处时报错要求 `replace_all` |
+| list_dir / find（glob）/ search（文本） | 已实现 | 自带 `*` `?` `**` 匹配器，跳过 `.git`/`node_modules` 等 |
+| 二进制检测与拒绝 | 已实现 | 非 `force_full` 下拒绝，避免把二进制塞进上下文 |
+
+---
+
+## 3. 待做设计（本轮需求展开）
+
+### 3.1 依赖与许可
+
+| 项 | 状态 | 结论 |
+|---|---|---|
+| 本项目许可 | 已定 | MIT（`LICENSE`） |
+| 运行时依赖许可 | 已核对 | rusqlite/regex/serde/uuid/sha2/thiserror/tempfile 全部 MIT 或 Apache-2.0 |
+| 参考 kelivo | 已核对 | kelivo 为 **AGPL-3.0-only**：**只参考 UI/交互设计，不复制代码**；若将来要抄代码，整个项目必须转 AGPL |
+| 模型元数据来源 | 待办 | 计划用 models.dev + LiteLLM 的 `model_prices_and_context_window.json`（均宽松许可）做**离线快照**，附来源与抓取日期 |
+
+### 3.2 Provider / 模型配置层
+
+| 项 | 状态 | 设计要点 |
+|---|---|---|
+| Provider 类型 | 设计已定 | `openai_compatible`、`openai_responses`、`anthropic`、`gemini`，留扩展位 |
+| 能力位（capability flags） | 设计已定 | 流式 usage、图片、工具、结构化输出、**assistant prefill（强制续接依赖）**、思考回传要求 |
+| 思考字段类型（ThinkingField） | 设计已定 | `openai_effort` / `responses_reasoning` / `anthropic_thinking` / `gemini_thinking_config` / `none` / `custom`；新增模型时按 provider 类型给默认 |
+| 自定义 body 与 body 屏蔽 | 设计已定 | 合并顺序：软件默认 → provider 自定义 → model 自定义 → body 屏蔽（屏蔽可删任意 key/value） |
+| 模型名正则表 | 设计已定 | 归一化后匹配（`.`/`-` 等价、剥离 `[分组]` 前缀）；命中家族但无版本 → 取该家族最新；UI 必须显示"值来自规则 X，可手动覆盖" |
+| 多模态 | 设计已定 | 按 openai / gemini / anthropic 三类端口的图片编码与尺寸限制分别适配 |
+| 结构化输出 | 设计已定 | 优先 provider 原生（json_schema / response_format），否则工具约束 + 本地 schema 校验 + 有限重试 |
+| 错误与 usage 韧性 | 已实现 core | 沿用实验结论：usage 可能缺失、错误码不可靠 → **客户端自维护预算**；`max_tokens` 给足。`OverflowHint` 分 Likely/Unreliable 两档，只当线索 | `core::runtime`、D40 |
+| 传输 | 已实现 core（明文） | `Transport` trait + `PlainHttpTransport`；分块/定长/关闭定界；`https` 报 `Unsupported` | `core::transport`、D38 |
+| 流式解析 | 已实现 core | SSE 帧 + 四端口适配，统一成 `StreamEvent`；usage 口径归一 | `core::sse`、`core::stream`、D39 |
+| 非流式 / 工具消息 | 已实现 core | `complete()` + `parse_complete`；工具消息四端口映射；工具声明三端口（Gemini 未做） | D41 |
+| 五类模型角色 | 已实现 core | `core::roles`：配置 + 提示词 + 门控 + 降级 + 单独计量；图片通道未做（P3.1） | D42 |
+| 实现 | 已实现 core | 落 `core::provider` + `core::model` + `core::runtime`（真机冒烟见 `docs/provider-runtime.md`） | `crates/core/src/` |
+
+### 3.3 五类模型角色
+
+统一抽象：`ModelRole { TitleSummary, Compression, Translation, Vision, ChatSuggestion }`。
+每个角色可配：provider+model、思考开关、思考强度、自定义提示词 / 世界书引用、是否禁用、是否「使用当前聊天模型」。
+
+| 角色 | 触发时机 | 默认建议 | 备注 |
+|---|---|---|---|
+| 标题总结 | 首次生成结束且会话未命名 | 便宜小模型；无则用当前模型 | 输出写回会话标题，可撤销（保留原值） |
+| 压缩模型 | 自动触发或手动压缩 | **默认当前聊天模型** | 理解上下文需要同等能力；可换 |
+| 翻译模型 | 消息下「翻译」按钮 | 便宜模型 | 结果只进 UI，不进上下文（可选写入） |
+| 视觉模型 | 输入框「+ → 视觉替换」开启时 | 必须显式指定，未指定则功能置灰 | 图片不发给聊天模型，改为文字描述（新 `SourceTag::VisionBridge`） |
+| 聊天建议 | 每轮回答结束 | 便宜小模型 | 可关闭；不阻塞主流程 |
+
+共同要求：这些请求**单独计费与计量**，不并入会话上下文预算；失败静默降级，不影响主对话。
+
+### 3.4 上下文压缩落地（草稿式 + 分界线）
+
+用户提出的流程，逐条落成机制：
+
+```text
+触发（自动 safety valve / 手动）
+  → 冻结快照，注入压缩脚手架
+  → 模型可多次调用草稿工具：compress_draft_append / compress_draft_edit / compress_draft_read
+      · 草稿只存在内存/scratch，不进上下文、不进归档、零缓存代价
+      · 工具返回：已写入字节数、当前草稿长度
+  → 模型调用 compress_draft_done（"压缩草稿已完成"）
+  → 模型本轮输出自然结束
+  → 执行器（确定性代码，不是模型）：
+      1. 覆盖率校验（§3.6）：protected / keep 项是否都能回答
+      2. 不合格 → 拒绝提交，保留草稿，把缺失项回给模型继续补
+      3. 合格 → 线上内容写归档（原文不删）→ 插入 compression 分界线 → 把草稿作为一条新消息放到线下
+      4. 记录 trace：操作序列 / 草稿长度 / 分界线位置 / 覆盖率结果
+```
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 草稿工具接口 | 已实现 core | `core::compress`：`Draft` + `parse_command` + 四件工具声明；`edit` 只接受唯一匹配 |
+| 上限与兜底 | 已实现 core | 草稿 64 KiB / 单次 8 KiB / 64 次操作；超轮次转 `Forced`；`commit_fallback` 用归档指针拼确定性摘要 |
+| 覆盖率校验 | 已实现（§3.6） | `core::facts`：路径 / 命令 / 错误码 = 硬项；标识符与数字按"谁说的"分级；未完成标记 = 软项。三道防过抽的闸（每条 3 条 / 总 48+64 / 包含去重）。缺硬项拒提交，缺软项只提示 |
+| 分界线插入 | 已实现 | `choose_cut_for_budget` + `Divider::compression`；摘要挂在 `Divider.note`（D44） |
+| 归档线上内容 | 已实现 | 每条线上消息 `capture` → `put`，原文不删；摘要也进归档 |
+| trace | 已实现 | 操作序列 / 草稿长度 / 切点 / 覆盖率 / 退回次数 / 是否兜底 |
+| 与模式 2 掩码并存 | 设计已定 | 掩码是"写入时刻的形态"，分界线是"窗口切分"；两者叠加不冲突 |
+| 接模型跑通 | **已实测** | `compress::runner`：脚手架 + 工具循环 + 失败当工具结果喂回 + 退回后继续补；真机 2 次往返、2 次调用、覆盖率 3/3。**非流式**（D46）|
+
+### 3.5 工作区与工具（Android 后续要跑容器，但工作区独立）
+
+| 工具 | 状态 | 备注 |
+|---|---|---|
+| read / write / edit / list / find / search | 已实现 + **已接工具层** | `core::tools` 六个 `Tool` 实现，先过能力门；`specs_for(policy)` 按策略裁剪声明 |
+| bash（可选，仅沙盒内） | 未开始 | 无沙盒时工具置灰，不假装能跑 |
+| MCP 接入 | 未开始 | 参考 kelivo 的能力面，独立实现 |
+| 容器（可选）：PRoot + Alpine rootfs | 设计已定 | 见 `docs/sandbox.md`：GPL-2.0-or-later / GPL-3.0-only 决定了整体许可切 GPL-3.0；PRoot 不能嵌套，开发沙箱里测不了 |
+| 工具调用循环 | 已实现 core | `core::agent::run_turn`：非流式、工具失败即结果、轮数上限、`finished` 诚实回报；真机读→改→读确证通过 |
+| 工具执行放平台侧 | 部分实现 | core 已有 `Tool` trait + 工作区实现；容器/原生命令仍只留能力位，执行在平台侧 |
+| 能力门控（默认关 + 绑定工作区） | 已实现 core | `core::policy`；所有工具入口先问一次 `allows()` |
+
+### 3.5.1 密钥与凭据代理（P7.5）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `core::secrets`（`SecretHandle` + Vault trait + 内存实现） | 未开始 | 打印任何句柄都不出明文 |
+| Android Keystore 后端 / 桌面 keyring | 未开始 | StrongBox 优先；落盘只有密文 |
+| `core::broker`（UDS + 白名单 + 审计 + 吊销） | 未开始 | 未授权 host 一律拒绝 |
+| rootfs shim + `/etc/gitconfig`（A 方案） | 未开始 | 容器内 `git clone/push` 可用，且搜不到 `.git-credentials` |
+| 透明 TLS 代理（B 方案，**Android 默认**） | 未开始 | 容器里的 `GH_TOKEN` 是假值也能用；CA 只装进 rootfs |
+| 证书信任尾处置（环境变量 + 失败提示） | 未开始 | Python/Node 能通；rustls 系失败时提示走 helper |
+| SSH agent 转发（C 方案，可选） | 未开始 | 私钥文件不出现在容器里 |
+| 蜜罐诱饵 | 未开始 | 被使用即告警 |
+| Linux：systemd-creds + 不改自研代理 | 设计已定 | 密钥目录不进容器；启动器控制挂载列表 |
+| Windows：DPAPI + 原生命令默认关 | 设计已定 | 不碰容器 |
+| storage 的 L3 新检查 | 未开始 | 库里出现疑似明文凭据即报警并隔离 |
+
+### 3.6 UI 要点（P6 之前先冻结形状）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 输入区左侧：模型选择 / 网络搜索 / 思考强度 / 工具开关 | 未开始 | 长按弹小菜单，含「强制续接」 |
+| 输入区右侧：发送/停止 / 语音输入 / ＋菜单（含视觉替换） | 未开始 | ＋菜单承载视觉替换开关 |
+| 消息下按钮：复制 / 重试 / 朗读 / 翻译 / 更多 | 未开始 | 「更多」含复制、编辑、增强编辑、分享、工具详细 |
+| 分界线长按删除 + 确认/取消 | 未开始 | 与 `delete_divider` 对接 |
+| 锁定开关（长按菜单 / 消息详情） | 未开始 | 与 `set_locked` 对接 |
+| 分享导出（截图 / MD，可含思考与工具摘要） | 未开始 | 需"工具摘要渲染"：工具名 + 耗时 + 关键动作（如写入了哪些文件），**不含完整内部消息**；完整内容走灰化的「工具/调用详细」 |
+| 参考对象 | 已确认 | UI 与部分交互设计参考 kelivo（AGPL-3.0）与它提到的 RikkaHub；**只在设计与交互层面参考，不复制代码**，README 致谢 |
+| 页面归属（谁指向它 / 怎么回去 / 子页怎么办） | 已冻结 | `docs/ui/structure.md`：设置改成**分组索引 + 子页**（索引页不摆开关，行右侧写当前值）；**日志拆三种通道**（上下文 / 请求 / 调试），索引页三行 + 右上角齿轮（三种开关与上限），每个通道子页四个动作（查看 / 复制 / 导出 / 清除）。规矩：一页一件事、不给假开关、没有生产者就明写 |
+
+### 3.7 强制续接（可做，需分情况）
+
+| 项 | 状态 | 结论 |
+|---|---|---|
+| 能力位 `supports_assistant_prefill` | 设计已定 | 支持则以 assistant 消息结尾续写（真正的 prefill） |
+| 降级路径 | 设计已定 | 不支持则追加一条最简续接指令（"继续，不要重复已输出内容"） |
+| 缓存友好 | 设计已定 | 两种都是**追加**，不破坏前缀 |
+| 未完成标记 | 设计已定 | 被中断的 assistant 消息标 `incomplete`，UI 显示「继续」，与「重试」区分开 |
+| 落地 | 未开始 | 依赖 P2 的能力位 |
+
+### 3.8 数据可靠性（用户非正常关闭应用）
+
+**前提**：安卓上划掉卡片就是清进程，任何时刻都可能被系统杀掉；桌面端也会被强杀、断电、OOM。
+所以要求不是"尽量少丢"，而是**只要界面显示过的东西，就一定能读回来**。
+
+先把两种事故分开，它们的对策不一样：
+
+| 事故 | 会丢什么 | 对策 |
+|---|---|---|
+| 进程被杀（划卡片、OOM、`kill -9`） | 只丢**还在本进程缓冲区**里的数据；已 `write()` 到内核的都在 | 不许有"已经告诉用户成功、但还在内存里"的数据 |
+| 断电 / 内核崩溃 | 内核页缓存里没落盘的数据全丢 | `fsync`（SQLite 的 `synchronous=FULL`） |
+
+WAL + `synchronous=NORMAL` 已经覆盖第一类；第二类要显式开 FULL，代价是每个事务多一次 fsync
+（手机上一次几毫秒，写入频率低，可接受）。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| WAL + `busy_timeout` 5s | 已实现 | `storage::open` 里设；WAL 是连接级行为，不进 DDL |
+| 单元写入 / 编辑在事务里 | 已实现 | `append_unit`、`apply_edit` 都是 begin→写→commit，不留半个单元 |
+| `synchronous` 分级 | 已实现 | `OpenOptions { durable }` → `open_with`；默认 `NORMAL`（抗杀进程），`durable: true` 切 `FULL`（抗断电）。`synchronous_level()` 可查 |
+| 启动收口 | 已实现 | `Storage::reconcile()` 只读扫一遍：会话以 user/tool 结尾（没等到回复）、未闭合工具单元（带没等到结果的调用名）、已有的 `incomplete` 计数。修由显式动作 `abandon_open_unit()` 完成——不伪造 tool_result |
+| 压缩提交的跨表事务 | 已实现 | `Storage::commit_compression()`：归档条目 + 摘要 + 分界线一个事务，重放幂等（`INSERT OR IGNORE`）；有回滚测试（分界线外键失败 → 归档一并回滚） |
+| 草稿可丢（有意如此） | 已定 | 草稿只在内存，杀掉就没了；兜底是 `commit_fallback`（确定性指针摘要）。**不允许**为了保草稿把原文留在半压缩状态 |
+| 导出 / 备份 / 分享 | 已实现（备份） | `storage::atomic`：`.tmp` → fsync → rename → fsync 目录；备份改成"写 tmp → 在 tmp 上验证 → 过了才发布"，验证不过不发布、旧备份不动。导出（Markdown / 分享）走同一个 `write_bytes`，UI 未接 |
+| 长任务不依赖后台 | 未开始 | 压缩、索引这类多轮任务走前台服务；被杀就停在最后一个已提交事务上，重启后重新开始 |
+| 启动校验 | 已实现 | L0–L3 + 隔离区 + 撤销 +（本轮）启动收口 |
+| 测试方法 | 部分 | 已有"未提交事务在连接丢弃后消失"的测试（SIGKILL 在 SQLite 眼里是同一件事）+ 压缩提交的回滚测试。**真 SIGKILL（fork 子进程中途杀）未做**，留给桌面 CI |
+
+**两条硬规矩**（比上面任何一条都重要）：
+
+1. **ack 时机 = 事务提交之后**。UI 上的"已发送""已保存"必须在仓库层返回 `Ok` 之后才点亮。
+2. **不做异步批量写**。手机上 SQLite 单条插入是微秒级，为省这点时间引入写队列，换来的是
+   "杀进程丢最后 N 条"，不值。
+
+### 3.9 推理回放（需按 provider 配，不能全局开关）
+
+| 项 | 状态 | 结论 |
+|---|---|---|
+| 语义 | 已明确 | 把历史轮次的思考内容原样回传，还是不回传 |
+| 三种模式 | 设计已定 | `auto`（按 provider 能力与要求）/ `always` / `never` |
+| 本项目端点的实测 | 已验证（上游实验） | 该端点思考内容可丢弃 / 原样回传 / 篡改，三种都 200 且答案一致，**无签名约束** → 是客户端策略，不是协议要求 |
+| 与退化传染的关系 | 设计已定 | 回传会强化"Hmm 循环"（§3.4.1.1），默认对本地这个端点取 `never`（省 token + 切断传染） |
+| 与压缩的关系 | 设计已定 | 若 provider 要求回传，则删除思考内容不合法 → 压缩只能归档，不能丢思考 |
+
+---
+
+### 3.10 README 双语与名字由来
+
+用户 2026-10-21 提出（原话记在这里，免得转述走形）：
+
+> NMoi 这个词取自 Omni 打乱顺序，NM 就是中文「你妈」的简写，常用于骂人的前缀。
+> 所以这个客户端名称的详细意思是，你妈全能 Agent 😋
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `README.md` 保持中文 | 已如此 | 默认入口不变，中文优先 |
+| 英文版 | 待做 | 建议文件名 `README.en.md`（GitHub 语言栏两个都会认）；开头互链一份 |
+| 名字的梗写在哪 | 待做 | **只在中文版**写，英文版不解释、也不暗示 |
+| 中文版写法 | 待做 | 放在「名字」小节，别放开头第一段：第一段要能让陌生人在十秒内知道这是干什么的；梗放后面，好笑且不挡路 |
+| 英文版写法 | 待做 | 一句 `The name is a pun that does not survive translation.` 封顶，或者干脆不提 |
+
+**一个约束**：README 里不写任何**只有本机才有**的东西（本地端点地址、局域网路径、
+临时目录），双语版都按"别人克隆下来就能跑"来写。
+
+### 3.11 FFI 契约（P6.1，UI 与核心之间的那条线）
+
+UI 三种平台都要跨语言：Android 走 JNI/JNA、Linux 走 GTK4-rs（可选直连）、Windows 走 C# P/Invoke。
+桥梁是 `crates/ffi` 的手写 C ABI（D24：UniFFI 是备选，不是前提）。
+这一层只做一件事：**把 core / storage 的形状翻成能跨语言传的形状**，不藏业务逻辑。
+
+#### 调用形状（每个函数只用其中一种）
+
+| 形状 | 签名 | 失败怎么报 |
+|---|---|---|
+| 数据 / 句柄 | `fn(...) -> *mut c_char` | 永远返回堆上的 JSON，**永不 null**；失败是 `{"ok":false,"error":{...}}` |
+| 标量 | `fn(...) -> i32` / `u32` | 负数 = `FfiStatus`（只用于 ABI 级问题：空指针、缓冲区太小、边界内 panic） |
+| 输入串 | `*const c_char`（NUL 结尾 UTF-8） | 只读，不接管所有权；调用期间必须有效 |
+
+**为什么不给"句柄指针 + last_error"那套**：那会让绑定层有两条错误路径，而且 use-after-free 是 UB。
+句柄装进 JSON 之后，两种失败走同一条路，绑定层只解析一次。
+
+#### JSON 信封
+
+```json
+{"ok": true,  "handle": 7, "...": "..."}
+{"ok": false, "error": {"kind": "invalid_handle", "message": "句柄 7 不存在或已释放"}}
+```
+
+`kind` 是**稳定词表**（绑定层可以 switch）：`null_argument` / `invalid_utf8` / `invalid_handle` /
+`bad_argument` / `id` / `storage` / `workspace` / `panic`。`message` 是给人看的，允许改。
+所有字段名 `snake_case`；`ok` 必在第一位（解析器可以先只看它）。
+
+#### 句柄是整数 id，不是指针
+
+理由不是洁癖：UI 是多线程的，"后台任务拿着旧句柄回来"这件事必然发生。
+裸指针在那一步就是崩进程；整数 id 只返回 `invalid_handle`，UI 弹一句"这个会话已经关了"就够了。
+id **单调递增、永不复用**——复用会把"旧 id 指向新对象"变成静默错误，比崩更难查。
+表是全局 `Mutex<BTreeMap<u64, Entry>>`，`Entry` 持有 `Storage` / `Workspace` 的 `Box`。
+
+**句柄不跨线程共享语义**：表锁只保证表不撕裂，不保证业务顺序。同一 id 的调用由调用方串行化。
+
+#### 字符串所有权
+
+- Rust 分配的（所有 JSON 返回值）：**只能**用 `nmoi_string_free` 归还。不归还是泄漏，不会崩。
+- 调用方分配的（`nmoi_product_name` / `nmoi_version` 的 `buf,len` 那条路）：Rust 只写，不持有。
+  缓冲区不足时返回**所需长度（含 NUL）**，调用方按这个数重试——不需要"先问长度再分配"的两次握手。
+- 不往调用方缓冲区里塞变长 JSON：长度不可预知，猜错就是截断。
+
+#### panic 与版本
+
+- 每个导出函数都进 `guarded`（`catch_unwind`）：JSON 函数 panic → `{"ok":false,"error":{"kind":"panic"}}`，
+  标量函数 → `FfiStatus::Panic`。`extern "C"` 里让 panic 穿过去是 UB，这条不是防御性编程。
+- `nmoi_abi_version()`：**加函数不递增，改参数含义 / 返回语义必须递增**。绑定层加载后先比对，
+  不匹配就别用——比在运行时收到看不懂的 JSON 便宜得多。
+
+#### 线程与阻塞
+
+所有 `*_json` 都是**同步阻塞**调用：storage 会锁库、workspace 会读盘、F2 的 turn 会发网络。
+FFI 自己**不建线程、不回调**（F2 的事件回调也只在调用方线程上同步回调，回调里再调 FFI 只允许读句柄）。
+
+#### 函数清单（stage F1）
+
+| 分组 | 函数 | 说明 |
+|---|---|---|
+| 元信息 | `nmoi_abi_version` / `nmoi_product_name` / `nmoi_version` / `nmoi_selftest` / `nmoi_panic_probe` / `nmoi_string_free` | 前五个是 stage 0 就有的，`string_free` 是 JSON 面的配套 |
+| 能力面 | `nmoi_capabilities_json` | 绑定层 init 时打一行日志：版本、是否有 https、工具名、schema 版本 |
+| 存储 | `nmoi_storage_open_json` / `close` / `health` / `reconcile` / `create_conversation` / `append_text` / `append_unit` / `load_units` / `backup` | `open` 的返回带 `state`：`ready` / `blocked`（阻塞不是错误，D47——UI 要弹恢复选项） |
+| 工作区 | `nmoi_workspace_open_json` / `close` / `read` / `write` / `edit` / `list` / `stat` | 截断信息原样摊平（`truncated` / `remaining_lines` / `long_lines`），不替 UI 判断 |
+| 工具 | `nmoi_tool_specs_json` / `nmoi_tool_names_json` / `nmoi_tool_invoke_json` | 声明表按策略过滤；直接调用要 workspace 句柄 + 策略，失败也是结果（D50） |
+| 文本 | `nmoi_redact_json` / `nmoi_estimate_tokens_json` | 脱敏命中只报类型与长度，**不回显原文** |
+
+#### F2：turn 面（`nmoi_turn_run_json` / `nmoi_turn_cancel_json`）
+
+F1 只给"存/读/工具"这些立即返回的调用；真正让 UI 有东西可画的是**跑一轮**。
+它的形状和 F1 不同，所以单写一节。
+
+**入参是一个 JSON 对象**（不是十个标量参数）：
+
+```json
+{
+  "storage": 1,                    // F1 的 storage 句柄，必填
+  "session": "018f…",              // 必填
+  "workspace": 2,                  // 可选；缺省/0 = 没绑工作区
+  "read_only_workspace": false,
+  "provider": {
+    "id": "local",
+    "kind": "openai_compatible",   // 或 openai_responses / anthropic / gemini
+    "base_url": "http://127.0.0.1:8790/v1",
+    "api_key": null                // 只在这一层出现，不回显、不进日志
+  },
+  "model": "…",
+  "user_text": "…",                // 必填，空串会被拒
+  "now_ms": 1700000000000,
+  "max_rounds": 12,                // 可选
+  "max_tokens": 16384,             // 可选
+  "temperature": null,             // 可选
+  "budget": {"window": 128000, "reserve_output": 8192},  // 可选；给了才算压缩判据
+  "avg_per_turn": null
+}
+```
+
+**出参**是这一轮的完整交代：落库的单元 id、用户消息、助手正文（可能没有）、
+每次工具调用（名字/参数/成功与否/返回文字）、轮数、`finished`、`cancelled`、压缩判据。
+
+三条边界，都是故意的：
+
+| 决定 | 理由 |
+|---|---|
+| **不注入系统提示词** | 系统提示是会话的一部分，要能看见、能改、能被压缩。所以由调用方先 `nmoi_storage_append_text_json(role="system")` 落库。FFI 里偷偷加一条，UI 就永远看不到它 |
+| **不猜思考档位** | D37 要求"关闭必须显式"。这一层不知道模型支持哪一档，猜一个等于替用户做决定。F2 不发思考字段，等 P3.2 角色配置持久化把档位接上 |
+| **`api_key` 只进不出** | 配置里有，返回体与错误信息里没有 |
+
+**取消是协作式的，只在轮次边界生效。** `nmoi_turn_cancel_json(session)` 置一个标志，
+`run_turn` 在**每次模型调用之前**和**每个工具调用之前**看它一眼。
+所以：正在飞的那次往返不会被打断（最坏等一次往返，受 `DEFAULT_READ_TIMEOUT` 约束）；
+已经执行完的工具调用是**真发生过的事**，照常落库；这一轮标 `finished=false`，
+库里那条助手消息带 `incomplete`（D21/D43）。这和"掐断流"是同一套语义，不另起一套。
+
+取消**只对正在跑的轮次生效**：没在跑就是空操作（`{"cancelled":false,"running":false}`）。
+不做"预存一个取消请求等着下一个轮次"——那会让一次误触静默吃掉后面某一轮。
+
+**turn 期间 storage 句柄被"取出"**：`run_turn` 要 `&mut Storage`，整轮可能跑几十秒。
+如果一直攥着那把全局锁，UI 读消息就会卡住（不是报错，是**静默卡死**，最坏的那种）。
+所以 turn 开跑时把 `Storage` 从表里取出来、原位置留占位，期间对该句柄的其他调用
+立刻得到 `{"kind":"busy"}`；跑完（**包括失败和 panic**）再放回去。
+工作区不用取出——`Workspace` 可以 clone，拿一个副本进去就够。
+
+#### F2.1 会话列表（P6.2）
+
+F1/F2 之后 UI 还差第一屏：**去哪儿选会话**。这一项单列，因为它有自己的一套契约。
+
+```
+nmoi_storage_list_conversations_json(handle, limit, offset)
+→ {"items":[{ "id","title","created_at","updated_at","messages","tokens",
+               "incomplete","last_seq","last_role","last_text","last_text_truncated" }],
+   "returned": n, "has_more": false}
+```
+
+三条约定：
+
+| 约定 | 理由 |
+|---|---|
+| 排序 `updated_at DESC, id DESC` | 第二键不是为了好看：同一毫秒建的两个会话，只按时间排会让顺序随机跳，而屏幕上"会话乱跳"是最容易被当成数据损坏的现象 |
+| 给 `has_more`，**不给总数** | UI 要的是"还能不能往下翻"。为这个跑一次全表 `COUNT(*)`，在手机上就是白花几十毫秒 |
+| 预览截断到 200 字符 + `last_text_truncated` | 最后一条可能是工具结果（几十 KB 的目录列表）。不截断就是让"打开会话列表"变成拉一个文件回来；截了不说，UI 就会把半句话当全文显示 |
+
+`limit` 缺省 50，硬上限 200（UI 传 1e9 不该把手机拖死）。
+`last_*` 三件指**最后一条消息**（不分角色）——列表上显示"最后说了什么"，比"最后助手说了什么"更接近人的记忆。
+
+#### 本层明确不做
+
+不解析模型输出、不管压缩策略、不碰 UI 布局、不做"自动重试"。
+每个函数都把 core 的返回结构**摊平成字段**，而不是重新组织——重新组织就是在 FFI 里写第二套业务逻辑。
+
+---
+
+### 3.12 聊天页、侧栏与两个面板（P6.3，形状按截图冻结）
+
+UI 本体要等有平台工具链的机器，但**形状可以现在就冻结**：每一块都写出"数据从哪来"，
+将来画的人不用猜，也不会在 UI 层重造一套已经有的语义。
+2026-10-21 按用户给的 kelivo 截图对齐（结构照抄，像素不照抄）。
+
+**聊天页三层：**
+
+| 层 | 内容 | 数据来源 |
+|---|---|---|
+| 顶栏 | 会话标题（可改）· 当前模型（点开换模型）· 右：上下文窗口 / 搜索 / 更多 | `list_conversations` 的 `title`；模型来自设置 |
+| 消息区 | 日期分隔 · 用户右 / 助手左（可切全宽）· **工具调用折叠卡** · **思考折叠块** · 压缩分界线 · `incomplete` 标记 · **断块卡**（§3.17） | `load_units` 按原子单元渲染；分界线来自 `dividers`；断块来自 `repair::diagnose` |
+| 输入岛 | 多行输入 + 左「＋」+ 右「发送/停止」（同一按钮换形态）+ 上方一行：token 估算 / 模型 / 视觉覆盖是否生效 | `estimate_tokens`；`report.cancelled` 决定按钮回弹 |
+
+**发送/停止按钮的长按菜单**（用户 2026-10-21 加）：
+
+| 项 | 行为 | 用到的调用 |
+|---|---|---|
+| 仅保存为助手消息 | 把输入框里的内容存成**最新一条助手消息**，不发给模型 | `nmoi_storage_append_text_json(role="assistant")` |
+| 仅保存为用户消息 | 同上，角色换成 user | 同上，`role="user"` |
+
+这两项的好处在"先记下来、晚点再发"：想法来的时候模型可能正忙、或者你不想花钱。
+注意它会把会话的历史改写成"以助手结尾"，下一次发消息时模型看到的是"我上次说过这句"
+——这正是用户要的语义，不要"顺手修正"成 user。
+
+**「＋」面板（照截图）：**
+
+| 位置 | 项 | 对应我们的东西 |
+|---|---|---|
+| 顶部三个圆形 | 拍照 / 照片 / 上传文件 | §3.13 附件管线（相机 Android/iOS 原生，桌面不做） |
+| 列表 | 技能 `23/23` | `core::skills` 发现结果 + 对话级开关（`跟随助手` 总开关在下一屏） |
+| 列表 | 指令注入 `>` | 注入的 md 集合（按分组） |
+| 列表 | 世界书 `1/11` | `core::lorebook`：启用条数 / 总条数 |
+| 列表 | **视觉覆盖** `✓` | §3.14 的视觉覆盖（用户原话：不要叫「OCR 文字识别」）；右侧勾表示当前生效 |
+| 列表 | 上下文管理 `>` | 打开下面的「上下文窗口」面板 |
+
+**「上下文窗口」面板（照截图，从顶栏进）：**
+
+标题 + 估算总量（`445.9k`）→ 一条分段进度条 → 图例（每行：色块 + 名称 + 数值）→ 三个操作。
+
+图例那八行正好是 `SourceTag` 的归类，**不用另造一套分类**：
+
+| 截图里的行 | 我们按什么算 |
+|---|---|
+| 历史消息 | `History` |
+| 内置工具 | `ToolDefinition` + `ToolCall` + `ToolResult` |
+| MCP 工具 | 同上，来源标成 MCP 的子集（P7 接入后才有数） |
+| 技能 | `Skills` |
+| 系统提示词 | `System` + `InstructionInjection` |
+| 世界书 | `WorldBook` |
+| 工作区 | `Workspace` |
+| 草稿 | 压缩草稿（`compress` 那一份，没提交就不进历史） |
+
+三个操作对应我们已经有的能力：
+
+- **设置上下文窗口** → `Budget` 的三段（声明窗口 / 有效窗口 / 预留输出），P2.7 的逐参数覆盖。
+- **压缩上下文**（截图副标题"总结对话并开始新聊天"）→ `core::compress` 全链已经在（P4），
+  差别只在入口：这里是"用户主动按"。
+- **清空上下文**（截图副标题"标记上下文分界点"，右侧"10 条消息"）→ `dividers` 表 + `DividerKind`，
+  按 Q8 允许线以上回灌；右侧那个数字就是"线以下还有多少条"。
+
+#### 平台自适应（P6.6）
+
+同一套功能，按平台给不同的排布。**Android 竖屏照截图走，横屏与桌面把东西放出来**：
+
+| 区域 | Android 竖屏 | 横屏 / 平板 / 桌面 |
+|---|---|---|
+| 会话列表 | 抽屉（从左滑） | **左栏常驻 260–320**（桌面不该用抽屉） |
+| 附件入口 | 「＋」→ 底部弹层（拍照/照片/上传文件） | 输入岛左侧按钮行：图片 / 文件 / 技能 / 世界书 / ⋯ |
+| 上下文面板 | 从「＋」进二级页 | **右栏常驻 280–320**，可折叠 |
+| 发送按钮 | 右下圆形 | 胶囊「发送 / 停止」，长按出"仅保存为…" |
+| 思考强度 | chip 在输入岛上方一行 | chip 在输入岛右侧，发送键左边 |
+
+"放出来"的判据只有一条：**宽度够不够放得不挤**。默认是**全部放出来**，一行排不下时才把末尾的收进 ⋯（顺序不变）；Android 窄屏（＜720）自然落到"抽屉 + 弹层"那一档。
+
+#### 思考强度的图标与标签（P6.5）
+
+六档 + 关闭，共七个图标（`docs/ui/icons/`）。语法是"仪表盘"：
+
+| 档位 | 环 | 指针 | 标签 |
+|---|---|---|---|
+| min / low / mid | 1 环（深蓝） | 红针从左往右 | `min` `low` `mid` |
+| high / xhigh | 2 环（外深蓝 + 内淡蓝） | 同上 | `high` `xhigh` |
+| max | 3 环（紫 / 深蓝 / 淡蓝）+ **环外一圈红色颗粒** | 同上 | `max` |
+| off | 同上一版：环 + 中心点 + 斜杠 | 无针 | `off` |
+
+底部用一条**淡蓝水平线**把仪表封口（不是开口的弧）。环数=档位、颜色=强度，
+这样"数环"和"看针"两个线索同时可用——小尺寸时数环更快。
+
+标签规则（用户定的）：**名字 ≥ 6 个字母就缩**：`minimal → min`、`medium → mid`；
+`low/high/xhigh/max` 原样。缩到 3–5 个字母是刻意的：chip 要窄，且英文名只是给"这几档叫什么"
+一个锚点，真正的信息在针和环上。
+
+排版（实测过 3× 对比）：图标 18×18、文字 12px/500、间距 6px、chip 高 30/圆角 15、
+**文字基线 = chip 中心 + 0.28em（≈3.4px）**。这个偏移不是玄学：等宽包围盒对齐会让文字看着偏高，
+要按"x 高度 + 下伸部"的视觉中线对。`+4.3px`（0.36em）试过，明显偏上。
+
+**一条硬规矩**：UI 不解释 JSON 里的业务含义，只渲染。比如"这个会话上次没说完"是
+`incomplete > 0` 这个事实，不是 UI 去比对最后一条是不是 user——那种判断放错层，两个平台就会各错一次。
+
+### 3.13 加号菜单与附件管线（P7.7）
+
+「＋」里按 kelivo 的能力面对齐（**我能在公开 README 里核到的**：图片、PDF 与 Word 文档、
+文本与代码文件、模型支持时的音频、可指定视觉模型做 OCR、图片压缩质量可调）：
+
+| 菜单项 | 说明 | 备注 |
+|---|---|---|
+| 相册图片 | 多选；上传前压缩（质量可调，默认 0.85，长边 2048） | 原图保留本地，请求里用压缩版 |
+| 拍照 | 直接进相机 | Android/iOS 原生；桌面不做 |
+| 文件 | PDF / Word / 纯文本 / 代码 | 按扩展名分流，文本类直接读，PDF/Word 走抽取 |
+| 音频 | 录音 + 音频文件 | 只有声明了 audio 输入的模型才发得出去（D40 显式报错） |
+| 粘贴 | 从剪贴板取图或长文本 | 长文本走工作区/归档，不进消息体 |
+| 语音输入 | ASR（`AsrEngine` 预留位，P5.6） | 与"音频附件"是两件事：这个只转文字 |
+| **视觉覆盖** | 不是附件，是模式开关 | 见下 |
+
+> 菜单项的**图标与顺序**还没对齐：我需要 kelivo 那张截图，按图摆，不凭印象摆。
+
+**附件管线**（选完文件到发出去之间）：
+
+1. 拿字节（手机走系统文件选择器，桌面走文件对话框）；
+2. **算内容哈希**，同内容不重复存；
+3. 存进本地附件库（内容寻址，跟归档同一套 ref 思路）；
+4. 按模态生成内容块（见 §3.14），或交给视觉覆盖转成文字（见下）；
+5. 请求里**只带需要的那个版本**（压缩图 / 描述文字），原图和全文留在本地。
+
+**没做完之前不许假装做完**：管线没通的时候，UI 上"图片"必须置灰并说明原因，
+而不是让用户点了之后消息发出去少一张图。
+
+### 3.14 视觉覆盖（Vision Override，P3.3）
+
+用户原话（2026-10-21）：
+
+> OCR 文字识别我们这边叫视觉覆盖，启用后聊天中的模型将不使用自己的图片、视频等模态，
+> 相应信息将会发给设置好的默认视觉模型，视觉模型的默认提示词应该存两套，一份图像，一份视频。
+
+所以它不是"OCR 功能"，是**一条通路**：
+
+```
+附件（图片/视频） ──[视觉模型 + 该模态的提示词]──> 文字描述 ──> 主对话（SourceTag::VisionBridge）
+                                                        └─> 参与预算与压缩，和普通消息一样
+```
+
+**四条语义**（写进 D62）：
+
+1. **主模型一个媒体块都不收**。开着覆盖时，请求体里不许出现 `image_url` / `inline_data` 之类——
+   否则"覆盖"就只是"多问一次"，主模型照样按自己的方式瞎猜。
+2. **描述是普通历史**：进消息表、有 `SourceTag::VisionBridge`、参与 token 预算、能被压缩。
+   媒体本身不进上下文，但**留在本地库里**（可按 ref 重放、可换提示词重看）。
+3. **失败要说出来，不许静默丢附件**：视觉模型挂了，这条消息里要写"这张图没看成（原因）"，
+   UI 显示成失败态。悄悄少一张图，是最坏的一种"成功"。
+4. **两套默认提示词**，一份图像一份视频；用户可以全局改、也可以按会话覆盖。
+   图像默认 = 用户给的高精度复刻提示词（`data/vision.image.md`，逐字收）；视频默认见 `data/vision.video.md`。
+
+**为什么视频不能复用图像的提示词**：图像是一次性快照，视频是"时间轴上的东西"——
+要分镜、镜头运动、场景切换、字幕、音轨、关键帧时刻。用一张图的模板去描述视频，
+出来的东西会丢掉"什么时候发生了什么"，而那是视频唯一不可替代的信息。
+
+### 3.15 多模态内容块与 Gemini 全模态（P3.4）
+
+**内容块**（请求里能出现的东西，与 `SourceTag` 正交）：
+
+| 块 | OpenAI chat | Responses | Anthropic | Gemini |
+|---|---|---|---|---|
+| 文本 | ✅ | ✅ | ✅ | ✅ |
+| 图片（URL/base64） | ✅ `image_url` | ✅ `input_image` | ✅ `image` | ✅ `inline_data` |
+| PDF/文档 | ❌（上游要自己抽文本） | ⚠️ `input_file`（待认证） | ✅ `document` | ✅ `inline_data` |
+| 音频 | ⚠️ 部分兼容端点 | ⚠️ | ❌ | ✅ |
+| 视频 | ❌ | ❌ | ❌ | ✅（inline 有大小上限，大文件走 Files API） |
+
+**Gemini 走全模态**：小文件 `inline_data`（base64，一次性），大文件走 Files API
+（先 `POST /upload`、再引用 URI），本地测试没有 key 跑不了，**标注"待外部认证"**。
+其他端点尽量做，但同样受"没有多模态测试模型"限制。
+
+**能力门在模型档案**：每个 provider/模型声明能收哪些模态（快照里有就取，没有就按家族兜底 + 手动覆盖）。
+发之前先问能力矩阵；缺能力就**显式报错**（D40），不静默降级成"看不见"。
+真做了静默降级，用户会发现"为什么它说没看到图"而永远查不出原因。
+
+**怎么让"找不到模型测"这件事不变成糊弄**：写一个探针脚本 `scripts/modality_probe.sh`，
+对着一个端点和模型逐模态打一遍（图 / PDF / 音频 / 视频），输出支持矩阵。
+本机只能跑文本和图片（端点没有别的），其余列在报告里写明"未测"——**别人有 key 就能跑同一份脚本**。
+
+### 3.16 签名密钥与 CI 注入（P9.1）
+
+要签的东西：Android keystore（`.jks`）、Windows 代码签名证书（`.pfx`）、Linux 包签名（GPG）。
+
+**存哪儿，写在 `docs/signing.md`**，这里只说结论：
+
+- **CI secret 只是副本，主密钥离线保存**。keystore 丢了 = 已发出去的应用从此更新不了
+  （Android 的包名绑定签名），这不是"重新生成一个"能解决的。所以：离线备份两份，放两处。
+- **GitHub**：用 **environment secret**（`release` 环境，需要人工批准），不给仓库级 secret。
+  这样即使某个 workflow 被改坏，也只有 release 那一步拿得到。
+- **Codeberg / Woodpecker**：repo secret + `event: tag` 过滤。Woodpecker 的 secret
+  默认不注入 fork 的 PR，这一点和 GitHub 一致。
+- **只在 tag 构建里注入**，普通 push / PR 一律拿不到 —— fork 的 PR 能跑 workflow，
+  那就绝不能让它有机会看到签名材料。
+- **注入即用即焚**：解到 `$RUNNER_TEMP`（不进仓库、不进 artifact）、`umask 077`、
+  结尾 `if: always()` 删掉、脚本里禁 `set -x`、不 `echo`、不 `env`。
+  两个平台都自动 mask secret 值，但 mask 只挡日志，挡不住你把它写进文件。
+
+**两处都存 = 两份泄露面。** 建议：主密钥只存 Codeberg（主仓在那儿），GitHub 只在确实要发
+GitHub Release 时临时注入；如果哪天不在 GitHub 发版，那条路直接不配。
+
+（这一段的具体命令与可粘贴的 workflow 在 `docs/signing.md`；workflow 文件没有直接放进
+`.github/workflows/`——现在没有任何签名材料，放进去只会让 CI 天天红，红久了就没人看了。）
+
+### 3.17 断块修复：把不完整的调用/思考块"翻译成文字块"再发出去（P4.1）
+
+用户 2026-10-21 提的问题很具体：**流断在半路，库里留下一个不完整的工具调用单元，
+下一次把这个历史发给模型时，上游直接 400**（`assistant.tool_calls` 有 id、
+却没有对应的 tool 消息），于是这个会话再也续不下去。
+
+**不删、不改历史，改的是"发出去的那一份"。** 库里原样保留（那是事实），
+构造请求时把这类单元**替换成一段文字块**：
+
+```
+1545374566161错误工具调用块原因:没等到工具结果
+read_file({"path":"a.txt"})
+```
+
+三条约束，每条都有理由：
+
+1. **声明行 = ID + 块类 + 原因，中间不隔符号**（用户明确要求，D66）。
+   理由不是排版：以符号开头的重复行更容易把模型带进复读/退化；
+   纯数字 ID + 中文块名的开头每一块都不一样，很难形成"同一 token 反复出现"的模式。
+2. **ID 稳定，不是每次随机**。同一块每次请求都得是同一个 ID——
+   否则每次请求的 prompt 都变，断点缓存全废，而且模型看到的是"无限多个新块"。
+   由单元 id 做一次 FNV-1a 再取 13 位十进制，版本升级也不变。
+   （用户说"随机生成"；这里取"看起来随机、实际确定"，性质上更安全。）
+3. **信息要留下**。声明下面接原始内容（参数、思考尾巴），截断到上限。
+   只写一句"这里坏了一块"，模型就不知道刚才想干什么，等于让人重新猜——
+   而这一段是它自己上一次的动作。
+
+**块类型**：`错误思考块`（思考被截断）、`错误工具调用块`（调用没等到结果 / 参数不是合法 JSON）。
+**原因**：`调用中途断开` / `格式错误` / `没等到工具结果`。
+够了：再细分对模型没有帮助，对排查有帮助的在库里（`reconcile` 报告 + 消息本身）。
+
+**UI 侧**（照 kelivo 的折叠样式，D67）：断块默认折叠，标题就是那行声明，
+展开看到原始内容。这样"出过错"这件事在会话里看得见、点得开，而不是被悄悄抹平。
+
+**这条路的边界**：修复只发生在**请求构造**时（`session` 汇总历史那一步），
+不动库、不动用户可见的历史文本；已经闭合的工具对一律不碰。
+指回原文的超链接也没有——这是"翻译成另一种表示"，不是"变成另一条消息"。
+
+## 3.19 自动重试（P2.11 / D70、D71）
+
+**判据按这个顺序，第一条命中就停：**
+
+1. HTTP 状态码在"不可重试"表 → 不重试；
+2. 错误文本命中"停止关键词" → 不重试；
+3. HTTP 状态码在"可重试"表 → 重试；
+4. 错误文本命中"重试关键词" → 重试；
+5. 其余 → 不重试。
+
+**为什么状态码排在关键词前面**：关键词是给人写的判断（"限流"两个字可能出现在任何地方），
+状态码是协议给的判断。协议能判的时候，不要让文本去猜。停止项永远排在可重试项前面——
+`429` 的响应体里经常同时有 `quota`，顺序反了就会在余额已空的卡上重试到天亮。
+
+**状态机**
+
+```text
+idle ──请求──▶ 判定 ──不重试──▶ 结束（把错误交给 UI）
+                 │
+                 └可重试─▶ 取第 n 项（范围 roll 一次）─▶ 等 d 秒 ─成功─▶ 继续会话（停表、丢弃本次 roll）
+                                                    │          └失败─▶ 第 n+1 项还有吗？
+                                                    │                    ├有  → 回到"取第 n+1 项"
+                                                    └用户取消─▶ 结束（不算失败）
+                                                                         └没有 → 结束
+```
+
+**数据结构**（新增 `core::retry`）
+
+| 类型 | 形状 | 说明 |
+|---|---|---|
+| `RetryList<T>` | `{ items: Vec<T>, default: Vec<T> }` | 四张表共用；`restore()` 用 default 的副本覆盖 items |
+| `CodeList` | `RetryList<u16>` | 状态码 |
+| `KeywordList` | `RetryList<String>` | 关键词；匹配前统一小写（中文不受影响） |
+| `WaitBand` | `{ min_s: f64, max_s: f64 }` | 时间点是范围，两位小数 |
+| `RetryPolicy` | `{ enabled, retry_codes, stop_codes, retry_keywords, stop_keywords, bands, total_budget_s }` | — |
+
+**判定只有一个出口**：`classify(&self, status: Option<u16>, error_text: &str) -> Decision`，
+`Decision = Retry { band_index, wait_s } | GiveUp { reason }`。这个函数不打日志、不 sleep、不碰网络，
+所以能穷举测试——重试逻辑最怕的就是"只有真出故障时才知道它对不对"。
+
+**范围与 roll**：`bands` 按 `min_s` 升序（相等按 `max_s`）；进第 n 项时
+`d = min + (max - min) × rng()`，保留两位小数（四舍五入到 0.01，且夹在 `[min, max]` 内）。
+`rng` 注入：生产给系统熵，测试给固定序列（D71）。
+
+**等待**：50ms 分片，每片看 `Cancellation`；`total_budget_s` 默认 180。
+
+**与 D40 的关系**：D40 的 429/5xx 重试是**底层立刻重连**（只在零字节阶段）；
+这张表是**上层按时间点再来一轮**。两层不叠次数：底层一次尝试失败后才进上层的计时，
+否则会出现"重试的重试"，实际间隔和用户填的完全对不上。
+
+## 3.20 图片管线（P7.8 / D72–D74）
+
+三件事发生在三个不同位置，不要混：
+
+| 事 | 什么时候 | 在哪 | 产物 |
+|---|---|---|---|
+| 上传压缩 | 用户选完图、还没发 | 平台侧（解码/缩放） | 附件库里的一份"发送副本" |
+| `view_image` | 模型要求看图 | 工具层 + 隔离子调用 | 一条文字描述（含思考段）进工具结果 |
+| 历史摘图 | 下一次请求构造 | `session` 拼历史那一步 | 占位引用替换掉媒体块 |
+
+**上传压缩参数**
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| 开关 | 关 | 关着就原样发；大图被端点拒，那就拒 |
+| 长边上限 | 1568 | Anthropic 的建议值，OpenAI 兼容端也在同一量级 |
+| 总像素上限 | 1.15 M | ≈ 1568×736；只限长边挡不住 1600×1600 |
+| 字节上限 | 5 MiB | 先降质量，再缩边 |
+| 滤波 | Lanczos3 | 可选 CatmullRom / Nearest |
+| JPEG 质量 | 85 | PNG 带 alpha 时不转 JPEG |
+| 结果提示 | 输入框上方一行 | 「已处理好 1024×768」/「本来就在范围内」 |
+
+状态 `pending → processing → ready / failed(reason)`，**只有 ready 能发**。
+
+**`view_image` 契约**
+
+```json
+入参 {"path":"docs/img/a.png","prompt":"这张图里的表格有几列？"}
+出参 {"ok":true,"description":"…","reasoning":"…","cached":false,
+      "image":{"format":"png","width":1024,"height":768,"bytes":183442,"att":"att_7f3a…"}}
+```
+
+- 只收**工作区相对路径**；`scheme://` 一律拒（远程要显式开开关）。
+- 单次最多 4 张，单张 8 MiB；超限**报错**，不偷偷缩。
+- 缓存键 `(att_hash, prompt_hash, vision_model)`；`cached:true` 时不再调模型。
+- 隔离子上下文 = 图片 + 任务锚点 + 最近 4 条文字，**不带工具、不带写权限**。
+- 格式按**魔数**判断，不看扩展名。
+
+**历史摘图**
+
+占位形如 `[image:att_7f3a2c1b 1024×768 image/png 视觉覆盖已转写]`。
+三个条件同时满足才换：视觉覆盖开着、这张图已经有描述、它不是当前这一轮的。
+
+## 3.21 设置的三个轴与两级门（D79–D85）
+
+**一张表说清所有开关**。任何一层的"关"只影响它下面那层，永不改写别的层：
+
+| 层 | 例子 | 关掉的后果 | 能改写别的层吗 |
+|---|---|---|---|
+| 模型能力（事实） | `reasoning: false`、`supported_efforts` | 这一份请求不发该字段 | 不能 |
+| 用户设置（持久） | 每模型的思考强度、每助手的工具开关 | 影响下一次构造请求 | **不能被任何切换改写** |
+| 会话临时 | 聊天窗口里的世界书勾选、视觉覆盖开关 | 只影响这个会话 | 不能 |
+| 这一份请求（现算） | 交集结果 | 发出去就没了 | — |
+
+**发不出去 = 这次不发，不是清零**。`core::config` 里已经落地：`ModelOverrides::emission()`
+返回 `Setting` 或 `Dropped { reason, stored }`，`stored` 原样保留用户选的那一档。
+`effective()` 走同一个出口（两条路各算各的迟早分叉）。
+
+**四类东西的语义各不同，别混**：
+
+| 东西 | 启用意味着 | 禁用之后 |
+|---|---|---|
+| 技能 | name + description 进上下文 | 模型不知道它存在；**文件照样能读**（有环境走 `/skills` 映射，没环境走工作区工具） |
+| 指令注入 | 真的注入 md 内容 | 一个字都不进上下文（命令类开关，关了就是关了） |
+| 世界书 | 设置级加载 + 会话级生效（两级门） | 设置级关：不加载、不生效；会话级没勾：加载但不注入 |
+| 工具 / 工作区 | 声明进 `tools` 字段 | 声明不进；`policy` 门控是更上面一层，默认关 |
+
+**"工作区"不是特殊物种**：它就是一组工具，UI 上归到"工具"页，开关走同一套三轴
+（`policy` × 助手允许 × 会话临时）。kelivo 那个"MCP 与本地工具被关、工作区没被关"
+就是因为它给工作区单开了一套判断。
+
+**唯一的自动回退**：值坏了（解析失败 / 类型不符 / 越界到没法用）→ 回默认 + 记
+`settings_repair`，UI 上明说被重置了。静默回退不行——用户会以为是自己改的。
+
+## 3.22 token 估算与两条压缩线（D90 / D91）
+
+**估算三级**（细节与理由见 D91、D94–D96）：
+
+| 级别 | 手段 | 成本（实测，release / PRoot aarch64） | 用在哪儿 |
+|---|---|---|---|
+| L0 | `estimate_tokens`（ASCII 4 字符≈1、CJK 1 字符≈1） | 零 | 流式增量、每帧判绝对线、BPE 不可用时兜底 |
+| L1 | 本地 BPE：`tiktoken-rs 0.5.9`，`o200k_base` 兜底、`cl100k_base` 给 gpt-4/gpt-3.5/claude 家族 | 首次初始化 691ms（o200k）/ 296ms（cl100k），之后 16k 汉字 26ms、10k 字符 ~14ms | 造请求前、压缩判据 |
+| L2 | 端点回的 `usage.prompt_tokens` | 零 | 每轮结束**反推比例因子**，按 (模型, 级别, 内容类) 存滑动平均；`samples ≥ 3` 才算校准过 |
+
+L2 是重点：一次真实值校准后面 N 次估算。在线 tokenizer 服务**默认不用**——
+国内没有对等端点、跨境可达性差，且高频调用等于滥用。
+
+**L1 的实测误差**（同一批文本，真值取自 `relay-a/DeepSeek-V4-Flash` 的 `usage.prompt_tokens`，
+模型×词表见 `docs/token-estimation.md`）：ASCII 1.025、中文 0.804、混排 1.061、代码 1.050
+（数 = 真实/估算，>1 是低估）。同一个 L0 在这些文本上是 0.62 / 0.63 / **1.32** / 1.01。
+结论：**L1 把"随内容种类摆动 2 倍"压到"±6%"**，剩余偏差交给 L2。
+
+**L1 的二进制代价**（strip 后实测）：空程序 395KB；只链 cl100k 3.67MB；只链 o200k 5.64MB；
+两个都链 **7.28MB**。所以留一个 cargo feature `bpe`（默认开）：关掉之后 `tokens` 退成纯 L0+L2，
+装在容量敏感的分发里时由打包方决定。
+
+**调用面**：`tokens::Estimator`（`estimate` / `budgeted` / `observe_usage`）是唯一入口，
+L0 的 `estimate_tokens` 保留原样给流式与兜底。**接线已完成**（D98）：`breakdown_of_units` 认估算器、
+会话的"用了多少"走 breakdown、轮末 `observe_usage` → `SessionTurn::calibration` → FFI 落库。
+`nmoi_context_breakdown_json` 那条也在 **D101**（schema v4 的 `conversations.model`）之后接上了：
+会话记住最近用的模型，面板按它取校准、选词表；出参多 `model` 与 `level`（`l1`/`l0`），
+`level` 是这一批数字的口径来源——没有模型名、或二进制没编 `bpe` 时它就是 `l0`，面板该据此说"粗估"。
+
+**两条线**（`CompressionTrigger` 的 `force` / `emergency` 就是它们的旧名字，D97 已改名）：
+
+| | 建议线（默认 0.75） | 绝对线（默认 0.92） |
+|---|---|---|
+| 轮开始前已过 | 照常发，本轮结束后压 → `ProceedThenCompact` | **先压再发** → `CompactThenProceed`（`SessionError::CompactionRequired`） |
+| 生成中已过 | 不动，等生成结束 → `Proceed` | **立刻截断** → `TruncateThenCompact`（`TurnReport.truncated`） |
+| 生成结束已过 | 落库后压 → `CompactAfterPersist` | 落库后压（已经截断过） |
+
+三条硬约束（D97）：单位可切百分比 / token，**判定一律比较 token**；只在"造请求前"与
+"生成结束"处判定，生成中只按字符增量累加；压缩**不可重入**（`SessionConfig::suppress_compression`
+把造请求前的闸和轮末信号一起关掉）。
+
+`Threshold` 双写 `percent` / `tokens`，由 `mode` 决定谁是权威——只存 token 的话，
+在 200k 模型上设的 150k 换到 32k 模型会让第一次请求就触发压缩。
+
+## 4. 需要你拍板的问题
+
+| # | 问题 | 我的倾向 |
+|---|---|---|
+| Q7 | ~~锁定是否也锁**位置**（禁止重排）~~ **已定（2026-10-21）：锁位置** | 用户手动锁 = "这段别动"，连位置一起锁；`pinned` 留给模型/策略，见 D11 修订 |
+| Q8 | 分界线是否也**阻止回灌**（线以上的 ref 还能不能 fetch） | 倾向允许：回灌是"追加到尾部"，不破坏窗口语义 |
+| Q9 | 压缩时线上内容是"全部归档"还是"超阈值才归档" | 倾向全部归档（存储不花钱，回灌可控） |
+| Q10 | `force_full` 是否设一个绝对上限（比如 512 KiB）防止把自己炸掉 | 倾向不设上限，但在 UI 上二次确认并显示字节数 |
+| Q11 | 五类模型角色的默认是否都允许"禁用" | 标题/建议/翻译可禁用；压缩可禁用（退回确定性截断）；视觉未配置即置灰 |
+| Q12 | 模型名正则表的快照多久更新一次 | 倾向：跟版本走 + 手动刷新按钮；快照带来源与日期 |
+| Q13 | **压缩角色 vs 轮次冻结**（D76） | D42 说压缩是独立角色，D76 说这一轮冻结哪个模型就全程用它。倾向：显式配了压缩角色就用它，没配用冻结的会话模型（用户的原话是"这一轮归谁管就归谁管"，但配好压缩模型的人不该被无视）。**等你拍板** |
+| Q14 | 助手 / 工具页的清单要不要先去读 kelivo 源码 | 倾向要读（AGPL，只读设计不抄代码），否则"工具项参考 kelivo 做"就成了猜。这一步需要网络，放在 schema v3 之后、UI 之前。**等你确认要不要现在读** |
+
+---
+
+## 5. 下一步（按依赖顺序）
+
+0. ~~**`budget::breakdown` + FFI**~~（`3cab893`）：八行分段用量 + `nmoi_context_breakdown_json`。
+   core 353 项、C 侧 204 项全过。
+
+**这一期的顺序**（`3cab893` 之后）。排序依据只有一条：**谁决定了别人的形状，谁先做**。
+
+| # | 事 | 为什么排在这里 |
+|---|---|---|
+| 0.1 | ~~设置三轴：`ThinkingEmission` / `TrimReason`~~ **已完成 core** | 决定后面所有持久化的形状；也是用户点名的"切过去切回来丢设置"。改晚了要迁移数据 |
+| 0.2 | ~~**schema v3** + 设置文档读写 + `nmoi_settings_*`~~ **已完成** | 0.1 只是内存里的规矩，不落库等于每次重开就回到默认。UI 接线等平台工具链 |
+| 0.3 | ~~**技能 / 指令注入 / 世界书 / 工具开关的语义落地**~~ **已完成 core**（`core::gate`，10 项测试） | 四个纯函数各管一种语义；工具按 `Capability` 分三轴 + MCP 两级门。缺：接进 `run_session_turn` 与 FFI |
+| 0.4 | ~~**轮次模型冻结**（D76）~~ **已完成 core**：`turn::TurnPlan::freeze` 冻 model + 生效 profile + `ThinkingEmission` + `ToolPlan`；`SessionConfig.plan` 接线，工具声明按冻结名单（`ToolContext.declared`） | 压缩与工具循环读同一份值。Q13 已定（压缩角色优先，没配用冻结模型），压缩侧接线还没做 |
+| 0.5 | ~~**并发粒度降到会话**（D75）~~ **已完成**：`Storage::attach` 开第二条连接，句柄不再被借走；同会话第二轮仍由 `Registration` 挡 busy | 结构问题；改完 A/B/C 三个会话才能真同时跑 |
+| 0.6 | ~~**token 估算 L1 + L2 校准**~~ **已完成**（§3.22、D91、D94–D96）：`tokens::{bpe,class,calibrate,Estimator}` + `settings` 表新 scope `calibration`；L1 实测误差 1.025 / 0.804 / 1.061 / 1.050（ASCII / 中文 / 混排 / 代码，真实÷估算）；二进制 +7.28MB，可用 `--no-default-features` 关掉 | 压缩两条线要先知道"现在多少 token"，它是 0.7 的前置。**剩下的是接线**（`budget::breakdown` 换 Estimator、轮末 `observe_usage`），留给 0.7 一起做，一次改一处 |
+| 0.7 | ~~**双线压缩**（D90）~~ **已完成**（D97）① `Threshold`：单位可切百分比 / token，判定一律折成 token；两条线改名 `suggest`（0.75）/ `absolute`（0.92）② `decide(trigger, point)` 三处判定的动作表 ③ 造请求前过绝对线 → `SessionError::CompactionRequired`（core 不替调用方压，也不假装发出去）④ 生成中过绝对线 → 工具循环立刻停、`TurnReport.truncated`，落库仍走 `mark_incomplete` ⑤ 压缩不可重入：`SessionConfig.suppress_compression`｜依赖 0.6 的估算。压缩本身要 provider + archive，只有调用方拿得全，所以 core 的职责是"算准 + 拒绝 + 交代"，不是自己压 |
+| 0.8 | ~~**自动重试 core**~~ **已完成**（D70/D71/D99）：`retry` 模块（判据顺序 / 2 KiB 关键词扫描 / `{min_s,max_s}` roll + 注入随机源 / 50ms 可中断等待 / 四张可恢复的表）+ `ChatClient::complete_retrying`；**已接进 `run_turn`**（每次工具往返各算各的，`SessionConfig::retry`，FFI 暂传 `None` 等设置面）；底层 `RetryPolicy` 改名 `ReconnectPolicy`，两层不叠次数 | 独立模块，可穷举测试；与上面几项无耦合 |
+| 0.8b | ~~**schema v4：`conversations.model`**~~ **已完成**（D101）：会话记住最近用的模型；`nmoi_context_breakdown_json` 出参多 `model` / `level`，`Estimator::level()` 报告实际走的那一级；列表页每行带 `model`；新增 `nmoi_storage_set_conversation_model_json`；`nmoi_turn_run_json` 造请求前写一次 | 补掉"面板只能按 L0 给数"那个洞。它是 UI 会话头的直接数据源，且不依赖任何外部条件——放在动 Android 之前 |
+| 0.9 | **图片管线**（D72–D74，§3.20）：先是判定与契约，真发图等 P3.4 内容块 | 依赖附件库；`view_image` 的业务部分要等视觉子调用 |
+| 0.10 | **F3 事件回调** | 先拿 curl 验端点支持不支持 `tools` + `stream`，验不过就明说 |
+| 0.11 | **UI 外壳**（P6） | 需要平台工具链；在那之前只维护契约与草稿 |
+| 0.12 | **Android 骨架**（P6.7）**已完成，（未接 JNI）**：`android/` + CI 出 debug APK | 先要有一条"改完能出包"的链路，否则后面每加一个界面都在赌；只写 Gradle/Compose 结构不依赖 secret，出包也只要 debug |
+| 0.13 | ~~**JNI 桥 + `cargo-ndk`**~~ **已完成，未真机验证**（D112）：4 个符号转手 C ABI，CI 编 `arm64-v8a/libnmoi_ffi.so`，列表读真库 | 骨架有了才接核心，否则又是一个没人调的接口 |
+| 0.14 | **真机验证一次**（`docs/verification.md` V0→V5） | 在这之前"能跑"不能用；装包 / `.so` 加载 / 建库 / 列表这四段没有任何证据 |
+| 0.14b | **日志拆三种通道 + 设置子页化**（`docs/ui/structure.md`）：`NLog` 分 `context` / `request` / `debug` 三路、各自文件与上限；日志索引页三行 + 齿轮（三种开关与上限）；通道子页四动作；设置从六节平铺改成「分组索引 → 子页」，索引行右侧写当前值 | 现在一页把"开关 + 上限 + 四种动作 + 预览"挤在一起，手机上就是滚动里找东西。**先在界面上把入口/返回定下来，后面每接一个功能只是往对应子页里填**；顺序排在设置接线之前，因为接线的落点就是这些子页 |
+| 0.15 | **压缩失败阶梯**（D115）**设计已定，未实现**：L0 多步 → L1 备用多步（剔思考块压事实层 → 合并再压）→ L2 单步 → L3 分段（约 16 段；重叠窗口只当上下文；低置信丢弃用硬事实命中 + 锚点覆盖算，不信模型自评）→ L4 兜底；提示词全部可自定义 | 现在只有 L0，失败就只剩截断；"压不干净"比"没压"更伤，所以降级必须分档、每档判据写清 |
+
+1. ~~stage 0 代码 / CI 跑通~~（已绿：ubuntu + windows + MSRV 1.75 + rustfmt 阻塞 + clippy）
+2. ~~`core::provider` + `model_registry`（P2）~~ / ~~压缩草稿工具链（P4）~~ / ~~工具层与工具循环（P7）~~ 均已实现 core 且真机跑通
+3. ~~`core::session` 编排（P6 地基）~~（D52）
+4. ~~P6.1 FFI stage F1：契约 + 句柄 + JSON 信封 + storage/workspace/工具面~~（§3.11，真 C 程序验收）
+5. ~~P6.1 FFI stage F2：`nmoi_turn_run` + 取消~~（已完成：真机端到端跑完"发一句话 → 工具调用 → 落库"，
+   见 §3.11 的 F2 小节）。
+   **剩下的 F3：事件回调**（`nmoi_set_event_callback`，同步回调、回调里只能读句柄、逐字吐出）。
+   拦路的事实先说清：工具循环**必须**非流式（D46，上游流式吞 `tool_calls`），
+   所以"逐字"要等端点支持流式工具调用，或者走"先流式出一段纯文本、工具轮次仍走非流式"的混合。
+   这一条要做之前先拿 curl 在目标端点验一遍。
+6. UI 外壳（P6）：Android 先做会话列表 + 输入岛（`AndroidView` 包 `EditText`），Linux 用 GTK4。
+   侧栏/底部窗口的遮罩、边缘进出、返回与拖动关闭、动画中不可点，契约在 `docs/ui/overlays.md`（D109）；图标与规则见 `docs/ui/icon-packs.md`、`docs/ui/icons/README.md`。
+   **需要一台有平台工具链的机器**（GTK4 / WPF / Android SDK 本机都没有），在那之前只管把 FFI 面钉死。
+7. 容器可选增强（P7 内部）：PRoot 能力探测 → rootfs 管理 → 只挂载用户选定的工作区目录。
+   **本机 PRoot 不能嵌套，这一项只能写不能验**，别假装验过。

@@ -1,0 +1,40 @@
+# Codeberg（Forgejo）上的 CI。
+# 与 .github/workflows/ci.yml 同源，但这里不依赖第三方 action：
+# runner 镜像里没有 Rust，自己装；只有 actions/checkout 是 Forgejo 内建兼容的核心 action。
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
+          sh /tmp/rustup.sh -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: 工具链自证（写进日志，便于复核跑的是什么版本）
+        run: |
+          cargo --version
+          rustc --version
+
+      - name: 测试（单元 + 集成）
+        run: cargo test --workspace --all-targets --locked
+
+      - name: CLI 冒烟（真实的打开 / 体检 / 备份链路）
+        run: |
+          cargo run --locked -p nmoi-cli -- version
+          cargo run --locked -p nmoi-cli -- init ./ci-nmoi.db
+          cargo run --locked -p nmoi-cli -- doctor ./ci-nmoi.db
+          cargo run --locked -p nmoi-cli -- backup ./ci-nmoi.db ./ci-backup/nmoi.db

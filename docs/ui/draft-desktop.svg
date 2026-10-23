@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+<rect width="1440" height="900" fill="#FFFFFF"/>
+<rect x="0" y="0" width="280" height="900" fill="#FAFAFB"/>
+<line x1="280" y1="0" x2="280" y2="900" stroke="#E5E7EB"/>
+<text x="24" y="40" font-family="Smiley Sans, Noto Sans SC" font-size="20" fill="#111827" font-weight="normal" text-anchor="start">NMoi</text>
+<text x="74" y="40" font-family="Noto Sans SC" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="start">Agent</text>
+<rect x="216" y="20" width="44" height="32" rx="10" fill="#EEF2FF"/>
+<path d="M238 28v16M230 36h16" stroke="#4F46E5" stroke-width="1.8" stroke-linecap="round"/>
+<rect x="8" y="70" width="264" height="62" rx="12" fill="#EEF2FF"/>
+<rect x="8" y="82" width="3" height="34" rx="2" fill="#4F46E5"/>
+<text x="24" y="90" font-family="Noto Sans SC" font-size="13.5" fill="#111827" font-weight="500" text-anchor="start">重构输入岛</text>
+<text x="24" y="108" font-family="Noto Sans SC" font-size="11" fill="#6B7280" font-weight="normal" text-anchor="start">输入岛左侧按钮按宽度放，挤了才收⋯</text>
+<text x="256" y="90" font-family="Noto Sans SC" font-size="10.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">12:40</text>
+<text x="24" y="160" font-family="Noto Sans SC" font-size="13.5" fill="#111827" font-weight="normal" text-anchor="start">安卓签名流程</text>
+<text x="24" y="178" font-family="Noto Sans SC" font-size="11" fill="#B45309" font-weight="normal" text-anchor="start">密钥放 secret，Codeberg 那边同理</text>
+<text x="256" y="160" font-family="Noto Sans SC" font-size="10.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">11:02</text>
+<text x="24" y="230" font-family="Noto Sans SC" font-size="13.5" fill="#111827" font-weight="normal" text-anchor="start">上下文窗口面板</text>
+<text x="24" y="248" font-family="Noto Sans SC" font-size="11" fill="#6B7280" font-weight="normal" text-anchor="start">图例八行直接按 SourceTag 归类</text>
+<text x="256" y="230" font-family="Noto Sans SC" font-size="10.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">昨天</text>
+<text x="24" y="300" font-family="Noto Sans SC" font-size="13.5" fill="#111827" font-weight="normal" text-anchor="start">视觉覆盖提示词</text>
+<text x="24" y="318" font-family="Noto Sans SC" font-size="11" fill="#6B7280" font-weight="normal" text-anchor="start">图像一份、视频一份，不能互相复用</text>
+<text x="256" y="300" font-family="Noto Sans SC" font-size="10.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">昨天</text>
+<text x="24" y="370" font-family="Noto Sans SC" font-size="13.5" fill="#111827" font-weight="normal" text-anchor="start">断块修复</text>
+<text x="24" y="388" font-family="Noto Sans SC" font-size="11" fill="#6B7280" font-weight="normal" text-anchor="start">16154544994949错误工具调用块…</text>
+<text x="256" y="370" font-family="Noto Sans SC" font-size="10.5" fill="#9CA3AF" font-weight="normal" text-anchor="end">周二</text>
+<text x="24" y="860" font-family="Noto Sans SC" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">设置 · 世界书 · 技能</text>
+<line x1="280" y1="56" x2="1140" y2="56" stroke="#E5E7EB"/>
+<text x="308" y="36" font-family="Noto Sans SC" font-size="15" fill="#111827" font-weight="500" text-anchor="start">重构输入岛</text>
+<rect x="430" y="18" width="196" height="24" rx="12" fill="#F3F4F6"/>
+<text x="444" y="34" font-family="Lato" font-size="11" fill="#374151" font-weight="normal" text-anchor="start">DeepSeek-V4.1-Flash</text>
+<text x="868" y="34" font-family="Lato" font-size="11.5" fill="#374151" font-weight="normal" text-anchor="start">445.9k</text>
+<rect x="930" y="26" width="120" height="6" rx="3" fill="#E5E7EB"/>
+<rect x="930" y="26" width="110" height="6" rx="3" fill="#3B82F6"/>
+<rect x="308" y="86" width="120" height="20" rx="10" fill="#F3F4F6"/>
+<text x="368" y="99" font-family="Noto Sans SC" font-size="10.5" fill="#6B7280" font-weight="normal" text-anchor="middle">今天 12:31</text>
+<rect x="640" y="120" width="424" height="52" rx="14" fill="#4F46E5"/>
+<text x="664" y="143" font-family="Noto Sans SC" font-size="13" fill="#FFFFFF" font-weight="normal" text-anchor="start">桌面横屏把加号里的东西全放出来，</text>
+<text x="664" y="161" font-family="Noto Sans SC" font-size="13" fill="#FFFFFF" font-weight="normal" text-anchor="start">挤不下再收进 ⋯，左栏右栏常驻。</text>
+<rect x="308" y="196" width="404" height="76" rx="14" fill="#F9FAFB"/>
+<text x="328" y="222" font-family="Noto Sans SC" font-size="13" fill="#111827" font-weight="normal" text-anchor="start">左栏 280 常驻会话，中间 860 放消息，</text>
+<text x="328" y="242" font-family="Noto Sans SC" font-size="13" fill="#111827" font-weight="normal" text-anchor="start">右栏 300 给上下文窗口。输入岛上面一行</text>
+<text x="328" y="262" font-family="Noto Sans SC" font-size="13" fill="#111827" font-weight="normal" text-anchor="start">放全部入口，下面才是输入框。</text>
+<rect x="308" y="292" width="404" height="44" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<path d="M326 306l6 6-6 6" stroke="#9CA3AF" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+<text x="344" y="318" font-family="Lato" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">read_file</text>
+<text x="414" y="318" font-family="Noto Sans SC" font-size="11.5" fill="#6B7280" font-weight="normal" text-anchor="start">a.txt · 3 行 / 17 字节</text>
+<rect x="308" y="348" width="520" height="44" rx="12" fill="#FFFBEB" stroke="#FDE68A"/>
+<path d="M326 362l6 6-6 6" stroke="#B45309" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+<text x="344" y="374" font-family="Lato" font-size="12.5" fill="#92400E" font-weight="normal" text-anchor="start">16154544994949错误工具调用块原因:格式错误</text>
+<rect x="308" y="676" width="556" height="176" rx="18" fill="#FFFFFF" stroke="#E5E7EB"/>
+<rect x="328" y="694" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="356.0" y="713" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">图片</text><rect x="392" y="694" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="420.0" y="713" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">文件</text><rect x="456" y="694" width="56" height="28" rx="9" fill="#F3F4F6"/><text x="484.0" y="713" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">技能</text><rect x="520" y="694" width="72" height="28" rx="9" fill="#F3F4F6"/><text x="556.0" y="713" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">指令注入</text><rect x="600" y="694" width="32" height="28" rx="9" fill="#F3F4F6"/><text x="616.0" y="713" font-family="Noto Sans SC" font-size="11" fill="#374151" font-weight="normal" text-anchor="middle">⋯</text>
+<text x="328" y="764" font-family="Noto Sans SC" font-size="13" fill="#9CA3AF" font-weight="normal" text-anchor="start">说点什么，或者把文件拖进来</text>
+<g transform="translate(648,790) scale(1.0)"><rect width="92" height="30" rx="15.0" fill="#EEF2FF"/><g transform="translate(10,6.0) scale(0.7500)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.0 16.0H21.0" stroke="#BFDBFE" stroke-width="1.4"/>
+  <path d="M3.00 16.0 A 9.00 9.00 0 0 1 21.00 16.0" stroke="#1D4ED8" stroke-width="1.7"/>
+  <path d="M6.30 16.0 A 5.70 5.70 0 0 1 17.70 16.0" stroke="#BFDBFE" stroke-width="1.5"/>
+  <path d="M12.0 16.0L14.02 8.47" stroke="#DC2626" stroke-width="2.2"/><circle cx="14.02" cy="8.47" r="1.05" fill="#DC2626" stroke="none"/></g><text x="34" y="18.4" font-family="Lato" font-size="12" fill="#3730A3" font-weight="500" text-anchor="start">high</text></g>
+<rect x="752" y="790" width="92" height="30" rx="15" fill="#4F46E5"/>
+<text x="798" y="807" font-family="Noto Sans SC" font-size="12.5" fill="#FFFFFF" font-weight="normal" text-anchor="middle">发送</text>
+<text x="328" y="838" font-family="Noto Sans SC" font-size="10" fill="#9CA3AF" font-weight="normal" text-anchor="start">窄窗口：第 4 个之后收进 ⋯（顺序不变）</text>
+<rect x="1140" y="0" width="300" height="900" fill="#FAFAFB"/>
+<line x1="1140" y1="0" x2="1140" y2="900" stroke="#E5E7EB"/>
+<text x="1164" y="40" font-family="Noto Sans SC" font-size="14" fill="#111827" font-weight="500" text-anchor="start">上下文窗口</text>
+<text x="1416" y="40" font-family="Lato" font-size="13" fill="#111827" font-weight="normal" text-anchor="end">445.9k</text>
+<text x="1416" y="56" font-family="Noto Sans SC" font-size="10" fill="#9CA3AF" font-weight="normal" text-anchor="end">估算</text>
+<rect x="1164.0" y="72" width="201.6" height="10" fill="#3B82F6"/>
+<rect x="1365.6" y="72" width="7.6" height="10" fill="#F59E0B"/>
+<rect x="1373.2" y="72" width="7.6" height="10" fill="#F97316"/>
+<rect x="1380.7" y="72" width="7.6" height="10" fill="#FACC15"/>
+<rect x="1388.3" y="72" width="10.1" height="10" fill="#9CA3AF"/>
+<rect x="1398.4" y="72" width="10.1" height="10" fill="#22C55E"/>
+<rect x="1408.4" y="72" width="5.0" height="10" fill="#64748B"/>
+<rect x="1413.5" y="72" width="2.5" height="10" fill="#A855F7"/>
+<rect x="1164" y="107" width="10" height="10" rx="3" fill="#3B82F6"/>
+<text x="1184" y="116" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">历史消息</text>
+<text x="1416" y="116" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">433.9k</text>
+<rect x="1164" y="137" width="10" height="10" rx="3" fill="#F59E0B"/>
+<text x="1184" y="146" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">内置工具</text>
+<text x="1416" y="146" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">1.2k</text>
+<rect x="1164" y="167" width="10" height="10" rx="3" fill="#F97316"/>
+<text x="1184" y="176" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">MCP 工具</text>
+<text x="1416" y="176" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">1.9k</text>
+<rect x="1164" y="197" width="10" height="10" rx="3" fill="#FACC15"/>
+<text x="1184" y="206" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">技能</text>
+<text x="1416" y="206" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">2k</text>
+<rect x="1164" y="227" width="10" height="10" rx="3" fill="#9CA3AF"/>
+<text x="1184" y="236" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">系统提示词</text>
+<text x="1416" y="236" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">2.1k</text>
+<rect x="1164" y="257" width="10" height="10" rx="3" fill="#22C55E"/>
+<text x="1184" y="266" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">世界书</text>
+<text x="1416" y="266" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">3.8k</text>
+<rect x="1164" y="287" width="10" height="10" rx="3" fill="#64748B"/>
+<text x="1184" y="296" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">工作区</text>
+<text x="1416" y="296" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">316</text>
+<rect x="1164" y="317" width="10" height="10" rx="3" fill="#A855F7"/>
+<text x="1184" y="326" font-family="Noto Sans SC" font-size="12.5" fill="#374151" font-weight="normal" text-anchor="start">草稿</text>
+<text x="1416" y="326" font-family="Lato" font-size="12" fill="#6B7280" font-weight="normal" text-anchor="end">415</text>
+<line x1="1164" y1="380" x2="1416" y2="380" stroke="#E5E7EB"/>
+<rect x="1164" y="396" width="252" height="52" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="1180" y="414" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">设置上下文窗口</text>
+<text x="1180" y="434" font-family="Noto Sans SC" font-size="10.5" fill="#6B7280" font-weight="normal" text-anchor="start">窗口 / 预留输出</text>
+<rect x="1164" y="460" width="252" height="52" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="1180" y="478" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">压缩上下文</text>
+<text x="1180" y="498" font-family="Noto Sans SC" font-size="10.5" fill="#6B7280" font-weight="normal" text-anchor="start">总结对话并开始新聊天</text>
+<rect x="1164" y="524" width="252" height="52" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+<text x="1180" y="542" font-family="Noto Sans SC" font-size="12.5" fill="#111827" font-weight="normal" text-anchor="start">清空上下文</text>
+<text x="1180" y="562" font-family="Noto Sans SC" font-size="10.5" fill="#6B7280" font-weight="normal" text-anchor="start">标记上下文分界点 · 10 条消息</text>
+</svg>

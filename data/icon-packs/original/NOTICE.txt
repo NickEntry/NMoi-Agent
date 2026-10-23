@@ -1,0 +1,23 @@
+NMoi-Agent 图标包 — 第三方声明
+================================
+
+这个包里每一张 PNG 都是从 SVG 母版栅格化来的，母版来源与许可见下文。
+本项目自身是 GPL-3.0-only（https://www.gnu.org/licenses/gpl-3.0.txt）。
+
+1. 界面动作图标（actions/）
+   来源：Lucide（lucide-static@1.61.0），ISC 许可；
+         其中 11 个图形源自 Feather，MIT 许可（Copyright (c) 2013-present Cole Bemis）。
+   我们的改动：描边宽度 2 → 1.75，删除 class 属性；栅格化时把 currentColor 烤成白色。
+   divider 图标为本项目自绘（GPL-3.0-only）。
+
+2. 供应商与模型图标（providers/、models/）
+   来源：Lobe Icons（@lobehub/icons-static-svg@1.97.0），MIT 许可，
+         Copyright (c) 2023 LobeHub。
+   我们的改动：width/height 由 1em 改为数值，删除内联 style；单色图标烤成白色。
+   这些图形是各家的商标，此处仅用于标识当前使用的模型/厂商，未改色、未改形，
+   不用于暗示授权或背书。
+
+3. 许可全文
+   ISC（含 Feather 的 MIT 段落）：LICENSES/ISC-lucide.txt
+   MIT（Lobe Icons）：LICENSES/MIT-lobe-icons.txt
+   随本项目分发时，这两个文件与本声明需一并提供。

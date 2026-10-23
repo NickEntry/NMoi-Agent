@@ -1,0 +1,196 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 单元测试与集成测试
+        run: cargo test --workspace --all-targets --locked
+      - name: CLI 冒烟（真实打开 / 体检 / 备份链路）
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p nmoi-cli -- version
+          cargo run --locked -p nmoi-cli -- init ./ci-nmoi.db
+          cargo run --locked -p nmoi-cli -- doctor ./ci-nmoi.db
+          cargo run --locked -p nmoi-cli -- backup ./ci-nmoi.db ./ci-backup/nmoi.db
+      # C 侧 ABI 验收：真编一个 C 程序链接 cdylib。只在 ubuntu 跑——
+      # windows 上的 cc 是 MSVC 那套，命令行和链接参数都不一样，
+      # 而这一层要证明的是"ABI 形状对不对"，同一份测试跑两边收益很小。
+      - name: C 侧 ABI 验收（P6.1）
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/ffi_smoke.sh
+
+  msrv:
+    name: msrv (1.75)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75.0
+      - name: 保持最低支持版本可编译
+        run: cargo check --workspace --all-targets --locked
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # clippy 的 lint 集合随工具链版本变化，把它设成建议性：
+  # 红了要去看，但不该因为它拦住一次正确的提交。fmt 是确定性的，所以是阻塞的。
+  clippy:
+    name: clippy（建议性）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Android 骨架：只出 debug APK。debug 签名由构建机自己生成，不需要任何 secret；
+  # release 签名要 4 个 environment secret（见 docs/signing.md），那是下一步。
+  # 这一版**还没有** Rust 核心（没有 JNI 层），所以这里只证明"工具链能出包"。
+  android:
+    name: android (debug apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # 8.7 是 AGP 8.5.2 的下限；上限受 KGP 2.0.21（<=8.8）约束，两个都满足的只有 8.7/8.8。
+          gradle-version: '8.7'
+      # 原生层：用 cargo-ndk 编一份 arm64 的 .so 塞进 jniLibs。
+      # 只编 arm64-v8a：真机反馈之前多编一份（armv7/x86_64）只是让 job 慢一倍。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: 装 cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: 编 .so（JNI 桥，arm64-v8a）
+        run: |
+          set -euo pipefail
+          # 两个环境变量必须是同一个 NDK：runner 上 HOME=30.x、ROOT=27.3，
+          # 不一致时 cargo-ndk 会先警告再按某个版本编，出了问题很难看出来用的是哪个。
+          NDK="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then NDK=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1); fi
+          export ANDROID_NDK_ROOT="$NDK"
+          export ANDROID_NDK_HOME="$NDK"
+          echo "NDK=$NDK"
+          # 注意：cargo-ndk 4.x 的 `-p` 是 cargo 的 --package，不是 platform。
+          # platform 只能写 `--platform`（写 `-p 26` 会变成"unknown package: 26"并 panic）。
+          cargo ndk -t arm64-v8a --platform 26 -o android/app/src/main/jniLibs \
+            build --release -p nmoi-ffi --features jni --locked
+          find android/app/src/main/jniLibs -type f -exec ls -l {} \;
+      # 符号对账：Kotlin 的 external fun 与 .so 里导出的 Java_* 必须一一对上。
+      # 这一步是"真实机上第一版就踩了"换来的——编译能过、装包能过，
+      # 只有点了按钮才报 No implementation found。
+      - name: JNI 符号对账
+        run: ./scripts/check_jni_symbols.sh android/app/src/main/jniLibs/arm64-v8a/libnmoi_ffi.so
+      # 先自述一遍环境：SDK 里到底装了哪些 platform / build-tools，
+      # 失败时不用靠猜是哪一件缺了。
+      - name: 环境自述
+        run: |
+          set -x
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ls "$SDK/platforms" || true
+          ls "$SDK/build-tools" || true
+          gradle --version
+      # 启动器图标切换靠 8 个 activity-alias，名字在三处出现（manifest / Kotlin 目录 / 偏好）。
+      # 漂移的表现是"设置里点了没反应"或"桌面上两个图标"，编译期完全看不出来，所以对账。
+      - name: 图标 alias 对账
+        run: ./scripts/check_app_icon_aliases.sh
+      - name: 打包 debug APK
+        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
+      - name: 产物清点
+        run: |
+          ls -l android/app/build/outputs/apk/debug/
+          count=$(find android/app/build/outputs/apk/debug -name '*.apk' | wc -l)
+          echo "APK 数量：$count"
+          [ "$count" -ge 1 ]
+      # D106：第三方声明必须随包走，而且必须在**签名之前**就在包里。
+      # 这条不做成"记得看一下"，做成闸：包里没有 assets/notices 就直接失败。
+      # 包名钉住（D116）：这一串事故的根就是"名字到底是什么"没人验。
+      # aapt2 直接读 APK 的 manifest，顺带确认启动入口是图标 alias 而不是 MainActivity。
+      # 包名钉住（D116）：这一串事故的根就是"名字到底是什么"没人验。
+      # 启动入口没法用 `dump badging` 验——aapt2 的 launchable-activity 只认 <activity>，
+      # 不认 <activity-alias>（我们正好全是 alias，输出是空的，被这道闸当场抓到过）。
+      # 所以直接读 APK 里的 manifest：alias 数量与名字。
+      - name: 包名与图标 alias 对账（D116 / D114）
+        run: |
+          set -euo pipefail
+          apk=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          echo "aapt2=$AAPT2"
+
+          pkg=$("$AAPT2" dump badging "$apk" | sed -nE "s/^package: name='([^']+)'.*/\1/p" | head -1)
+          echo "package=$pkg"
+          [ "$pkg" = "com.nmoi.agent" ] \
+            || { echo "APK 包名是 $pkg，应为 com.nmoi.agent（D116）" >&2; exit 1; }
+
+          tree=$("$AAPT2" dump xmltree --file AndroidManifest.xml "$apk")
+          aliases=$(printf '%s\n' "$tree" | grep -c 'E: activity-alias' || true)
+          echo "activity-alias 数量=$aliases"
+          [ "$aliases" -eq 8 ] \
+            || { echo "alias 应有 8 个（4 设计 × 黑白），实际 $aliases：桌面图标切换会失效" >&2; exit 1; }
+
+          for want in TerminalStarsDark WishingStarLight InfinityRingDark CodeStardustLight; do
+            printf '%s\n' "$tree" | grep -q "com.nmoi.agent.icon.$want" \
+              || { echo "APK 的 manifest 里找不到 alias $want" >&2; exit 1; }
+          done
+          echo "图标 alias 齐全 ✓"
+      - name: 声明进包对账（D106）
+        run: |
+          set -euo pipefail
+          apk=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "检查 $apk"
+          listing=$(unzip -l "$apk" | grep -E 'assets/notices/' || true)
+          printf '%s\n' "$listing"
+          missing=0
+          for want in THIRD-PARTY-NOTICES.md LICENSES/ISC-lucide.txt LICENSES/MIT-lobe-icons.txt; do
+            printf '%s\n' "$listing" | grep -qF "assets/notices/$want" \
+              || { echo "APK 里缺少 assets/notices/$want：第三方声明没进包（D106）" >&2; missing=1; }
+          done
+          if [ "$missing" -ne 0 ]; then
+            # 失败时把 assets 下到底有什么全打出来：上次就是因为文件放错了层级，
+            # 只看"缺哪个"不知道它其实在 assets/ 根上。
+            echo "--- APK 里 assets/ 的全部内容" >&2
+            unzip -l "$apk" | grep -E 'assets/' >&2 || echo "（assets 下一个文件都没有）" >&2
+            exit 1
+          fi
+          echo "声明齐全：$(printf '%s\n' "$listing" | grep -cE 'assets/notices/.+\..+') 个文件"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmoi-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
