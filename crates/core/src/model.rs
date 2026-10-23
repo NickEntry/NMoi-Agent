@@ -690,8 +690,10 @@ mod tests {
         let aliased = registry().resolve("DeepSeek-V4.1-Flash", ProviderKind::OpenAiCompatible);
         assert_eq!(aliased.matched_by, MatchSource::Alias);
         assert_eq!(aliased.profile.context_window, 1_000_000);
-        let prefixed =
-            registry().resolve("relay-b/DeepSeek-V4.1-Flash", ProviderKind::OpenAiCompatible);
+        let prefixed = registry().resolve(
+            "relay-b/DeepSeek-V4.1-Flash",
+            ProviderKind::OpenAiCompatible,
+        );
         assert!(prefixed.raw_id.contains("relay-b"));
     }
 
