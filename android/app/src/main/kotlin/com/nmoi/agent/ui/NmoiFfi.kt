@@ -42,6 +42,10 @@ internal object NmoiFfi {
     /** C ABI 里 `limit ≤ 0` 就是默认值（上限 200），对齐着写。 */
     const val DEFAULT_LIST_LIMIT = 200
 
+    /** 读会话的原子单元。limit ≤ 0 = 全给；首屏给 80 就够，翻页等接上再说。 */
+    suspend fun loadUnits(handle: Long, session: String, limit: Long = 80L): Result<JSONObject> =
+        call("load_units") { NativeBridge.loadUnitsJson(handle, session, limit) }
+
     suspend fun settingsList(
         handle: Long,
         scope: SettingsScope,

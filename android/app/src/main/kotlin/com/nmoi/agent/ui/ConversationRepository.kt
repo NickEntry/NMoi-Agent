@@ -87,6 +87,7 @@ internal object ConversationRepository {
             val item = items.optJSONObject(index) ?: continue
             add(
                 ConversationRow(
+                    id = item.optString("id", ""),
                     title = item.optString("title", "（无标题）"),
                     preview = item.optString("last_text", ""),
                     // model 是 D101 新加的那一列：NULL = 这个会话还没跑过。

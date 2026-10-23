@@ -35,7 +35,7 @@ internal fun ConversationListScreen(
     snapshot: ConversationSnapshot?,
     nativeStatus: NativeStatus,
     onOpenDrawer: () -> Unit,
-    onOpenConversation: (String) -> Unit,
+    onOpenConversation: (ConversationRow) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -75,7 +75,7 @@ internal fun ConversationListScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(snapshot.rows) { row ->
-                        ConversationCard(row, onClick = { onOpenConversation(row.title) })
+                        ConversationCard(row, onClick = { onOpenConversation(row) })
                     }
                 }
             }

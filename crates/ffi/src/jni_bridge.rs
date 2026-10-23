@@ -305,3 +305,36 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteSettingsJson<'l
     });
     to_jstring(&mut env, text)
 }
+
+/// `Native.loadUnitsJson(handle, session, limit)`：读会话的原子单元（消息区的数据源）。
+///
+/// 这一层不解释单元里有什么：`kind`（`turn` / `tool_pair`）、`source`
+/// （`model_thinking` / `tool_call` / `tool_result` …）、`broken` 都是 core 与 storage
+/// 已经定好的词，Kotlin 侧照词渲染即可。**在客户端再判一次"什么算思考"只会多一套规矩。**
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_loadUnitsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    limit: jlong,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => {
+            let Ok(c_session) = CString::new(session) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `session` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_load_units_json(
+                handle as u64,
+                c_session.as_ptr(),
+                limit,
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

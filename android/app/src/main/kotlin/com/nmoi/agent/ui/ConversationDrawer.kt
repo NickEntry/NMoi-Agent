@@ -53,7 +53,7 @@ internal fun ConversationDrawer(
     rows: List<ConversationRow>,
     currentTitle: String? = null,
     onOpen: () -> Unit,
-    onOpenConversation: (String) -> Unit,
+    onOpenConversation: (ConversationRow) -> Unit,
     onOpenSettings: () -> Unit,
     onClose: () -> Unit,
     content: @Composable () -> Unit,
@@ -144,7 +144,7 @@ internal fun ConversationDrawer(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier
-                                    .clickable { onOpenConversation(row.title) }
+                                    .clickable { onOpenConversation(row) }
                                     .padding(horizontal = 20.dp, vertical = 14.dp),
                             )
                         }

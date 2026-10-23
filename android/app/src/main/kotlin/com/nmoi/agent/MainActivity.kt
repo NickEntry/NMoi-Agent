@@ -40,8 +40,8 @@ import java.io.File
 private sealed interface Route {
     data object Conversations : Route
 
-    /** 只带标题，等 load_units 接上再带会话 id。 */
-    data class Chat(val title: String) : Route
+    /** 标题给顶栏，`sessionId` 给 `load_units`；占位数据没有 id，所以可空。 */
+    data class Chat(val title: String, val sessionId: String?) : Route
 
     /** 设置索引页：六行分组入口，本身不摆开关。 */
     data object Settings : Route
@@ -116,7 +116,10 @@ class MainActivity : ComponentActivity() {
                     onOpen = { drawerOpen = true },
                     onOpenConversation = { picked ->
                         drawerOpen = false
-                        backStack = listOf(Route.Conversations, Route.Chat(picked))
+                        backStack = listOf(
+                            Route.Conversations,
+                            Route.Chat(picked.title, picked.id.ifEmpty { null }),
+                        )
                     },
                     onOpenSettings = {
                         drawerOpen = false
@@ -129,11 +132,14 @@ class MainActivity : ComponentActivity() {
                         snapshot = snapshot,
                         nativeStatus = nativeStatus,
                         onOpenDrawer = { drawerOpen = true },
-                        onOpenConversation = { title -> backStack = backStack + Route.Chat(title) },
+                        onOpenConversation = { row ->
+                            backStack = backStack + Route.Chat(row.title, row.id.ifEmpty { null })
+                        },
                     )
 
                     is Route.Chat -> ChatScreen(
                         title = route.title,
+                        sessionId = route.sessionId,
                         onBack = { backStack = backStack.dropLast(1) },
                         onOpenDrawer = { drawerOpen = true },
                     )

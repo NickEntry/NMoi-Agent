@@ -4,96 +4,347 @@ import android.os.Build
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
- * 聊天页（PLAN §3.12 第一版）：顶栏 + 消息区 + 输入岛，会话列表收进左侧抽屉。
+ * 聊天页（PLAN §3.12）：顶栏 + 消息区 + 输入岛，会话列表收进左侧抽屉。
  *
- * 顶栏顺序：返回箭头 → 标题 → 菜单（打开抽屉）。返回和抽屉是两件事：
- * 返回是"退出这一页回列表"，抽屉是"就地换一个会话"，所以两个都留着。
+ * 消息区现在**读真数据**了（`load_units` → `ChatRepository`）。渲染的规矩只有一条：
+ * **按 core 给的词渲染**——`source` 是 `model_thinking` 就折成思考块，是 `tool_call` /
+ * `tool_result` 就进工具卡，`broken` 有值就显示声明行。不在客户端重新判断"什么算思考"。
  *
- * 返回键的两层：这一页里抽屉开着时，返回先关抽屉（注册在本页，
- * 比 MainActivity 那个后注册，Compose 的 BackHandler 是后注册者优先）。
+ * 返回键的两层：抽屉开着时返回先关抽屉（本页注册得更晚，Compose 的 `BackHandler` 后注册者优先）。
  */
 @Composable
 internal fun ChatScreen(
     title: String,
+    sessionId: String?,
     onBack: () -> Unit,
     onOpenDrawer: () -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    // 读单元要开库、读盘，不许在主线程上做。
+    val snapshot by produceState<ChatSnapshot?>(initialValue = null, sessionId) {
+        value = if (sessionId == null) {
+            ChatSnapshot(
+                page = null,
+                source = RowSource.Placeholder,
+                note = "这一行是占位数据，没有会话 id 可读",
+            )
+        } else {
+            withContext(Dispatchers.IO) {
+                ChatRepository.load(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
+            }
+        }
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BackButton(onBack = onBack)
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier.weight(1f).padding(start = 4.dp),
-                        maxLines = 1,
-                    )
-                    // 抽屉入口：图标按钮，48dp 热区 / 22dp 视觉（D103）。
-                    MenuButton(onClick = onOpenDrawer)
-                }
-
-                MessageArea(modifier = Modifier.weight(1f))
-                Composer(
-                    draft = draft,
-                    onDraftChange = { draft = it },
-                    onSend = { /* 未接线：nmoi_turn_run_json 还没接进 Kotlin 侧 */ },
-                    sendEnabled = false,
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BackButton(onBack = onBack)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                    maxLines = 1,
                 )
+                // 抽屉入口：图标按钮，48dp 热区 / 22dp 视觉（D103）。
+                MenuButton(onClick = onOpenDrawer)
             }
+
+            MessageArea(snapshot = snapshot, modifier = Modifier.weight(1f))
+            Composer(
+                draft = draft,
+                onDraftChange = { draft = it },
+                onSend = { /* 未接线：nmoi_turn_run_json 还没接进 Kotlin 侧 */ },
+                sendEnabled = false,
+            )
+        }
     }
 }
 
 /**
- * 消息区。现在只有空状态——库里的消息单元还没接线（`load_units`）。
+ * 消息区。
  *
- * 空状态必须说清"为什么是空的"：这里不是"没有对话"，是"读不出来"。
- * 一片黑和一句"还没有消息"是两种完全不同的信息。
+ * 三种状态必须说清是哪一种，不能都是"一片空"：
+ * ① 读不出来（`page == null`）——附原因；② 读到了但一条没有——"这个会话还空着"；
+ * ③ 有内容——按单元渲染，顶部说明"上面还有更早的"。
  */
 @Composable
-private fun MessageArea(modifier: Modifier = Modifier) {
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun MessageArea(snapshot: ChatSnapshot?, modifier: Modifier = Modifier) {
+    val page = snapshot?.page
+    if (page == null || page.isEmpty) {
+        Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = if (page == null) "这一段历史还没被读出来" else "这个会话还空着",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val note = snapshot?.note
+                if (note != null) {
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp),
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    val listState = rememberLazyListState()
+    val headerCount = if (page.truncated) 1 else 0
+
+    // 打开会话应当看到最新的一条，而不是最早的一条。
+    LaunchedEffect(page.units.size, page.truncated) {
+        val target = headerCount + page.units.lastIndex
+        if (target >= 0) listState.scrollToItem(target)
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (page.truncated) {
+            item {
+                Text(
+                    text = "上面还有更早的消息：共 ${page.total} 个单元，这里只读了最后 ${page.units.size} 个",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                )
+            }
+        }
+        items(page.units) { unit -> UnitBlock(unit) }
+    }
+}
+
+/** 一个原子单元：`turn`（一条文本）或 `tool_pair`（assistant(tool_calls) + 全部 tool_result）。 */
+@Composable
+private fun UnitBlock(unit: ChatUnit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val broken = unit.broken
+        if (broken != null) {
+            BrokenCard(declaration = broken.declaration, reason = broken.reason)
+        }
+        if (unit.isToolPair) {
+            ToolPairCard(unit)
+        } else {
+            unit.messages.forEach { message -> MessageRow(message) }
+        }
+    }
+}
+
+@Composable
+private fun MessageRow(message: ChatMessage) {
+    when {
+        message.isThinking -> ThinkingBlock(message)
+        message.isUser -> Bubble(text = message.content, mine = true, incomplete = message.incomplete)
+        else -> Bubble(text = message.content, mine = false, incomplete = message.incomplete)
+    }
+}
+
+/**
+ * 说话气泡。用户靠右、助手靠左——这是聊天界面最不需要解释的一条。
+ *
+ * 助手消息**不铺满整行**（`fillMaxWidth(0.98f)` 只是防止超长行贴边），
+ * 长文本靠换行，不做"卡片里再套卡片"。
+ */
+@Composable
+private fun Bubble(text: String, mine: Boolean, incomplete: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(if (mine) 16.dp else 12.dp),
+            color = if (mine) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+            modifier = Modifier.fillMaxWidth(if (mine) 0.86f else 0.98f),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                Text(
+                    text = text.ifEmpty { "（空消息）" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                if (incomplete) {
+                    // 「未完成」不是错误：这一轮被中断了，界面要说清，别让它看着像正常回复。
+                    Text(
+                        text = "未完成 · 这一轮被中断",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 思考块：**默认收起**，只显示"思考 · N 字"。展开看全文。
+ *
+ * 收起是刻意的：思考通常很长，默认铺开会把真正的回答挤到屏幕外。
+ */
+@Composable
+private fun ThinkingBlock(message: ChatMessage) {
+    var expanded by remember(message.id) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        modifier = Modifier
+            .fillMaxWidth(0.98f)
+            .clickable { expanded = !expanded },
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
             Text(
-                text = "这一段历史还没被读出来",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = if (expanded) {
+                    "思考（点一下收起）"
+                } else {
+                    "思考 · ${message.content.length} 字（点一下展开）"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
             )
             Text(
-                text = "消息区要等 load_units 接线（PLAN 0.16）",
+                text = message.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (expanded) Int.MAX_VALUE else 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 工具调用单元：一张折叠卡。标题给"调用 N 次 / 结果 M 条"，
+ * 展开后按消息列出（调用参数与结果原文，等宽字体）。
+ *
+ * 为什么不逐条做成气泡：工具往返是**一条逻辑**——把参数和结果拆到两条气泡里，
+ * 读的人要在两屏之间来回对 id。
+ */
+@Composable
+private fun ToolPairCard(unit: ChatUnit) {
+    var expanded by remember(unit.id) { mutableStateOf(false) }
+    val calls = unit.messages.count { it.isToolCall || it.toolCalls > 0 }
+    val results = unit.messages.count { it.isToolResult }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier
+            .fillMaxWidth(0.98f)
+            .clickable { expanded = !expanded },
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Text(
+                text = buildString {
+                    append("工具调用")
+                    if (calls > 0) append(" × $calls")
+                    if (results > 0) append(" · 结果 $results 条")
+                    if (!unit.closed) append(" · 未收全")
+                    append(if (expanded) "（点一下收起）" else "（点一下展开）")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (expanded) {
+                unit.messages.forEach { message ->
+                    Text(
+                        text = buildString {
+                            append(if (message.isToolResult) "← 结果" else "→ 调用")
+                            val id = message.toolCallId
+                            if (id != null) append(" [$id]")
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Text(
+                        text = message.content.ifEmpty { "（空）" },
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 断块（P4.1 / D67）：声明行由 core 给，UI 不自己拼。 */
+@Composable
+private fun BrokenCard(declaration: String, reason: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+        modifier = Modifier.fillMaxWidth(0.98f),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Text(
+                text = declaration,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Text(
+                text = reason,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
             )
         }
     }
