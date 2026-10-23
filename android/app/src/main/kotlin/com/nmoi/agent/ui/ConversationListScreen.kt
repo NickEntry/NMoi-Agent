@@ -87,21 +87,24 @@ internal fun ConversationListScreen(
 
 @Composable
 private fun Header(nativeStatus: NativeStatus, onOpenDrawer: () -> Unit) {
-    Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 8.dp)) {
+    // start 只留 4dp：菜单按钮自己带 48dp 热区，再多加内边距会把图标推到看着不对的位置。
+    Column(modifier = Modifier.padding(start = 4.dp, end = 16.dp, top = 24.dp, bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // 侧边栏入口**在左上角**（用户 2026-10-23 第二次提到）。
+            // 之前它在标题右边：`weight(1f)` 把标题撑满，按钮被推到了最右。
+            MenuButton(onClick = onOpenDrawer)
             Text(
                 text = "NMoi",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
-            // 侧边栏入口。设置已经收进抽屉，这里不再单独摆"设置"。
-            MenuButton(onClick = onOpenDrawer)
         }
         Text(
             text = "本地优先 · 骨架版 0.0.1-dev",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp),
         )
         // 实机验证先看这一行（docs/verification.md 的 V1）：
         //   `NMoi-Agent v… · abi 1`            → 通了
@@ -115,6 +118,7 @@ private fun Header(nativeStatus: NativeStatus, onOpenDrawer: () -> Unit) {
             } else {
                 MaterialTheme.colorScheme.error
             },
+            modifier = Modifier.padding(start = 12.dp),
         )
     }
 }

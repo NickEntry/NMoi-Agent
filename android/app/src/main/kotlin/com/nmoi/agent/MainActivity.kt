@@ -29,7 +29,9 @@ import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.theme.NMoiTheme
+import com.nmoi.agent.ui.theme.SystemBarsForTheme
 import com.nmoi.agent.ui.theme.ThemeStore
+import com.nmoi.agent.ui.theme.applySystemBars
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -66,11 +68,14 @@ class MainActivity : ComponentActivity() {
         // 日志开关必须在**第一行日志之前**就读到，所以放在最前。
         NLog.init(this)
         // 窗口底色跟着主题走：不设的话，强制浅色时冷启动那一帧是深色（一次明显的黑闪）。
+        val darkAtLaunch = ThemeStore.isDarkNow(this)
         window.setBackgroundDrawable(
             android.graphics.drawable.ColorDrawable(
-                if (ThemeStore.isDarkNow(this)) 0xFF101014.toInt() else 0xFFF7F7FA.toInt(),
+                if (darkAtLaunch) 0xFF101014.toInt() else 0xFFF7F7FA.toInt(),
             ),
         )
+        // 系统栏图标深浅也要在第一帧之前定好，否则会先闪一下白图标。
+        applySystemBars(window, lightBackground = !darkAtLaunch)
         // alias 启动时 componentName 是那个 alias，不是 MainActivity。
         // 这条日志同时回答两件事：入口是不是别名、现在生效的是哪一个图标。
         NLog.i("App", "启动入口：$componentName")
@@ -79,7 +84,10 @@ class MainActivity : ComponentActivity() {
             val context = LocalContext.current
             // 主题必须在第一帧之前定：跟随系统时要读当下的系统配置（用户切系统主题会触发重组）。
             var themeMode by remember { mutableStateOf(ThemeStore.load(context)) }
-            NMoiTheme(dark = ThemeStore.isDark(themeMode)) {
+            val dark = ThemeStore.isDark(themeMode)
+            // 主题运行中切换时，系统栏图标要跟着改（浅底配深图标）。
+            SystemBarsForTheme(dark)
+            NMoiTheme(dark = dark) {
                 // 路由栈：返回 = 回上一级。子页面以后（提示词编辑、模型详情…）同样只需 push，
                 // 不用每页各写一个返回逻辑。
                 var backStack by remember { mutableStateOf(listOf<Route>(Route.Conversations)) }

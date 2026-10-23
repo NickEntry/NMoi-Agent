@@ -88,6 +88,9 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.2")
+    // 显式声明 androidx.core（跟协程那条同一个理由）：`WindowCompat` 在这里，
+    // 状态栏图标深浅要靠它。现在编得过只是因为它被 activity-compose 顺带拖进来了。
+    implementation("androidx.core:core-ktx:1.13.1")
     // 显式声明协程：`Dispatchers.IO` 现在只靠 Compose 的传递依赖能编过，
     // 哪天上游把这条依赖挪走，编译会在一个很奇怪的地方断掉。
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
