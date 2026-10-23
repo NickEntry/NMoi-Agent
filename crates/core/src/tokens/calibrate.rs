@@ -134,11 +134,11 @@ mod tests {
 
     #[test]
     fn key_round_trip() {
-        let cal = Calibration::new("relay-a/DeepSeek-V4-Flash", Level::L0, Class::Mixed, 7);
-        assert_eq!(cal.key(), "relay-a/DeepSeek-V4-Flash|l0|mixed");
+        let cal = Calibration::new("vendor/model-a", Level::L0, Class::Mixed, 7);
+        assert_eq!(cal.key(), "vendor/model-a|l0|mixed");
         assert_eq!(
             parse_key(&cal.key()),
-            Some(("relay-a/DeepSeek-V4-Flash", Level::L0, Class::Mixed))
+            Some(("vendor/model-a", Level::L0, Class::Mixed))
         );
     }
 

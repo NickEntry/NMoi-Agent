@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn uncalibrated_estimate_carries_the_safety_factor_only_in_budgeted() {
-        let estimator = Estimator::new("relay-a/DeepSeek-V4-Flash", &[]);
+        let estimator = Estimator::new("vendor/model-a", &[]);
         let estimate = estimator.estimate("hello world");
         assert!(!estimate.calibrated);
         assert!((estimate.factor - 1.0).abs() < 1e-9);

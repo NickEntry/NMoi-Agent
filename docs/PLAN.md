@@ -440,7 +440,7 @@ F1 只给"存/读/工具"这些立即返回的调用；真正让 UI 有东西可
   "provider": {
     "id": "local",
     "kind": "openai_compatible",   // 或 openai_responses / anthropic / gemini
-    "base_url": "http://127.0.0.1:8790/v1",
+    "base_url": "http://127.0.0.1:<端口>/v1",
     "api_key": null                // 只在这一层出现，不回显、不进日志
   },
   "model": "…",

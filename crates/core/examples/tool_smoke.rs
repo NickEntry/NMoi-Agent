@@ -1,7 +1,7 @@
 //! 真机冒烟：让模型真的用工具读写一个临时工作区（P7）。
 //!
 //! ```bash
-//! NMOI_SMOKE_MODEL="relay-b/DeepSeek-V4.1-Flash" \
+//! NMOI_SMOKE_BASE="<你的端点>/v1" NMOI_SMOKE_MODEL="<你的模型>" \
 //!   cargo run -q -p nmoi-core --example tool_smoke
 //! ```
 //!
@@ -40,8 +40,16 @@ fn kind_from_env() -> Result<ProviderKind, String> {
 }
 
 fn main() -> ExitCode {
-    let base =
-        std::env::var("NMOI_SMOKE_BASE").unwrap_or_else(|_| "http://127.0.0.1:8790/v1".into());
+    // 端点**不写死在仓库里**：谁要打哪个地址由调用时给（带 /v1 这种版本段）。
+    let base = match std::env::var("NMOI_SMOKE_BASE") {
+        Ok(base) if !base.trim().is_empty() => base,
+        _ => {
+            eprintln!(
+                "缺少 NMOI_SMOKE_BASE（仓库里不写端点地址：填你实际要打的那个，带 /v1 这类版本段）"
+            );
+            return ExitCode::from(2);
+        }
+    };
     let model = match std::env::var("NMOI_SMOKE_MODEL") {
         Ok(model) if !model.trim().is_empty() => model,
         _ => {

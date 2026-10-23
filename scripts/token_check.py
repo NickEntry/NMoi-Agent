@@ -2,7 +2,7 @@
 """token 估算对账（D91）：把同一段文本发给真端点，比对 usage.prompt_tokens。
 
 用法：
-    python3 scripts/token_check.py [--base URL] [--model M] [--sizes 1000,10000]
+    python3 scripts/token_check.py --base URL --model M [--sizes 1000,10000]
 
 做三件小事：
 1. 造三段固定文本（纯 ASCII / 纯中文 / 中英混排），长度按 --sizes 给；
@@ -123,8 +123,9 @@ def estimates(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", default="http://127.0.0.1:8790/v1")
-    parser.add_argument("--model", default="relay-a/DeepSeek-V4-Flash")
+    # 端点和模型都不给默认值：仓库里不留真实地址与标识，谁跑谁传。
+    parser.add_argument("--base", required=True, help="带 /v1 这类版本段的端点地址")
+    parser.add_argument("--model", required=True, help="要打的那个模型名")
     parser.add_argument("--sizes", default="1000,10000")
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()

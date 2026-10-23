@@ -499,18 +499,18 @@ fn conversation_model_is_null_until_set_and_survives_reopen() {
         assert_eq!(storage.conversation_model(session).unwrap(), None);
 
         storage
-            .set_conversation_model(session, "relay-a/DeepSeek-V4-Flash")
+            .set_conversation_model(session, "vendor/model-a")
             .unwrap();
         assert_eq!(
             storage.conversation_model(session).unwrap().as_deref(),
-            Some("relay-a/DeepSeek-V4-Flash")
+            Some("vendor/model-a")
         );
 
         let page = storage.list_conversations(10, 0).unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(
             page.items[0].model.as_deref(),
-            Some("relay-a/DeepSeek-V4-Flash"),
+            Some("vendor/model-a"),
             "列表页要带上模型名，UI 会话头直接用"
         );
         session
@@ -520,7 +520,7 @@ fn conversation_model_is_null_until_set_and_survives_reopen() {
     let storage = ready(&path);
     assert_eq!(
         storage.conversation_model(session).unwrap().as_deref(),
-        Some("relay-a/DeepSeek-V4-Flash")
+        Some("vendor/model-a")
     );
 }
 

@@ -903,7 +903,7 @@ fn openai_body(request: &ChatRequest) -> Result<Value, ChatError> {
         "messages": messages,
         "stream": request.stream,
     });
-    // 流式 usage 要显式要：OpenAI 系默认不发，实测 relay-b 有、relay-c 怎么逼都没有。
+    // 流式 usage 要显式要：OpenAI 系默认不发，实测有的端点给、有的怎么逼都不给。
     // 非流式不需要它（usage 无条件带回来）。
     if request.stream && request.provider.capabilities.streaming_usage {
         body["stream_options"] = json!({"include_usage": true});
@@ -2062,7 +2062,7 @@ mod tests {
 
     fn chat_request() -> ChatRequest {
         let session = SessionId::new();
-        request_with(ProviderKind::OpenAiCompatible, "http://127.0.0.1:8790/v1")
+        request_with(ProviderKind::OpenAiCompatible, "http://127.0.0.1:8080/v1")
             .messages(vec![message(session, 1, Role::User, "1+1=?")])
             .api_key("sk-test")
     }
@@ -2071,7 +2071,7 @@ mod tests {
     fn streaming_call_turns_raw_sse_into_normalized_events() {
         // 逐字对齐真实端点的帧形状（含 content:"" 与 reasoning_content 并存）
         let raw = concat!(
-            "data: {\"id\":\"c1\",\"model\":\"deepseek-flash\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
+            "data: {\"id\":\"c1\",\"model\":\"m-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"We\",\"content\":\"\"}}]}\n\n",
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"2\"}}]}\n\n",
             "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":31,\"completion_tokens\":8,\"completion_tokens_details\":{\"reasoning_tokens\":8}}}\n\n",
@@ -2088,7 +2088,7 @@ mod tests {
 
         assert!(events.iter().any(|event| matches!(
             event,
-            StreamEvent::Meta { model: Some(model), .. } if model == "deepseek-flash"
+            StreamEvent::Meta { model: Some(model), .. } if model == "m-1"
         )));
         assert_eq!(
             events
@@ -2118,7 +2118,7 @@ mod tests {
         assert!(stream.next_event().unwrap().is_none());
 
         let sent = client.transport().last_request();
-        assert_eq!(sent.url, "http://127.0.0.1:8790/v1/chat/completions");
+        assert_eq!(sent.url, "http://127.0.0.1:8080/v1/chat/completions");
         assert!(sent
             .headers
             .iter()

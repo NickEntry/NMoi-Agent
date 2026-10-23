@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! cargo run -q -p nmoi-core --example token_estimate -- /tmp/a.txt /tmp/b.txt
+//! # 不给 --model 时按 o200k 估，输出里写明"未指定"
 //! cargo run -q -p nmoi-core --example token_estimate -- --model gpt-4 /tmp/a.txt
 //! # 输出：路径 \t 字符数 \t 估算 token \t 级别 \t 内容类
 //! ```
@@ -16,7 +17,8 @@ use std::env;
 use nmoi_core::tokens::Estimator;
 
 fn main() {
-    let mut model = String::from("relay-a/DeepSeek-V4-Flash");
+    // 不给默认模型名：仓库里不留真实标识。不给 `--model` 时按默认词表（o200k）估，输出里会写明。
+    let mut model = String::new();
     let mut paths: Vec<String> = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {

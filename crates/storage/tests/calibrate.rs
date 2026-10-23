@@ -32,7 +32,7 @@ fn calibration(model: &str, level: Level, class: Class, ratio: f64, samples: u32
 #[test]
 fn round_trip_by_model_and_bucket() {
     let (_dir, storage) = temp();
-    let cal = calibration("relay-a/DeepSeek-V4-Flash", Level::L1, Class::Cjk, 0.95, 4);
+    let cal = calibration("vendor/model-a", Level::L1, Class::Cjk, 0.95, 4);
     storage.put_calibration(&cal, 10).expect("put");
 
     // L1 也按内容类分桶：中文的因子不能拿去套英文。
@@ -41,7 +41,7 @@ fn round_trip_by_model_and_bucket() {
         .unwrap()
         .expect("读回来");
     assert_eq!(back, cal);
-    assert_eq!(back.key(), "relay-a/DeepSeek-V4-Flash|l1|cjk");
+    assert_eq!(back.key(), "vendor/model-a|l1|cjk");
     // 取别的类取不到——这正是分桶的意义。
     assert!(storage
         .get_calibration(&cal.model, Level::L1, Class::Ascii, 11)

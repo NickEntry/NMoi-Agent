@@ -610,7 +610,7 @@ mod tests {
         let mut provider = ProviderConfig::new(
             "local",
             ProviderKind::OpenAiCompatible,
-            "http://127.0.0.1:8790/v1",
+            "http://127.0.0.1:8080/v1",
         );
         provider.capabilities = ProviderCapabilities::openai_like();
         provider

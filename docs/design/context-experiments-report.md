@@ -23,7 +23,7 @@
 
 
 ```
-BASE = http://127.0.0.1:8790/v1
+BASE = http://127.0.0.1:<端口>/v1
 ```
 
 本机代理端点，69 个模型别名，四个 provider 前缀：`relay-a/`、`relay-b/`、`relay-c/`、`local/`。只实现 `/v1/chat/completions`；`/v1/completions`、`/v1/responses`、`/v1/model/info`、`/health` 全部 404。

@@ -8,7 +8,7 @@
 #   unknown   —— 端点回了些看不懂的东西（401 鉴权、429 限流、5xx）→ 这一行等于"没测"
 #
 # 用法：
-#   scripts/modality_probe.sh --base http://127.0.0.1:8790/v1 --model <model> [--key K]
+#   scripts/modality_probe.sh --base <你的端点>/v1 --model <model> [--key K]
 #                             [--image a.png] [--video a.mp4] [--audio a.mp3] [--pdf a.pdf]
 #
 # 没给素材的模态会被标成"未测"——**不会**用"应该支持"填上去。

@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(vocab_for_model("o3-mini"), Vocab::O200k);
         assert_eq!(vocab_for_model("openai/o1"), Vocab::O200k);
         // 中文各家与认不出的名字 → 兜底 o200k。
-        assert_eq!(vocab_for_model("relay-a/DeepSeek-V4-Flash"), Vocab::O200k);
+        assert_eq!(vocab_for_model("vendor/model-a"), Vocab::O200k);
         assert_eq!(vocab_for_model("自定义模型"), Vocab::O200k);
     }
 

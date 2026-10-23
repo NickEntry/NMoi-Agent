@@ -245,7 +245,7 @@ char *nmoi_tool_invoke_json(uint64_t workspace_handle, const char *name, const c
  *   {
  *     "storage": 1, "session": "018f…", "workspace": 2, "read_only_workspace": false,
  *     "provider": {"id": "local", "kind": "openai_compatible",
- *                  "base_url": "http://127.0.0.1:8790/v1", "api_key": null},
+ *                  "base_url": "https://api.example.com/v1", "api_key": null},
  *     "model": "…", "user_text": "…", "now_ms": 1700000000000,
  *     "max_rounds": 12, "max_tokens": 16384, "temperature": null,
  *     "budget": {"window": 128000, "reserve_output": 8192}, "avg_per_turn": null

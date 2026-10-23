@@ -985,7 +985,7 @@ mod tests {
             "None 就该信库里的数"
         );
 
-        let estimator = Estimator::new("relay-a/DeepSeek-V4-Flash", &[]);
+        let estimator = Estimator::new("vendor/model-a", &[]);
         let counted = breakdown_of_units(std::slice::from_ref(&unit), Some(&estimator));
         let expected = estimator
             .estimate_all(["the quick brown fox jumps over a lazy dog", "先想一想"])

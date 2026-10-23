@@ -163,7 +163,7 @@ def normalize_effort(value: str) -> str | None:
 
 
 def is_native_source(provider_id: str, family: str) -> bool:
-    """这条数据是不是"模型厂商自己"给的？（如 provider=deepseek 且 family=deepseek-flash）"""
+    """这条数据是不是"模型厂商自己"给的？（如 provider=某厂商 且 family=该厂商的模型族）"""
     provider = provider_id.strip().lower()
     family = family.lower()
     if family.startswith(provider):

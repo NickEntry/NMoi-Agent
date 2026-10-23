@@ -167,7 +167,7 @@ mod tests {
         };
         let profile = model_profile();
         TurnPlan::freeze(Freeze {
-            model: "relay-b/DeepSeek-V4.1-Flash",
+            model: "vendor/model-b",
             profile: &profile,
             overrides,
             context: ThinkingContext::new(
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn freezing_keeps_the_model_id_and_the_effective_window() {
         let frozen = plan(None);
-        assert_eq!(frozen.model, "relay-b/DeepSeek-V4.1-Flash");
+        assert_eq!(frozen.model, "vendor/model-b");
         assert_eq!(frozen.context_window(), 131_072);
         assert_eq!(frozen.max_output(), 8_192);
         // 本地工具关着，所以内置工具一个都不声明（工作区工具照旧）
@@ -226,7 +226,7 @@ mod tests {
         );
         let mut request = request;
         frozen.apply(&mut request);
-        assert_eq!(request.model, "relay-b/DeepSeek-V4.1-Flash");
+        assert_eq!(request.model, "vendor/model-b");
     }
 
     /// 档位这个模型没有：这次不发，但冻结里记着"为什么没发"。

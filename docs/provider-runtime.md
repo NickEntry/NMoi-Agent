@@ -26,7 +26,7 @@ ChatRequest ──build_body──► Value ──PlainHttpTransport──► �
 
 ---
 
-## 1. 真机实测（本机代理 `http://127.0.0.1:8790/v1`）
+## 1. 真机实测（本机代理 `http://127.0.0.1:<端口>/v1`）
 
 > **脱敏约定（2026-10-23）**：本文里的实测端点都是**本机的一个第三方中转**，它和上游各家的真实别名一律不写进仓库，统一记为 `relay-a/` `relay-b/` `relay-c/` `local/`（映射只在本机笔记里）。数字、延迟、token 数都是原始实测值，**没有因为脱敏改动过任何一个数**；要复核就照同样的请求体打同样的端点，结论不依赖它叫什么名字。
 
@@ -40,7 +40,7 @@ NMOI_SMOKE_PROMPT="只回两个字：喵喵。不要解释。" \
 2026-10-20 的结果：
 
 ```
-→ http://127.0.0.1:8790/v1 relay-b/DeepSeek-V4.1-Flash (kind=openai_compatible)
+→ http://127.0.0.1:<端口>/v1 relay-b/DeepSeek-V4.1-Flash (kind=openai_compatible)
 [meta] id=Some("02179250611903731c26a7cf9ea611aa30972127acb8017c9592e") model=Some("DeepSeek-V4.1-Flash")
 [usage] prompt=40 completion=60 cached=0 reasoning=57
 喵喵

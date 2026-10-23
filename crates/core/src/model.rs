@@ -686,15 +686,13 @@ mod tests {
 
     #[test]
     fn mid_string_version_is_covered_by_alias() {
-        // provider 前缀（relay-b/）会参与归一化，所以别名要连前缀一起写
+        // provider 前缀（`vendor/` 这种）会参与归一化，所以别名要连前缀一起写
         let aliased = registry().resolve("DeepSeek-V4.1-Flash", ProviderKind::OpenAiCompatible);
         assert_eq!(aliased.matched_by, MatchSource::Alias);
         assert_eq!(aliased.profile.context_window, 1_000_000);
-        let prefixed = registry().resolve(
-            "relay-b/DeepSeek-V4.1-Flash",
-            ProviderKind::OpenAiCompatible,
-        );
-        assert!(prefixed.raw_id.contains("relay-b"));
+        let prefixed =
+            registry().resolve("vendor/DeepSeek-V4.1-Flash", ProviderKind::OpenAiCompatible);
+        assert!(prefixed.raw_id.contains("vendor/"));
     }
 
     #[test]

@@ -3,11 +3,11 @@
 //! 这不是测试，是一次可复现的端到端验证——CI 上没有可达的 LLM 端点。
 //!
 //! ```bash
-//! NMOI_SMOKE_MODEL="relay-b/DeepSeek-V4.1-Flash" \
+//! NMOI_SMOKE_BASE="<你的端点>/v1" NMOI_SMOKE_MODEL="<你的模型>" \
 //!   cargo run -q -p nmoi-core --example compress_smoke
 //! ```
 //!
-//! 环境变量：`NMOI_SMOKE_BASE`（默认本机代理）、`NMOI_SMOKE_MODEL`（必填）、
+//! 环境变量：`NMOI_SMOKE_BASE`（必填）、`NMOI_SMOKE_MODEL`（必填）、
 //! `NMOI_SMOKE_KIND`、`NMOI_SMOKE_KEY`、`NMOI_SMOKE_KEEP`（保留多少 token 在窗口里，默认 300）。
 
 use std::process::ExitCode;
@@ -112,8 +112,16 @@ fn history(session: SessionId) -> Vec<AtomicUnit> {
 }
 
 fn main() -> ExitCode {
-    let base =
-        std::env::var("NMOI_SMOKE_BASE").unwrap_or_else(|_| "http://127.0.0.1:8790/v1".into());
+    // 端点**不写死在仓库里**：谁要打哪个地址由调用时给（带 /v1 这种版本段）。
+    let base = match std::env::var("NMOI_SMOKE_BASE") {
+        Ok(base) if !base.trim().is_empty() => base,
+        _ => {
+            eprintln!(
+                "缺少 NMOI_SMOKE_BASE（仓库里不写端点地址：填你实际要打的那个，带 /v1 这类版本段）"
+            );
+            return ExitCode::from(2);
+        }
+    };
     let model = match std::env::var("NMOI_SMOKE_MODEL") {
         Ok(model) if !model.trim().is_empty() => model,
         _ => {

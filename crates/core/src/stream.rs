@@ -1185,7 +1185,7 @@ fn int_field(value: &Value, key: &str) -> u32 {
 }
 
 fn openai_usage(usage: &Value) -> Usage {
-    // relay-a 这类别名在 chat/completions 上回的是 Anthropic 风格字段
+    // 有的中转在 chat/completions 上回的是 Anthropic 风格字段
     // （cache_read_input_tokens / reasoning_tokens），实测见 docs/provider-runtime.md。
     let cached = usage
         .get("prompt_tokens_details")
@@ -1291,13 +1291,13 @@ mod tests {
 
     #[test]
     fn openai_delta_carries_text_and_reasoning_separately() {
-        // 真实抓到的帧（relay-c/deepseek-flash，本机代理）
+        // 真实抓到的帧（某中转端点，本机代理）
         let mut parser = StreamParser::new(ProviderKind::OpenAiCompatible);
         let events = drain(
             &mut parser,
             &[
                 frame(
-                    json!({"id":"chatcmpl-804992c8746b4ad0b22f6aaa","object":"chat.completion.chunk","created":1792504437,"model":"deepseek-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}),
+                    json!({"id":"chatcmpl-804992c8746b4ad0b22f6aaa","object":"chat.completion.chunk","created":1792504437,"model":"m-1","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}),
                 ),
                 frame(
                     json!({"choices":[{"index":0,"delta":{"reasoning_content":"We","content":""}}]}),
@@ -1315,9 +1315,9 @@ mod tests {
 
         assert_eq!(reasonings(&events), "We need answer in");
         assert_eq!(texts(&events), "2");
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::Meta { model: Some(model), .. } if model == "deepseek-flash")));
+        assert!(events.iter().any(
+            |event| matches!(event, StreamEvent::Meta { model: Some(model), .. } if model == "m-1")
+        ));
         assert!(events.contains(&StreamEvent::Finish(FinishReason::Stop)));
         assert!(events.contains(&StreamEvent::Done));
         // 空 content 不该产出空 Text 事件
@@ -1372,7 +1372,7 @@ mod tests {
 
     #[test]
     fn openai_usage_is_read_from_the_final_chunk_including_anthropic_style_fields() {
-        // 真实抓到的 usage（relay-b/DeepSeek-V4.1-Flash）：prompt_tokens_details 是空对象，
+        // 真实抓到的 usage（某端点）：prompt_tokens_details 是空对象，
         // 且带一个非标准的 points_consumed —— 缺字段不能当成 0 以外的意思。
         let mut parser = StreamParser::new(ProviderKind::OpenAiCompatible);
         let events = drain(
@@ -1402,7 +1402,7 @@ mod tests {
             .iter()
             .any(|event| matches!(event, StreamEvent::Usage(_))));
 
-        // relay-a 风格：缓存字段用 Anthropic 的命名
+        // Anthropic 风格：缓存字段用 Anthropic 的命名
         let style = openai_usage(&json!({
             "prompt_tokens": 100,
             "completion_tokens": 5,
@@ -1862,7 +1862,7 @@ mod tests {
                 },
                 "finish_reason": "tool_calls"
             }],
-            // 真实 usage（relay-b）：prompt_tokens_details 是空对象
+            // 真实 usage（某端点）：prompt_tokens_details 是空对象
             "usage": {"prompt_tokens":31,"completion_tokens":8,"total_tokens":39,"prompt_tokens_details":{},"completion_tokens_details":{"reasoning_tokens":8}}
         });
         let completion = parse_complete(ProviderKind::OpenAiCompatible, &value).unwrap();

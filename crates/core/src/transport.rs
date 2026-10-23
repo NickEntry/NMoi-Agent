@@ -882,9 +882,9 @@ mod tests {
 
     #[test]
     fn url_parsing_covers_ports_ipv6_and_query() {
-        let url = Url::parse("http://127.0.0.1:8790/v1/chat/completions?debug=1").unwrap();
+        let url = Url::parse("http://127.0.0.1:8080/v1/chat/completions?debug=1").unwrap();
         assert_eq!(url.host, "127.0.0.1");
-        assert_eq!(url.port, 8790);
+        assert_eq!(url.port, 8080);
         assert_eq!(url.path, "/v1/chat/completions?debug=1");
 
         let url = Url::parse("http://example.com").unwrap();

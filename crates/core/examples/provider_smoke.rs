@@ -5,7 +5,7 @@
 //!
 //! ```bash
 //! # 本机代理（不需要 key）
-//! NMOI_SMOKE_MODEL="relay-b/DeepSeek-V4.1-Flash" \
+//! NMOI_SMOKE_BASE="<你的端点>/v1" NMOI_SMOKE_MODEL="<你的模型>" \
 //!   cargo run -p nmoi-core --example provider_smoke
 //!
 //! # 云端端点
@@ -18,7 +18,7 @@
 //!
 //! | 变量 | 默认 | 说明 |
 //! |---|---|---|
-//! | `NMOI_SMOKE_BASE` | `http://127.0.0.1:8790/v1` | 自带版本段（`/v1`、`/v1beta`） |
+//! | `NMOI_SMOKE_BASE` | 无，**必填** | 端点不写死在仓库里；要自带版本段（`/v1`、`/v1beta`） |
 //! | `NMOI_SMOKE_MODEL` | 无，**必填** | 故意不给默认值：打到哪个模型必须是你选的 |
 //! | `NMOI_SMOKE_KIND` | `openai_compatible` | `openai_compatible` / `openai_responses` / `anthropic` / `gemini` |
 //! | `NMOI_SMOKE_KEY` | 空 | 留空则不发鉴权头（本地端点不需要） |
@@ -47,8 +47,16 @@ fn kind_from_env() -> Result<ProviderKind, String> {
 }
 
 fn main() -> ExitCode {
-    let base =
-        std::env::var("NMOI_SMOKE_BASE").unwrap_or_else(|_| "http://127.0.0.1:8790/v1".into());
+    // 端点**不写死在仓库里**：谁要打哪个地址由调用时给（带 /v1 这种版本段）。
+    let base = match std::env::var("NMOI_SMOKE_BASE") {
+        Ok(base) if !base.trim().is_empty() => base,
+        _ => {
+            eprintln!(
+                "缺少 NMOI_SMOKE_BASE（仓库里不写端点地址：填你实际要打的那个，带 /v1 这类版本段）"
+            );
+            return ExitCode::from(2);
+        }
+    };
     let model = match std::env::var("NMOI_SMOKE_MODEL") {
         Ok(model) if !model.trim().is_empty() => model,
         // 不给默认模型：这一步会花掉真实配额，得是你点名的那一个
