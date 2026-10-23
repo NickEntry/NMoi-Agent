@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="nmoi_window_background">#FF0F1013</color>
+    <!-- 冷启动第一帧的底色（D120 之后要跟主题对得上，否则白光/黑光一闪）。
+         非 night 桶给浅色：默认模式是「跟随系统」，浅色系统上第一帧就该是浅的。 -->
+    <color name="nmoi_window_background">#FFF7F7FA</color>
+    <!-- 深色那一支单独列出来：强制深色 / night 桶 / 运行时改 window 背景都要用它。 -->
+    <color name="nmoi_window_background_dark">#FF101014</color>
 </resources>

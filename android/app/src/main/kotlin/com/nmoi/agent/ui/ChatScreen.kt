@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 
@@ -151,13 +152,16 @@ private fun NativeEditText(
     hint: String,
     modifier: Modifier = Modifier,
 ) {
+    // 文字色跟着主题走：写死深色主题的两支颜色，换到浅色就是"浅灰字压白底"，读不出来。
+    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
+    val hintColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     AndroidView(
         modifier = modifier.heightIn(min = 48.dp),
         factory = { context ->
             EditText(context).apply {
                 background = null
-                setTextColor(0xFFE8E6F2.toInt())
-                setHintTextColor(0xFF9C97AE.toInt())
+                setTextColor(textColor)
+                setHintTextColor(hintColor)
                 this.hint = hint
                 textSize = 16f
                 maxLines = 6
@@ -182,6 +186,10 @@ private fun NativeEditText(
             }
         },
         update = { editText ->
+            // factory 只跑一次：主题在运行中切换时，颜色要在这里跟上来，
+            // 否则从浅色切回深色，输入框还是白底黑字的旧色。
+            editText.setTextColor(textColor)
+            editText.setHintTextColor(hintColor)
             if (editText.text?.toString() != value) {
                 editText.setText(value)
                 editText.setSelection(value.length)

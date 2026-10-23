@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 系统是 night 时，第一帧用深色底：跟 ThemeMode.System 下的深色主题对上。 -->
+    <style name="Theme.NMoi" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/nmoi_window_background_dark</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

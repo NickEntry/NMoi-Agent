@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.nmoi.agent.ui.theme.ThemeMode
 
 /**
  * 外观子页：启动器图标（4 设计 × 黑/白底，D114）。
@@ -38,7 +39,9 @@ import androidx.compose.ui.unit.dp
 internal fun AppearanceScreen(
     choice: IconChoice,
     warning: String?,
+    themeMode: ThemeMode,
     onPick: (IconChoice) -> Unit,
+    onThemePick: (ThemeMode) -> Unit,
     onBack: () -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -57,6 +60,29 @@ internal fun AppearanceScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                // ---- 主题（D120）----
+                SectionLabel("主题")
+                Text(
+                    text = "「跟随系统」跟着手机的深/浅切换走，不用每天来手动点。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ThemeMode.entries.forEach { mode ->
+                        Chip(
+                            label = mode.label,
+                            selected = themeMode == mode,
+                            onClick = { onThemePick(mode) },
+                        )
+                    }
+                }
+
+                // ---- 启动器图标（D114）----
+                SectionLabel("启动器图标")
                 Text(
                     text = "切完部分桌面要过几秒才刷新，必要时重启桌面。",
                     style = MaterialTheme.typography.bodySmall,
@@ -112,10 +138,87 @@ internal fun AppearanceScreen(
                     text = "没有做 monochrome 层；白底是中心纯白→外圈淡银的径向渐变（drawable，不是 @color）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 24.dp),
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+                )
+
+                // ---- 背景（D122–D124，未实现）----
+                SectionLabel("聊天页背景")
+                Text(
+                    text = "纯色 / 图片 / 视频，「跟着当前助手走」：换助手就换背景。视频只用平台硬解，" +
+                        "换掉之后旧文件会被清掉。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Text(
+                    text = "待接 0.14d（先把「库存在哪、谁拥有、怎么清」定死再画）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+
+                // ---- 自定义主题：只留位（D121）----
+                SectionLabel("自定义主题")
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    // 三个色块只是"将来能改成什么样"的示意，不是当前配色；
+                    // 现在点不动，也不写"待接"以外的承诺。
+                    listOf(Color(0xFF101014), Color(0xFF1E1E26), Color(0xFF8AB4F8)).forEach { color ->
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(color),
+                        )
+                    }
+                    Text(
+                        text = "5 个颜色封顶（背景 / 卡片 / 主色 / 正文 / 次要文字）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+                Text(
+                    text = "待接：要先给 settings 加一个 appearance scope（D86 现在是四类）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 6.dp),
+    )
+}
+
+@Composable
+private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Surface(
+        shape = shape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        },
+        modifier = Modifier.clip(shape).clickable(onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+        )
     }
 }
 

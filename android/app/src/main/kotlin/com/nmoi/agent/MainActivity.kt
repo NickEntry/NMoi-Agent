@@ -29,6 +29,7 @@ import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.theme.NMoiTheme
+import com.nmoi.agent.ui.theme.ThemeStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -64,13 +65,21 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 日志开关必须在**第一行日志之前**就读到，所以放在最前。
         NLog.init(this)
+        // 窗口底色跟着主题走：不设的话，强制浅色时冷启动那一帧是深色（一次明显的黑闪）。
+        window.setBackgroundDrawable(
+            android.graphics.drawable.ColorDrawable(
+                if (ThemeStore.isDarkNow(this)) 0xFF101014.toInt() else 0xFFF7F7FA.toInt(),
+            ),
+        )
         // alias 启动时 componentName 是那个 alias，不是 MainActivity。
         // 这条日志同时回答两件事：入口是不是别名、现在生效的是哪一个图标。
         NLog.i("App", "启动入口：$componentName")
 
         setContent {
-            NMoiTheme {
-                val context = LocalContext.current
+            val context = LocalContext.current
+            // 主题必须在第一帧之前定：跟随系统时要读当下的系统配置（用户切系统主题会触发重组）。
+            var themeMode by remember { mutableStateOf(ThemeStore.load(context)) }
+            NMoiTheme(dark = ThemeStore.isDark(themeMode)) {
                 // 路由栈：返回 = 回上一级。子页面以后（提示词编辑、模型详情…）同样只需 push，
                 // 不用每页各写一个返回逻辑。
                 var backStack by remember { mutableStateOf(listOf<Route>(Route.Conversations)) }
@@ -147,7 +156,7 @@ class MainActivity : ComponentActivity() {
                     )
 
                     Route.Settings -> SettingsIndexScreen(
-                        iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label}",
+                        iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                         logSummary = logSummary,
                         onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
                         onBack = { backStack = backStack.dropLast(1) },
@@ -158,6 +167,12 @@ class MainActivity : ComponentActivity() {
                         SettingsGroup.Appearance -> AppearanceScreen(
                             choice = iconChoice,
                             warning = iconWarning,
+                            themeMode = themeMode,
+                            onThemePick = { mode ->
+                                ThemeStore.save(context, mode)
+                                themeMode = mode
+                                NLog.i("Appearance", "主题改成 ${mode.label}")
+                            },
                             onPick = { picked ->
                                 if (AppIconSwitcher.apply(context, picked)) {
                                     iconChoice = picked
