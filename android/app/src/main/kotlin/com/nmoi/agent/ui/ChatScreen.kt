@@ -13,6 +13,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -267,6 +269,7 @@ internal fun ChatScreen(
                     notice = notice,
                     canSend = !busy,
                     unsaved = sessionId == null,
+                    onHint = { notice = it },
                     onSend = { submit("user") },
                     onSendAssistant = { submit("assistant") },
                 )
@@ -1226,6 +1229,7 @@ private fun Composer(
     notice: String?,
     canSend: Boolean,
     unsaved: Boolean,
+    onHint: (String) -> Unit,
     onSend: () -> Unit,
     onSendAssistant: () -> Unit,
 ) {
@@ -1238,6 +1242,10 @@ private fun Composer(
                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp),
             )
         }
+
+        // 模型 / 思考 / 搜索 / 工具 / 附件：位置就是最终位置（PLAN §3.12），
+        // 现在一个都没接，所以点一下**说清差什么**，而不是摆一排点了没反应的开关。
+        ComposerChips(onHint = onHint)
 
         Surface(
             shape = RoundedCornerShape(24.dp),
@@ -1273,6 +1281,47 @@ private fun Composer(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp),
+        )
+    }
+}
+
+/**
+ * 输入区上方那一排：模型 / 思考 / 搜索 / 工具 / ＋（附件）。
+ *
+ * **一个都还没接**，所以每个都只做一件事：点一下把"差什么、等哪个阶段"写进提示行。
+ * 这不是假开关——假开关是"点了没反应"，这里点了有回应，只是回应是"还没轮到它"。
+ * 接上一个就把对应的 hint 换成真动作，位置不动。
+ */
+@Composable
+private fun ComposerChips(onHint: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(start = 16.dp, end = 16.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ComposerChip("模型 · 未配置") { onHint("模型选择待接：要先有供应商与密钥页（P3）") }
+        ComposerChip("思考 · 关") { onHint("思考强度待接：滑块 + 模型能力位（P3.4，D37）") }
+        ComposerChip("搜索 · 关") { onHint("网络搜索待接：工具层（P7）") }
+        ComposerChip("工具 · 关") { onHint("工具开关待接：工具层（P7，两级门）") }
+        ComposerChip("＋ 附件") { onHint("附件待接：附件管线（P7.7）") }
+    }
+}
+
+@Composable
+private fun ComposerChip(label: String, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            maxLines = 1,
         )
     }
 }

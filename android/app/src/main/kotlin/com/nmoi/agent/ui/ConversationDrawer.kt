@@ -102,7 +102,10 @@ internal fun ConversationDrawer(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(open) {
-                val flingThreshold = 350.dp.toPx()
+                // 两个方向给两套阈值（用户 2026-10-24 反馈）：向右展开的手感已经够，
+                // 但"展开后往左滑关掉"需要更灵敏——关门本来就该比开门轻。
+                val openFling = 350.dp.toPx()
+                val closeFling = 160.dp.toPx()
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val tracker = VelocityTracker()
@@ -149,11 +152,21 @@ internal fun ConversationDrawer(
                     if (!decided || !horizontal) return@awaitEachGesture
 
                     val velocityX = tracker.calculateVelocity().x
-                    val flung = abs(velocityX) > flingThreshold
-                    val targetOpen = when {
-                        // 快速甩：方向说了算（向右开、向左关）。
-                        flung -> velocityX > 0f
-                        else -> progress >= 0.25f
+                    // 打开与关闭用两套判据：
+                    // - 从关到开：位移 25% 或速度 350 dp/s；
+                    // - 从开到关：位移只要 15%（progress < 0.85 就算关）或速度 160 dp/s。
+                    val targetOpen = if (open) {
+                        when {
+                            velocityX < -closeFling -> false
+                            velocityX > openFling -> true
+                            else -> progress > 0.85f
+                        }
+                    } else {
+                        when {
+                            velocityX > openFling -> true
+                            velocityX < -openFling -> false
+                            else -> progress >= 0.25f
+                        }
                     }
 
                     // 先落状态：这样动画结束时 AnimatedVisibility 已经是"到位"的，不会再滑一次。
