@@ -128,6 +128,10 @@ internal fun IconActionButton(
     description: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 灰掉：功能还没接。**仍然能长按看提示**——"为什么是灰的"要能问出来。 */
+    enabled: Boolean = true,
+    /** 消息下面那排动作按钮用它：热区 36 / 视觉 18，四五个并排才不显笨重。 */
+    compact: Boolean = false,
 ) {
     var hintVisible by remember { mutableStateOf(false) }
 
@@ -138,14 +142,22 @@ internal fun IconActionButton(
         }
     }
 
+    val hit = if (compact) 36.dp else 48.dp
+    val visual = if (compact) 18.dp else 22.dp
+    val tint = if (enabled) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+    }
+
     Box(modifier = modifier) {
         Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(hit)
                 .clip(CircleShape)
-                .pointerInput(Unit) {
+                .pointerInput(enabled) {
                     detectTapGestures(
-                        onTap = { onClick() },
+                        onTap = { if (enabled) onClick() },
                         onLongPress = { hintVisible = true },
                     )
                 }
@@ -155,8 +167,8 @@ internal fun IconActionButton(
             Icon(
                 imageVector = image,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(22.dp),
+                tint = tint,
+                modifier = Modifier.size(visual),
             )
         }
 

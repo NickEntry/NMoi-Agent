@@ -83,4 +83,51 @@ private fun ImageVector.Builder.stroke(path: String) {
         strokeLineCap = StrokeCap.Round,
         strokeLineJoin = StrokeJoin.Round,
     )
+
+    /** Lucide `rotate-ccw.svg`：重新生成（现在灰着：`turn_run` 还没接）。 */
+    val RotateCcw: ImageVector = buildVector("rotate-ccw") {
+        stroke("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8")
+        stroke("M3 3v5h5")
+    }
+
+    /** Lucide `pencil.svg`：编辑这条（现在灰着：`edit` 还没桥出 FFI）。 */
+    val Pencil: ImageVector = buildVector("pencil") {
+        stroke(
+            "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83" +
+                "l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z",
+        )
+        stroke("m15 5 4 4")
+    }
+
+    /** Lucide `ellipsis.svg`：更多。三个 `circle r=1` 写成三段小圆弧。 */
+    val Ellipsis: ImageVector = buildVector("ellipsis") {
+        stroke("M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")
+        stroke("M20 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")
+        stroke("M6 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")
+    }
+
+    /** Lucide `trash-2.svg`：删除（现在灰着：`delete` 的 FFI 还没有）。 */
+    val Trash2: ImageVector = buildVector("trash-2") {
+        stroke("M10 11v6")
+        stroke("M14 11v6")
+        stroke("M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6")
+        stroke("M3 6h18")
+        stroke("M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2")
+    }
+
+    /** Lucide `check.svg`：选中态 / 复制成功。 */
+    val Check: ImageVector = buildVector("check") {
+        stroke("M20 6 9 17l-5-5")
+    }
+
+    /** Lucide `x.svg`：取消选择。 */
+    val Close: ImageVector = buildVector("x") {
+        stroke("M18 6 6 18")
+        stroke("m6 6 12 12")
+    }
+
+    /** Lucide `chevron-down.svg`：折叠块的开合指示。 */
+    val ChevronDown: ImageVector = buildVector("chevron-down") {
+        stroke("m6 9 6 6 6-6")
+    }
 }

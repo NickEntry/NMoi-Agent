@@ -2,10 +2,13 @@ package com.nmoi.agent.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.os.Build
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -13,17 +16,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -59,18 +66,17 @@ import java.time.format.DateTimeFormatter
 /**
  * 聊天页——**这一页就是主页**（D125）。
  *
- * 三件和"上一个版本"不一样的事，都是照着真实聊天客户端的操作习惯改的：
+ * 消息区的形状照 D129（2026-10-24 用户按截图重新定的）：
  *
- * 1. **没有返回箭头**。它是根页面，左上角是抽屉（≡），不是一个"退回去"的动作：
- *    退回去意味着还有一个列表页在你身后，而那里现在不存在了。
- * 2. **启动进来就是一个还没落库的空会话**（`sessionId == null`）。第一次存消息时才建会话，
- *    界面不跳页、不闪、也不需要先点"新建"。会话 id 由 [onCreateSession] 建好并回填路由。
- * 3. **消息形状照 Material 3**（D126）：用户 `primaryContainer` 靠右、助手 `surfaceContainerLow`
- *    靠左、圆角 16、无尾巴、同角色 4dp / 异角色 12dp。气泡**按内容长度收放**，
- *    最多占屏宽 78%——不是每条都撑到同一个宽度（那样一眼就看得出是"画出来的框"）。
+ * - **用户**：右侧。上面一行是「名字 + 时间 + 头像」，下面是气泡（`primaryContainer`、圆角 16），
+ *   气泡下面一排动作（复制 / 重新生成 / 编辑 / 更多）。
+ * - **助手**：左侧。**没有气泡**——头像 + 名字 + 时间，正文直接铺在背景上，
+ *   走 [MarkdownBody] 渲染。思考块与工具卡在这里仍然是卡片（它们是"过程"，不是"回答"）。
+ * - **长按 = 进入选择模式**（不是复制）：整行泛出选中底色，顶部换成选择条，
+ *   可以逐条点选，然后复制。删除还灰着（`delete` 的 FFI 还没有）。
  *
- * 底部的说明行不是装饰：`nmoi_turn_run_json` 还没接，点 ↑ 只是把话存进库里。
- * 写"发送"然后不发送才是骗人，所以这里把区别写在界面上。
+ * 名字与头像现在都是占位：库里还没有"助手"这个实体（助手设置页未接），
+ * 所以写死「我」/「助手」+ 首字母圆标。等助手设置接上，从 D122 的助手文档里取名字与头像。
  */
 @Composable
 internal fun ChatScreen(
@@ -87,7 +93,16 @@ internal fun ChatScreen(
     var reloadKey by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // 选择模式：长按任意一条进入，点别的消息加选，顶部条上复制或取消。
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<String>()) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
+
+    // 换会话就把选择清掉：跨会话的选中集合没有任何意义，还容易误复制。
+    LaunchedEffect(sessionId) {
+        selecting = false
+        selected = emptySet()
+    }
 
     // 空白会话（还没落库）不发读请求：没有 id 可读，界面直接给"还没有消息"的静态提示。
     val snapshot by produceState<ChatSnapshot?>(initialValue = null, sessionId, reloadKey) {
@@ -98,6 +113,26 @@ internal fun ChatScreen(
                 ChatRepository.load(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
             }
         }
+    }
+
+    val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()
+
+    val copySelected: () -> Unit = {
+        val picked = allMessages.filter { it.id in selected }.sortedBy { it.seq }
+        if (picked.isEmpty()) {
+            notice = "先选一条消息"
+        } else {
+            putClipboard(context, "选中的消息", picked.joinToString("\n\n") { it.content })
+            notice = "已复制 ${picked.size} 条消息"
+            selecting = false
+            selected = emptySet()
+        }
+    }
+
+    // 选择模式也要吃返回键：先退选择，再谈退出页面（和抽屉同一套"后注册者优先"）。
+    BackHandler(enabled = selecting) {
+        selecting = false
+        selected = emptySet()
     }
 
     // 存一条：`role` 是 core 的词（`user` / `assistant`）。
@@ -129,11 +164,30 @@ internal fun ChatScreen(
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
-            ChatTopBar(
-                title = title,
-                onOpenDrawer = onOpenDrawer,
-                onNewChat = onNewChat,
-            )
+            if (selecting) {
+                SelectionTopBar(
+                    count = selected.size,
+                    onCancel = {
+                        selecting = false
+                        selected = emptySet()
+                    },
+                    onCopy = copySelected,
+                )
+            } else {
+                ChatTopBar(
+                    title = title,
+                    onOpenDrawer = onOpenDrawer,
+                    onNewChat = onNewChat,
+                )
+                if (notice != null) {
+                    Text(
+                        text = notice,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
+                    )
+                }
+            }
 
             Box(modifier = Modifier.weight(1f)) {
                 if (sessionId == null) {
@@ -141,21 +195,71 @@ internal fun ChatScreen(
                 } else {
                     MessageArea(
                         snapshot = snapshot,
+                        selecting = selecting,
+                        selected = selected,
+                        onLongPressMessage = { id ->
+                            selecting = true
+                            selected = setOf(id)
+                        },
+                        onToggleMessage = { id ->
+                            val next = if (id in selected) selected - id else selected + id
+                            selected = next
+                            if (next.isEmpty()) selecting = false
+                        },
                         onCopied = { notice = "已复制这条消息" },
                     )
                 }
             }
 
-            Composer(
-                draft = draft,
-                onDraftChange = { draft = it },
-                notice = notice,
-                canSend = !busy,
-                unsaved = sessionId == null,
-                onSend = { submit("user") },
-                onSendAssistant = { submit("assistant") },
-            )
+            if (!selecting) {
+                Composer(
+                    draft = draft,
+                    onDraftChange = { draft = it },
+                    notice = notice,
+                    canSend = !busy,
+                    unsaved = sessionId == null,
+                    onSend = { submit("user") },
+                    onSendAssistant = { submit("assistant") },
+                )
+            } else {
+                // 选择模式下藏起输入区，但留 10dp 底边，免得最后一条消息贴住屏幕边缘。
+                Spacer(Modifier.heightIn(min = 10.dp))
+            }
         }
+    }
+}
+
+/** 选择模式的顶栏：取消 + 已选条数 + 复制。删除灰着（`delete` 的 FFI 还没有）。 */
+@Composable
+private fun SelectionTopBar(count: Int, onCancel: () -> Unit, onCopy: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconActionButton(
+            image = ActionIcons.Close,
+            description = "取消选择",
+            onClick = onCancel,
+        )
+        Text(
+            text = if (count == 0) "选择消息" else "已选 $count 条",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.weight(1f).padding(start = 4.dp),
+            maxLines = 1,
+        )
+        IconActionButton(
+            image = ActionIcons.Copy,
+            description = "复制选中的消息",
+            onClick = onCopy,
+            enabled = count > 0,
+        )
+        IconActionButton(
+            image = ActionIcons.Trash2,
+            description = "删除（待接 delete）",
+            onClick = {},
+            enabled = false,
+        )
     }
 }
 
@@ -216,7 +320,14 @@ private fun BlankConversationHint() {
  * ③ 读到了但一条没有；④ 有内容。
  */
 @Composable
-private fun MessageArea(snapshot: ChatSnapshot?, onCopied: () -> Unit) {
+private fun MessageArea(
+    snapshot: ChatSnapshot?,
+    selecting: Boolean,
+    selected: Set<String>,
+    onLongPressMessage: (String) -> Unit,
+    onToggleMessage: (String) -> Unit,
+    onCopied: () -> Unit,
+) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
@@ -285,6 +396,10 @@ private fun MessageArea(snapshot: ChatSnapshot?, onCopied: () -> Unit) {
                 unit = unit,
                 maxBubble = maxBubble,
                 gapAbove = gap,
+                selecting = selecting,
+                selected = selected,
+                onLongPressMessage = onLongPressMessage,
+                onToggleMessage = onToggleMessage,
                 onCopied = onCopied,
             )
         }
@@ -297,7 +412,16 @@ private fun ChatUnit.alignsRight(): Boolean =
 
 /** 一个原子单元：`turn`（一条文本）或 `tool_pair`（assistant(tool_calls) + 全部 tool_result）。 */
 @Composable
-private fun UnitBlock(unit: ChatUnit, maxBubble: Dp, gapAbove: Dp, onCopied: () -> Unit) {
+private fun UnitBlock(
+    unit: ChatUnit,
+    maxBubble: Dp,
+    gapAbove: Dp,
+    selecting: Boolean,
+    selected: Set<String>,
+    onLongPressMessage: (String) -> Unit,
+    onToggleMessage: (String) -> Unit,
+    onCopied: () -> Unit,
+) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -312,79 +436,148 @@ private fun UnitBlock(unit: ChatUnit, maxBubble: Dp, gapAbove: Dp, onCopied: () 
             unit.messages.forEach { message ->
                 when {
                     message.isThinking -> ThinkingBlock(message)
-                    else -> MessageBubble(message = message, maxBubble = maxBubble, onCopied = onCopied)
+                    message.isUser -> UserMessage(
+                        message = message,
+                        maxBubble = maxBubble,
+                        selecting = selecting,
+                        isSelected = message.id in selected,
+                        onLongPress = { onLongPressMessage(message.id) },
+                        onTap = { if (selecting) onToggleMessage(message.id) },
+                        onCopied = onCopied,
+                    )
+
+                    else -> AssistantMessage(
+                        message = message,
+                        selecting = selecting,
+                        isSelected = message.id in selected,
+                        onLongPress = { onLongPressMessage(message.id) },
+                        onTap = { if (selecting) onToggleMessage(message.id) },
+                        onCopied = onCopied,
+                    )
                 }
             }
         }
     }
 }
 
-private val stampFormat: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+private const val USER_NAME = "我"
+private const val ASSISTANT_NAME = "助手"
 
-/** 时间戳：`createdAt` 是秒；0 表示库里没给，宁可不显示也不写"00:00"。 */
+private val stampFormat: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+
+/** 时间戳：`createdAt` 是秒；0 表示库里没给，宁可不显示也不写一个假时间。 */
 private fun stampOf(epochSeconds: Long): String? =
     if (epochSeconds <= 0L) null else stampFormat.format(Instant.ofEpochSecond(epochSeconds))
 
+private fun putClipboard(context: Context, label: String, text: String) {
+    val manager = context.getSystemService(ClipboardManager::class.java) ?: return
+    manager.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
 /**
- * 一条文本消息。
+ * 首字母圆标。
  *
- * 时间在上、气泡在下（跟主流水准一致）：放在气泡里面会把短消息撑成一个奇怪的形状。
- * 长按复制——手机上"想留一条下来"的第一反应就是长按，不是进二级菜单。
+ * 先不引图片：`Assistant` 还没有实体（助手设置页未接），拿不到名字与头像字节。
+ * 用首字母圆标是"诚实的占位"——它明确地不是一张脸，也不会假装自己是谁。
  */
 @Composable
-private fun MessageBubble(message: ChatMessage, maxBubble: Dp, onCopied: () -> Unit) {
-    val context = LocalContext.current
-    val mine = message.isUser
-    val stamp = stampOf(message.createdAt)
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+private fun InitialAvatar(letter: String, size: Dp, mine: Boolean) {
+    Surface(
+        shape = CircleShape,
+        color = if (mine) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        modifier = Modifier.size(size),
     ) {
-        Column(
-            modifier = Modifier.widthIn(max = maxBubble),
-            horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = letter,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (mine) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** 用户那一条：右对齐的头像/名字/时间 + 气泡 + 动作行。 */
+@Composable
+private fun UserMessage(
+    message: ChatMessage,
+    maxBubble: Dp,
+    selecting: Boolean,
+    isSelected: Boolean,
+    onLongPress: () -> Unit,
+    onTap: () -> Unit,
+    onCopied: () -> Unit,
+) {
+    val context = LocalContext.current
+    val stamp = stampOf(message.createdAt)
+    val tint = if (selecting && isSelected) {
+        Modifier
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
+            .padding(4.dp)
+    } else {
+        Modifier
+    }
+
+    Column(modifier = Modifier.fillMaxWidth().then(tint)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(
+                text = USER_NAME,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                maxLines = 1,
+            )
             if (stamp != null) {
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = stamp,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 3.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    maxLines = 1,
                 )
             }
+            Spacer(Modifier.width(8.dp))
+            InitialAvatar(letter = USER_NAME, size = 26.dp, mine = true)
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = if (mine) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerLow
-                },
-                modifier = Modifier.pointerInput(message.id) {
-                    detectTapGestures(
-                        onLongPress = {
-                            val manager = context.getSystemService(ClipboardManager::class.java)
-                            manager?.setPrimaryClip(
-                                ClipData.newPlainText("消息", message.content),
-                            )
-                            onCopied()
-                        },
-                    )
-                },
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier
+                    .widthIn(max = maxBubble)
+                    .pointerInput(selecting, message.id) {
+                        detectTapGestures(
+                            onTap = { onTap() },
+                            onLongPress = { onLongPress() },
+                        )
+                    },
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
                     Text(
                         text = message.content.ifEmpty { "（空消息）" },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (mine) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
+                        fontSize = 15.sp,
+                        lineHeight = 22.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     if (message.incomplete) {
-                        // 「未完成」不是错误：这一轮被中断了，界面要说清，别让它看着像正常回复。
                         Text(
                             text = "未完成 · 这一轮被中断",
                             style = MaterialTheme.typography.labelSmall,
@@ -395,6 +588,158 @@ private fun MessageBubble(message: ChatMessage, maxBubble: Dp, onCopied: () -> U
                 }
             }
         }
+
+        MessageActionRow(
+            mine = true,
+            onCopy = {
+                putClipboard(context, "消息", message.content)
+                onCopied()
+            },
+            onSelect = onLongPress,
+        )
+    }
+}
+
+/**
+ * 助手那一条：**没有气泡**。
+ *
+ * 头像在左上，名字、时间各自一行，正文用 [MarkdownBody] 铺开——气泡会把长回答框成一个
+ * "大卡片"，读起来像在念一段引文；真实聊天客户端里助手本来也是贴着背景说话的。
+ */
+@Composable
+private fun AssistantMessage(
+    message: ChatMessage,
+    selecting: Boolean,
+    isSelected: Boolean,
+    onLongPress: () -> Unit,
+    onTap: () -> Unit,
+    onCopied: () -> Unit,
+) {
+    val context = LocalContext.current
+    val stamp = stampOf(message.createdAt)
+    val tint = if (selecting && isSelected) {
+        Modifier
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
+            .padding(4.dp)
+    } else {
+        Modifier
+    }
+
+    Row(modifier = Modifier.fillMaxWidth().then(tint)) {
+        InitialAvatar(letter = "助", size = 28.dp, mine = false)
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = ASSISTANT_NAME,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            if (stamp != null) {
+                Text(
+                    text = stamp,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    maxLines = 1,
+                    modifier = Modifier.padding(top = 1.dp),
+                )
+            }
+            MarkdownBody(
+                text = message.content.ifEmpty { "（空消息）" },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .pointerInput(selecting, message.id) {
+                        detectTapGestures(
+                            onTap = { onTap() },
+                            onLongPress = { onLongPress() },
+                        )
+                    },
+            )
+            if (message.incomplete) {
+                Text(
+                    text = "未完成 · 这一轮被中断",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            MessageActionRow(
+                mine = false,
+                onCopy = {
+                    putClipboard(context, "消息", message.content)
+                    onCopied()
+                },
+                onSelect = onLongPress,
+            )
+        }
+    }
+}
+
+/**
+ * 消息下面那排动作（照用户给的截图）：复制 / 重新生成 / 编辑 / 更多。
+ *
+ * **重新生成与编辑现在是灰的**：`turn_run` 没接（没有可重发的一轮），`edit` 没桥出 FFI。
+ * 灰着而不是藏起来，是因为这两个动作的位置会一直在；藏起来用户会以为这里没有编辑。
+ * 长按灰按钮会浮一句"待接什么"，不让人猜。
+ */
+@Composable
+private fun MessageActionRow(mine: Boolean, onCopy: () -> Unit, onSelect: () -> Unit) {
+    var moreOpen by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconActionButton(
+            image = ActionIcons.Copy,
+            description = "复制",
+            onClick = onCopy,
+            compact = true,
+        )
+        IconActionButton(
+            image = ActionIcons.RotateCcw,
+            description = "重新生成（待接 turn_run）",
+            onClick = {},
+            compact = true,
+            enabled = false,
+        )
+        IconActionButton(
+            image = ActionIcons.Pencil,
+            description = "编辑（待接 edit）",
+            onClick = {},
+            compact = true,
+            enabled = false,
+        )
+        Box {
+            IconActionButton(
+                image = ActionIcons.Ellipsis,
+                description = "更多",
+                onClick = { moreOpen = true },
+                compact = true,
+            )
+            DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("复制") },
+                    onClick = {
+                        moreOpen = false
+                        onCopy()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("选择消息") },
+                    onClick = {
+                        moreOpen = false
+                        onSelect()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("删除（待接 delete）") },
+                    onClick = {},
+                    enabled = false,
+                )
+            }
+        }
     }
 }
 
@@ -402,35 +747,48 @@ private fun MessageBubble(message: ChatMessage, maxBubble: Dp, onCopied: () -> U
  * 思考块：**默认收起**，只显示"思考 · N 字"。展开看全文。
  *
  * 收起是刻意的：思考通常很长，默认铺开会把真正的回答挤到屏幕外。
+ * 左边留出头像那一段缩进，让它看起来属于助手那一条，而不是一条独立卡片。
  */
 @Composable
 private fun ThinkingBlock(message: ChatMessage) {
     var expanded by remember(message.id) { mutableStateOf(false) }
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier
-            .widthIn(max = (LocalConfiguration.current.screenWidthDp * 0.92f).dp)
-            .clickable { expanded = !expanded },
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
-            Text(
-                text = if (expanded) {
-                    "思考（点一下收起）"
-                } else {
-                    "思考 · ${message.content.length} 字（点一下展开）"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                text = message.content,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = if (expanded) Int.MAX_VALUE else 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 2.dp),
-            )
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Spacer(Modifier.width(38.dp))
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier
+                .widthIn(max = (LocalConfiguration.current.screenWidthDp * 0.9f).dp)
+                .clickable { expanded = !expanded },
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = ActionIcons.ChevronDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        text = if (expanded) {
+                            "思考（点一下收起）"
+                        } else {
+                            "思考 · ${message.content.length} 字（点一下展开）"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) Int.MAX_VALUE else 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
     }
 }
@@ -448,45 +806,57 @@ private fun ToolPairCard(unit: ChatUnit) {
     val calls = unit.messages.count { it.isToolCall || it.toolCalls > 0 }
     val results = unit.messages.count { it.isToolResult }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier
-            .widthIn(max = (LocalConfiguration.current.screenWidthDp * 0.92f).dp)
-            .clickable { expanded = !expanded },
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
-            Text(
-                text = buildString {
-                    append("工具调用")
-                    if (calls > 0) append(" × $calls")
-                    if (results > 0) append(" · 结果 $results 条")
-                    if (!unit.closed) append(" · 未收全")
-                    append(if (expanded) "（点一下收起）" else "（点一下展开）")
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            if (expanded) {
-                unit.messages.forEach { message ->
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Spacer(Modifier.width(38.dp))
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier
+                .widthIn(max = (LocalConfiguration.current.screenWidthDp * 0.9f).dp)
+                .clickable { expanded = !expanded },
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = ActionIcons.ChevronDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
                     Text(
                         text = buildString {
-                            append(if (message.isToolResult) "← 结果" else "→ 调用")
-                            val id = message.toolCallId
-                            if (id != null) append(" [$id]")
+                            append("工具调用")
+                            if (calls > 0) append(" × $calls")
+                            if (results > 0) append(" · 结果 $results 条")
+                            if (!unit.closed) append(" · 未收全")
+                            append(if (expanded) "（点一下收起）" else "（点一下展开）")
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 6.dp),
                     )
-                    Text(
-                        text = message.content.ifEmpty { "（空）" },
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+                }
+                if (expanded) {
+                    unit.messages.forEach { message ->
+                        Text(
+                            text = buildString {
+                                append(if (message.isToolResult) "← 结果" else "→ 调用")
+                                val id = message.toolCallId
+                                if (id != null) append(" [$id]")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                        Text(
+                            text = message.content.ifEmpty { "（空）" },
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             }
         }
@@ -585,7 +955,7 @@ private fun Composer(
 }
 
 /**
- * 发送键：圆形、40dp 视觉（热区靠外层 8dp padding 补到 48 以上）。
+ * 发送键：圆形、40dp 视觉（热区靠外层 48dp 补足）。
  *
  * 禁用态只是变淡，**不做隐藏**——打字时按钮忽隐忽现会让整条输入区的高度跟着跳。
  */

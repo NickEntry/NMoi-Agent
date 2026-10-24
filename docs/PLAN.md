@@ -6,7 +6,7 @@
 
 - 上游设计：`docs/design/context-modes-design-v1.1.md`、`docs/design/platform-client-plan.md`、`docs/design/context-experiments-report.md`
 - 决策记录：`docs/decisions.md`（D1–D9 来自计划文档，D10 起是本仓库新增）
-- 最近更新：2026-10-24（0.14e/0.14f **已实现、待真机验证**：聊天页升主页 D125、气泡照 M3 D126；
+- 最近更新：2026-10-24（0.14g **已实现、待真机验证**：助手去气泡 + 头像/名字/时间 + 动作行、长按选择消息、自研 Markdown 渲染，D129–D131；同轮 0.14e/0.14f：聊天页升主页 D125、气泡照 M3 D126；
   同轮：M3 的许可义务（`LICENSES/Apache-2.0.txt` + 声明 §3 + CI 闸，D127）、
   应用内「关于 → 开源许可」页 + 自己的 GPL 全文进包 + 闸改精确比对（D128））
 - 上一轮：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 docs/compression.md、D115）
@@ -965,7 +965,8 @@ L0 的 `estimate_tokens` 保留原样给流式与兜底。**接线已完成**（
 | 0.13 | ~~**JNI 桥 + `cargo-ndk`**~~ **已完成，未真机验证**（D112）：4 个符号转手 C ABI，CI 编 `arm64-v8a/libnmoi_ffi.so`，列表读真库 | 骨架有了才接核心，否则又是一个没人调的接口 |
 | 0.14 | **真机验证一次**（`docs/verification.md` V0→V5） | 在这之前"能跑"不能用；装包 / `.so` 加载 / 建库 / 列表这四段没有任何证据 |
 | 0.14e | **聊天页升为主页**（D125） | **已实现（待真机验证）**：启动 `backStack = [Chat(新会话, null)]`，`sessionId == null` 就是没落库的空白会话；首次存消息走 `onCreateSession`，父层把这条路由**原地换成带 id 的同一条**（栈深不变，不闪不跳）；左上角改成抽屉、右上角「＋新建会话」；**列表页 `ConversationListScreen.kt` 整个删除**，换会话与新会话都在抽屉里（抽屉顶部新增「＋ 新会话」，当前项按 **id** 高亮而非标题） | `MainActivity.kt`、`ui/ChatScreen.kt`、`ui/ConversationDrawer.kt`；D125 |
-| 0.14f | **气泡照 Material 3**（D126） | **已实现（待真机验证）**：用户 `primaryContainer` 右、助手 `surfaceContainerLow` 左，圆角 16、无尾巴；`widthIn(max = 屏宽 × 0.78)` **按内容收放**（不再每条都 `fillMaxWidth(0.86f)`）；同角色 4dp / 异角色 12dp（换人时额外 8dp）；时间 `labelSmall` + `onSurfaceVariant` 放气泡上方，`createdAt == 0` 时不显示；长按气泡复制 | `ui/ChatScreen.kt`；D126 |
+| 0.14f | **气泡照 Material 3**（D126） | **已实现（待真机验证）**：用户 `primaryContainer` 右、圆角 16、无尾巴；`widthIn(max = 屏宽 × 0.78)` 按内容收放；同角色 4dp / 异角色 12dp；时间 `labelSmall`；`createdAt == 0` 时不显示 | `ui/ChatScreen.kt`；D126 |
+| 0.14g | **消息区按截图重定**（D129 / D130 / D131） | **已实现（待真机验证）**：① 助手消息**去气泡**——头像 28dp + 名字 + 时间 + Markdown 正文，思考/工具/断块仍是卡片（左缩进 38dp）；② 用户消息：名字+时间+头像一行、气泡、下面一排动作（复制真做；重新生成/编辑灰着等 `turn_run` / `edit`）；③ **长按 = 选择模式**：选择条（取消 / 已选 N / 复制 / 删除灰）、点选加减、复制按 `seq` 拼进剪贴板、选择时藏输入区、返回键先退选择、换会话清零；④ `ui/Markdown.kt` 自研最小渲染器（标题/围栏代码/列表/引用/分隔线/段落 + 行内粗斜体删除线行内代码链接上色），不引库；表格/嵌套/图片原样显示 | `ui/{ChatScreen,Markdown,ActionIcons,Controls}.kt`；D129–D131 |
 | 0.14c | ~~**主题三态 + 外观子页接线**（D120）~~ **已完成**：`NMoiTheme(dark)` 两套 token（深/浅各自的背景、卡片、正文色，正文不用纯白）、`ThemeMode` + `ThemeStore`、跟随系统走 `isSystemInDarkTheme()`；冷启动窗口底色按主题选（`values-night` + `onCreate` 里改 window 背景），避免闪一帧；外观子页加「主题 / 聊天页背景 / 自定义主题」三节（后两节灰行 + 三色预览位）；输入框文字色改成跟主题取；**系统栏图标跟着主题反色**（`WindowCompat`，浅色下图标变深，真机上踩过白图标白底）；显式声明 `androidx.core:core-ktx` | 深色只有一套的时候，"黑白可切"是个空话；而自定义主题要等新 scope，先留位不挡路 |
 | 0.14d | **聊天页背景**（D122–D124，`docs/ui/appearance.md`）：纯色 / 图片 / 视频，**按助手归属**；`MediaCodec`+`MediaMuxer` 入库转码（≤720p / 30fps / 2Mbps / I 帧 1s / 无音轨）；不可见即停；换种类与启动时回收旧文件 | 视频这条要先把"库存在哪、谁拥有、怎么清"定死，再谈渲染；顺序反了会留下没人清的文件 |
 | 0.14b | **日志拆三种通道 + 设置子页化**（`docs/ui/structure.md`）：~~`NLog` 分 `context` / `request` / `debug` 三路~~ **已完成**；~~设置改成「分组索引 → 子页」~~ **已完成**（索引页六行 + 外观/调试两个真子页 + 其余四组灰行清单）、各自文件与上限；日志索引页三行 + 齿轮（三种开关与上限）；通道子页四动作；设置从六节平铺改成「分组索引 → 子页」，索引行右侧写当前值 | 现在一页把"开关 + 上限 + 四种动作 + 预览"挤在一起，手机上就是滚动里找东西。**先在界面上把入口/返回定下来，后面每接一个功能只是往对应子页里填**；顺序排在设置接线之前，因为接线的落点就是这些子页 |
