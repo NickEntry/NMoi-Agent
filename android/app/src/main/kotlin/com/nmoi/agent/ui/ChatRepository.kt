@@ -55,6 +55,69 @@ internal object ChatRepository {
         }
     }
 
+    /**
+     * 记一版新正文（D137）。**现在只有"更多 → 复制为新版本"这个临时探针会调它**；
+     * `turn_run` 接上之后，重新生成走同一条路。
+     */
+    suspend fun saveVersion(databasePath: String, messageId: String, text: String): Result<Unit> =
+        withHandle(databasePath) { handle ->
+            NmoiFfi.saveVersion(handle, messageId, text).map { }
+        }
+
+    /** 切到某一版的某一组正文，返回切换后应当显示的正文。 */
+    suspend fun switchVersion(
+        databasePath: String,
+        messageId: String,
+        versionNo: Long,
+        view: String,
+    ): Result<String> = withHandle(databasePath) { handle ->
+        NmoiFfi.switchVersion(handle, messageId, versionNo, view).map { envelope ->
+            envelope.optString("content", "")
+        }
+    }
+
+    /** 删一版；`versionNo = 0` 表示"只留当前这一版"。 */
+    suspend fun deleteVersion(
+        databasePath: String,
+        messageId: String,
+        versionNo: Long,
+    ): Result<Unit> = withHandle(databasePath) { handle ->
+        NmoiFfi.deleteVersion(handle, messageId, versionNo).map { }
+    }
+
+    /**
+     * 开库 → 跑一段 → 关库。三个版本动词共用这一份：每个都抄一遍 open/close 的话，
+     * 迟早有一处漏了 `finally`，然后句柄泄漏到"库被锁住"。
+     */
+    private suspend fun <T> withHandle(
+        databasePath: String,
+        block: (Long) -> Result<T>,
+    ): Result<T> {
+        if (!NativeBridge.loaded) {
+            return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
+        }
+        val opened = runCatching { JSONObject(NativeBridge.openStorageJson(databasePath)) }
+            .getOrElse {
+                return Result.failure(
+                    NmoiFfiException("native_call", "打开库时报错：${it.message}"),
+                )
+            }
+        if (!opened.ok()) {
+            return Result.failure(NmoiFfiException(opened.errorKind(), "打开库失败：${opened.errorText()}"))
+        }
+        if (opened.optString("state", "") != "ready") {
+            return Result.failure(
+                NmoiFfiException("blocked", "库没通过校验（state=${opened.optString("state")}）"),
+            )
+        }
+        val handle = opened.optLong("handle", 0L)
+        return try {
+            block(handle)
+        } finally {
+            runCatching { NativeBridge.closeStorageJson(handle) }
+        }
+    }
+
     private fun loadInner(databasePath: String, sessionId: String, limit: Long): ChatSnapshot {
         if (!NativeBridge.loaded) {
             return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")

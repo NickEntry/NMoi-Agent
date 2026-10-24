@@ -315,3 +315,51 @@ fn reopens_with_versions_intact() {
     assert_eq!((list.count, list.active), (2, 2));
     assert_eq!(shown_content(&storage, session, &message), "第二版");
 }
+
+#[test]
+fn remembered_view_survives_switching_away_and_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, _, message) = fixture(dir.path());
+    storage.save_generated_version(&message, "一").unwrap();
+    storage.save_generated_version(&message, "二").unwrap();
+    storage.mark_version_edited(&message, 2, "二·改").unwrap();
+
+    // 第 2 版切到"编辑后"。
+    storage
+        .switch_message_version(&message, 2, VersionView::Edited)
+        .unwrap();
+    // 翻到第 1 版（沿用第 1 版记住的视图 = raw）。
+    assert_eq!(
+        storage
+            .switch_message_version_remembered(&message, 1)
+            .unwrap(),
+        "一"
+    );
+    // 再翻回第 2 版：**应当还是编辑后**，不能被第 1 版的 raw 带跑。
+    assert_eq!(
+        storage
+            .switch_message_version_remembered(&message, 2)
+            .unwrap(),
+        "二·改"
+    );
+}
+
+#[test]
+fn version_index_only_lists_messages_that_have_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, message) = fixture(dir.path());
+    // 再放一条没有版本的消息。
+    storage
+        .append_unit(session, &assistant_unit(session, 2, "第二条"))
+        .unwrap();
+    storage.save_generated_version(&message, "第一版").unwrap();
+    storage.save_generated_version(&message, "第二版").unwrap();
+
+    let index = storage.version_index(session).unwrap();
+    assert_eq!(index.len(), 1, "没版本的消息不该出现在索引里");
+    let brief = index.get(&message.to_string()).expect("应当有这条");
+    assert_eq!(brief.count, 2);
+    assert_eq!(brief.active, 2);
+    assert_eq!(brief.view, VersionView::Raw);
+    assert!(!brief.edited_by_tool);
+}

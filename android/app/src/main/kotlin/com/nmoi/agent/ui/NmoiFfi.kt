@@ -66,6 +66,31 @@ internal object NmoiFfi {
         NativeBridge.appendTextJson(handle, session, role, text, nowMs)
     }
 
+    /** 记一版新正文（D137）。目前只有「更多 → 复制为新版本」这个临时探针会调。 */
+    suspend fun saveVersion(handle: Long, message: String, text: String): Result<JSONObject> =
+        call("save_version") {
+            NativeBridge.saveVersionJson(handle, message, text)
+        }
+
+    /** 切版本 / 切原文-编辑。`view` 只收 `raw` / `edited`。 */
+    suspend fun switchVersion(
+        handle: Long,
+        message: String,
+        versionNo: Long,
+        view: String,
+    ): Result<JSONObject> = call("switch_version") {
+        NativeBridge.switchVersionJson(handle, message, versionNo, view)
+    }
+
+    /** 删一版；`versionNo = 0` = 只留当前这一版。 */
+    suspend fun deleteVersion(
+        handle: Long,
+        message: String,
+        versionNo: Long,
+    ): Result<JSONObject> = call("delete_version") {
+        NativeBridge.deleteVersionJson(handle, message, versionNo)
+    }
+
     suspend fun settingsList(
         handle: Long,
         scope: SettingsScope,

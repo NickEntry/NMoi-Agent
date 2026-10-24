@@ -51,6 +51,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
@@ -155,6 +156,43 @@ internal fun ChatScreen(
             notice = "已复制 ${selectedMessages.size} 条消息"
             selecting = false
             selected = emptySet()
+        }
+    }
+
+    // 切版本 / 切原文-编辑（D137）：成功后重读，界面只看库里的状态，不做本地猜测。
+    val switchVersion: (String, Long, String) -> Unit = { id, versionNo, view ->
+        scope.launch {
+            ChatRepository.switchVersion(databasePath, id, versionNo, view).fold(
+                onSuccess = { reloadKey += 1 },
+                onFailure = { notice = "切版本失败：${it.message}" },
+            )
+        }
+    }
+
+    // 「更多 → 复制为新版本」：**临时探针**。
+    // `turn_run` 还没接，重新生成产不出版本，而版本 UI 没有数据就没法验。
+    // 这条把当前正文再存一版，专门用来验 D137 那一套；接上 turn_run 就删掉它。
+    val saveVersionProbe: (ChatMessage) -> Unit = { message ->
+        scope.launch {
+            ChatRepository.saveVersion(databasePath, message.id, message.content).fold(
+                onSuccess = {
+                    reloadKey += 1
+                    notice = "已复制为新版本（临时探针）"
+                },
+                onFailure = { notice = "存版本失败：${it.message}" },
+            )
+        }
+    }
+
+    val deleteVersion: (String, Long) -> Unit = { id, versionNo ->
+        scope.launch {
+            ChatRepository.deleteVersion(databasePath, id, versionNo).fold(
+                onSuccess = {
+                    reloadKey += 1
+                    notice = if (versionNo == 0L) "已删除其余版本" else "已删除这一版"
+                },
+                onFailure = { notice = "删版本失败：${it.message}" },
+            )
         }
     }
 
@@ -267,6 +305,7 @@ internal fun ChatScreen(
                         },
                         onCopied = { notice = "已复制这条消息" },
                         onMoreMessage = { id -> moreFor = allMessages.firstOrNull { it.id == id } },
+                        onVersionMessage = switchVersion,
                         // 「更多 → 分享」= 选中这一条并直接打开分享面板：
                         // 分享本来就是"选几条再导"，让它从一条开始，少两步。
                         onShareMessage = { id ->
@@ -317,7 +356,6 @@ internal fun ChatScreen(
                 title = if (sheetMessage.isUser) "这条用户消息" else "这条助手消息",
                 items = messageSheetItems(
                     message = sheetMessage,
-                    versionCount = 1,
                     onShare = {
                         selecting = true
                         selected = setOf(sheetMessage.id)
@@ -327,6 +365,9 @@ internal fun ChatScreen(
                         selecting = true
                         selected = setOf(sheetMessage.id)
                     },
+                    onSaveVersion = { saveVersionProbe(sheetMessage) },
+                    onDeleteThis = { deleteVersion(sheetMessage.id, sheetMessage.versionActive.toLong()) },
+                    onDeleteAll = { deleteVersion(sheetMessage.id, 0L) },
                 ),
                 onHint = { notice = it },
                 onDismiss = { moreFor = null },
@@ -621,6 +662,7 @@ private fun MessageArea(
     onCopied: () -> Unit,
     onShareMessage: (String) -> Unit,
     onMoreMessage: (String) -> Unit,
+    onVersionMessage: (String, Long, String) -> Unit,
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -699,6 +741,7 @@ private fun MessageArea(
                 onCopied = onCopied,
                 onShareMessage = onShareMessage,
                 onMoreMessage = onMoreMessage,
+                onVersionMessage = onVersionMessage,
             )
         }
     }
@@ -721,6 +764,7 @@ private fun UnitBlock(
     onCopied: () -> Unit,
     onShareMessage: (String) -> Unit,
     onMoreMessage: (String) -> Unit,
+    onVersionMessage: (String, Long, String) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
@@ -746,6 +790,7 @@ private fun UnitBlock(
                         onCopied = onCopied,
                         onShare = { onShareMessage(message.id) },
                         onMore = { onMoreMessage(message.id) },
+                        onVersion = { no, view -> onVersionMessage(message.id, no, view) },
                     )
 
                     else -> AssistantMessage(
@@ -757,6 +802,7 @@ private fun UnitBlock(
                         onCopied = onCopied,
                         onShare = { onShareMessage(message.id) },
                         onMore = { onMoreMessage(message.id) },
+                        onVersion = { no, view -> onVersionMessage(message.id, no, view) },
                     )
                 }
             }
@@ -847,6 +893,7 @@ private fun UserMessage(
     onCopied: () -> Unit,
     onShare: () -> Unit,
     onMore: () -> Unit,
+    onVersion: (Long, String) -> Unit,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -923,9 +970,9 @@ private fun UserMessage(
             }
         }
 
+        VersionControl(message = message, onPick = onVersion)
         MessageActionRow(
             mine = true,
-            versionCount = 1,
             onCopy = {
                 putClipboard(context, "消息", message.content)
                 onCopied()
@@ -953,6 +1000,7 @@ private fun AssistantMessage(
     onCopied: () -> Unit,
     onShare: () -> Unit,
     onMore: () -> Unit,
+    onVersion: (Long, String) -> Unit,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -1008,9 +1056,9 @@ private fun AssistantMessage(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
+        VersionControl(message = message, onPick = onVersion)
         MessageActionRow(
             mine = false,
-            versionCount = 1,
             onCopy = {
                 putClipboard(context, "消息", message.content)
                 onCopied()
@@ -1018,6 +1066,88 @@ private fun AssistantMessage(
             onShare = onShare,
             onSelect = onLongPress,
             onMore = onMore,
+        )
+    }
+}
+
+/**
+ * 版本切换（D135 / D137）：`<  n/n  >`。
+ *
+ * 那个数字的颜色就是三态语义：
+ * - 白（`onSurface`）：这一版**没被工具编辑过**，点它没反应；
+ * - 蓝（`primary`）：被编辑过，现在显示**原文**，点它切到编辑后；
+ * - 红（`error`）：被编辑过，现在显示**编辑后**，点它切回原文。
+ *
+ * 左右箭头翻版本，传 `keep`：**沿用那一版自己记住的视图**。用当前这一版的视图去套邻居，
+ * 会出现"翻过去突然变成编辑态"的怪事。
+ *
+ * `versionCount <= 1` 时整个控件不渲染——只有一个版本的消息不该看到翻页按钮。
+ */
+@Composable
+private fun VersionControl(message: ChatMessage, onPick: (Long, String) -> Unit) {
+    if (message.versionCount <= 1) return
+    val active = message.versionActive.coerceAtLeast(1)
+    val numberColor = when {
+        !message.versionEdited -> MaterialTheme.colorScheme.onSurface
+        message.versionView == "edited" -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        VersionArrow(
+            description = "上一版",
+            rotate = 90f,
+            enabled = active > 1,
+            onClick = { onPick((active - 1).toLong(), "keep") },
+        )
+        Text(
+            text = "$active/${message.versionCount}",
+            style = MaterialTheme.typography.labelMedium,
+            color = numberColor,
+            modifier = Modifier
+                .pointerInput(message.id, message.versionView, message.versionEdited) {
+                    detectTapGestures(
+                        onTap = {
+                            if (message.versionEdited) {
+                                onPick(
+                                    active.toLong(),
+                                    if (message.versionView == "edited") "raw" else "edited",
+                                )
+                            }
+                        },
+                    )
+                }
+                .padding(horizontal = 8.dp),
+        )
+        VersionArrow(
+            description = "下一版",
+            rotate = -90f,
+            enabled = active < message.versionCount,
+            onClick = { onPick((active + 1).toLong(), "keep") },
+        )
+    }
+}
+
+@Composable
+private fun VersionArrow(description: String, rotate: Float, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .pointerInput(enabled) {
+                detectTapGestures { if (enabled) onClick() }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = ActionIcons.ChevronDown,
+            contentDescription = description,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                alpha = if (enabled) 1f else 0.3f,
+            ),
+            modifier = Modifier.size(16.dp).rotate(rotate),
         )
     }
 }
@@ -1032,7 +1162,6 @@ private fun AssistantMessage(
 @Composable
 private fun MessageActionRow(
     mine: Boolean,
-    versionCount: Int,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSelect: () -> Unit,
@@ -1417,9 +1546,11 @@ private fun SendStopButton(
  */
 private fun messageSheetItems(
     message: ChatMessage,
-    versionCount: Int,
     onShare: () -> Unit,
     onSelectOnly: () -> Unit,
+    onSaveVersion: () -> Unit,
+    onDeleteThis: () -> Unit,
+    onDeleteAll: () -> Unit,
 ): List<SheetItem> {
     val items = mutableListOf(
         SheetItem(
@@ -1442,22 +1573,35 @@ private fun messageSheetItems(
             icon = ActionIcons.Check,
             onClick = onSelectOnly,
         ),
+        // 临时探针：`turn_run` 未接，重新生成产不出版本；
+        // 没有它，版本 UI 在真机上永远没有数据可看。接上 turn_run 就删掉这一项。
+        SheetItem(
+            label = "复制为新版本（临时探针）",
+            icon = ActionIcons.Copy,
+            onClick = onSaveVersion,
+        ),
         SheetItem(
             label = "创建分支",
             icon = ActionIcons.GitBranch,
             hint = "创建分支待接：要先把「从某条消息开始的新会话」建模",
         ),
-        SheetItem(
+    )
+    if (message.versionCount > 1) {
+        items += SheetItem(
             label = "删除此版本",
             icon = ActionIcons.Trash2,
-            hint = "删除此版本待接：版本表还没有（D137），storage 也还没有 delete 动词",
-        ),
-    )
-    if (versionCount > 1) {
+            onClick = onDeleteThis,
+        )
         items += SheetItem(
             label = "删除所有版本",
             icon = ActionIcons.Trash2,
-            hint = "删除所有版本待接：版本表还没有（D137）",
+            onClick = onDeleteAll,
+        )
+    } else {
+        items += SheetItem(
+            label = "删除此版本",
+            icon = ActionIcons.Trash2,
+            hint = "只剩一版：删了就等于删消息，而那组动词还没有（D130）",
         )
     }
     return items

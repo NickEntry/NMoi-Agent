@@ -21,6 +21,7 @@ use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::{AtomicUnit, Message, Role};
 use nmoi_core::source::SourceTag;
 use nmoi_core::{Estimator, Level};
+use nmoi_storage::versions::VersionView;
 use nmoi_storage::{OpenOutcome, Storage};
 use serde_json::{json, Value};
 
@@ -34,6 +35,11 @@ fn storage_error(error: impl std::fmt::Display) -> FfiError {
 fn parse_session(text: &str) -> FfiResult<SessionId> {
     SessionId::from_str(text)
         .map_err(|error| FfiError::new("id", format!("会话 id 不合法：{error}")))
+}
+
+fn parse_message(text: &str) -> FfiResult<MessageId> {
+    MessageId::from_str(text)
+        .map_err(|error| FfiError::new("id", format!("消息 id 不合法：{error}")))
 }
 
 fn parse_role(text: &str) -> FfiResult<Role> {
@@ -248,6 +254,144 @@ pub extern "C" fn nmoi_storage_append_text_json(
     })
 }
 
+/// 记一版**新生成的**回复（重新生成时用；开关关着时不要调它）。
+///
+/// 出参：`{"ok":true,"message":"…","version_no":3,"count":3}`
+///
+/// 现在 UI 还没有真正的"重新生成"（`turn_run` 未接），所以这一条先被
+/// 「更多 → 复制为新版本（临时探针）」用来验 D137 那一整套；接上 turn_run 之后，
+/// 探针删掉，这个动词留着给它用。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_save_version_json(
+    handle: u64,
+    message: *const c_char,
+    text: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let text = read_str(text, "text")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            let (version_no, count) = storage
+                .save_generated_version(&message_id, text)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "version_no": version_no,
+                "count": count,
+            }))
+        })
+    })
+}
+
+/// 列出某条消息的所有版本。
+///
+/// 出参：`{"ok":true,"message":"…","count":3,"active":2,"versions":[
+///   {"no":1,"active":false,"edited":false,"view":"raw","created_at":1792825006739}, …]}`
+///
+/// `edited` 决定 UI 上那个 `n/n` 的颜色：false = 白，true + view raw = 蓝，true + view edited = 红。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_versions_json(handle: u64, message: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            let list = storage
+                .list_message_versions(&message_id)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "count": list.count,
+                "active": list.active,
+                "versions": list
+                    .versions
+                    .iter()
+                    .map(|version| json!({
+                        "no": version.version_no,
+                        "active": version.active,
+                        "edited": version.edited_by_tool,
+                        "view": version.view.as_str(),
+                        "created_at": version.created_at,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+        })
+    })
+}
+
+/// 切到某一版的某一组正文，回**切换后应该显示的正文**。
+///
+/// 入参：`view` 只收 `raw` / `edited`；对没被编辑过的版本传 `edited` 会被降级成 `raw`
+/// （界面上的"点数字切换"本来就只在蓝/红两态有效，为这个报错没意义）。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_switch_version_json(
+    handle: u64,
+    message: *const c_char,
+    version_no: i64,
+    view: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let view_text = read_str(view, "view")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            // `keep` = 沿用这一版自己记住的视图（UI 上按 < / > 翻版本时用）。
+            if view_text == "keep" {
+                let content = storage
+                    .switch_message_version_remembered(&message_id, version_no)
+                    .map_err(storage_error)?;
+                return Ok(json!({
+                    "message": message_id.to_string(),
+                    "version_no": version_no,
+                    "view": "keep",
+                    "content": content,
+                }));
+            }
+            let parsed = VersionView::parse(view_text).ok_or_else(|| {
+                FfiError::new(
+                    "bad_argument",
+                    format!("view 只能是 raw / edited / keep，收到 `{view_text}`"),
+                )
+            })?;
+            let content = storage
+                .switch_message_version(&message_id, version_no, parsed)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "version_no": version_no,
+                "view": parsed.as_str(),
+                "content": content,
+            }))
+        })
+    })
+}
+
+/// 删一版（`version_no = 0` 表示"删除所有版本、只留当前显示的那一版"）。
+///
+/// 只剩一版时拒绝删：删到零版等于删消息，而那组动词还没有。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_delete_version_json(
+    handle: u64,
+    message: *const c_char,
+    version_no: i64,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            let (count, active, content) = storage
+                .delete_message_version(&message_id, version_no)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "count": count,
+                "active": active,
+                "content": content,
+            }))
+        })
+    })
+}
+
 /// 读一个会话的原子单元。
 ///
 /// `limit`：> 0 时只取最后 N 个单元（UI 首屏），`<= 0` 全给。`truncated` 告诉调用方
@@ -263,6 +407,8 @@ pub extern "C" fn nmoi_storage_load_units_json(
         let session_id = parse_session(session_text)?;
         with_storage(handle, |storage| {
             let units = storage.load_units(session_id).map_err(storage_error)?;
+            // 版本概要一次查完（不是每条消息一次：那是 N+1，滚动会顿）。
+            let versions = storage.version_index(session_id).map_err(storage_error)?;
             let total = units.len();
             let take = if limit <= 0 {
                 total
@@ -277,6 +423,7 @@ pub extern "C" fn nmoi_storage_load_units_json(
                         .messages
                         .iter()
                         .map(|message| {
+                            let brief = versions.get(&message.id.to_string());
                             json!({
                                 "id": message.id.to_string(),
                                 "seq": message.id.seq(),
@@ -292,6 +439,12 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "revision": message.revision,
                                 "tool_calls": message.tool_calls.len(),
                                 "tool_call_id": message.tool_call_id,
+                                // 版本（D137）：`version_count <= 1` 时 UI 不显示切换控件。
+                                // `version_edited` 决定那个数字的颜色：白 / 蓝 / 红。
+                                "version_count": brief.map(|b| b.count).unwrap_or(0),
+                                "version_active": brief.map(|b| b.active).unwrap_or(0),
+                                "version_view": brief.map(|b| b.view.as_str()).unwrap_or("raw"),
+                                "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
                             })
                         })
                         .collect();

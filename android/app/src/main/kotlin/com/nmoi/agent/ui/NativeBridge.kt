@@ -36,6 +36,14 @@ internal object NativeBridge {
 
     external fun closeStorageJson(handle: Long): String
 
+    external fun versionsJson(handle: Long, message: String): String
+
+    external fun switchVersionJson(handle: Long, message: String, versionNo: Long, view: String): String
+
+    external fun deleteVersionJson(handle: Long, message: String, versionNo: Long): String
+
+    external fun saveVersionJson(handle: Long, message: String, text: String): String
+
     external fun listConversationsJson(handle: Long, limit: Long, offset: Long): String
 
     /** 读会话的原子单元（消息区）。limit ≤ 0 = 全给。 */

@@ -409,3 +409,115 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_createConversationJso
     });
     to_jstring(&mut env, text)
 }
+
+/// `Native.versionsJson(handle, message)`：列出一条消息的所有版本。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_versionsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let text = guarded(move || match message {
+        Some(message) => {
+            let Ok(c_message) = CString::new(message) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `message` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_versions_json(
+                handle as u64,
+                c_message.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.switchVersionJson(handle, message, versionNo, view)`：切版本 / 切原文-编辑。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_switchVersionJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+    version_no: jlong,
+    view: JString<'local>,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let view = read_string(&mut env, &view);
+    let text = guarded(move || match (message, view) {
+        (Some(message), Some(view)) => {
+            let (Ok(c_message), Ok(c_view)) = (CString::new(message), CString::new(view)) else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::storage::nmoi_storage_switch_version_json(
+                handle as u64,
+                c_message.as_ptr(),
+                version_no,
+                c_view.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.deleteVersionJson(handle, message, versionNo)`：删一版（0 = 删除所有版本）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteVersionJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+    version_no: jlong,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let text = guarded(move || match message {
+        Some(message) => {
+            let Ok(c_message) = CString::new(message) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `message` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_delete_version_json(
+                handle as u64,
+                c_message.as_ptr(),
+                version_no,
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.saveVersionJson(handle, message, text)`：把这段文本记成该消息的新一版。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_saveVersionJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+    text: JString<'local>,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let text = read_string(&mut env, &text);
+    let result = guarded(move || match (message, text) {
+        (Some(message), Some(text)) => {
+            let (Ok(c_message), Ok(c_text)) = (CString::new(message), CString::new(text)) else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::storage::nmoi_storage_save_version_json(
+                handle as u64,
+                c_message.as_ptr(),
+                c_text.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, result)
+}

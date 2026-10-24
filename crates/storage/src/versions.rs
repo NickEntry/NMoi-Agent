@@ -13,7 +13,9 @@
 //!    这样 UI 上的 `n/n` 不需要再处理空洞。
 //! 3. 每消息上限 [`MAX_VERSIONS`] 版，超了丢**最旧**的一版（丢的是旧，不是当前）。
 
-use nmoi_core::ids::MessageId;
+use std::collections::HashMap;
+
+use nmoi_core::ids::{MessageId, SessionId};
 use rusqlite::{params, Transaction};
 
 use crate::repo::StorageError;
@@ -248,6 +250,24 @@ impl Storage {
         Ok(text)
     }
 
+    /// 切到某一版，**视图沿用这一版自己记住的那个**（`active_view`）。
+    ///
+    /// UI 上按 `<` / `>` 翻版本时用这个：把当前这一版的"原文/编辑后"状态硬套到邻居上，
+    /// 会让用户看到"我明明点的是上一版，它却跳到了编辑态"。
+    pub fn switch_message_version_remembered(
+        &mut self,
+        message_id: &MessageId,
+        version_no: i64,
+    ) -> Result<String, StorageError> {
+        let view: String = self.conn.query_row(
+            "SELECT active_view FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
+            params![message_id.to_string(), version_no],
+            |row| row.get(0),
+        )?;
+        let view = VersionView::parse(&view).unwrap_or(VersionView::Raw);
+        self.switch_message_version(message_id, version_no, view)
+    }
+
     /// 删一版（`version_no = 0` 表示"删除所有版本、只留当前显示的那一版"）。
     ///
     /// 只剩一版时拒绝删除（`StorageError::Inconsistent`）：删到零版等于删消息，
@@ -330,6 +350,60 @@ impl Storage {
         )?;
         tx.commit()?;
         Ok((new_count, new_active, displayed))
+    }
+}
+
+/// 一条消息的版本概要（列表渲染用）：几版、当前第几版、当前看哪一组、有没有被编辑过。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionBrief {
+    pub count: i64,
+    pub active: i64,
+    pub view: VersionView,
+    pub edited_by_tool: bool,
+}
+
+impl Storage {
+    /// 整个会话的版本概要，按消息 id 索引。
+    ///
+    /// 为什么整会话一次查完、而不是每条消息查一次：`load_units` 一次给几十上百条消息，
+    /// 逐条查会变成 N+1 次 SQL——真机上就是滚动一顿一顿的来源。
+    ///
+    /// 只返回 `version_count > 0` 的消息：没版本的消息（绝大多数）不该出现在结果里，
+    /// 调用方拿不到就等于"没有版本"，与 `count = 0` 同义。
+    pub fn version_index(
+        &self,
+        session: SessionId,
+    ) -> Result<HashMap<String, VersionBrief>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.version_count, m.version_active,
+                    COALESCE(v.edited_by_tool, 0), COALESCE(v.active_view, 'raw')
+             FROM messages m
+             LEFT JOIN message_versions v
+                    ON v.message_id = m.id AND v.version_no = m.version_active
+             WHERE m.conv_id = ?1 AND m.version_count > 0",
+        )?;
+        let rows = stmt.query_map([session.to_string()], |row| {
+            let id: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            let active: i64 = row.get(2)?;
+            let edited: i64 = row.get(3)?;
+            let view: String = row.get(4)?;
+            Ok((
+                id,
+                VersionBrief {
+                    count,
+                    active,
+                    view: VersionView::parse(&view).unwrap_or(VersionView::Raw),
+                    edited_by_tool: edited != 0,
+                },
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (id, brief) = row?;
+            out.insert(id, brief);
+        }
+        Ok(out)
     }
 }
 

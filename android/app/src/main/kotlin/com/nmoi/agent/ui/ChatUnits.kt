@@ -24,6 +24,14 @@ internal data class ChatMessage(
     val locked: Boolean,
     val toolCalls: Int,
     val toolCallId: String?,
+    /** 版本（D137）：总共几版。<= 1 时界面不显示切换控件。 */
+    val versionCount: Int = 0,
+    /** 当前第几版（1 起）。 */
+    val versionActive: Int = 0,
+    /** 当前这一版显示的是哪一组：`raw` / `edited`。 */
+    val versionView: String = "raw",
+    /** 这一版被工具/编辑改过没有——决定那个 `n/n` 的颜色（白 / 蓝 / 红）。 */
+    val versionEdited: Boolean = false,
 ) {
     val isThinking: Boolean get() = source == "model_thinking"
     val isToolCall: Boolean get() = source == "tool_call"
@@ -111,6 +119,10 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
                     locked = message.optBoolean("locked", false),
                     toolCalls = message.optInt("tool_calls", 0),
                     toolCallId = message.optString("tool_call_id", "").ifEmpty { null },
+                    versionCount = message.optInt("version_count", 0),
+                    versionActive = message.optInt("version_active", 0),
+                    versionView = message.optString("version_view", "raw"),
+                    versionEdited = message.optBoolean("version_edited", false),
                 ),
             )
         }

@@ -2581,3 +2581,25 @@ Compose 的 `clearFocus` 对 `AndroidView` 里的原生控件**不一定生效**
   `nmoi-core` 492、`nmoi-ffi` 24 未受影响。
 - **还没做**：三个 FFI 动词（`versions / switch_version / delete_version`）、
   `load_units` 里带上 `version_count/active_view/edited_by_tool`、UI 的 `< n/n >` 与三色、开关。
+
+### D137 实现记录（第二层：FFI + 界面，2026-10-24）
+
+数据层之上把这条能力接通了，**Android 侧现在真能看见、能点**。
+
+- **C ABI 四个动词**（`crates/ffi/src/storage.rs`）：
+  `nmoi_storage_save_version_json`（记一版新正文）、`nmoi_storage_versions_json`（列版本）、
+  `nmoi_storage_switch_version_json`（切版本 / 切视图，`view` 支持 `raw` / `edited` / `keep`）、
+  `nmoi_storage_delete_version_json`（删一版，0 = 只留当前版）。
+- **`load_units` 多四个键**：`version_count` / `version_active` / `version_view` / `version_edited`。
+  版本概要**整会话一次查完**（`Storage::version_index`），不是每条消息一次——那是 N+1。
+- **JNI 15 个符号**（原 11 + 4），Kotlin `NativeBridge` 同步；`check_jni_symbols.sh` 在 CI 对账。
+- **`keep` 的语义**：按 `<` / `>` 翻版本时沿用**那一版自己记住的视图**。
+  用当前版的视图去套邻居，会出现"翻过去突然变成编辑态"的怪事——这条单独有测试
+  （`remembered_view_survives_switching_away_and_back`）。
+- **界面**（`ChatScreen.VersionControl`）：`<  n/n  >`，数字三色 —— 白（未编辑，点不动）/
+  蓝（编辑过，显示原文）/ 红（编辑过，显示编辑后）；点数字切视图；`version_count <= 1` 整个控件不渲染。
+- **临时探针**：「更多 → 复制为新版本（临时探针）」。因为 `turn_run` 还没接、重新生成产不出版本，
+  而版本 UI 没数据就永远验不了。接上 turn_run 就删掉这一项（代码里标了）。
+- 「删除此版本 / 删除所有版本」现在**是真动作**（版本数 > 1 时才出现；只剩一版时给"删了等于删消息"的理由）。
+- 本地验证：`cargo test -p nmoi-storage` 全绿（versions 13 条），`cargo build -p nmoi-ffi` 通过；
+  JNI 那部分本机编不了（jni-sys 要 rustc 1.76+，D112），只能靠 CI 的 android job。
