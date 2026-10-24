@@ -2347,3 +2347,90 @@ D126 一来，`androidx.compose.material3` 就从"顺带被 BOM 拖进来"变成
 
 **还没做**：回弹没有插值动画（松手直接归位）；拖动期间遮罩没有缓动曲线；只认第一根手指（双指不处理）。
 **代价**：面板宽 300dp 是写死的，手势阈值按它算；换宽要一起改。
+
+## D137 消息版本：施工图（schema v5 + FFI 信封 + 测试清单）
+
+D135 定的是规则，这里是把它落到能开工的粒度。**待定项先拍死**（用户授权"你看着办"，实现前有异议再说）：
+
+- **每消息上限 20 版**，超了丢最旧的一版（丢的是最旧，不是当前；丢弃要写一条 `NLog.w`）。
+- **删除此版本**：删这一版。删的是当前版就切到**剩余里最新的**；若删到只剩 0 版，整条消息按
+  D130 的删除语义处理——但那组动词还没有，所以**只剩一版时不允许删**（UI 灰掉，理由写在提示里）。
+- **删除所有版本**：保留**当前显示的那一版**、把其余删掉（回到"只有一个版本"），不是删空。
+- **分支**：复制**当前显示**的那一组文本（不是原文）。分支是下一层的事，这里只留语义。
+
+### schema v5（`SCHEMA_VERSION` 4 → 5）
+
+```sql
+-- 每个 (message_id, version_no) 存两组正文：模型原始输出 + 工具/编辑改过的那份。
+CREATE TABLE message_versions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id     TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    version_no     INTEGER NOT NULL CHECK (version_no >= 1),
+    raw_text       TEXT NOT NULL,
+    edited_text    TEXT,
+    edited_by_tool INTEGER NOT NULL DEFAULT 0 CHECK (edited_by_tool IN (0, 1)),
+    -- 这个版本**上次看的是哪一组**：按版本记，不是按消息记。
+    active_view    TEXT NOT NULL DEFAULT 'raw' CHECK (active_view IN ('raw', 'edited')),
+    created_at     INTEGER NOT NULL,
+    -- 没被编辑过的版本不许有 edited_text；被编辑过的必须有
+    CHECK ((edited_by_tool = 0 AND edited_text IS NULL)
+        OR (edited_by_tool = 1 AND edited_text IS NOT NULL)),
+    UNIQUE (message_id, version_no)
+);
+
+CREATE INDEX message_versions_by_message ON message_versions(message_id, version_no);
+
+-- 消息上只记"总共几版、当前是第几版"；哪一组文本正在显示，按版本记（上面那张表）。
+ALTER TABLE messages ADD COLUMN version_count  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN version_active INTEGER NOT NULL DEFAULT 0;
+```
+
+**`messages.content` 保持"当前显示的那一组文本"**。这是刻意的：
+
+- `load_units` 的读路径一行都不用改（消息区照旧渲染 `content`）；
+- 展示态与存储态只差一个"写回"，切版本 / 切原文-编辑时同步写一次 `content`；
+- 代价是**同一份文本存了两处**（`content` + `message_versions`），所以写入必须走同一个仓库方法，
+  不许别处直接 UPDATE `messages.content`——否则两处会分叉，而分叉以后没人知道哪份是对的。
+
+### FFI 信封（三个新动词，`ok` 永远第一个键，D55）
+
+```
+nmoi_storage_versions_json(handle, message_id) ->
+  {"ok":1,"version_count":3,"active":2,"items":[
+     {"no":1,"active":false,"edited_by_tool":false,"view":"raw","created_at":1792825006739},
+     {"no":2,"active":true, "edited_by_tool":true, "view":"raw","created_at":...}]}
+
+nmoi_storage_switch_version_json(handle, message_id, version_no, view) ->
+  {"ok":1,"version_no":2,"view":"edited","content":"<切完显示的那一组文本>"}
+
+nmoi_storage_delete_version_json(handle, message_id, version_no)   // version_no = 0 表示"删除所有版本"
+  -> {"ok":1,"version_count":1,"active":1,"content":"<删完显示的那一组>"}
+```
+
+失败照旧走 `{"ok":0,"kind":...}`；`kind` 至少要有 `not_found` / `last_version`（只剩一版不许删）/ `bad_view`。
+
+### 写入时机
+
+- **重新生成**：开关开 → 插入 `version_no = count + 1`，`messages.version_active = 新号`，
+  `content` 写新文本；开关关 → 老行为（就地覆盖 `content`，不动版本表）。
+- **工具编辑**：写 `edited_text` + `edited_by_tool = 1`；`content` 按当前 `view` 决定要不要跟着改
+  （view = edited 才改）。
+- 开关本身先存 `SharedPreferences`（`msg_version/enabled`，与 `app_log` 同法），
+  `SettingsRepository` 接上后搬进 `settings` 文档——**迁移点写在这里，别到时候忘**。
+
+### 测试清单（本地能跑，`cargo test -p nmoi-storage`）
+
+1. v4 库升到 v5：行数不变、`version_count` 全 0；
+2. 插 3 版 → `versions` 顺序、`active` 标记、`content` = 当前显示组；
+3. 切 view：raw ↔ edited，`content` 跟着变，`active_view` 落在**那个版本**上；
+4. 切版本：`content` 变成目标版本的当前组；
+5. 删非当前版：`count-1`，当前版不变；
+6. 删当前版：切到剩余最新，`content` 跟着变；
+7. 删到只剩 1 版再删：`kind=last_version`，不动数据；
+8. 删所有版本：留当前显示那一版，`count = 1`；
+9. 上限：插到 21 版，最旧被丢，编号不重排（`version_no` 只增）；
+10. **发送取当前显示态**：这条在 FFI 之上，用一个"读 content 再发"的测试兜住语义——
+    它防的是"永远发原文"这个最隐蔽的错。
+
+实现顺序：迁移与仓库方法（Rust，本地测）→ FFI 三个动词 + `check_jni_symbols` 计数 →
+Android UI（`<` `n/n` `>`、三色、开关）→ 真机验。
