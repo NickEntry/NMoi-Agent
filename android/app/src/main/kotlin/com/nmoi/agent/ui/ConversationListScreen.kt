@@ -46,7 +46,7 @@ internal fun ConversationListScreen(
         color = MaterialTheme.colorScheme.background,
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Header(nativeStatus, onOpenDrawer)
+            Header(nativeStatus, onOpenDrawer, onCreateConversation)
 
             if (snapshot == null) {
                 Box(
@@ -89,7 +89,11 @@ internal fun ConversationListScreen(
 }
 
 @Composable
-private fun Header(nativeStatus: NativeStatus, onOpenDrawer: () -> Unit) {
+private fun Header(
+    nativeStatus: NativeStatus,
+    onOpenDrawer: () -> Unit,
+    onCreateConversation: () -> Unit,
+) {
     // start 只留 4dp：菜单按钮自己带 48dp 热区，再多加内边距会把图标推到看着不对的位置。
     Column(modifier = Modifier.padding(start = 4.dp, end = 16.dp, top = 24.dp, bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
