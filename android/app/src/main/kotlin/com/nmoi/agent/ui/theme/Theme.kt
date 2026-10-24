@@ -27,6 +27,16 @@ private val DarkColors = darkColorScheme(
     onSurface = Color(0xFFE6E6EA),
     surfaceVariant = Color(0xFF1E1E26),
     onSurfaceVariant = Color(0xFF9AA0A6),
+    // M3 的容器色阶（D126 用到的就是这几档）：助手气泡 `surfaceContainerLow`、
+    // 思考块与工具卡 `surfaceContainer`、输入区 `surfaceContainerHigh`。
+    // 不写死颜色，模板里就只剩"抬一档"这个说法；而 `darkColorScheme` 的默认值是从
+    // 基线紫算出来的，和我们的灰紫背景不在一套里——所以必须在这里给值。
+    surfaceContainerLowest = Color(0xFF0C0C10),
+    surfaceContainerLow = Color(0xFF17171D),
+    surfaceContainer = Color(0xFF1C1C23),
+    surfaceContainerHigh = Color(0xFF22222A),
+    surfaceContainerHighest = Color(0xFF282831),
+    outlineVariant = Color(0xFF33333D),
     inverseSurface = Color(0xFFE6E6EA),
     inverseOnSurface = Color(0xFF1A1A20),
     error = Color(0xFFF2B8B5),
@@ -43,6 +53,13 @@ private val LightColors = lightColorScheme(
     onSurface = Color(0xFF1A1A1F),
     surfaceVariant = Color(0xFFEFEFF4),
     onSurfaceVariant = Color(0xFF5A5F66),
+    // 浅色这一侧同理：气泡比背景深半档，输入区再深一点；不是"把深色反过来"。
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF1F1F6),
+    surfaceContainer = Color(0xFFEAEAF0),
+    surfaceContainerHigh = Color(0xFFE4E4EB),
+    surfaceContainerHighest = Color(0xFFDDDDE5),
+    outlineVariant = Color(0xFFDCDCE3),
     inverseSurface = Color(0xFF2E2E33),
     inverseOnSurface = Color(0xFFF4F4F8),
     error = Color(0xFFB3261E),

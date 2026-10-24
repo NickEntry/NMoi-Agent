@@ -95,10 +95,12 @@ environment secret（`docs/signing.md`），现在一个都没有，所以不出
 
 - **不提交副本**。提交进 `android/app/src/main/assets/` 的副本迟早和源头漂移，
   到时候"声明里写着"和"包里真正带的"是两份东西。
-- **CI 有一道闸**：`unzip -l` 列出 APK，必须能看到
+- **CI 有一道闸**：`unzip -l` 列出 APK，必须能看到 `assets/notices/LICENSE`、
   `assets/notices/THIRD-PARTY-NOTICES.md`、`assets/notices/LICENSES/ISC-lucide.txt`、
   `assets/notices/LICENSES/MIT-lobe-icons.txt`、`assets/notices/LICENSES/Apache-2.0.txt`，缺一个就失败。
-  （最后一份是 Android / Kotlin 运行期依赖共用的：Compose、`material3`、协程全是 Apache-2.0，见 D127。）
+  （`LICENSE` 是本项目自己的 GPL 全文，D128；`Apache-2.0.txt` 覆盖 Compose / `material3` / 协程，D127。）
+  比对用 `awk '$NF == "assets/notices/<名字>"'` 逐行比最后一个字段，**不用 `grep -F`**：
+  `assets/notices/LICENSE` 是 `assets/notices/LICENSES/…` 的前缀，用 grep 会把"没进包"放过去。
   "签名之前"这件事在 Gradle 里天然成立（assets 在合并阶段进包，签名只是对最终 zip 盖章），
   真正会出事的是"忘了放"和"放了个旧的"——前者由 srcDir 保证，后者由不提交副本保证。
 
@@ -108,7 +110,8 @@ environment secret（`docs/signing.md`），现在一个都没有，所以不出
   `docs/verification.md`，按 V0→V5 走。
 - **启动器图标**：4 设计 × 黑/白底共 8 套，设置里可切，默认 4 号黑底（D114、`docs/ui/icons/app/README.md`）。
   真机上**没验过**切换效果：manifest 的 alias 开关是标准做法，但各家桌面刷新快慢不一样。
-- **没有输入岛**：发不出消息，所以库里永远没有会话；想验列表得先用桌面 CLI 造库推进去。
+- **能存不能发**：输入岛有了（整条圆角 + 圆形 ↑），点 ↑ 只是把话写进库里，`nmoi_turn_run_json` 还没接，
+  界面上一行小字明写这个区别。库里的会话现在全靠这一条路造出来（不再需要桌面 CLI）。
 - **设置面只有绑定层，没有界面**：`NmoiFfi`（Kotlin）→ `NativeBridge` → `nmoi_settings_*` 四个动词
   已经通了（CI 里 `check_jni_symbols.sh` 对账 8 个符号），但设置页五节仍是灰行 ——
   界面接线是下一层（`SettingsRepository`）。真机上从「设置 → 调试 → 日志」看通没通（V4.5），不依赖 adb。

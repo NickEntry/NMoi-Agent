@@ -47,12 +47,6 @@ internal fun pendingRows(group: SettingsGroup): List<PendingRow> = when (group) 
     SettingsGroup.Debug -> emptyList()
 
     SettingsGroup.About -> listOf(
-        PendingRow("许可", "GPL-3.0-only；第三方便用不并进 LICENSE", "已定 D15"),
-        PendingRow(
-            "第三方声明",
-            "随每个分发物走：APK 的 assets/notices/、安装目录、图标包（D106）",
-            "已实现",
-        ),
         PendingRow("构建号与提交", "骨架阶段 0.0.1-dev；等 release 链路接上再显示提交号", "待接 P9"),
     )
 }

@@ -8,13 +8,17 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -51,9 +55,10 @@ import androidx.compose.ui.unit.dp
 internal fun ConversationDrawer(
     open: Boolean,
     rows: List<ConversationRow>,
-    currentTitle: String? = null,
+    currentId: String? = null,
     onOpen: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
+    onNewConversation: () -> Unit,
     onOpenSettings: () -> Unit,
     onClose: () -> Unit,
     content: @Composable () -> Unit,
@@ -115,8 +120,31 @@ internal fun ConversationDrawer(
                         text = "会话",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(start = 20.dp, top = 28.dp, bottom = 12.dp),
+                        modifier = Modifier.padding(start = 20.dp, top = 28.dp, bottom = 8.dp),
                     )
+
+                    // 新建放在列表顶上：抽屉是"换会话"的地方，那就得能在这里开一个新的。
+                    // 它只是切到一个空白会话（D125），落库发生在第一次存消息时——
+                    // 所以这个动作不会在库里留下一条空记录。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNewConversation() }
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = ActionIcons.Plus,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(end = 10.dp).size(18.dp),
+                        )
+                        Text(
+                            text = "新会话",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
 
                     LazyColumn(modifier = Modifier.weight(1f)) {
                         if (rows.isEmpty()) {
@@ -132,7 +160,8 @@ internal fun ConversationDrawer(
                         items(rows) { row ->
                             // 当前正在看的那一条要有标记：抽屉里十行长得一样，
                             // 不标出来就没法回答"我现在在哪"这个最基本的可见性问题。
-                            val current = row.title == currentTitle
+                            // 按 **id** 比，不按标题：两个会话重名是常事，重名会让两行同时亮。
+                            val current = currentId != null && row.id == currentId
                             Text(
                                 text = if (current) "${row.title}  ·  当前" else row.title,
                                 style = MaterialTheme.typography.bodyMedium,

@@ -18,6 +18,9 @@ val noticesAssetsRoot = layout.buildDirectory.dir("generated/assets")
 val syncNotices by tasks.registering(Sync::class) {
     from(repoRoot.resolve("THIRD-PARTY-NOTICES.md")) { into("notices") }
     from(repoRoot.resolve("LICENSES")) { into("notices/LICENSES") }
+    // 本项目自己的 GPL-3.0-only 全文也要随包走（D128）：应用内「开源许可」把它排在第一行，
+    // 用户拿到 APK 之后不该还需要上网才能读到自己的权利。
+    from(repoRoot.resolve("LICENSE")) { into("notices") }
     into(noticesAssetsRoot)
 }
 

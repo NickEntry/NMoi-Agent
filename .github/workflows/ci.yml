@@ -175,9 +175,12 @@ jobs:
           listing=$(unzip -l "$apk" | grep -E 'assets/notices/' || true)
           printf '%s\n' "$listing"
           missing=0
-          for want in THIRD-PARTY-NOTICES.md LICENSES/ISC-lucide.txt LICENSES/MIT-lobe-icons.txt LICENSES/Apache-2.0.txt; do
-            printf '%s\n' "$listing" | grep -qF "assets/notices/$want" \
-              || { echo "APK 里缺少 assets/notices/$want：第三方声明没进包（D106）" >&2; missing=1; }
+          # 逐个**精确**比对最后一个字段（unzip 列表的末尾就是文件名）：
+          # 用 grep -F "assets/notices/LICENSE" 会同时命中 "assets/notices/LICENSES/…"，
+          # 于是 LICENSE 没进包也能通过——这正是这道闸最容易假绿的地方。
+          for want in LICENSE THIRD-PARTY-NOTICES.md LICENSES/ISC-lucide.txt LICENSES/MIT-lobe-icons.txt LICENSES/Apache-2.0.txt; do
+            printf '%s\n' "$listing" | awk -v w="assets/notices/$want" '$NF == w { found = 1 } END { exit !found }' \
+              || { echo "APK 里缺少 assets/notices/$want：第三方声明没进包（D106 / D127 / D128）" >&2; missing=1; }
           done
           if [ "$missing" -ne 0 ]; then
             # 失败时把 assets 下到底有什么全打出来：上次就是因为文件放错了层级，

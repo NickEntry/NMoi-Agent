@@ -8,18 +8,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppIconSwitcher
 import com.nmoi.agent.ui.AppearanceScreen
-import com.nmoi.agent.ui.DebugScreen
 import com.nmoi.agent.ui.ChatScreen
-import com.nmoi.agent.ui.ConversationListScreen
 import com.nmoi.agent.ui.ConversationDrawer
 import com.nmoi.agent.ui.ConversationRepository
 import com.nmoi.agent.ui.ConversationSnapshot
+import com.nmoi.agent.ui.DebugScreen
 import com.nmoi.agent.ui.GroupScreen
+import com.nmoi.agent.ui.LicenseDoc
+import com.nmoi.agent.ui.LicenseDocScreen
+import com.nmoi.agent.ui.LicensesScreen
 import com.nmoi.agent.ui.LogChannelScreen
 import com.nmoi.agent.ui.LogKind
 import com.nmoi.agent.ui.LogListScreen
@@ -34,15 +35,20 @@ import com.nmoi.agent.ui.theme.SystemBarsForTheme
 import com.nmoi.agent.ui.theme.ThemeStore
 import com.nmoi.agent.ui.theme.applySystemBars
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** 三个页面，够用就行。导航还不值得引 Navigation-Compose：多一个依赖只为 3 个页面不值。 */
+/**
+ * 路由。
+ *
+ * **根路由是聊天页**（D125）：启动直接进一个还没落库的空白会话，
+ * 没有"先列表再进去"那一跳。会话列表收在左侧抽屉里，等价于别家的"历史记录"。
+ *
+ * 也正因为根是聊天页，[Route.Chat] 是唯一一个**没有返回箭头**的页面：
+ * 它上面没有别的页面可退，根页面按返回键应当退出应用。
+ */
 private sealed interface Route {
-    data object Conversations : Route
-
-    /** 标题给顶栏，`sessionId` 给 `load_units`；占位数据没有 id，所以可空。 */
+    /** `sessionId == null` = 还没落库的空白会话，第一次存消息时建。 */
     data class Chat(val title: String, val sessionId: String?) : Route
 
     /** 设置索引页：六行分组入口，本身不摆开关。 */
@@ -62,6 +68,12 @@ private sealed interface Route {
 
     /** 日志设置页：三种通道各自的开关与上限。 */
     data object LogSettings : Route
+
+    /** 开源许可索引：本项目许可 / 第三方声明 / LICENSES/ 下各份全文。 */
+    data object Licenses : Route
+
+    /** 单份许可全文。 */
+    data class LicenseDocRoute(val doc: LicenseDoc) : Route
 }
 
 class MainActivity : ComponentActivity() {
@@ -84,9 +96,11 @@ class MainActivity : ComponentActivity() {
             // 主题运行中切换时，系统栏图标要跟着改（浅底配深图标）。
             SystemBarsForTheme(dark)
             NMoiTheme(dark = dark) {
-                // 路由栈：返回 = 回上一级。子页面以后（提示词编辑、模型详情…）同样只需 push，
-                // 不用每页各写一个返回逻辑。
-                var backStack by remember { mutableStateOf(listOf<Route>(Route.Conversations)) }
+                // 路由栈：返回 = 回上一级。子页面以后（模型详情、世界书编辑…）同样只需 push，
+                // 不用每页各写一个返回逻辑。根是聊天页，它不接管返回键。
+                var backStack by remember {
+                    mutableStateOf(listOf<Route>(Route.Chat(NEW_CHAT_TITLE, null)))
+                }
                 val route = backStack.last()
                 var iconChoice by remember { mutableStateOf(AppIconSwitcher.load(context)) }
                 var iconWarning by remember { mutableStateOf<String?>(null) }
@@ -97,9 +111,8 @@ class MainActivity : ComponentActivity() {
 
                 val nativeStatus = remember { NativeBridge.status() }
                 val databasePath = remember { File(filesDir, "nmoi.db").absolutePath }
-                // 新建会话之后要让列表重读：produceState 只有 key 变了才会重跑。
+                // 建了会话之后要让抽屉重读：produceState 只有 key 变了才会重跑。
                 var listReload by remember { mutableStateOf(0) }
-                val scope = rememberCoroutineScope()
                 // 开库和列表读盘都碰磁盘，不许在主线程上做。
                 val snapshot by produceState<ConversationSnapshot?>(initialValue = null, listReload) {
                     value = withContext(Dispatchers.IO) {
@@ -107,7 +120,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 只在栈深 > 1 时接管返回键：根页面按返回应当是退出应用，
+                // 只在栈深 > 1 时接管返回键：根页面（聊天页）按返回应当退出应用，
                 // 而不是被我们拦下来变成"什么都不发生"。全局只注册这一处，子页面不各自注册。
                 BackHandler(enabled = backStack.size > 1) {
                     backStack = backStack.dropLast(1)
@@ -115,17 +128,37 @@ class MainActivity : ComponentActivity() {
                 // 后注册者优先：抽屉开着时，返回先关抽屉，而不是直接退页面。
                 BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
+                // D125 的"无感建会话"：路由原地换掉（栈深不变），页面不重建、不闪。
+                // 返回 null = 建不出来，调用方负责把原因写在界面上，不静默丢字。
+                val ensureSession: suspend () -> String? = {
+                    val created = withContext(Dispatchers.IO) {
+                        ConversationRepository.create(databasePath, NEW_CHAT_TITLE)
+                    }
+                    created.fold(
+                        onSuccess = { id ->
+                            listReload += 1
+                            backStack = backStack.dropLast(1) + Route.Chat(NEW_CHAT_TITLE, id)
+                            id
+                        },
+                        onFailure = {
+                            NLog.w("Storage", "首次存消息时建会话失败：${it.message}")
+                            null
+                        },
+                    )
+                }
+
                 ConversationDrawer(
                     open = drawerOpen,
                     rows = snapshot?.rows.orEmpty(),
-                    currentTitle = (route as? Route.Chat)?.title,
+                    currentId = (route as? Route.Chat)?.sessionId,
                     onOpen = { drawerOpen = true },
                     onOpenConversation = { picked ->
                         drawerOpen = false
-                        backStack = listOf(
-                            Route.Conversations,
-                            Route.Chat(picked.title, picked.id.ifEmpty { null }),
-                        )
+                        backStack = listOf(Route.Chat(picked.title, picked.id.ifEmpty { null }))
+                    },
+                    onNewConversation = {
+                        drawerOpen = false
+                        backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
                     },
                     onOpenSettings = {
                         drawerOpen = false
@@ -133,106 +166,100 @@ class MainActivity : ComponentActivity() {
                     },
                     onClose = { drawerOpen = false },
                 ) {
-                when (route) {
-                    Route.Conversations -> ConversationListScreen(
-                        snapshot = snapshot,
-                        nativeStatus = nativeStatus,
-                        onOpenDrawer = { drawerOpen = true },
-                        onOpenConversation = { row ->
-                            backStack = backStack + Route.Chat(row.title, row.id.ifEmpty { null })
-                        },
-                        onCreateConversation = {
-                            scope.launch {
-                                val title = "新会话"
-                                val created = withContext(Dispatchers.IO) {
-                                    ConversationRepository.create(databasePath, title)
-                                }
-                                created.fold(
-                                    onSuccess = { session ->
-                                        listReload += 1
-                                        backStack = backStack + Route.Chat(title, session)
-                                    },
-                                    onFailure = {
-                                        // 失败也要留痕：设置 → 调试 → 日志里能看到这一行。
-                                        NLog.w("Storage", "新建会话失败：${it.message}")
-                                    },
-                                )
-                            }
-                        },
-                    )
-
-                    is Route.Chat -> ChatScreen(
-                        title = route.title,
-                        sessionId = route.sessionId,
-                        onBack = { backStack = backStack.dropLast(1) },
-                        onOpenDrawer = { drawerOpen = true },
-                    )
-
-                    Route.Logs -> LogListScreen(
-                        onOpen = { kind -> backStack = backStack + Route.LogChannel(kind) },
-                        onOpenSettings = { backStack = backStack + Route.LogSettings },
-                        onBack = { backStack = backStack.dropLast(1) },
-                    )
-
-                    is Route.LogChannel -> LogChannelScreen(
-                        kind = route.kind,
-                        onBack = { backStack = backStack.dropLast(1) },
-                    )
-
-                    Route.LogSettings -> LogSettingsScreen(
-                        onBack = { backStack = backStack.dropLast(1) },
-                    )
-
-                    Route.Prompts -> PromptsScreen(
-                        onBack = { backStack = backStack.dropLast(1) },
-                    )
-
-                    Route.Settings -> SettingsIndexScreen(
-                        iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
-                        logSummary = logSummary,
-                        onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
-                        onBack = { backStack = backStack.dropLast(1) },
-                    )
-
-                    is Route.SettingsGroupRoute -> when (val group = route.group) {
-                        // 外观与调试已有真实现，其余四组先给"还没接线"的清单。
-                        SettingsGroup.Appearance -> AppearanceScreen(
-                            choice = iconChoice,
-                            warning = iconWarning,
-                            themeMode = themeMode,
-                            onThemePick = { mode ->
-                                ThemeStore.save(context, mode)
-                                themeMode = mode
-                                NLog.i("Appearance", "主题改成 ${mode.label}")
-                            },
-                            onPick = { picked ->
-                                if (AppIconSwitcher.apply(context, picked)) {
-                                    iconChoice = picked
-                                    iconWarning = null
-                                } else {
-                                    iconWarning = "切换没生效，详情看 logcat（tag: NMoiIcon）"
+                    when (route) {
+                        is Route.Chat -> ChatScreen(
+                            title = route.title,
+                            sessionId = route.sessionId,
+                            onOpenDrawer = { drawerOpen = true },
+                            onCreateSession = ensureSession,
+                            onNewChat = {
+                                // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
+                                if (route.sessionId != null) {
+                                    backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
                                 }
                             },
+                        )
+
+                        Route.Prompts -> PromptsScreen(
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
-                        SettingsGroup.Debug -> DebugScreen(
+                        Route.Logs -> LogListScreen(
+                            onOpen = { kind -> backStack = backStack + Route.LogChannel(kind) },
+                            onOpenSettings = { backStack = backStack + Route.LogSettings },
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        is Route.LogChannel -> LogChannelScreen(
+                            kind = route.kind,
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        Route.LogSettings -> LogSettingsScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        Route.Licenses -> LicensesScreen(
+                            onOpenDoc = { doc -> backStack = backStack + Route.LicenseDocRoute(doc) },
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        is Route.LicenseDocRoute -> LicenseDocScreen(
+                            doc = route.doc,
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        Route.Settings -> SettingsIndexScreen(
+                            iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                             logSummary = logSummary,
-                            nativeStatus = nativeStatus,
-                            onOpenLogs = { backStack = backStack + Route.Logs },
+                            onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
-                        else -> GroupScreen(
-                            group = group,
-                            onOpenPrompts = { backStack = backStack + Route.Prompts },
-                            onBack = { backStack = backStack.dropLast(1) },
-                        )
+                        is Route.SettingsGroupRoute -> when (val group = route.group) {
+                            // 外观与调试已有真实现，其余组先给"还没接线"的清单。
+                            SettingsGroup.Appearance -> AppearanceScreen(
+                                choice = iconChoice,
+                                warning = iconWarning,
+                                themeMode = themeMode,
+                                onThemePick = { mode ->
+                                    ThemeStore.save(context, mode)
+                                    themeMode = mode
+                                    NLog.i("Appearance", "主题改成 ${mode.label}")
+                                },
+                                onPick = { picked ->
+                                    if (AppIconSwitcher.apply(context, picked)) {
+                                        iconChoice = picked
+                                        iconWarning = null
+                                    } else {
+                                        iconWarning = "切换没生效，详情看 logcat（tag: NMoiIcon）"
+                                    }
+                                },
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+
+                            SettingsGroup.Debug -> DebugScreen(
+                                logSummary = logSummary,
+                                nativeStatus = nativeStatus,
+                                onOpenLogs = { backStack = backStack + Route.Logs },
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+
+                            else -> GroupScreen(
+                                group = group,
+                                onOpenPrompts = { backStack = backStack + Route.Prompts },
+                                onOpenLicenses = { backStack = backStack + Route.Licenses },
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+                        }
                     }
-
-                }
                 }
             }
         }
+    }
+
+    private companion object {
+        /** 空白会话的显示名。落库时也用它；改名是后面的事（等模型跑起来自动起名）。 */
+        const val NEW_CHAT_TITLE = "新会话"
     }
 }

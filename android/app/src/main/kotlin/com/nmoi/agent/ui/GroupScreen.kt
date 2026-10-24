@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 internal fun GroupScreen(
     group: SettingsGroup,
     onOpenPrompts: () -> Unit,
+    onOpenLicenses: () -> Unit,
     onBack: () -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -53,12 +54,22 @@ internal fun GroupScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                 )
 
-                // 唯一一个真正能进的地方：模型与提示词 → 七条压缩提示词（只读页已实现）。
+                // 真正能进的入口：目前两处。接了新的就从 pendingRows 里删一行、在这里加一个 NavRow。
                 if (group == SettingsGroup.Models) {
                     NavRow(
                         title = "七条压缩提示词",
                         subtitle = "draft / fallback.strip / fallback.merge / single / segment / merge_segments / verify",
                         onClick = onOpenPrompts,
+                    )
+                }
+
+                // 关于 → 开源许可：页面读的是包里真实存在的 assets/notices/，
+                // 所以它既是"看声明"的地方，也是"声明到底进包没有"的自检入口。
+                if (group == SettingsGroup.About) {
+                    NavRow(
+                        title = "开源许可",
+                        subtitle = "GPL-3.0-only 全文 · 第三方组件声明 · LICENSES/ 下三份",
+                        onClick = onOpenLicenses,
                     )
                 }
 
