@@ -106,6 +106,8 @@ internal fun ChatScreen(
     var selected by remember { mutableStateOf(setOf<String>()) }
     // 分享底部两排：上排两个开关（思考调用 / 详细信息），下排两个动作（MD / 图片）。
     var shareOpen by remember { mutableStateOf(false) }
+    // 「更多」是一个**自己画的底部面板**（不是 DropdownMenu）：要带图标、要盖住整屏。
+    var moreFor by remember { mutableStateOf<ChatMessage?>(null) }
     var includeThinkingTools by remember { mutableStateOf(false) }
     var includeDetails by remember { mutableStateOf(false) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
@@ -264,6 +266,7 @@ internal fun ChatScreen(
                             if (next.isEmpty()) selecting = false
                         },
                         onCopied = { notice = "已复制这条消息" },
+                        onMoreMessage = { id -> moreFor = allMessages.firstOrNull { it.id == id } },
                         // 「更多 → 分享」= 选中这一条并直接打开分享面板：
                         // 分享本来就是"选几条再导"，让它从一条开始，少两步。
                         onShareMessage = { id ->
@@ -305,6 +308,28 @@ internal fun ChatScreen(
                 onMarkdown = shareAsMarkdown,
                 onImage = {},
                 onDismiss = { shareOpen = false },
+            )
+        }
+
+        val sheetMessage = moreFor
+        if (sheetMessage != null) {
+            MenuSheet(
+                title = if (sheetMessage.isUser) "这条用户消息" else "这条助手消息",
+                items = messageSheetItems(
+                    message = sheetMessage,
+                    versionCount = 1,
+                    onShare = {
+                        selecting = true
+                        selected = setOf(sheetMessage.id)
+                        shareOpen = true
+                    },
+                    onSelectOnly = {
+                        selecting = true
+                        selected = setOf(sheetMessage.id)
+                    },
+                ),
+                onHint = { notice = it },
+                onDismiss = { moreFor = null },
             )
         }
     }
@@ -595,6 +620,7 @@ private fun MessageArea(
     onToggleMessage: (String) -> Unit,
     onCopied: () -> Unit,
     onShareMessage: (String) -> Unit,
+    onMoreMessage: (String) -> Unit,
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -643,9 +669,9 @@ private fun MessageArea(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        // 左右边距一致（D139）：用户要"助手侧边距再小一点，左右对称"，
-        // 所以两边都是 12dp，头像贴着自己那一侧。
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+        // 左右边距一致 8dp（用户 2026-10-24 按图定的：边距"就这么一点"），
+        // 头像 32dp 贴着自己那一侧；思考块/工具卡按 32+8 缩进对齐正文。
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
         // 同角色 4dp、异角色 12dp（D126）：4 是基准间距，换人时再加 8。
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -672,6 +698,7 @@ private fun MessageArea(
                 onToggleMessage = onToggleMessage,
                 onCopied = onCopied,
                 onShareMessage = onShareMessage,
+                onMoreMessage = onMoreMessage,
             )
         }
     }
@@ -693,6 +720,7 @@ private fun UnitBlock(
     onToggleMessage: (String) -> Unit,
     onCopied: () -> Unit,
     onShareMessage: (String) -> Unit,
+    onMoreMessage: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
@@ -717,6 +745,7 @@ private fun UnitBlock(
                         onTap = { if (selecting) onToggleMessage(message.id) },
                         onCopied = onCopied,
                         onShare = { onShareMessage(message.id) },
+                        onMore = { onMoreMessage(message.id) },
                     )
 
                     else -> AssistantMessage(
@@ -727,6 +756,7 @@ private fun UnitBlock(
                         onTap = { if (selecting) onToggleMessage(message.id) },
                         onCopied = onCopied,
                         onShare = { onShareMessage(message.id) },
+                        onMore = { onMoreMessage(message.id) },
                     )
                 }
             }
@@ -816,6 +846,7 @@ private fun UserMessage(
     onTap: () -> Unit,
     onCopied: () -> Unit,
     onShare: () -> Unit,
+    onMore: () -> Unit,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -853,7 +884,7 @@ private fun UserMessage(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            InitialAvatar(letter = USER_NAME, size = 24.dp, mine = true)
+            InitialAvatar(letter = USER_NAME, size = 32.dp, mine = true)
         }
 
         Row(
@@ -901,6 +932,7 @@ private fun UserMessage(
             },
             onShare = onShare,
             onSelect = onLongPress,
+            onMore = onMore,
         )
     }
 }
@@ -920,6 +952,7 @@ private fun AssistantMessage(
     onTap: () -> Unit,
     onCopied: () -> Unit,
     onShare: () -> Unit,
+    onMore: () -> Unit,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -932,7 +965,7 @@ private fun AssistantMessage(
     }
 
     Row(modifier = Modifier.fillMaxWidth().then(tint)) {
-        InitialAvatar(letter = "助", size = 24.dp, mine = false)
+        InitialAvatar(letter = "助", size = 32.dp, mine = false)
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -979,6 +1012,7 @@ private fun AssistantMessage(
                 },
                 onShare = onShare,
                 onSelect = onLongPress,
+                onMore = onMore,
             )
         }
     }
@@ -998,8 +1032,8 @@ private fun MessageActionRow(
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSelect: () -> Unit,
+    onMore: () -> Unit,
 ) {
-    var moreOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
@@ -1035,59 +1069,12 @@ private fun MessageActionRow(
             compact = true,
             enabled = false,
         )
-        Box {
-            IconActionButton(
-                image = ActionIcons.Ellipsis,
-                description = "更多",
-                onClick = { moreOpen = true },
-                compact = true,
-            )
-            DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-                // 顺序照用户给的：编辑 / 增强编辑 / 分享 / 选择消息 / 创建分支 / 删除此版本 / 删除所有版本。
-                DropdownMenuItem(
-                    text = { Text("编辑（待接 edit）") },
-                    onClick = {},
-                    enabled = false,
-                )
-                DropdownMenuItem(
-                    text = { Text("增强编辑（待接 edit）") },
-                    onClick = {},
-                    enabled = false,
-                )
-                DropdownMenuItem(
-                    text = { Text("分享") },
-                    onClick = {
-                        moreOpen = false
-                        onShare()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("选择消息") },
-                    onClick = {
-                        moreOpen = false
-                        onSelect()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("创建分支（待接 branch）") },
-                    onClick = {},
-                    enabled = false,
-                )
-                DropdownMenuItem(
-                    text = { Text("删除此版本（待接 delete）") },
-                    onClick = {},
-                    enabled = false,
-                )
-                // "删除所有版本"只在**真的还有其他版本**时出现；现在没有版本模型，所以不显示。
-                if (versionCount > 1) {
-                    DropdownMenuItem(
-                        text = { Text("删除所有版本（待接 delete）") },
-                        onClick = {},
-                        enabled = false,
-                    )
-                }
-            }
-        }
+        IconActionButton(
+            image = ActionIcons.Ellipsis,
+            description = "更多",
+            onClick = onMore,
+            compact = true,
+        )
     }
 }
 
@@ -1101,7 +1088,7 @@ private fun MessageActionRow(
 private fun ThinkingBlock(message: ChatMessage) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(32.dp))
+        Spacer(Modifier.width(40.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1155,7 +1142,7 @@ private fun ToolPairCard(unit: ChatUnit) {
     val results = unit.messages.count { it.isToolResult }
 
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(32.dp))
+        Spacer(Modifier.width(40.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1417,6 +1404,61 @@ private fun SendStopButton(
             )
         }
     }
+}
+
+/**
+ * 「更多」面板的内容。
+ *
+ * 顺序照用户 2026-10-24 给的：编辑 / 增强编辑 / 分享 / 选择消息 / 创建分支 / 删除此版本 /
+ * 删除所有版本（**只有真的还有其他版本时才出现**）。没接的项不隐藏、也不做成一按就死的行，
+ * 而是点了给一句"待接什么"——这是这个项目里"不给假开关"的一贯做法。
+ */
+private fun messageSheetItems(
+    message: ChatMessage,
+    versionCount: Int,
+    onShare: () -> Unit,
+    onSelectOnly: () -> Unit,
+): List<SheetItem> {
+    val items = mutableListOf(
+        SheetItem(
+            label = "编辑",
+            icon = ActionIcons.Pencil,
+            hint = "编辑待接：core::edit::apply_edit 还没桥出 FFI（与 D135 那一层一起做）",
+        ),
+        SheetItem(
+            label = "增强编辑",
+            icon = ActionIcons.Pencil,
+            hint = "增强编辑待接：同编辑，另外要先定「用模型改写这一段」的提示词与预算",
+        ),
+        SheetItem(
+            label = "分享",
+            icon = ActionIcons.Share2,
+            onClick = onShare,
+        ),
+        SheetItem(
+            label = "选择消息",
+            icon = ActionIcons.Check,
+            onClick = onSelectOnly,
+        ),
+        SheetItem(
+            label = "创建分支",
+            icon = ActionIcons.GitBranch,
+            hint = "创建分支待接：要先把「从某条消息开始的新会话」建模",
+        ),
+        SheetItem(
+            label = "删除此版本",
+            icon = ActionIcons.Trash2,
+            hint = "删除此版本待接：版本表还没有（D137），storage 也还没有 delete 动词",
+        ),
+    )
+    if (versionCount > 1) {
+        items += SheetItem(
+            label = "删除所有版本",
+            icon = ActionIcons.Trash2,
+            hint = "删除所有版本待接：版本表还没有（D137）",
+        )
+    }
+    return items
 }
 
 /**

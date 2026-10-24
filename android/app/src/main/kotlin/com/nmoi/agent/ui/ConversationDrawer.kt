@@ -28,8 +28,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -100,6 +98,9 @@ internal fun ConversationDrawer(
 
     // 拖动位移（px）。拖动阶段只能写普通 state：`awaitEachGesture` 是受限协程，
     // 里面挂起不了 Animatable 的方法（CI 会报 Restricted suspending functions...）。
+    // 提示行与助手面板的状态放在最外层：面板要盖住整屏，不能缩在 300dp 的抽屉里。
+    var hint by remember { mutableStateOf<String?>(null) }
+    var assistantMenu by remember { mutableStateOf(false) }
     var dragPx by remember { mutableStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
     val inertia = remember { Animatable(0f) }
@@ -225,6 +226,9 @@ internal fun ConversationDrawer(
                 DrawerPanel(
                     rows = rows,
                     currentId = currentId,
+                    hint = hint,
+                    onHint = { hint = it },
+                    onOpenAssistantMenu = { assistantMenu = true },
                     onOpenConversation = onOpenConversation,
                     onNewConversation = onNewConversation,
                     onOpenSettings = onOpenSettings,
@@ -257,12 +261,38 @@ internal fun ConversationDrawer(
                     DrawerPanel(
                         rows = rows,
                         currentId = currentId,
+                        hint = hint,
+                        onHint = { hint = it },
+                        onOpenAssistantMenu = { assistantMenu = true },
                         onOpenConversation = onOpenConversation,
                         onNewConversation = onNewConversation,
                         onOpenSettings = onOpenSettings,
                     )
                 }
             }
+        }
+
+        // 助手列表：自己画的底部面板（头像 + 名称 + 铅笔），不是下拉菜单。
+        if (assistantMenu) {
+            MenuSheet(
+                title = "切换助手",
+                items = listOf(
+                    SheetItem(
+                        label = ASSISTANT_NAME,
+                        avatar = "助",
+                        trailing = ActionIcons.Pencil,
+                        onTrailing = { hint = "编辑助手待接：助手页（P3.6），名字/头像都是装饰性字段" },
+                        onClick = { hint = "切换助手待接：助手表还没建（P3.6）" },
+                    ),
+                    SheetItem(
+                        label = "新建助手",
+                        icon = ActionIcons.Plus,
+                        hint = "新建助手待接：助手页（P3.6）",
+                    ),
+                ),
+                onHint = { hint = it },
+                onDismiss = { assistantMenu = false },
+            )
         }
     }
 }
@@ -287,13 +317,14 @@ private fun greeting(): String = when (LocalTime.now().hour) {
 private fun DrawerPanel(
     rows: List<ConversationRow>,
     currentId: String?,
+    hint: String?,
+    onHint: (String) -> Unit,
+    onOpenAssistantMenu: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
     onNewConversation: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    var hint by remember { mutableStateOf<String?>(null) }
     var searchAll by remember { mutableStateOf(false) }
-    var assistantMenu by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
@@ -308,7 +339,7 @@ private fun DrawerPanel(
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    modifier = Modifier.clickable { hint = "编辑用户名字/头像待接：要头像存储与编辑对话框（D140）" },
+                    modifier = Modifier.clickable { onHint("编辑用户名字/头像待接：要头像存储与编辑对话框（D140）") },
                 )
                 Text(
                     text = greeting(),
@@ -323,7 +354,7 @@ private fun DrawerPanel(
         SearchPill(
             searchAll = searchAll,
             onSwitchToAll = { searchAll = true },
-            onHint = { hint = "搜索待接：storage 还没有 search 动词（P4 / P10）" },
+            onHint = { onHint("搜索待接：storage 还没有 search 动词（P4 / P10）") },
         )
 
         // —— 会话列表（新对话在最上面）——
@@ -415,16 +446,15 @@ private fun DrawerPanel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 点头像 = 助手设置（待接）；点名字/箭头 = 助手列表。
-            Box {
-                Row(
-                    modifier = Modifier
-                        .clickable { assistantMenu = true }
-                        .padding(end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            Row(
+                modifier = Modifier
+                    .clickable { onOpenAssistantMenu() }
+                    .padding(end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                     Box(
                         modifier = Modifier.clickable {
-                            hint = "助手设置待接：助手页（P3.6），头像与名字都是装饰性字段"
+                            onHint("助手设置待接：助手页（P3.6），头像与名字都是装饰性字段")
                         },
                     ) {
                         DrawerAvatar(label = "助", size = 30.dp, mine = false)
@@ -436,30 +466,12 @@ private fun DrawerPanel(
                         maxLines = 1,
                         modifier = Modifier.padding(start = 10.dp),
                     )
-                    Icon(
-                        imageVector = ActionIcons.ChevronDown,
-                        contentDescription = "切换助手",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 6.dp).size(18.dp),
-                    )
-                }
-                DropdownMenu(expanded = assistantMenu, onDismissRequest = { assistantMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("默认助手") },
-                        onClick = {
-                            assistantMenu = false
-                            hint = "切换助手待接：助手表还没建（P3.6）"
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("新建助手（待接）") },
-                        onClick = {
-                            assistantMenu = false
-                            hint = "新建助手待接：助手页（P3.6）"
-                        },
-                        enabled = false,
-                    )
-                }
+                Icon(
+                    imageVector = ActionIcons.ChevronDown,
+                    contentDescription = "切换助手",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                )
             }
             Spacer(Modifier.weight(1f))
             // 设置图标是**自绘**的齿轮（D139），不用参考图里那个。
