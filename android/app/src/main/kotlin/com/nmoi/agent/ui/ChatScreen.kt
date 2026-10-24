@@ -669,9 +669,9 @@ private fun MessageArea(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        // 左右边距一致 8dp（用户 2026-10-24 按图定的：边距"就这么一点"），
-        // 头像 32dp 贴着自己那一侧；思考块/工具卡按 32+8 缩进对齐正文。
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
+        // 左右边距一致 18dp（2026-10-24 第二轮：8dp 太贴边，按 2.2 倍放大）。
+        // 助手正文**整行铺开**、左边缘和头像左边缘同一条线（D142）。
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
         // 同角色 4dp、异角色 12dp（D126）：4 是基准间距，换人时再加 8。
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -964,57 +964,61 @@ private fun AssistantMessage(
         Modifier
     }
 
-    Row(modifier = Modifier.fillMaxWidth().then(tint)) {
-        InitialAvatar(letter = "助", size = 32.dp, mine = false)
-        Spacer(Modifier.width(8.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = ASSISTANT_NAME,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-            )
-            if (stamp != null) {
+    Column(modifier = Modifier.fillMaxWidth().then(tint)) {
+        // 头像 + 名字/时间占一行；**正文在它们下面整行铺开**，
+        // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
+        Row(verticalAlignment = Alignment.Top) {
+            InitialAvatar(letter = "助", size = 32.dp, mine = false)
+            Spacer(Modifier.width(10.dp))
+            Column {
                 Text(
-                    text = stamp,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    text = ASSISTANT_NAME,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    modifier = Modifier.padding(top = 1.dp),
                 )
+                if (stamp != null) {
+                    Text(
+                        text = stamp,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                }
             }
-            MarkdownBody(
-                text = message.content.ifEmpty { "（空消息）" },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp)
-                    .pointerInput(selecting, message.id) {
-                        detectTapGestures(
-                            onTap = { onTap() },
-                            onLongPress = { onLongPress() },
-                        )
-                    },
-            )
-            if (message.incomplete) {
-                Text(
-                    text = "未完成 · 这一轮被中断",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            MessageActionRow(
-                mine = false,
-                versionCount = 1,
-                onCopy = {
-                    putClipboard(context, "消息", message.content)
-                    onCopied()
+        }
+        MarkdownBody(
+            text = message.content.ifEmpty { "（空消息）" },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+                .pointerInput(selecting, message.id) {
+                    detectTapGestures(
+                        onTap = { onTap() },
+                        onLongPress = { onLongPress() },
+                    )
                 },
-                onShare = onShare,
-                onSelect = onLongPress,
-                onMore = onMore,
+        )
+        if (message.incomplete) {
+            Text(
+                text = "未完成 · 这一轮被中断",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
+        MessageActionRow(
+            mine = false,
+            versionCount = 1,
+            onCopy = {
+                putClipboard(context, "消息", message.content)
+                onCopied()
+            },
+            onShare = onShare,
+            onSelect = onLongPress,
+            onMore = onMore,
+        )
     }
 }
 
@@ -1088,7 +1092,6 @@ private fun MessageActionRow(
 private fun ThinkingBlock(message: ChatMessage) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(40.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1142,7 +1145,6 @@ private fun ToolPairCard(unit: ChatUnit) {
     val results = unit.messages.count { it.isToolResult }
 
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(40.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1493,7 +1495,7 @@ private fun NativeEditText(
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION or EditorInfo.IME_ACTION_NONE
-                setPadding(12, 22, 4, 20)
+                setPadding(16, 22, 12, 18)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null
