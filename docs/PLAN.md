@@ -6,7 +6,9 @@
 
 - 上游设计：`docs/design/context-modes-design-v1.1.md`、`docs/design/platform-client-plan.md`、`docs/design/context-experiments-report.md`
 - 决策记录：`docs/decisions.md`（D1–D9 来自计划文档，D10 起是本仓库新增）
-- 最近更新：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 docs/compression.md、D115）
+- 最近更新：2026-10-24（D125 聊天页升主页、D126 气泡照 Material 3：**都只有设计，未实现**；
+  同轮把 M3 的许可义务落定：`LICENSES/Apache-2.0.txt` + 声明 §3 + CI 闸点四样，D127）
+- 上一轮：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 docs/compression.md、D115）
 - 同轮：0.14（应用图标 4 款 × 黑白底、设置里可切、默认 4 号黑底；D114）
 - 同轮：0.13（JNI 桥接上原生层，列表读真库；D112；真机清单 docs/verification.md）
 - 上一轮：2026-10-22（0.12：Android 骨架 + CI 出 debug APK；D110 / D111）

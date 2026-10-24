@@ -175,7 +175,7 @@ jobs:
           listing=$(unzip -l "$apk" | grep -E 'assets/notices/' || true)
           printf '%s\n' "$listing"
           missing=0
-          for want in THIRD-PARTY-NOTICES.md LICENSES/ISC-lucide.txt LICENSES/MIT-lobe-icons.txt; do
+          for want in THIRD-PARTY-NOTICES.md LICENSES/ISC-lucide.txt LICENSES/MIT-lobe-icons.txt LICENSES/Apache-2.0.txt; do
             printf '%s\n' "$listing" | grep -qF "assets/notices/$want" \
               || { echo "APK 里缺少 assets/notices/$want：第三方声明没进包（D106）" >&2; missing=1; }
           done

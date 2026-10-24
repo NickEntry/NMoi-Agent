@@ -2172,3 +2172,27 @@ PLAN §3.12 的第一层：聊天页 = 顶栏（返回 / 标题 / 抽屉）+ 消
 - 依据：material3 1.3 的 `surfaceContainer*` 色阶（BOM 2024.09 已带）。
 
 两条都只定了形状，**都还没实现**。
+
+## D127 Material 3 的许可是 Apache-2.0：全文进 `LICENSES/`，随包走
+
+D126 一来，`androidx.compose.material3` 就从"顺带被 BOM 拖进来"变成"设计基线"。许可这件事跟着要点清：
+
+- **分清两样东西**：我们用的是 `androidx.compose.material3` 这个**代码库**（Apache-2.0），
+  不是 Google 的 Material Design 3 **规范文档**（文档不是随包分发的软件），
+  也不是 `com.google.android.material`（Material Components，**没引**）。
+  规范里说的 Roboto 本项目**没内置**（Android 只用系统默认字体，D68 那套 OFL 字体是桌面侧），
+  所以没有字体许可要跟着走。
+- **义务三条，逐条落地**：给接收方一份许可全文 → `LICENSES/Apache-2.0.txt`（176 行 / 9723 字节，
+  逐字标准文本）；有 `NOTICE` 就保留 → AAR 内是否带 NOTICE **未核对**（本机无 Android SDK），
+  写在 `THIRD-PARTY-NOTICES.md` §3 末尾当"还没验"的标记；改过要说明 → **一行没改**。
+- **一份全文覆盖全家**：Compose BOM `2024.09.00` 定的 `ui` / `foundation` / `material3`、
+  `activity-compose 1.9.2`、`core-ktx 1.13.1`、`kotlinx-coroutines-android 1.8.1`、Kotlin 标准库 `2.0.21`
+  —— 全是 Apache-2.0，**不再各放一份**。以后引新的 Apache-2.0 依赖只在
+  `THIRD-PARTY-NOTICES.md` §3 的表里加一行（组件 / 版本 / 是否进包）。
+- **`META-INF/AL2.0` 的 exclude 保留**：`packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }`
+  是 AGP 模板里就有的，作用是躲开资源合并阶段的重名冲突。代价是"jar 自带的那份副本"不进包，
+  由我们自己的 `LICENSES/Apache-2.0.txt` 顶上（同一段文本）。
+  **这条写进决策，是为了以后有人看见 exclude 时不会当成"把许可删了"。**
+- **闸要跟着长**：CI 的"声明进包对账"原来只点两份图标许可，现在点四样
+  （`THIRD-PARTY-NOTICES.md`、`ISC-lucide.txt`、`MIT-lobe-icons.txt`、`Apache-2.0.txt`）。
+  少一样就失败 —— 否则"文件加进仓库了、忘了进包"这种漏法没有任何编译器会报。

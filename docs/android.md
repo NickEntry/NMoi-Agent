@@ -97,7 +97,8 @@ environment secret（`docs/signing.md`），现在一个都没有，所以不出
   到时候"声明里写着"和"包里真正带的"是两份东西。
 - **CI 有一道闸**：`unzip -l` 列出 APK，必须能看到
   `assets/notices/THIRD-PARTY-NOTICES.md`、`assets/notices/LICENSES/ISC-lucide.txt`、
-  `assets/notices/LICENSES/MIT-lobe-icons.txt`，缺一个就失败。
+  `assets/notices/LICENSES/MIT-lobe-icons.txt`、`assets/notices/LICENSES/Apache-2.0.txt`，缺一个就失败。
+  （最后一份是 Android / Kotlin 运行期依赖共用的：Compose、`material3`、协程全是 Apache-2.0，见 D127。）
   "签名之前"这件事在 Gradle 里天然成立（assets 在合并阶段进包，签名只是对最终 zip 盖章），
   真正会出事的是"忘了放"和"放了个旧的"——前者由 srcDir 保证，后者由不提交副本保证。
 

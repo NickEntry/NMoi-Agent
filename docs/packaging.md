@@ -17,7 +17,7 @@ MIT / ISC 要求版权与许可声明"出现在**每一份副本**里"。这句�
 
 **不做"只在网页上挂一份"**。那不算随副本走：拿到文件的人看不到网页。
 
-占用可以忽略：这份文件和两段许可全文加起来不到 10 KB。
+占用可以忽略：这份文件和 `LICENSES/` 下三份全文加起来不到 15 KB。
 
 ## 2. 目录布局
 
@@ -31,6 +31,7 @@ MIT / ISC 要求版权与许可声明"出现在**每一份副本**里"。这句�
     LICENSES/
       ISC-lucide.txt
       MIT-lobe-icons.txt
+      Apache-2.0.txt            Android / Kotlin 运行期依赖共用（Compose、material3、协程…）
   icon-packs/
     original/                 随安装包分发的原版图标包（PNG + manifest.json + NOTICE.txt）
 ```
@@ -73,8 +74,8 @@ MIT / ISC 要求版权与许可声明"出现在**每一份副本**里"。这句�
 ## 5. 发版前逐条过
 
 1. `THIRD-PARTY-NOTICES.md` 里的版本号/取样日期与实际引入的一致。
-2. 每个产物里都能找到 `THIRD-PARTY-NOTICES.md` 与 `LICENSES/` 两份全文。
-3. APK：装到真机，进「关于 → 开源许可」，两段许可正文都能滚到底。
+2. 每个产物里都能找到 `THIRD-PARTY-NOTICES.md` 与 `LICENSES/` 下的许可全文。
+3. APK：装到真机，进「关于 → 开源许可」，三份许可正文都能滚到底。
 4. 便携包：解压到空目录，双击能起，`licenses/` 在根目录。
 5. 图标包：导出 → 解压 → 覆盖 `icon-packs/original/` → 应用能起来且图标生效；
    再故意删掉一个 PNG，应用应回退并给出提示而不是白屏。
@@ -82,6 +83,8 @@ MIT / ISC 要求版权与许可声明"出现在**每一份副本**里"。这句�
 
 ## 6. 还没做的
 
+- **应用内「关于 → 开源许可」页**：`assets/notices/` 已经随包进（Gradle `syncNotices` + CI 闸），
+  但界面还是灰行，**没人调用它渲染**。现在要看声明只能解包或看仓库根；页面属于设置接线那一层。
 - **Rust 依赖清单**：`Cargo.toml` 里几十个 crate 尚未汇总进 `THIRD-PARTY-NOTICES.md`。
   1.0 之前必须补，用 `cargo metadata` 或 `cargo-about` 生成，挂进打包流程。
 - **字体**：内置字体全是 OFL-1.1（D68），OFL 也要求随分发带许可与保留字体名，
