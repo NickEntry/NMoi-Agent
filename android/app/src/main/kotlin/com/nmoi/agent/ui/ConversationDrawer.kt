@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -10,10 +11,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,11 +26,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,33 +48,28 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import java.time.LocalTime
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
- * 左侧抽屉：会话列表 + 唤出手势（D136）。
+ * 左侧抽屉：用户块 / 搜索 / 会话列表 / 助手切换（D139）。
  *
- * 手势规则（用户 2026-10-24 定，这一版按真机反馈调过）：
+ * 手势（D136）：按下的前一小段路径与水平夹角 ≤ 25° 才算"在滑抽屉"，之后跟手；
+ * 松手看位移或速度（开 350 dp/s · 25%，关 160 dp/s · 15%），并补一段带初速的动画。
  *
- * 1. 按下后先看**前一小段路径的方向**：与水平线夹角 **≤ 25°** 才算"在滑抽屉"。
- *    判据是角度，不是 `|dx| > |dy|`——斜着划时人以为自己在滚列表。
- * 2. 判定为横滑后**跟手**：面板位移 = 起点进度 + 位移 / 面板宽，遮罩 α 同步 0 → 0.60。
- * 3. 松手看两样：**位移 ≥ 25%** 或 **速度 ≥ 350 dp/s**（带方向）。
- *    真机上 800 dp/s 那次太苛刻，快速甩也常常不过线——阈值定得比"系统认为在甩"更松一点，
- *    因为这里的目标不是精确判定，是"我想开就开"。
- * 4. 松手之后**补一段带初速的动画**（`Animatable.animateTo` + tween）：
- *    面板沿原来方向继续走完，而不是啪一下归位。时长按"剩余距离 / 速度"算，夹在 80–260ms。
- *
- * 竖向滚动不受影响：只有判定为横滑**之后**才 consume；发现 `change.isConsumed`
- * （列表已经拿走这次事件）立刻退出。
- *
- * 还没做：只认第一根手指（双指不处理）；遮罩没有单独的缓动曲线，跟着同一条 tween 走。
+ * 展开时**主动收键盘**（用户 2026-10-24 提）：抽屉盖住输入区之后，输入框还顶着焦点，
+ * 安卓的输入法就不会自己收回去。这里清焦点 + 直接让 IME 收窗（`clearFocus` 对
+ * `AndroidView` 里的原生 `EditText` 不一定够，所以两件事都做）。
  */
 @Composable
 internal fun ConversationDrawer(
@@ -83,27 +86,32 @@ internal fun ConversationDrawer(
     val width = 300.dp
     val widthPx = with(LocalDensity.current) { width.toPx() }
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val view = LocalView.current
 
-    // 拖动位移（px）。**不能用 Animatable 在拖动循环里写**：那都是挂起函数，
-    // 而 `awaitEachGesture` 是受限协程，只能挂起在指针事件上（CI 会报
-    // "Restricted suspending functions can invoke member or extension suspending functions
-    // only on their restricted coroutine scope"）。所以：拖动写普通 state，
-    // 松手后的惯性交给普通协程里的 Animatable。
+    // 抽屉一开就收键盘：这是用户要的手感，不是可选项。
+    LaunchedEffect(open) {
+        if (open) {
+            focusManager.clearFocus(force = true)
+            val imm = view.context.getSystemService(InputMethodManager::class.java)
+            imm?.hideSoftInputFromWindow(view.windowToken, 0)
+        }
+    }
+
+    // 拖动位移（px）。拖动阶段只能写普通 state：`awaitEachGesture` 是受限协程，
+    // 里面挂起不了 Animatable 的方法（CI 会报 Restricted suspending functions...）。
     var dragPx by remember { mutableStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
     val inertia = remember { Animatable(0f) }
-    // 惯性动画期间也走"手动渲染"这条路径，否则会先弹一下再交给 AnimatedVisibility。
     var animating by remember { mutableStateOf(false) }
     val manual = dragging || animating
-    // 渲染读的值：拖动看 dragPx，惯性看 inertia.value（动画开始前 inertia 已对齐到 dragPx）。
     val shownPx = if (animating) inertia.value else dragPx
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(open) {
-                // 两个方向给两套阈值（用户 2026-10-24 反馈）：向右展开的手感已经够，
-                // 但"展开后往左滑关掉"需要更灵敏——关门本来就该比开门轻。
+                // 两个方向两套阈值（D136）：开门 350 dp/s / 25%，关门 160 dp/s / 15%。
                 val openFling = 350.dp.toPx()
                 val closeFling = 160.dp.toPx()
                 awaitEachGesture {
@@ -120,7 +128,7 @@ internal fun ConversationDrawer(
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        // 列表已经把这次事件拿走了（竖向滚动）：立刻退出，绝不抢。
+                        // 列表/输入框已经把这次事件拿走了：立刻退出，绝不抢。
                         if (change.isConsumed) break
 
                         dx += change.positionChange().x
@@ -128,8 +136,7 @@ internal fun ConversationDrawer(
                         tracker.addPosition(change.uptimeMillis, change.position)
 
                         if (!decided) {
-                            val moved = hypot(dx.toDouble(), dy.toDouble())
-                            if (moved > viewConfiguration.touchSlop) {
+                            if (hypot(dx.toDouble(), dy.toDouble()) > viewConfiguration.touchSlop) {
                                 decided = true
                                 val degrees = Math.toDegrees(
                                     atan2(abs(dy).toDouble(), abs(dx).toDouble()),
@@ -152,9 +159,6 @@ internal fun ConversationDrawer(
                     if (!decided || !horizontal) return@awaitEachGesture
 
                     val velocityX = tracker.calculateVelocity().x
-                    // 打开与关闭用两套判据：
-                    // - 从关到开：位移 25% 或速度 350 dp/s；
-                    // - 从开到关：位移只要 15%（progress < 0.85 就算关）或速度 160 dp/s。
                     val targetOpen = if (open) {
                         when {
                             velocityX < -closeFling -> false
@@ -169,7 +173,6 @@ internal fun ConversationDrawer(
                         }
                     }
 
-                    // 先落状态：这样动画结束时 AnimatedVisibility 已经是"到位"的，不会再滑一次。
                     if (targetOpen) {
                         if (!open) onOpen()
                     } else {
@@ -183,14 +186,8 @@ internal fun ConversationDrawer(
                         dragPx = 0f
                         return@awaitEachGesture
                     }
-                    // 时长按"剩余距离 ÷ 速度"估：甩得越快越短；松手时几乎没速度就走 260ms。
                     val speed = abs(velocityX).coerceAtLeast(1f)
-                    val duration = ((abs(target - start) / speed) * 1000f)
-                        .coerceIn(80f, 260f)
-                        .toInt()
-                    // 注意：这里只起协程，不做挂起调用（本作用域不允许）。
-                    // 协程第一件事是把 inertia 对齐到当前位移，之后才切到惯性渲染，
-                    // 所以看不到"跳一下"。
+                    val duration = ((abs(target - start) / speed) * 1000f).coerceIn(80f, 260f).toInt()
                     scope.launch {
                         inertia.snapTo(start)
                         animating = true
@@ -212,7 +209,6 @@ internal fun ConversationDrawer(
         content()
 
         if (manual) {
-            // 手动渲染这条路径：遮罩透明度跟着进度走，别在手指还在动的时候突然全黑。
             val progress = (shownPx / widthPx).coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
@@ -236,8 +232,6 @@ internal fun ConversationDrawer(
             }
         } else {
             if (open) {
-                // 遮罩：纯黑 0.60，点击关闭。用没有涟漪的 clickable，
-                // 否则点一下遮罩会闪一个灰圈，看着像"点到了东西"。
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -273,7 +267,22 @@ internal fun ConversationDrawer(
     }
 }
 
-/** 抽屉里那一列：新建 + 会话行 + 设置。拖动与动画两条路径共用同一份，免得两处慢慢长歪。 */
+/** 用户名字：装饰性字段，编辑是下一层的事。 */
+private const val USER_NAME = "我"
+
+/** 助手名字：还没有助手实体，先占位。 */
+private const val ASSISTANT_NAME = "助手"
+
+/** 问候语按系统时间选，**文案一字不改**（用户 2026-10-24 指定）。 */
+private fun greeting(): String = when (LocalTime.now().hour) {
+    in 5..10 -> "早上好🤡"
+    in 11..12 -> "中午好🤡"
+    in 13..17 -> "下午好🤡"
+    in 18..22 -> "晚上好🤡"
+    else -> "夜猫子好😋"
+}
+
+/** 抽屉里那一列。拖动与动画两条路径共用同一份，免得两处慢慢长歪。 */
 @Composable
 private fun DrawerPanel(
     rows: List<ConversationRow>,
@@ -282,76 +291,270 @@ private fun DrawerPanel(
     onNewConversation: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            text = "会话",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(start = 20.dp, top = 28.dp, bottom = 8.dp),
-        )
+    var hint by remember { mutableStateOf<String?>(null) }
+    var searchAll by remember { mutableStateOf(false) }
+    var assistantMenu by remember { mutableStateOf(false) }
 
-        // 新建放在列表顶上：抽屉是"换会话"的地方，那就得能在这里开一个新的。
-        // 它只是切到一个空白会话（D125），落库发生在第一次存消息时。
+    Column(modifier = Modifier.fillMaxSize()) {
+        // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNewConversation() }
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 44.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = ActionIcons.Plus,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(end = 10.dp).size(18.dp),
-            )
-            Text(
-                text = "新会话",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            DrawerAvatar(label = "我", size = 40.dp, mine = true)
+            Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+                Text(
+                    text = USER_NAME,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.clickable { hint = "编辑用户名字/头像待接：要头像存储与编辑对话框（D140）" },
+                )
+                Text(
+                    text = greeting(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
         }
 
+        // —— 搜索：两态，在框上向右滑切换 ——
+        SearchPill(
+            searchAll = searchAll,
+            onSwitchToAll = { searchAll = true },
+            onHint = { hint = "搜索待接：storage 还没有 search 动词（P4 / P10）" },
+        )
+
+        // —— 会话列表（新对话在最上面）——
         LazyColumn(modifier = Modifier.weight(1f)) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNewConversation() }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = ActionIcons.Plus,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 10.dp).size(18.dp),
+                    )
+                    Text(
+                        text = "新对话",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "草稿",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             if (rows.isEmpty()) {
                 item {
                     Text(
                         text = "还没有会话",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
             }
+
             items(rows) { row ->
-                // 当前正在看的那一条要有标记：抽屉里十行长得一样，
-                // 不标出来就没法回答"我现在在哪"这个最基本的可见性问题。
-                // 按 **id** 比，不按标题：两个会话重名是常事，重名会让两行同时亮。
+                // 当前行按 **id** 高亮，不按标题：两个会话重名是常事。
                 val current = currentId != null && row.id == currentId
-                Text(
-                    text = if (current) "${row.title}  ·  当前" else row.title,
-                    style = MaterialTheme.typography.bodyMedium,
+                Surface(
                     color = if (current) {
-                        MaterialTheme.colorScheme.primary
+                        MaterialTheme.colorScheme.secondaryContainer
                     } else {
-                        MaterialTheme.colorScheme.onSurface
+                        Color.Transparent
                     },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
-                        .clickable { onOpenConversation(row) }
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
-                )
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 1.dp)
+                        .clickable { onOpenConversation(row) },
+                ) {
+                    Text(
+                        text = row.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (current) {
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                    )
+                }
             }
         }
 
-        Text(
-            text = "设置",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .clickable { onOpenSettings() }
-                .padding(horizontal = 20.dp, vertical = 18.dp),
-        )
+        // —— 提示行（点搜索/助手头像这类"还没接"的地方，原因写在这里）——
+        val currentHint = hint
+        if (currentHint != null) {
+            Text(
+                text = currentHint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        // —— 底部：助手切换 + 设置 ——
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 点头像 = 助手设置（待接）；点名字/箭头 = 助手列表。
+            Box {
+                Row(
+                    modifier = Modifier
+                        .clickable { assistantMenu = true }
+                        .padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier.clickable {
+                            hint = "助手设置待接：助手页（P3.6），头像与名字都是装饰性字段"
+                        },
+                    ) {
+                        DrawerAvatar(label = "助", size = 30.dp, mine = false)
+                    }
+                    Text(
+                        text = ASSISTANT_NAME,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                    Icon(
+                        imageVector = ActionIcons.ChevronDown,
+                        contentDescription = "切换助手",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                    )
+                }
+                DropdownMenu(expanded = assistantMenu, onDismissRequest = { assistantMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("默认助手") },
+                        onClick = {
+                            assistantMenu = false
+                            hint = "切换助手待接：助手表还没建（P3.6）"
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("新建助手（待接）") },
+                        onClick = {
+                            assistantMenu = false
+                            hint = "新建助手待接：助手页（P3.6）"
+                        },
+                        enabled = false,
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            // 设置图标是**自绘**的齿轮（D139），不用参考图里那个。
+            IconActionButton(
+                image = ActionIcons.GearSelf,
+                description = "设置",
+                onClick = onOpenSettings,
+                compact = true,
+            )
+        }
+    }
+}
+
+/**
+ * 搜索框：两态（搜索当前助手 / 搜索全部会话）。
+ *
+ * - 左图标跟着状态换：当前助手 = 细长尾巴的搜索（`SearchAssistant`），全部会话 = 数据库（`Database`），
+ *   两个都是自绘的（D139）。
+ * - 在框上**向右滑**切到"全部会话"；左滑切回来。点框本身给出"搜索还没接"的原因。
+ */
+@Composable
+private fun SearchPill(searchAll: Boolean, onSwitchToAll: () -> Unit, onHint: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .pointerInput(searchAll) {
+                var acc = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { acc = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        change.consume()
+                        acc += amount
+                        if (acc > 44.dp.toPx()) {
+                            acc = 0f
+                            if (!searchAll) onSwitchToAll()
+                        } else if (acc < -44.dp.toPx()) {
+                            acc = 0f
+                        }
+                    },
+                )
+            }
+            .clickable { onHint() },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (searchAll) ActionIcons.Database else ActionIcons.SearchAssistant,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = if (searchAll) "搜索全部会话" else "搜索当前助手",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 10.dp).weight(1f),
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * 头像占位：首字母/首字圆标。
+ *
+ * 真头像要等 D140 那套存储（内容哈希去重 + 引用计数）落地；现在用圆标是**诚实的占位**，
+ * 它明确地不是一张脸，也不会假装自己是谁。
+ */
+@Composable
+private fun DrawerAvatar(label: String, size: Dp, mine: Boolean) {
+    Surface(
+        shape = CircleShape,
+        color = if (mine) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        modifier = Modifier.size(size),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (mine) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+            )
+        }
     }
 }

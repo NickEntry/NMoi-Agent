@@ -89,6 +89,7 @@ import java.util.Locale
 internal fun ChatScreen(
     title: String,
     sessionId: String?,
+    drawerOpen: Boolean,
     onOpenDrawer: () -> Unit,
     onCreateSession: suspend () -> String?,
     onNewChat: () -> Unit,
@@ -108,6 +109,20 @@ internal fun ChatScreen(
     var includeThinkingTools by remember { mutableStateOf(false) }
     var includeDetails by remember { mutableStateOf(false) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
+    // 原生 EditText 的引用：抽屉打开时要主动清焦点 + 收输入法。
+    // Compose 的 clearFocus 对 AndroidView 里的原生控件不一定生效，所以这里拿真控件。
+    val editTextRef = remember { mutableStateOf<EditText?>(null) }
+    LaunchedEffect(drawerOpen) {
+        if (drawerOpen) {
+            editTextRef.value?.let { field ->
+                field.clearFocus()
+                val imm = context.getSystemService(
+                    android.view.inputmethod.InputMethodManager::class.java,
+                )
+                imm?.hideSoftInputFromWindow(field.windowToken, 0)
+            }
+        }
+    }
 
     // 换会话就把选择清掉：跨会话的选中集合没有任何意义，还容易误复制。
     LaunchedEffect(sessionId) {
@@ -269,6 +284,7 @@ internal fun ChatScreen(
                     busy = busy,
                     unsaved = sessionId == null,
                     onHint = { notice = it },
+                    onEditTextReady = { editTextRef.value = it },
                     onSend = { submit("user") },
                     onSaveAssistant = { submit("assistant") },
                     onSaveUser = { submit("user") },
@@ -627,7 +643,9 @@ private fun MessageArea(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        // 左右边距一致（D139）：用户要"助手侧边距再小一点，左右对称"，
+        // 所以两边都是 12dp，头像贴着自己那一侧。
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
         // 同角色 4dp、异角色 12dp（D126）：4 是基准间距，换人时再加 8。
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -810,28 +828,32 @@ private fun UserMessage(
     }
 
     Column(modifier = Modifier.fillMaxWidth().then(tint)) {
+        // 用户：**名字在上排、时间在下排**，两行都在头像左侧（D139）。
+        // 文字块右对齐、头像贴右边，跟助手那边成镜像。
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
         ) {
-            Text(
-                text = USER_NAME,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                maxLines = 1,
-            )
-            if (stamp != null) {
-                Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = stamp,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    text = USER_NAME,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                 )
+                if (stamp != null) {
+                    Text(
+                        text = stamp,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                }
             }
             Spacer(Modifier.width(8.dp))
-            InitialAvatar(letter = USER_NAME, size = 26.dp, mine = true)
+            InitialAvatar(letter = USER_NAME, size = 24.dp, mine = true)
         }
 
         Row(
@@ -910,7 +932,7 @@ private fun AssistantMessage(
     }
 
     Row(modifier = Modifier.fillMaxWidth().then(tint)) {
-        InitialAvatar(letter = "助", size = 26.dp, mine = false)
+        InitialAvatar(letter = "助", size = 24.dp, mine = false)
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -1079,7 +1101,7 @@ private fun MessageActionRow(
 private fun ThinkingBlock(message: ChatMessage) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(34.dp))
+        Spacer(Modifier.width(32.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1133,7 +1155,7 @@ private fun ToolPairCard(unit: ChatUnit) {
     val results = unit.messages.count { it.isToolResult }
 
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(34.dp))
+        Spacer(Modifier.width(32.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1231,6 +1253,7 @@ private fun Composer(
     busy: Boolean,
     unsaved: Boolean,
     onHint: (String) -> Unit,
+    onEditTextReady: (EditText) -> Unit,
     onSend: () -> Unit,
     onSaveAssistant: () -> Unit,
     onSaveUser: () -> Unit,
@@ -1260,6 +1283,7 @@ private fun Composer(
                     onValueChange = onDraftChange,
                     hint = "说点什么…",
                     modifier = Modifier.fillMaxWidth(),
+                    onReady = onEditTextReady,
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -1274,7 +1298,7 @@ private fun Composer(
                         compact = true,
                     )
                     IconActionButton(
-                        image = ActionIcons.Search,
+                        image = ActionIcons.SearchInput,
                         description = "网络搜索",
                         onClick = { onHint("网络搜索待接：工具层（P7）") },
                         compact = true,
@@ -1408,6 +1432,7 @@ private fun NativeEditText(
     onValueChange: (String) -> Unit,
     hint: String,
     modifier: Modifier = Modifier,
+    onReady: (EditText) -> Unit = {},
 ) {
     // 文字色跟着主题走：写死深色主题的两支颜色，换到浅色就是"浅灰字压白底"，读不出来。
     val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
@@ -1431,6 +1456,7 @@ private fun NativeEditText(
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null
                 }
+                onReady(this)
                 addTextChangedListener(
                     object : android.text.TextWatcher {
                         override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit

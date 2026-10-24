@@ -170,6 +170,8 @@ class MainActivity : ComponentActivity() {
                         is Route.Chat -> ChatScreen(
                             title = route.title,
                             sessionId = route.sessionId,
+                            // 抽屉打开时要让输入框失焦并收键盘（D139），所以把状态传下去。
+                            drawerOpen = drawerOpen,
                             onOpenDrawer = { drawerOpen = true },
                             onCreateSession = ensureSession,
                             onNewChat = {
