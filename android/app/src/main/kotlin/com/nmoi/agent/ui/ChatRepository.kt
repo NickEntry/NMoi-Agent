@@ -91,7 +91,11 @@ internal object ChatRepository {
      */
     private suspend fun <T> withHandle(
         databasePath: String,
-        block: (Long) -> Result<T>,
+        // **必须写成 `suspend (Long) -> Result<T>`**：调用方在里面等 FFI（`NmoiFfi` 是挂起的）。
+        // 写成普通的函数类型会让"在 lambda 里调挂起函数"变成编译错误
+        // （Suspension functions can only be called within coroutine body）——
+        // 我第一版就是漏了这个 suspend，CI 直接拦下。
+        block: suspend (Long) -> Result<T>,
     ): Result<T> {
         if (!NativeBridge.loaded) {
             return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
