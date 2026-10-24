@@ -12,7 +12,7 @@
 所以源码仓库、APK、桌面安装目录、便携包、导出/导入的图标包，**每一处都要有**
 `THIRD-PARTY-NOTICES.md` 与本文件提到的 `LICENSES/`。具体放哪见 `docs/packaging.md`。
 
-## 1. 界面图标（`docs/ui/icons/actions/`，31 个）
+## 1. 界面图标（`docs/ui/icons/actions/`，34 个）
 
 | | |
 |---|---|
@@ -25,7 +25,12 @@
 源自 Feather 的 11 个（MIT，Copyright (c) 2013-present Cole Bemis）：
 `arrow-right` `arrow-up` `check` `chevron-down` `lock` `minimize-2` `plus` `search` `square` `trash-2` `x`
 
-其余 19 个是 Lucide 自有图形（ISC）；加上 `divider` 共 31 个。
+其余 22 个是 Lucide 自有图形（ISC）；加上 `divider` 共 34 个。
+
+2026-10-24 追加三个（同一包 `lucide-static@1.61.0`）：`volume-2`（文字转语音）、
+`languages`（翻译）、`git-branch`（创建分支）。改动同前（`stroke-width` 2 → 1.75、删 `class`）。
+`volume-2` 在 Feather 里也有同形图标（MIT），而 `LICENSES/ISC-lucide.txt` 本身就同时带着
+Feather 派生清单与 MIT 全文，所以这次追加**不新增许可文件**。
 
 ## 2. 供应商与模型图标（`docs/ui/icons/providers/` 21 个、`docs/ui/icons/models/` 16 个）
 

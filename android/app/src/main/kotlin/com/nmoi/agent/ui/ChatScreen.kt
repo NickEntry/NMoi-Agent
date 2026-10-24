@@ -3,7 +3,9 @@ package com.nmoi.agent.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.text.format.DateFormat
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
@@ -31,10 +33,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,6 +68,7 @@ import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * 聊天页——**这一页就是主页**（D125）。
@@ -93,9 +100,13 @@ internal fun ChatScreen(
     var reloadKey by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    // 选择模式：长按任意一条进入，点别的消息加选，顶部条上复制或取消。
+    // 选择模式：长按任意一条进入，点别的消息加选，顶部条上复制 / 分享。
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<String>()) }
+    // 分享底部两排：上排两个开关（思考调用 / 详细信息），下排两个动作（MD / 图片）。
+    var shareOpen by remember { mutableStateOf(false) }
+    var includeThinkingTools by remember { mutableStateOf(false) }
+    var includeDetails by remember { mutableStateOf(false) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
 
     // 换会话就把选择清掉：跨会话的选中集合没有任何意义，还容易误复制。
@@ -117,15 +128,41 @@ internal fun ChatScreen(
 
     val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()
 
+    val selectedMessages = allMessages.filter { it.id in selected }.sortedBy { it.seq }
+
     val copySelected: () -> Unit = {
-        val picked = allMessages.filter { it.id in selected }.sortedBy { it.seq }
-        if (picked.isEmpty()) {
+        if (selectedMessages.isEmpty()) {
             notice = "先选一条消息"
         } else {
-            putClipboard(context, "选中的消息", picked.joinToString("\n\n") { it.content })
-            notice = "已复制 ${picked.size} 条消息"
+            putClipboard(context, "选中的消息", selectedMessages.joinToString("\n\n") { it.content })
+            notice = "已复制 ${selectedMessages.size} 条消息"
             selecting = false
             selected = emptySet()
+        }
+    }
+
+    // 分享的正文在这里成形：Markdown 而不是纯文本——分享出去多半是要粘进文档或笔记。
+    val shareAsMarkdown: () -> Unit = {
+        if (selectedMessages.isEmpty()) {
+            notice = "先选一条消息"
+        } else {
+            val body = buildShareMarkdown(
+                picked = selectedMessages,
+                units = snapshot?.page?.units.orEmpty(),
+                includeThinkingTools = includeThinkingTools,
+                includeDetails = includeDetails,
+                stampOf = { millis -> stampOf(context, millis) ?: "—" },
+            )
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/markdown"
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                putExtra(Intent.EXTRA_TEXT, body)
+            }
+            context.startActivity(Intent.createChooser(send, "分享对话"))
+            shareOpen = false
+            selecting = false
+            selected = emptySet()
+            notice = "已打开分享（Markdown，含 ${selectedMessages.size} 条消息）"
         }
     }
 
@@ -172,6 +209,7 @@ internal fun ChatScreen(
                         selected = emptySet()
                     },
                     onCopy = copySelected,
+                    onShare = { shareOpen = true },
                 )
                 // 选择模式下输入区是藏起来的，所以"已复制 N 条"这类提示要放在这儿。
                 // 注意不能写 `if (notice != null) Text(notice)`：notice 是委托属性，
@@ -211,6 +249,13 @@ internal fun ChatScreen(
                             if (next.isEmpty()) selecting = false
                         },
                         onCopied = { notice = "已复制这条消息" },
+                        // 「更多 → 分享」= 选中这一条并直接打开分享面板：
+                        // 分享本来就是"选几条再导"，让它从一条开始，少两步。
+                        onShareMessage = { id ->
+                            selecting = true
+                            selected = setOf(id)
+                            shareOpen = true
+                        },
                     )
                 }
             }
@@ -230,12 +275,211 @@ internal fun ChatScreen(
                 Spacer(Modifier.heightIn(min = 10.dp))
             }
         }
+
+        if (shareOpen) {
+            ShareOptionsSheet(
+                count = selectedMessages.size,
+                includeThinkingTools = includeThinkingTools,
+                includeDetails = includeDetails,
+                onToggleThinkingTools = { includeThinkingTools = !includeThinkingTools },
+                onToggleDetails = { includeDetails = !includeDetails },
+                onMarkdown = shareAsMarkdown,
+                onImage = {},
+                onDismiss = { shareOpen = false },
+            )
+        }
+    }
+}
+
+/**
+ * 分享选项：**上排两个开关、下排两个动作**（用户 2026-10-24 定的形状）。
+ *
+ * - 上排：思考调用（把这条消息所属单元里的思考 / 工具往返一并带上）、详细信息（带上 id / seq / token 这类元数据）。
+ * - 下排：MD（真做，走系统分享）、图片（**灰着**：把消息渲染成图片那一层还没做，
+ *   现在给"能按但没反应"的按钮就是骗人）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShareOptionsSheet(
+    count: Int,
+    includeThinkingTools: Boolean,
+    includeDetails: Boolean,
+    onToggleThinkingTools: () -> Unit,
+    onToggleDetails: () -> Unit,
+    onMarkdown: () -> Unit,
+    onImage: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+            Text(
+                text = if (count == 0) "分享" else "分享 $count 条消息",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "先选要带上的内容，再决定导成什么。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+
+            // 上排：两个开关。选中的按钮用 tonal 底色 + 勾，别只靠颜色差别。
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SheetToggle(
+                    label = "思考调用",
+                    checked = includeThinkingTools,
+                    onClick = onToggleThinkingTools,
+                    modifier = Modifier.weight(1f),
+                )
+                SheetToggle(
+                    label = "详细信息",
+                    checked = includeDetails,
+                    onClick = onToggleDetails,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            // 下排：两个动作。
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = onMarkdown,
+                    enabled = count > 0,
+                    modifier = Modifier.weight(1f),
+                ) { Text("MD") }
+                FilledTonalButton(
+                    onClick = onImage,
+                    enabled = false,
+                    modifier = Modifier.weight(1f),
+                ) { Text("图片（待接）") }
+            }
+        }
+    }
+}
+
+/** 分享面板里的开关：勾选态用图标 + 底色两个信号，色盲也分得出来。 */
+@Composable
+private fun SheetToggle(
+    label: String,
+    checked: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (checked) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        modifier = modifier.clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (checked) ActionIcons.Check else ActionIcons.Plus,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 分享正文：Markdown。
+ *
+ * `includeThinkingTools` 时，把**同一条消息所属单元**里的思考与工具往返也带上——
+ * 用户勾这个开关的意思是"我要连过程一起分享"，不是"只分享我选的那几条正文"。
+ * `includeDetails` 时每条后面附一行元数据（id / seq / source / tokens / 是否未完成）。
+ */
+private fun buildShareMarkdown(
+    picked: List<ChatMessage>,
+    units: List<ChatUnit>,
+    includeThinkingTools: Boolean,
+    includeDetails: Boolean,
+    stampOf: (Long) -> String,
+): String {
+    val byId = picked.associateBy { it.id }
+    val unitOf = mutableMapOf<String, ChatUnit>()
+    units.forEach { unit -> unit.messages.forEach { if (it.id in byId) unitOf[it.id] = unit } }
+
+    return buildString {
+        picked.forEach { message ->
+            append("### ")
+            append(if (message.isUser) USER_NAME else ASSISTANT_NAME)
+            append(" · ")
+            append(stampOf(message.createdAt))
+            append("\n\n")
+            append(message.content.ifBlank { "（空消息）" })
+            append("\n")
+
+            if (includeThinkingTools) {
+                val unit = unitOf[message.id]
+                val extra = unit?.messages.orEmpty().filter {
+                    it.id != message.id && (it.isThinking || it.isToolCall || it.isToolResult)
+                }
+                if (extra.isNotEmpty()) {
+                    append("\n<details><summary>思考与工具调用（")
+                    append(extra.size)
+                    append(" 段）</summary>\n\n")
+                    extra.forEach { part ->
+                        append("- **")
+                        append(
+                            when {
+                                part.isThinking -> "思考"
+                                part.isToolCall -> "工具调用"
+                                else -> "工具结果"
+                            },
+                        )
+                        append("**：")
+                        append(part.content.replace("\n", "\n  "))
+                        append("\n")
+                    }
+                    append("\n</details>\n")
+                }
+            }
+
+            if (includeDetails) {
+                append("\n> id=")
+                append(message.id)
+                append(" · seq=")
+                append(message.seq)
+                append(" · source=")
+                append(message.source)
+                append(" · tokens=")
+                append(message.tokens)
+                if (message.incomplete) append(" · 未完成")
+                append("\n")
+            }
+            append("\n---\n\n")
+        }
     }
 }
 
 /** 选择模式的顶栏：取消 + 已选条数 + 复制。删除灰着（`delete` 的 FFI 还没有）。 */
 @Composable
-private fun SelectionTopBar(count: Int, onCancel: () -> Unit, onCopy: () -> Unit) {
+private fun SelectionTopBar(
+    count: Int,
+    onCancel: () -> Unit,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -259,10 +503,10 @@ private fun SelectionTopBar(count: Int, onCancel: () -> Unit, onCopy: () -> Unit
             enabled = count > 0,
         )
         IconActionButton(
-            image = ActionIcons.Trash2,
-            description = "删除（待接 delete）",
-            onClick = {},
-            enabled = false,
+            image = ActionIcons.Share2,
+            description = "分享选中的消息",
+            onClick = onShare,
+            enabled = count > 0,
         )
     }
 }
@@ -331,6 +575,7 @@ private fun MessageArea(
     onLongPressMessage: (String) -> Unit,
     onToggleMessage: (String) -> Unit,
     onCopied: () -> Unit,
+    onShareMessage: (String) -> Unit,
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -405,6 +650,7 @@ private fun MessageArea(
                 onLongPressMessage = onLongPressMessage,
                 onToggleMessage = onToggleMessage,
                 onCopied = onCopied,
+                onShareMessage = onShareMessage,
             )
         }
     }
@@ -425,6 +671,7 @@ private fun UnitBlock(
     onLongPressMessage: (String) -> Unit,
     onToggleMessage: (String) -> Unit,
     onCopied: () -> Unit,
+    onShareMessage: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
@@ -448,6 +695,7 @@ private fun UnitBlock(
                         onLongPress = { onLongPressMessage(message.id) },
                         onTap = { if (selecting) onToggleMessage(message.id) },
                         onCopied = onCopied,
+                        onShare = { onShareMessage(message.id) },
                     )
 
                     else -> AssistantMessage(
@@ -457,6 +705,7 @@ private fun UnitBlock(
                         onLongPress = { onLongPressMessage(message.id) },
                         onTap = { if (selecting) onToggleMessage(message.id) },
                         onCopied = onCopied,
+                        onShare = { onShareMessage(message.id) },
                     )
                 }
             }
@@ -467,12 +716,36 @@ private fun UnitBlock(
 private const val USER_NAME = "我"
 private const val ASSISTANT_NAME = "助手"
 
-private val stampFormat: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+/**
+ * 时间戳。
+ *
+ * 两个坑都在这一行里：
+ * - **库里存的是毫秒**（`SystemTime::as_millis`，见 `crates/storage`）。上一版按秒解，
+ *   界面上出现 `+58782-03-11`——年份 5 万多，是"毫秒当秒用"的典型症状。
+ * - **12/24 小时制要跟系统走**：用户在系统设置里选的，不该被我们写死成 24 小时。
+ */
+private var cachedStampPattern: String? = null
+private var cachedStampFormat: DateTimeFormatter? = null
 
-/** 时间戳：`createdAt` 是秒；0 表示库里没给，宁可不显示也不写一个假时间。 */
-private fun stampOf(epochSeconds: Long): String? =
-    if (epochSeconds <= 0L) null else stampFormat.format(Instant.ofEpochSecond(epochSeconds))
+private fun stampFormatFor(context: Context): DateTimeFormatter {
+    val pattern = if (DateFormat.is24HourFormat(context)) {
+        "yyyy-MM-dd HH:mm:ss"
+    } else {
+        "yyyy-MM-dd hh:mm:ss a"
+    }
+    cachedStampFormat?.let { if (cachedStampPattern == pattern) return it }
+    // 缓存一份：每条消息都新建 Formatter 在长会话里是纯浪费。
+    return DateTimeFormatter.ofPattern(pattern, Locale.getDefault())
+        .withZone(ZoneId.systemDefault())
+        .also {
+            cachedStampPattern = pattern
+            cachedStampFormat = it
+        }
+}
+
+/** 0 表示库里没给，宁可不显示也不写一个假时间。 */
+private fun stampOf(context: Context, epochMillis: Long): String? =
+    if (epochMillis <= 0L) null else stampFormatFor(context).format(Instant.ofEpochMilli(epochMillis))
 
 private fun putClipboard(context: Context, label: String, text: String) {
     val manager = context.getSystemService(ClipboardManager::class.java) ?: return
@@ -521,9 +794,10 @@ private fun UserMessage(
     onLongPress: () -> Unit,
     onTap: () -> Unit,
     onCopied: () -> Unit,
+    onShare: () -> Unit,
 ) {
     val context = LocalContext.current
-    val stamp = stampOf(message.createdAt)
+    val stamp = stampOf(context, message.createdAt)
     val tint = if (selecting && isSelected) {
         Modifier
             .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
@@ -595,10 +869,12 @@ private fun UserMessage(
 
         MessageActionRow(
             mine = true,
+            versionCount = 1,
             onCopy = {
                 putClipboard(context, "消息", message.content)
                 onCopied()
             },
+            onShare = onShare,
             onSelect = onLongPress,
         )
     }
@@ -618,9 +894,10 @@ private fun AssistantMessage(
     onLongPress: () -> Unit,
     onTap: () -> Unit,
     onCopied: () -> Unit,
+    onShare: () -> Unit,
 ) {
     val context = LocalContext.current
-    val stamp = stampOf(message.createdAt)
+    val stamp = stampOf(context, message.createdAt)
     val tint = if (selecting && isSelected) {
         Modifier
             .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
@@ -630,8 +907,8 @@ private fun AssistantMessage(
     }
 
     Row(modifier = Modifier.fillMaxWidth().then(tint)) {
-        InitialAvatar(letter = "助", size = 28.dp, mine = false)
-        Spacer(Modifier.width(10.dp))
+        InitialAvatar(letter = "助", size = 26.dp, mine = false)
+        Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = ASSISTANT_NAME,
@@ -670,10 +947,12 @@ private fun AssistantMessage(
             }
             MessageActionRow(
                 mine = false,
+                versionCount = 1,
                 onCopy = {
                     putClipboard(context, "消息", message.content)
                     onCopied()
                 },
+                onShare = onShare,
                 onSelect = onLongPress,
             )
         }
@@ -688,13 +967,22 @@ private fun AssistantMessage(
  * 长按灰按钮会浮一句"待接什么"，不让人猜。
  */
 @Composable
-private fun MessageActionRow(mine: Boolean, onCopy: () -> Unit, onSelect: () -> Unit) {
+private fun MessageActionRow(
+    mine: Boolean,
+    versionCount: Int,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
+    onSelect: () -> Unit,
+) {
     var moreOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 一排四个动作（用户 2026-10-24 定的最终形状）：复制 / 刷新 / 文字转语音 / 翻译。
+        // 后三个现在是灰的：turn_run、TTS、翻译都还没接。灰着而不是藏起来——
+        // 位置就是最终位置，接上之后只改 enabled，不改布局。
         IconActionButton(
             image = ActionIcons.Copy,
             description = "复制",
@@ -703,14 +991,21 @@ private fun MessageActionRow(mine: Boolean, onCopy: () -> Unit, onSelect: () -> 
         )
         IconActionButton(
             image = ActionIcons.RotateCcw,
-            description = "重新生成（待接 turn_run）",
+            description = "刷新（重新生成，待接 turn_run）",
             onClick = {},
             compact = true,
             enabled = false,
         )
         IconActionButton(
-            image = ActionIcons.Pencil,
-            description = "编辑（待接 edit）",
+            image = ActionIcons.Volume2,
+            description = "文字转语音（待接 TTS）",
+            onClick = {},
+            compact = true,
+            enabled = false,
+        )
+        IconActionButton(
+            image = ActionIcons.Languages,
+            description = "翻译（待接翻译）",
             onClick = {},
             compact = true,
             enabled = false,
@@ -723,11 +1018,22 @@ private fun MessageActionRow(mine: Boolean, onCopy: () -> Unit, onSelect: () -> 
                 compact = true,
             )
             DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                // 顺序照用户给的：编辑 / 增强编辑 / 分享 / 选择消息 / 创建分支 / 删除此版本 / 删除所有版本。
                 DropdownMenuItem(
-                    text = { Text("复制") },
+                    text = { Text("编辑（待接 edit）") },
+                    onClick = {},
+                    enabled = false,
+                )
+                DropdownMenuItem(
+                    text = { Text("增强编辑（待接 edit）") },
+                    onClick = {},
+                    enabled = false,
+                )
+                DropdownMenuItem(
+                    text = { Text("分享") },
                     onClick = {
                         moreOpen = false
-                        onCopy()
+                        onShare()
                     },
                 )
                 DropdownMenuItem(
@@ -738,10 +1044,23 @@ private fun MessageActionRow(mine: Boolean, onCopy: () -> Unit, onSelect: () -> 
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text("删除（待接 delete）") },
+                    text = { Text("创建分支（待接 branch）") },
                     onClick = {},
                     enabled = false,
                 )
+                DropdownMenuItem(
+                    text = { Text("删除此版本（待接 delete）") },
+                    onClick = {},
+                    enabled = false,
+                )
+                // "删除所有版本"只在**真的还有其他版本**时出现；现在没有版本模型，所以不显示。
+                if (versionCount > 1) {
+                    DropdownMenuItem(
+                        text = { Text("删除所有版本（待接 delete）") },
+                        onClick = {},
+                        enabled = false,
+                    )
+                }
             }
         }
     }
@@ -757,12 +1076,12 @@ private fun MessageActionRow(mine: Boolean, onCopy: () -> Unit, onSelect: () -> 
 private fun ThinkingBlock(message: ChatMessage) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(38.dp))
+        Spacer(Modifier.width(34.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
             modifier = Modifier
-                .widthIn(max = (LocalConfiguration.current.screenWidthDp * 0.9f).dp)
+                .fillMaxWidth()
                 .clickable { expanded = !expanded },
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
@@ -811,12 +1130,12 @@ private fun ToolPairCard(unit: ChatUnit) {
     val results = unit.messages.count { it.isToolResult }
 
     Row(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.width(38.dp))
+        Spacer(Modifier.width(34.dp))
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
             modifier = Modifier
-                .widthIn(max = (LocalConfiguration.current.screenWidthDp * 0.9f).dp)
+                .fillMaxWidth()
                 .clickable { expanded = !expanded },
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {

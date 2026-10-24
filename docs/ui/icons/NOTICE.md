@@ -3,7 +3,7 @@
 三个目录、三种来源。许可汇总在根目录 [`THIRD-PARTY-NOTICES.md`](../../../THIRD-PARTY-NOTICES.md)，
 全文在 `LICENSES/`；这份文件只管"每个图形从哪来、我们改了什么、什么不许做"。
 
-## 1. `actions/`（31 个）
+## 1. `actions/`（34 个）
 
 - 29 个来自 **Lucide**（`lucide-static@1.61.0`，ISC），其中 11 个的图形源自 **Feather**（MIT）。
   上游自己的 LICENSE 文件把这两段写在一起，我们逐字保留在 `LICENSES/ISC-lucide.txt`。

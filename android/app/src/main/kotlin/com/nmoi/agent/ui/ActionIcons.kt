@@ -114,6 +114,42 @@ internal object ActionIcons {
     val ChevronDown: ImageVector = buildVector("chevron-down") {
         stroke("m6 9 6 6 6-6")
     }
+
+    /** Lucide `share-2.svg`：分享。三个 `circle r=3` + 两条连线。 */
+    val Share2: ImageVector = buildVector("share-2") {
+        stroke("M21 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
+        stroke("M9 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
+        stroke("M21 19a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
+        stroke("M8.59 13.51l6.83 3.98")
+        stroke("M15.41 6.51l-6.82 3.98")
+    }
+
+    /** Lucide `volume-2.svg`：文字转语音（现在灰着：TTS 还没接）。 */
+    val Volume2: ImageVector = buildVector("volume-2") {
+        stroke(
+            "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6" +
+                "a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z",
+        )
+        stroke("M16 9a5 5 0 0 1 0 6")
+        stroke("M19.364 18.364a9 9 0 0 0 0-12.728")
+    }
+
+    /** Lucide `languages.svg`：翻译（现在灰着：翻译还没接）。 */
+    val Languages: ImageVector = buildVector("languages") {
+        stroke("m5 8 6 6")
+        stroke("m4 14 6-6 2-3")
+        stroke("M2 5h12")
+        stroke("M7 2h1")
+        stroke("m22 22-5-10-5 10")
+        stroke("M14 18h6")
+    }
+
+    /** Lucide `git-branch.svg`：创建分支（现在灰着：分支还没有数据模型）。 */
+    val GitBranch: ImageVector = buildVector("git-branch") {
+        stroke("M15 6a9 9 0 0 0-9 9V3")
+        stroke("M21 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
+        stroke("M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
+    }
 }
 
 private fun buildVector(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

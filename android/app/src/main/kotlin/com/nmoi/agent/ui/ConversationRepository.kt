@@ -130,8 +130,15 @@ internal object ConversationRepository {
         }
     }
 
-    private fun formatTime(seconds: Long): String =
-        if (seconds <= 0L) "—" else timeFormat.format(Instant.ofEpochSecond(seconds))
+    /**
+     * 库里存的是**毫秒**（`SystemTime::as_millis`）。上一版按秒解，抽屉里的时间会是
+     * `+58782-03-11`——年份五万多。这里跟消息区用同一个单位。
+     *
+     * 抽屉这一行固定 24 小时制 `MM-dd HH:mm`：它没有 context，拿不到系统的 12/24 设置，
+     * 而为了一个列表行去接 Activity 不值得。等 `SettingsRepository` 接上再统一。
+     */
+    private fun formatTime(epochMillis: Long): String =
+        if (epochMillis <= 0L) "—" else timeFormat.format(Instant.ofEpochMilli(epochMillis))
 
     private fun placeholder(note: String): ConversationSnapshot {
         // 退回占位数据不是"正常情况"，留一条日志：真机上第一句要问的永远是"为什么是占位数据"。
