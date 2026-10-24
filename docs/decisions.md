@@ -2558,3 +2558,26 @@ Compose 的 `clearFocus` 对 `AndroidView` 里的原生控件**不一定生效**
 5. **除"适合数字展示的控件"外都用图标**（例如消息右下角显示 `xxx tokens` 这种是文字控件）。
 
 从这一轮起：**每次 UI 变动都要追加一行到 `ui-taste.md`**，压缩时这条约定必须保留（用户明确要求）。
+
+### D137 实现记录（数据层，2026-10-24）
+
+已落地，**只在 Rust 侧**，Android/FFI 一行没动（那是下一层）。
+
+- 代码：`crates/storage/src/versions.rs`（新模块，`impl Storage`）、`schema.rs` 的 `SCHEMA_V5`、
+  `migrate.rs`（`SCHEMA_VERSION = 4 → 5`）、`crates/storage/tests/versions.rs`（11 条）。
+- 接口（都在 `Storage` 上，返回 `StorageError`）：
+  `save_generated_version` / `mark_version_edited` / `list_message_versions` /
+  `switch_message_version` / `delete_message_version`。
+  暴露的类型：`VersionView { Raw, Edited }`、`MessageVersion`、`VersionList`、`MAX_VERSIONS`。
+- **实现时定下的三条细则**（施工图里没写死，这里补上）：
+  1. `version_no` **永远压成 1..=count 的连续整数**：删除后重新编号（先挪到 `1_000_000+idx`
+     再挪回来，绕开 `UNIQUE` 冲突）。UI 的 `n/n` 因此不会看到空洞。
+  2. 对**没被编辑过**的版本请求 `Edited` 视图，**降级成 `Raw` 而不是报错**——
+     界面上"点数字切换"本来就只在蓝/红两态有效，为这个弹错误没意义。
+  3. 删到只剩一版时拒绝（错误文本里带"只剩一版"），并且**先把 `messages.content` 与
+     `version_count/active` 一起更新**，不留"版本表改了、正文没改"的中间态。
+- 验证：`cargo test -p nmoi-storage` 全绿（lib 28、calibrate 5、roundtrip 17、settings 9、
+  **versions 11**），`cargo fmt` 已跑，`cargo check --workspace --all-targets` 无错误无警告；
+  `nmoi-core` 492、`nmoi-ffi` 24 未受影响。
+- **还没做**：三个 FFI 动词（`versions / switch_version / delete_version`）、
+  `load_units` 里带上 `version_count/active_view/edited_by_tool`、UI 的 `< n/n >` 与三色、开关。

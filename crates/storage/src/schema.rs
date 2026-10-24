@@ -183,3 +183,32 @@ CREATE INDEX settings_repair_by_time ON settings_repair(at DESC);
 pub const SCHEMA_V4: &str = r#"
 ALTER TABLE conversations ADD COLUMN model TEXT;
 "#;
+
+/// v5：消息版本（D137）。
+///
+/// 每版存两组正文：`raw_text`（模型原始输出）与 `edited_text`（工具/编辑改过的那份）；
+/// `active_view` 记这个版本上次看的是哪一组——**按版本记，不按消息记**。
+///
+/// `messages` 上只加两个计数列：总共几版、当前第几版。正文仍然读 `messages.content`
+/// （它是"当前显示的那一组"），所以 `load_units` 的读路径不用改。
+pub const SCHEMA_V5: &str = r#"
+CREATE TABLE message_versions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id     TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    version_no     INTEGER NOT NULL CHECK (version_no >= 1),
+    raw_text       TEXT NOT NULL,
+    edited_text    TEXT,
+    edited_by_tool INTEGER NOT NULL DEFAULT 0 CHECK (edited_by_tool IN (0, 1)),
+    active_view    TEXT NOT NULL DEFAULT 'raw' CHECK (active_view IN ('raw', 'edited')),
+    created_at     INTEGER NOT NULL,
+    -- 没被编辑过的版本不许有 edited_text；被编辑过的必须有
+    CHECK ((edited_by_tool = 0 AND edited_text IS NULL)
+        OR (edited_by_tool = 1 AND edited_text IS NOT NULL)),
+    UNIQUE (message_id, version_no)
+);
+
+CREATE INDEX message_versions_by_message ON message_versions(message_id, version_no);
+
+ALTER TABLE messages ADD COLUMN version_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN version_active INTEGER NOT NULL DEFAULT 0;
+"#;

@@ -21,6 +21,7 @@ pub mod repo;
 pub mod schema;
 pub mod settings;
 pub mod validate;
+pub mod versions;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
