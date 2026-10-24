@@ -84,12 +84,19 @@ internal fun ConversationDrawer(
     val widthPx = with(LocalDensity.current) { width.toPx() }
     val scope = rememberCoroutineScope()
 
-    // 面板位移（px，0 = 收起，widthPx = 展开）。拖动和松手后的惯性动画都写它。
-    val panel = remember { Animatable(0f) }
+    // 拖动位移（px）。**不能用 Animatable 在拖动循环里写**：那都是挂起函数，
+    // 而 `awaitEachGesture` 是受限协程，只能挂起在指针事件上（CI 会报
+    // "Restricted suspending functions can invoke member or extension suspending functions
+    // only on their restricted coroutine scope"）。所以：拖动写普通 state，
+    // 松手后的惯性交给普通协程里的 Animatable。
+    var dragPx by remember { mutableStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
-    // 松手之后的惯性动画期间也要走"手动画"这条路径，否则会先弹一下再交给 AnimatedVisibility。
+    val inertia = remember { Animatable(0f) }
+    // 惯性动画期间也走"手动渲染"这条路径，否则会先弹一下再交给 AnimatedVisibility。
     var animating by remember { mutableStateOf(false) }
     val manual = dragging || animating
+    // 渲染读的值：拖动看 dragPx，惯性看 inertia.value（动画开始前 inertia 已对齐到 dragPx）。
+    val shownPx = if (animating) inertia.value else dragPx
 
     Box(
         modifier = Modifier
@@ -127,13 +134,13 @@ internal fun ConversationDrawer(
                                 horizontal = degrees <= 25.0
                                 if (!horizontal) break
                                 dragging = true
-                                panel.snapTo(progress * widthPx)
+                                dragPx = progress * widthPx
                             }
                         }
 
                         if (decided && horizontal) {
                             progress = (progress + change.positionChange().x / widthPx).coerceIn(0f, 1f)
-                            panel.snapTo(progress * widthPx)
+                            dragPx = progress * widthPx
                             change.consume()
                         }
                         if (!change.pressed) break
@@ -149,29 +156,33 @@ internal fun ConversationDrawer(
                         else -> progress >= 0.25f
                     }
 
-                    // 先落状态，再播动画：这样动画结束时 AnimatedVisibility 已经是"到位"的，
-                    // 不会再滑一次。
-                    dragging = false
+                    // 先落状态：这样动画结束时 AnimatedVisibility 已经是"到位"的，不会再滑一次。
                     if (targetOpen) {
                         if (!open) onOpen()
                     } else {
                         if (open) onClose()
                     }
 
-                    val start = panel.value
+                    val start = dragPx
                     val target = if (targetOpen) widthPx else 0f
                     if (abs(start - target) < 1f) {
-                        panel.snapTo(0f)
+                        dragging = false
+                        dragPx = 0f
                         return@awaitEachGesture
                     }
-                    // 时长按"剩余距离 / 速度"估：甩得越快越短，松手时几乎没速度就用慢一点的 260ms。
+                    // 时长按"剩余距离 ÷ 速度"估：甩得越快越短；松手时几乎没速度就走 260ms。
                     val speed = abs(velocityX).coerceAtLeast(1f)
                     val duration = ((abs(target - start) / speed) * 1000f)
                         .coerceIn(80f, 260f)
                         .toInt()
-                    animating = true
+                    // 注意：这里只起协程，不做挂起调用（本作用域不允许）。
+                    // 协程第一件事是把 inertia 对齐到当前位移，之后才切到惯性渲染，
+                    // 所以看不到"跳一下"。
                     scope.launch {
-                        panel.animateTo(
+                        inertia.snapTo(start)
+                        animating = true
+                        dragging = false
+                        inertia.animateTo(
                             targetValue = target,
                             animationSpec = tween(
                                 durationMillis = duration,
@@ -179,7 +190,8 @@ internal fun ConversationDrawer(
                             ),
                         )
                         animating = false
-                        panel.snapTo(0f)
+                        dragPx = 0f
+                        inertia.snapTo(0f)
                     }
                 }
             },
@@ -188,7 +200,7 @@ internal fun ConversationDrawer(
 
         if (manual) {
             // 手动渲染这条路径：遮罩透明度跟着进度走，别在手指还在动的时候突然全黑。
-            val progress = (panel.value / widthPx).coerceIn(0f, 1f)
+            val progress = (shownPx / widthPx).coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -199,7 +211,7 @@ internal fun ConversationDrawer(
                 modifier = Modifier
                     .width(width)
                     .fillMaxHeight()
-                    .offset { IntOffset((panel.value - widthPx).roundToInt(), 0) },
+                    .offset { IntOffset((shownPx - widthPx).roundToInt(), 0) },
             ) {
                 DrawerPanel(
                     rows = rows,
