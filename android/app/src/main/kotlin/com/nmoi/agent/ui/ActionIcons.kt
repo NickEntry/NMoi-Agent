@@ -18,6 +18,10 @@ import androidx.compose.ui.unit.dp
  *
  * 描边参数照 `docs/ui/icons/README.md` §1：画布 24×24、描边 1.75、round cap/join、不填色。
  * 颜色由 `Icon(tint = …)` 统一上色，这里固定写黑——**不要**把主题色写死在图标里。
+ *
+ * 一个坑（2026-10-24 踩过）：往这个文件追加图标时，别用"在最后一个 `}` 前插入"的写法——
+ * 文件末尾的 `}` 是 `stroke()` 辅助函数的，插进去的 val 会变成函数里的局部变量，
+ * 编译在调用点报 `Unresolved reference`。要么手工加到 object 里，要么整份重写。
  */
 internal object ActionIcons {
     /** Lucide `settings.svg`（`docs/ui/icons/actions/settings.svg`）。 */
@@ -48,7 +52,7 @@ internal object ActionIcons {
     }
 
     /**
-     * Lucide `copy.svg`：复制许可全文。
+     * Lucide `copy.svg`：复制。
      *
      * 那个 `<rect x=8 y=8 width=14 height=14 rx=2>` 直接用路径写（`h`/`a`/`v`），
      * 不必为圆角矩形引入额外的图形 API。
@@ -63,26 +67,6 @@ internal object ActionIcons {
         stroke("M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z")
         stroke("M9 3v18")
     }
-}
-
-private fun buildVector(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =
-    ImageVector.Builder(
-        name = name,
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply(block).build()
-
-private fun ImageVector.Builder.stroke(path: String) {
-    addPath(
-        pathData = PathParser().parsePathString(path).toNodes(),
-        fill = null,
-        stroke = SolidColor(Color.Black),
-        strokeLineWidth = 1.75f,
-        strokeLineCap = StrokeCap.Round,
-        strokeLineJoin = StrokeJoin.Round,
-    )
 
     /** Lucide `rotate-ccw.svg`：重新生成（现在灰着：`turn_run` 还没接）。 */
     val RotateCcw: ImageVector = buildVector("rotate-ccw") {
@@ -130,4 +114,24 @@ private fun ImageVector.Builder.stroke(path: String) {
     val ChevronDown: ImageVector = buildVector("chevron-down") {
         stroke("m6 9 6 6 6-6")
     }
+}
+
+private fun buildVector(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =
+    ImageVector.Builder(
+        name = name,
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply(block).build()
+
+private fun ImageVector.Builder.stroke(path: String) {
+    addPath(
+        pathData = PathParser().parsePathString(path).toNodes(),
+        fill = null,
+        stroke = SolidColor(Color.Black),
+        strokeLineWidth = 1.75f,
+        strokeLineCap = StrokeCap.Round,
+        strokeLineJoin = StrokeJoin.Round,
+    )
 }

@@ -173,20 +173,24 @@ internal fun ChatScreen(
                     },
                     onCopy = copySelected,
                 )
+                // 选择模式下输入区是藏起来的，所以"已复制 N 条"这类提示要放在这儿。
+                // 注意不能写 `if (notice != null) Text(notice)`：notice 是委托属性，
+                // Kotlin 不给它做智能转换（编译期就会报 Smart cast is impossible）。
+                val selectingNotice = notice
+                if (selectingNotice != null) {
+                    Text(
+                        text = selectingNotice,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
+                    )
+                }
             } else {
                 ChatTopBar(
                     title = title,
                     onOpenDrawer = onOpenDrawer,
                     onNewChat = onNewChat,
                 )
-                if (notice != null) {
-                    Text(
-                        text = notice,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
-                    )
-                }
             }
 
             Box(modifier = Modifier.weight(1f)) {
