@@ -150,6 +150,57 @@ internal object ActionIcons {
         stroke("M21 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
         stroke("M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0")
     }
+    /** Lucide `cpu.svg`：模型选择。 */
+    val Cpu: ImageVector = buildVector("cpu") {
+        stroke("M12 20v2")
+        stroke("M12 2v2")
+        stroke("M17 20v2")
+        stroke("M17 2v2")
+        stroke("M2 12h2")
+        stroke("M2 17h2")
+        stroke("M2 7h2")
+        stroke("M20 12h2")
+        stroke("M20 17h2")
+        stroke("M20 7h2")
+        stroke("M7 20v2")
+        stroke("M7 2v2")
+        stroke("M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z")
+        stroke("M9 8h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z")
+    }
+
+    /** Lucide `search.svg`：网络搜索。 */
+    val Search: ImageVector = buildVector("search") {
+        stroke("m21 21-4.34-4.34")
+        stroke("M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0")
+    }
+
+    /** Lucide `gauge.svg`：思考强度（D37 的仪表盘语义）。 */
+    val Gauge: ImageVector = buildVector("gauge") {
+        stroke("m12 14 4-4")
+        stroke("M3.34 19a10 10 0 1 1 17.32 0")
+    }
+
+    /** Lucide `wrench.svg`：工具开关。 */
+    val Wrench: ImageVector = buildVector("wrench") {
+        stroke(
+            "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218" +
+                "a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259" +
+                "c.438.12.54.662.219.984z",
+        )
+    }
+
+    /** Lucide `mic.svg`：语音识别。 */
+    val Mic: ImageVector = buildVector("mic") {
+        stroke("M12 19v3")
+        stroke("M19 10v2a7 7 0 0 1-14 0v-2")
+        stroke("M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3Z")
+    }
+
+    /** Lucide `square.svg`：生成中显示"停止"（同一按钮换形态，PLAN §3.12）。 */
+    val Square: ImageVector = buildVector("square") {
+        stroke("M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z")
+    }
+
 }
 
 private fun buildVector(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

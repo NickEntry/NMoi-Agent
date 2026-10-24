@@ -13,8 +13,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -268,10 +266,12 @@ internal fun ChatScreen(
                     onDraftChange = { draft = it },
                     notice = notice,
                     canSend = !busy,
+                    busy = busy,
                     unsaved = sessionId == null,
                     onHint = { notice = it },
                     onSend = { submit("user") },
-                    onSendAssistant = { submit("assistant") },
+                    onSaveAssistant = { submit("assistant") },
+                    onSaveUser = { submit("user") },
                 )
             } else {
                 // 选择模式下藏起输入区，但留 10dp 底边，免得最后一条消息贴住屏幕边缘。
@@ -1228,10 +1228,12 @@ private fun Composer(
     onDraftChange: (String) -> Unit,
     notice: String?,
     canSend: Boolean,
+    busy: Boolean,
     unsaved: Boolean,
     onHint: (String) -> Unit,
     onSend: () -> Unit,
-    onSendAssistant: () -> Unit,
+    onSaveAssistant: () -> Unit,
+    onSaveUser: () -> Unit,
 ) {
     Column {
         if (notice != null) {
@@ -1243,10 +1245,8 @@ private fun Composer(
             )
         }
 
-        // 模型 / 思考 / 搜索 / 工具 / 附件：位置就是最终位置（PLAN §3.12），
-        // 现在一个都没接，所以点一下**说清差什么**，而不是摆一排点了没反应的开关。
-        ComposerChips(onHint = onHint)
-
+        // 形状照 PLAN §3.12（也是 kelivo 那一套）：**输入框 + 底部一行图标按钮**。
+        // 左：模型 / 搜索 / 思考 / 工具；右：＋菜单 / 语音 / 发送（生成中变停止，同一按钮换形态）。
         Surface(
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1254,21 +1254,64 @@ private fun Composer(
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 6.dp),
-            ) {
+            Column(modifier = Modifier.padding(top = 6.dp, bottom = 6.dp)) {
                 NativeEditText(
                     value = draft,
                     onValueChange = onDraftChange,
                     hint = "说点什么…",
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                SendButton(
-                    enabled = canSend && draft.isNotBlank(),
-                    onClick = onSend,
-                    onLongPress = onSendAssistant,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 六个都还没接：点一下把"差什么、等哪个阶段"写进上面那行提示。
+                    // 不给假开关的意思是"点了要有回应"，不是"不许摆"。
+                    IconActionButton(
+                        image = ActionIcons.Cpu,
+                        description = "模型",
+                        onClick = { onHint("模型选择待接：要先有供应商与密钥页（P3）") },
+                        compact = true,
+                    )
+                    IconActionButton(
+                        image = ActionIcons.Search,
+                        description = "网络搜索",
+                        onClick = { onHint("网络搜索待接：工具层（P7）") },
+                        compact = true,
+                    )
+                    IconActionButton(
+                        image = ActionIcons.Gauge,
+                        description = "思考强度",
+                        onClick = { onHint("思考强度待接：滑块 + 模型能力位（P3.4，D37）") },
+                        compact = true,
+                    )
+                    IconActionButton(
+                        image = ActionIcons.Wrench,
+                        description = "工具开关",
+                        onClick = { onHint("工具开关待接：工具层（P7，两级门）") },
+                        compact = true,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    IconActionButton(
+                        image = ActionIcons.Plus,
+                        description = "＋ 菜单",
+                        onClick = { onHint("「＋」面板待接：附件管线（P7.7）+ 技能 / 世界书 / 上下文管理") },
+                        compact = true,
+                    )
+                    IconActionButton(
+                        image = ActionIcons.Mic,
+                        description = "语音识别",
+                        onClick = { onHint("语音识别待接：ASR（未排期）") },
+                        compact = true,
+                    )
+                    SendStopButton(
+                        enabled = canSend && draft.isNotBlank(),
+                        busy = busy,
+                        onSend = onSend,
+                        onSaveAssistant = onSaveAssistant,
+                        onSaveUser = onSaveUser,
+                    )
+                }
             }
         }
 
@@ -1276,7 +1319,7 @@ private fun Composer(
             text = if (unsaved) {
                 "这是还没落库的新会话：第一条消息存下去时才建会话。"
             } else {
-                "发送还没接：点 ↑ 只是把话存进库里，不请求模型；长按 ↑ 存为助手消息。"
+                "发送还没接：点 ↑ 只是把话存进库里，不请求模型；长按 ↑ 可以选「仅保存为助手/用户消息」。"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1286,78 +1329,68 @@ private fun Composer(
 }
 
 /**
- * 输入区上方那一排：模型 / 思考 / 搜索 / 工具 / ＋（附件）。
+ * 发送 / 停止：**同一个按钮换形态**（PLAN §3.12）。
  *
- * **一个都还没接**，所以每个都只做一件事：点一下把"差什么、等哪个阶段"写进提示行。
- * 这不是假开关——假开关是"点了没反应"，这里点了有回应，只是回应是"还没轮到它"。
- * 接上一个就把对应的 hint 换成真动作，位置不动。
+ * - 空闲：↑，草稿非空才亮；
+ * - 生成中：方块。现在没有可生成的东西，`busy` 只覆盖"正在写库"那一瞬间，
+ *   所以停止态是**灰的**——`turn_run` 接上之后它才真有东西可停。
+ * - **长按出菜单**（用户 2026-10-21 定的）：仅保存为助手消息 / 仅保存为用户消息。
+ *   这两项走 `append_text`，现在就能用；语义是"先记下来、晚点再发"，不是发给模型。
  */
 @Composable
-private fun ComposerChips(onHint: (String) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        ComposerChip("模型 · 未配置") { onHint("模型选择待接：要先有供应商与密钥页（P3）") }
-        ComposerChip("思考 · 关") { onHint("思考强度待接：滑块 + 模型能力位（P3.4，D37）") }
-        ComposerChip("搜索 · 关") { onHint("网络搜索待接：工具层（P7）") }
-        ComposerChip("工具 · 关") { onHint("工具开关待接：工具层（P7，两级门）") }
-        ComposerChip("＋ 附件") { onHint("附件待接：附件管线（P7.7）") }
-    }
-}
-
-@Composable
-private fun ComposerChip(label: String, onClick: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.clickable(onClick = onClick),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            maxLines = 1,
-        )
-    }
-}
-
-/**
- * 发送键：圆形、40dp 视觉（热区靠外层 48dp 补足）。
- *
- * 禁用态只是变淡，**不做隐藏**——打字时按钮忽隐忽现会让整条输入区的高度跟着跳。
- */
-@Composable
-private fun SendButton(enabled: Boolean, onClick: () -> Unit, onLongPress: () -> Unit) {
-    val background = if (enabled) {
+private fun SendStopButton(
+    enabled: Boolean,
+    busy: Boolean,
+    onSend: () -> Unit,
+    onSaveAssistant: () -> Unit,
+    onSaveUser: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val active = enabled && !busy
+    val background = if (active) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f)
     }
-    Box(
-        modifier = Modifier
-            .padding(start = 6.dp)
-            .size(48.dp)
-            .pointerInput(enabled) {
-                if (enabled) {
-                    detectTapGestures(onTap = { onClick() }, onLongPress = { onLongPress() })
+
+    Box {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .pointerInput(active, busy) {
+                    detectTapGestures(
+                        onTap = { if (active) onSend() },
+                        onLongPress = { if (!busy) menuOpen = true },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(shape = CircleShape, color = background, modifier = Modifier.size(36.dp)) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (busy) ActionIcons.Square else ActionIcons.ArrowUp,
+                        contentDescription = if (busy) "停止（待接 turn_run）" else "发送",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Surface(shape = CircleShape, color = background, modifier = Modifier.size(40.dp)) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = ActionIcons.ArrowUp,
-                    contentDescription = "发送",
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(20.dp),
-                )
             }
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("仅保存为助手消息") },
+                onClick = {
+                    menuOpen = false
+                    onSaveAssistant()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("仅保存为用户消息") },
+                onClick = {
+                    menuOpen = false
+                    onSaveUser()
+                },
+            )
         }
     }
 }
