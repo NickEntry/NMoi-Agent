@@ -284,6 +284,39 @@ pub extern "C" fn nmoi_storage_save_version_json(
     })
 }
 
+/// 把某一版的"编辑后"正文写进去，并把视图切到它（UI 的「编辑」按钮走这一条）。
+///
+/// 两件事一次做完：`mark_version_edited` + `switch(view=edited)`。
+/// 分成两次调用也行，但中间失败会留下"改了内容、视图还在原文"的半截状态，
+/// 而用户点的是"编辑"，期待看到的就是编辑后的样子。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_edit_version_json(
+    handle: u64,
+    message: *const c_char,
+    version_no: i64,
+    text: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let text = read_str(text, "text")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            storage
+                .mark_version_edited(&message_id, version_no, text)
+                .map_err(storage_error)?;
+            let content = storage
+                .switch_message_version(&message_id, version_no, VersionView::Edited)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "version_no": version_no,
+                "view": "edited",
+                "content": content,
+            }))
+        })
+    })
+}
+
 /// 列出某条消息的所有版本。
 ///
 /// 出参：`{"ok":true,"message":"…","count":3,"active":2,"versions":[

@@ -521,3 +521,32 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_saveVersionJson<'loca
     });
     to_jstring(&mut env, result)
 }
+
+/// `Native.editVersionJson(handle, message, versionNo, text)`：写入"编辑后"正文并切到它。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_editVersionJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+    version_no: jlong,
+    text: JString<'local>,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let text = read_string(&mut env, &text);
+    let result = guarded(move || match (message, text) {
+        (Some(message), Some(text)) => {
+            let (Ok(c_message), Ok(c_text)) = (CString::new(message), CString::new(text)) else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::storage::nmoi_storage_edit_version_json(
+                handle as u64,
+                c_message.as_ptr(),
+                version_no,
+                c_text.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, result)
+}

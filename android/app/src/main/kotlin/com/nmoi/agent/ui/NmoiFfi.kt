@@ -72,6 +72,16 @@ internal object NmoiFfi {
             NativeBridge.saveVersionJson(handle, message, text)
         }
 
+    /** 写入"编辑后"正文并切到它（UI 的「编辑」走这一条）。 */
+    suspend fun editVersion(
+        handle: Long,
+        message: String,
+        versionNo: Long,
+        text: String,
+    ): Result<JSONObject> = call("edit_version") {
+        NativeBridge.editVersionJson(handle, message, versionNo, text)
+    }
+
     /** 切版本 / 切原文-编辑。`view` 只收 `raw` / `edited`。 */
     suspend fun switchVersion(
         handle: Long,

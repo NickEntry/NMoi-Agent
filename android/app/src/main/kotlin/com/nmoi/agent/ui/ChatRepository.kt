@@ -61,7 +61,16 @@ internal object ChatRepository {
      */
     suspend fun saveVersion(databasePath: String, messageId: String, text: String): Result<Unit> =
         withHandle(databasePath) { handle ->
-            NmoiFfi.saveVersion(handle, messageId, text).map { }
+            NmoiFfi.saveVersion(handle, messageId, text)
+                .onSuccess { envelope ->
+                    NLog.i(
+                        "Version",
+                        "save ok: id=$messageId version=${envelope.optInt("version_no")} " +
+                            "count=${envelope.optInt("count")}",
+                    )
+                }
+                .onFailure { NLog.w("Version", "save 失败：${it.message}") }
+                .map { }
         }
 
     /** 切到某一版的某一组正文，返回切换后应当显示的正文。 */
@@ -71,9 +80,29 @@ internal object ChatRepository {
         versionNo: Long,
         view: String,
     ): Result<String> = withHandle(databasePath) { handle ->
-        NmoiFfi.switchVersion(handle, messageId, versionNo, view).map { envelope ->
-            envelope.optString("content", "")
-        }
+        NmoiFfi.switchVersion(handle, messageId, versionNo, view)
+            .onSuccess { envelope ->
+                NLog.i(
+                    "Version",
+                    "switch ok: no=$versionNo view=$view -> 实际 ${envelope.optString("view")} " +
+                        "长度=${envelope.optString("content").length}",
+                )
+            }
+            .onFailure { NLog.w("Version", "switch 失败：no=$versionNo view=$view ${it.message}") }
+            .map { envelope -> envelope.optString("content", "") }
+    }
+
+    /** 写入"编辑后"正文并切到它（UI 的「编辑」走这一条）。 */
+    suspend fun editVersion(
+        databasePath: String,
+        messageId: String,
+        versionNo: Long,
+        text: String,
+    ): Result<String> = withHandle(databasePath) { handle ->
+        NmoiFfi.editVersion(handle, messageId, versionNo, text)
+            .onSuccess { NLog.i("Version", "edit ok: no=$versionNo 新长度=${text.length}") }
+            .onFailure { NLog.w("Version", "edit 失败：no=$versionNo ${it.message}") }
+            .map { envelope -> envelope.optString("content", "") }
     }
 
     /** 删一版；`versionNo = 0` 表示"只留当前这一版"。 */
@@ -82,7 +111,16 @@ internal object ChatRepository {
         messageId: String,
         versionNo: Long,
     ): Result<Unit> = withHandle(databasePath) { handle ->
-        NmoiFfi.deleteVersion(handle, messageId, versionNo).map { }
+        NmoiFfi.deleteVersion(handle, messageId, versionNo)
+            .onSuccess { envelope ->
+                NLog.i(
+                    "Version",
+                    "delete ok: 请求=$versionNo -> count=${envelope.optInt("count")} " +
+                        "active=${envelope.optInt("active")}",
+                )
+            }
+            .onFailure { NLog.w("Version", "delete 失败：请求=$versionNo ${it.message}") }
+            .map { }
     }
 
     /**

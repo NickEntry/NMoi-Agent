@@ -44,6 +44,8 @@ internal object NativeBridge {
 
     external fun saveVersionJson(handle: Long, message: String, text: String): String
 
+    external fun editVersionJson(handle: Long, message: String, versionNo: Long, text: String): String
+
     external fun listConversationsJson(handle: Long, limit: Long, offset: Long): String
 
     /** 读会话的原子单元（消息区）。limit ≤ 0 = 全给。 */

@@ -13,6 +13,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -109,6 +110,8 @@ internal fun ChatScreen(
     var shareOpen by remember { mutableStateOf(false) }
     // 「更多」是一个**自己画的底部面板**（不是 DropdownMenu）：要带图标、要盖住整屏。
     var moreFor by remember { mutableStateOf<ChatMessage?>(null) }
+    // 「编辑」：把某一版的正文改一遍（写 edited_text 并切到"编辑后"，D137）。
+    var editing by remember { mutableStateOf<ChatMessage?>(null) }
     var includeThinkingTools by remember { mutableStateOf(false) }
     var includeDetails by remember { mutableStateOf(false) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
@@ -184,7 +187,27 @@ internal fun ChatScreen(
         }
     }
 
+    val saveEdit: (ChatMessage, String) -> Unit = { message, text ->
+        val trimmed = text.trim()
+        when {
+            trimmed.isEmpty() -> notice = "编辑后的内容不能为空"
+            trimmed == message.content -> notice = "内容没变"
+            else -> scope.launch {
+                val versionNo = message.versionActive.coerceAtLeast(1).toLong()
+                ChatRepository.editVersion(databasePath, message.id, versionNo, trimmed).fold(
+                    onSuccess = {
+                        reloadKey += 1
+                        notice = "已保存编辑（这一版变红：显示编辑后）"
+                    },
+                    onFailure = { notice = "编辑失败：${it.message}" },
+                )
+            }
+        }
+    }
+
     val deleteVersion: (String, Long) -> Unit = { id, versionNo ->
+        // 先记下"界面想删哪一版"，再看仓储那边回的 count/active：两行对不上就能定位。
+        NLog.i("Version", "点删除：id=$id 请求版号=$versionNo（0=删其余）")
         scope.launch {
             ChatRepository.deleteVersion(databasePath, id, versionNo).fold(
                 onSuccess = {
@@ -304,7 +327,20 @@ internal fun ChatScreen(
                             if (next.isEmpty()) selecting = false
                         },
                         onCopied = { notice = "已复制这条消息" },
-                        onMoreMessage = { id -> moreFor = allMessages.firstOrNull { it.id == id } },
+                        onMoreMessage = { id ->
+                            val target = allMessages.firstOrNull { it.id == id }
+                            // 这一行是排查版本的**第一现场**：界面认为这条有几版、当前第几版、
+                            // 显示哪一组、有没有被编辑过。删除/切换不生效时先看它。
+                            if (target != null) {
+                                NLog.i(
+                                    "Version",
+                                    "打开更多：id=$id count=${target.versionCount} " +
+                                        "active=${target.versionActive} view=${target.versionView} " +
+                                        "edited=${target.versionEdited}",
+                                )
+                            }
+                            moreFor = target
+                        },
                         onVersionMessage = switchVersion,
                         // 「更多 → 分享」= 选中这一条并直接打开分享面板：
                         // 分享本来就是"选几条再导"，让它从一条开始，少两步。
@@ -350,6 +386,18 @@ internal fun ChatScreen(
             )
         }
 
+        val editingMessage = editing
+        if (editingMessage != null) {
+            EditVersionDialog(
+                initial = editingMessage.content,
+                onCancel = { editing = null },
+                onSave = { text ->
+                    editing = null
+                    saveEdit(editingMessage, text)
+                },
+            )
+        }
+
         val sheetMessage = moreFor
         if (sheetMessage != null) {
             MenuSheet(
@@ -366,7 +414,17 @@ internal fun ChatScreen(
                         selected = setOf(sheetMessage.id)
                     },
                     onSaveVersion = { saveVersionProbe(sheetMessage) },
-                    onDeleteThis = { deleteVersion(sheetMessage.id, sheetMessage.versionActive.toLong()) },
+                    onEdit = {
+                        editing = sheetMessage
+                    },
+                    // `versionActive` 兜底成 1：万一它是 0（老库/字段没读到），
+                    // 传 0 会被 storage 当成"删除所有版本"，那不是用户点"删除此版本"的意思。
+                    onDeleteThis = {
+                        deleteVersion(
+                            sheetMessage.id,
+                            sheetMessage.versionActive.coerceAtLeast(1).toLong(),
+                        )
+                    },
                     onDeleteAll = { deleteVersion(sheetMessage.id, 0L) },
                 ),
                 onHint = { notice = it },
@@ -970,7 +1028,6 @@ private fun UserMessage(
             }
         }
 
-        VersionControl(message = message, onPick = onVersion)
         MessageActionRow(
             mine = true,
             onCopy = {
@@ -980,6 +1037,7 @@ private fun UserMessage(
             onShare = onShare,
             onSelect = onLongPress,
             onMore = onMore,
+            versionControl = { VersionControl(message = message, onPick = onVersion) },
         )
     }
 }
@@ -1056,7 +1114,6 @@ private fun AssistantMessage(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
-        VersionControl(message = message, onPick = onVersion)
         MessageActionRow(
             mine = false,
             onCopy = {
@@ -1066,6 +1123,99 @@ private fun AssistantMessage(
             onShare = onShare,
             onSelect = onLongPress,
             onMore = onMore,
+            versionControl = { VersionControl(message = message, onPick = onVersion) },
+        )
+    }
+}
+
+/**
+ * 编辑某一版的正文。
+ *
+ * 保存后：`edited_text` 写进去、视图切到"编辑后"——也就是那个数字变**红**。
+ * 原文**不覆盖**（D135：每版存原文与修改后两组），所以点数字还能切回去看原文（变蓝）。
+ *
+ * 用自绘的居中卡片，不用系统 `AlertDialog`：这里要放进原生 `EditText`（中文输入法那套），
+ * 而系统对话框的尺寸与输入法联动在深浅两套主题下都不好对齐。
+ */
+@Composable
+private fun EditVersionDialog(initial: String, onCancel: () -> Unit, onSave: (String) -> Unit) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onCancel,
+                ),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "编辑这一版",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "保存后变成「编辑后」那一组（数字变红）；原文仍然留着，点数字能切回去。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    ) {
+                        NativeEditText(
+                            value = text,
+                            onValueChange = { text = it },
+                            hint = "编辑后的正文",
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DialogAction(label = "取消", primary = false, onClick = onCancel)
+                        Spacer(Modifier.width(8.dp))
+                        DialogAction(label = "保存", primary = true, onClick = { onSave(text) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DialogAction(label: String, primary: Boolean, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (primary) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceContainer
+        },
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (primary) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
     }
 }
@@ -1094,7 +1244,6 @@ private fun VersionControl(message: ChatMessage, onPick: (Long, String) -> Unit)
     }
 
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         VersionArrow(
@@ -1166,6 +1315,7 @@ private fun MessageActionRow(
     onShare: () -> Unit,
     onSelect: () -> Unit,
     onMore: () -> Unit,
+    versionControl: @Composable () -> Unit = {},
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
@@ -1208,6 +1358,9 @@ private fun MessageActionRow(
             onClick = onMore,
             compact = true,
         )
+        // 版本控件跟在这一排里、⋯ 的右边，中间空一个图标的宽度（用户 2026-10-24 定的位置）。
+        Spacer(Modifier.width(36.dp))
+        versionControl()
     }
 }
 
@@ -1549,6 +1702,7 @@ private fun messageSheetItems(
     onShare: () -> Unit,
     onSelectOnly: () -> Unit,
     onSaveVersion: () -> Unit,
+    onEdit: () -> Unit,
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
 ): List<SheetItem> {
@@ -1556,12 +1710,12 @@ private fun messageSheetItems(
         SheetItem(
             label = "编辑",
             icon = ActionIcons.Pencil,
-            hint = "编辑待接：core::edit::apply_edit 还没桥出 FFI（与 D135 那一层一起做）",
+            onClick = onEdit,
         ),
         SheetItem(
             label = "增强编辑",
             icon = ActionIcons.Pencil,
-            hint = "增强编辑待接：同编辑，另外要先定「用模型改写这一段」的提示词与预算",
+            hint = "增强编辑待接：要让模型改写这一段，得先接 turn_run（D136 之后）",
         ),
         SheetItem(
             label = "分享",

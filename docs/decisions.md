@@ -2603,3 +2603,33 @@ Compose 的 `clearFocus` 对 `AndroidView` 里的原生控件**不一定生效**
 - 「删除此版本 / 删除所有版本」现在**是真动作**（版本数 > 1 时才出现；只剩一版时给"删了等于删消息"的理由）。
 - 本地验证：`cargo test -p nmoi-storage` 全绿（versions 13 条），`cargo build -p nmoi-ffi` 通过；
   JNI 那部分本机编不了（jni-sys 要 rustc 1.76+，D112），只能靠 CI 的 android job。
+
+### D137 实现记录（第三层：编辑、位置、日志，2026-10-24）
+
+真机反馈两条：`< n/n >` 的位置要挪进动作行；「删除」没删掉。处理方式与结论：
+
+**位置**：版本控件挪进**消息底部那一排**，紧挨在 `⋯` 右边、中间空一个图标的宽度（36dp）。
+动作行改成接受一个 `versionControl` 槽位，两个方向的布局不用各写一遍。
+
+**编辑接通**：`nmoi_storage_edit_version_json`（写 `edited_text` + 切到 `edited`，一次调用），
+JNI `editVersionJson` → `ChatRepository.editVersion` → 自绘居中对话框（复用原生 `EditText`，中文输入法那套照旧）。
+保存后那一版的数字从**白变红**；点数字可以切回原文（蓝）——这样三色语义终于能真机验了。
+
+**删除没生效怎么查**：先按真实 C ABI 路径写了端到端测试
+（`crates/ffi/tests/versions_abi.rs`：open → create → append → save ×2 → load_units → versions →
+delete → load_units → 拒绝删最后一版 → switch(keep)），**全过**——说明问题不在 SQL、也不在信封。
+于是按"日志能定位到哪一步"来收口：
+
+| 打点位置 | 日志内容（tag = `Version`） |
+|---|---|
+| 打开「更多」 | `打开更多：id=… count=… active=… view=… edited=…`（界面认为的状态） |
+| 点删除 | `点删除：id=… 请求版号=…（0=删其余）` |
+| 仓储返回 | `delete ok: 请求=… -> count=… active=…` 或 `delete 失败：请求=… …` |
+| 切版本 | `switch ok: no=… view=… -> 实际 … 长度=…` |
+| 存版本 / 编辑 | `save ok: …` / `edit ok: …` |
+
+另外修了一个可能造成"点了像没反应"的真问题：`删除此版本` 传的是 `versionActive`，
+如果它是 0（字段没读到/老库），0 在 FFI 里表示"删除所有版本"——那不是用户点的那一项。
+现在**兜底成 `coerceAtLeast(1)`**，并把请求版号打进日志，两行一比就能看出错在哪。
+
+日志在应用内「设置 → 调试 → 日志 → 调试通道」看，不用 adb（D117 的初衷）。
