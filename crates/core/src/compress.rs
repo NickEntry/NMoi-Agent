@@ -41,9 +41,16 @@ use crate::runtime::ToolSpec;
 use crate::source::SourceTag;
 use crate::tokens::estimate_tokens;
 
+pub mod excerpt;
 pub mod runner;
 
 /// 追加草稿。
+/// 压缩后窗口至少要留几个完整轮（D143）。
+///
+/// 实测：窗口里助手发言不足 2 轮时，语气承接就没有样本了——只摘要条件下口癖率归零（0.00 / 0.14），
+/// 补到 2 轮以上才回到 2.30 附近。所以这条是"下限"，不是"目标"。
+pub const MIN_HIDDEN_TURNS: usize = 2;
+
 pub const DRAFT_APPEND_TOOL: &str = "compress_draft_append";
 /// 局部改写草稿（唯一匹配）。
 pub const DRAFT_EDIT_TOOL: &str = "compress_draft_edit";
@@ -722,7 +729,7 @@ impl CompressionJob {
                 });
             }
         }
-        let cut = divider::choose_cut_for_budget(units, keep_recent_tokens)
+        let cut = divider::choose_cut_for_window_shape(units, keep_recent_tokens, MIN_HIDDEN_TURNS)
             .ok_or(CompressError::NothingToCompress)?;
         divider::validate_position(units, cut)?;
         let above: Vec<AtomicUnit> = divider::units_above(units, cut).to_vec();

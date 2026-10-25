@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::ids::{MessageId, SessionId};
-use crate::message::AtomicUnit;
+use crate::message::{AtomicUnit, Role};
 
 /// 分界线 ID（UUIDv7，可排序）。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -232,6 +232,90 @@ pub fn choose_cut_for_budget(units: &[AtomicUnit], keep_recent_tokens: u32) -> O
     None
 }
 
+/// 窗口最小形状（D143）：窗口的第一条必须是**用户消息**。
+///
+/// 纯预算切点只保证"落在单元边界上"，于是窗口可能以 assistant 开头——它回答的那条用户消息
+/// 已经在线上；最坏是窗口以 `assistant(tool_calls)` 开头，而它的 `tool_result` 也在线上
+/// （实测 9 次切点里 7 次这样，其中 2 次是悬空工具对）。
+///
+/// 处理顺序：
+///
+/// 1. 拿到预算切点后，先**丢掉**窗口开头那些残轮（第一条不是用户消息的单元）；
+/// 2. 丢完若完整轮数不足 `min_turns`，反过来**往前扩**，把那个残轮的用户消息包进来；
+/// 3. 两条路都要满足"线下面至少一个单元"，否则退回原切点。
+///
+/// 返回的永远是单元边界上的 `after_seq`，所以不会切开 tool_call / tool_result。
+pub fn choose_cut_for_window_shape(
+    units: &[AtomicUnit],
+    keep_recent_tokens: u32,
+    min_turns: usize,
+) -> Option<u64> {
+    let base = choose_cut_for_budget(units, keep_recent_tokens)?;
+    let want = min_turns.max(1);
+    let Ok(start) = split_index(units, base) else {
+        return Some(base);
+    };
+    if units[start].first_message().role == Role::User && full_turns(&units[start..]) >= want {
+        return Some(base);
+    }
+
+    // 1. 先试**丢掉**残轮：把线挪到最后一个残轮单元之后。
+    let mut best = base;
+    let mut cursor = start;
+    if let Some(offset) = units[start..]
+        .iter()
+        .position(|unit| unit.first_message().role == Role::User)
+    {
+        if offset > 0 {
+            let candidate = last_seq_of(&units[start + offset - 1]);
+            if let Ok(index) = split_index(units, candidate) {
+                if full_turns(&units[index..]) >= want {
+                    return Some(candidate);
+                }
+                // 丢完轮数不够，先记下这个候选，再去往前扩。
+                best = candidate;
+                cursor = index;
+            }
+        }
+    }
+
+    // 2. 往前扩：一轮一轮把残缺轮的用户消息包进来，直到轮数够或扩不动。
+    while let Some(previous) = extend_to_turn_start(units, cursor) {
+        let Ok(index) = split_index(units, previous) else {
+            break;
+        };
+        best = previous;
+        if full_turns(&units[index..]) >= want || index == 0 {
+            break;
+        }
+        cursor = index;
+    }
+    Some(best)
+}
+
+/// 完整轮数：以用户消息开头的单元个数。
+fn full_turns(units: &[AtomicUnit]) -> usize {
+    units
+        .iter()
+        .filter(|unit| unit.first_message().role == Role::User)
+        .count()
+}
+
+/// 从 `start` 往前找最近一个用户轮，返回"它之前"的切点。
+fn extend_to_turn_start(units: &[AtomicUnit], start: usize) -> Option<u64> {
+    let mut index = start;
+    while index > 0 {
+        index -= 1;
+        if units[index].first_message().role == Role::User {
+            if index == 0 {
+                return None;
+            }
+            return Some(last_seq_of(&units[index - 1]));
+        }
+    }
+    None
+}
+
 /// 线上内容（用于归档）。窗口之外的所有单元。
 pub fn units_above(units: &[AtomicUnit], after_seq: u64) -> &[AtomicUnit] {
     match split_index(units, after_seq) {
@@ -378,5 +462,162 @@ mod tests {
     fn units_above_is_empty_for_invalid_cut() {
         let (_, units) = units(3, 10);
         assert!(units_above(&units, 99).is_empty());
+    }
+
+    // ---- 窗口形状（D143）----
+
+    struct Shape {
+        session: SessionId,
+        seq: u64,
+        units: Vec<AtomicUnit>,
+    }
+
+    impl Shape {
+        fn new() -> Self {
+            Self {
+                session: SessionId::new(),
+                seq: 0,
+                units: Vec::new(),
+            }
+        }
+
+        fn bump(&mut self) -> u64 {
+            self.seq += 1;
+            self.seq
+        }
+
+        fn text(&mut self, role: Role, tokens: u32) {
+            let seq = self.bump();
+            let message = Message::text(
+                MessageId::new(self.session, seq),
+                role,
+                SourceTag::History,
+                format!("m{seq}"),
+                tokens,
+                0,
+                LogicalClock::new(seq),
+            );
+            self.units.push(AtomicUnit::turn(message).unwrap());
+        }
+
+        fn user(&mut self, tokens: u32) {
+            self.text(Role::User, tokens);
+        }
+
+        fn assistant(&mut self, tokens: u32) {
+            self.text(Role::Assistant, tokens);
+        }
+
+        fn tool_round(&mut self, tokens: u32) {
+            let call_seq = self.bump();
+            let head = Message::tool_call_message(
+                MessageId::new(self.session, call_seq),
+                vec![crate::message::OutgoingToolCall::new("c1", "read", "{}")],
+                tokens,
+                0,
+                LogicalClock::new(call_seq),
+            );
+            let mut unit = AtomicUnit::tool_pair(head).unwrap();
+            let result_seq = self.bump();
+            unit.add_result(
+                Message::tool_result(
+                    MessageId::new(self.session, result_seq),
+                    "c1",
+                    "x",
+                    tokens,
+                    0,
+                    LogicalClock::new(result_seq),
+                )
+                .with_unit(unit.id.clone()),
+            )
+            .unwrap();
+            self.units.push(unit);
+        }
+    }
+
+    /// 窗口第一条必须是用户消息：纯预算切点落在这里的残轮上时要被纠正。
+    #[test]
+    fn window_shape_starts_on_user_turn() {
+        let mut shape = Shape::new();
+        shape.user(1);
+        shape.assistant(1);
+        shape.user(1);
+        shape.assistant(1);
+        shape.user(1);
+        shape.assistant(1);
+        let units = shape.units;
+
+        // 预算只够 1 个单元时，纯预算切点会让窗口从 assistant 开始。
+        let raw = choose_cut_for_budget(&units, 1).unwrap();
+        let (_, raw_below) = split(&units, raw).unwrap();
+        assert_ne!(raw_below[0].first_message().role, Role::User);
+
+        let shaped = choose_cut_for_window_shape(&units, 1, 2).unwrap();
+        let (_, below) = split(&units, shaped).unwrap();
+        assert_eq!(below[0].first_message().role, Role::User);
+        assert!(validate_position(&units, shaped).is_ok());
+    }
+
+    /// 丢掉残轮会把轮数抬起来，但绝不允许把工具对切开。
+    #[test]
+    fn window_shape_never_splits_tool_pair() {
+        let mut shape = Shape::new();
+        shape.user(1);
+        shape.assistant(1);
+        shape.user(1);
+        shape.tool_round(1);
+        shape.assistant(1);
+        let units = shape.units;
+        for keep in 1..=4u32 {
+            if let Some(cut) = choose_cut_for_window_shape(&units, keep, 2) {
+                assert_eq!(
+                    validate_position(&units, cut),
+                    Ok(()),
+                    "切点 {cut} 必须是单元边界"
+                );
+            }
+        }
+    }
+
+    /// 残轮丢完不足 min_turns 时要往前扩，把那个残轮的用户消息包进来。
+    #[test]
+    fn window_shape_extends_when_turns_too_few() {
+        let mut shape = Shape::new();
+        for _ in 0..5 {
+            shape.user(1);
+            shape.assistant(1);
+        }
+        let units = shape.units;
+        let cut = choose_cut_for_window_shape(&units, 1, 3).unwrap();
+        let (_, below) = split(&units, cut).unwrap();
+        let turns = below
+            .iter()
+            .filter(|u| u.first_message().role == Role::User)
+            .count();
+        assert!(turns >= 3, "要求 3 轮，实际 {turns}");
+    }
+
+    /// 满预算时行为与纯预算切点一致（不无故多压）。
+    #[test]
+    fn window_shape_falls_back_to_budget_when_all_fits() {
+        let mut shape = Shape::new();
+        shape.user(1);
+        shape.assistant(1);
+        let units = shape.units;
+        assert!(choose_cut_for_window_shape(&units, 100, 2).is_none());
+    }
+
+    /// 整段没有用户消息时不 panic，仍返回合法切点。
+    #[test]
+    fn window_shape_handles_all_assistant_history() {
+        let mut shape = Shape::new();
+        shape.assistant(1);
+        shape.assistant(1);
+        shape.assistant(1);
+        let units = shape.units;
+        match choose_cut_for_window_shape(&units, 1, 2) {
+            Some(cut) => assert!(validate_position(&units, cut).is_ok()),
+            None => {}
+        }
     }
 }
