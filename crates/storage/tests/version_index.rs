@@ -73,15 +73,13 @@ fn version_index_keys_match_load_units_ids() {
 
     let storage = ready(&path);
     let index = storage.version_index(session).unwrap();
-    let brief = index
-        .get(&message_id.to_string())
-        .unwrap_or_else(|| {
-            panic!(
-                "索引里没有 {}，实际键 {:?}",
-                message_id,
-                index.keys().collect::<Vec<_>>()
-            )
-        });
+    let brief = index.get(&message_id.to_string()).unwrap_or_else(|| {
+        panic!(
+            "索引里没有 {}，实际键 {:?}",
+            message_id,
+            index.keys().collect::<Vec<_>>()
+        )
+    });
     assert_eq!((brief.count, brief.active), (2, 2));
 
     // 关键：`load_units` 拿到的消息 id 必须能查到同一份 brief
