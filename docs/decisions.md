@@ -2968,3 +2968,33 @@ runner 侧对 `TooLong` 的处理和 `Coverage` 一样：把"先删重复的、�
 
 **V7 通过**（用户真机逐层验过）：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出，每次只退一层，根页面按返回才退应用。
 V8 的第 1、3 条也过（编辑落在正确的版号、面板与现读一致）；第 2 条见 D137 第五层。
+
+## D148 颜色只管"被 AI 改过"：用户编辑走独立一层（schema v6）
+
+**用户 2026-10-26 指出的语义错误**：现在点「编辑」会让那一版变红/蓝。**不对。**
+红/蓝的含义是"这一版被工具（AI）改过"；用户自己改字不该改变这个状态，
+否则"我改了个错别字"和"模型重写过"看起来一模一样，三色就失去意义了。
+
+**要能分别改的三种内容**：① 没被 AI 改过的原文 ② 被 AI 改过的原文 ③ AI 改后的那一份。
+用户对哪一份不满意都能改，改了都不影响颜色。
+
+**做法（schema v6）**
+
+| 列 | 谁写 | 作用 |
+|---|---|---|
+| `raw_text` | 生成时 | 原文 |
+| `edited_text` + `edited_by_tool` | **工具/AI** | 改后的正文；`edited_by_tool` 决定蓝/红 |
+| `user_text` + `user_edit_of` | **用户** | 用户改的那一份，以及"改的是 raw 还是 edited" |
+
+- 显示规则 `shown_text`：**用户改过且改的是这一组** → 用 `user_text`；否则按视图取
+  `edited_text` / `raw_text`。所以"改了原文"不会串到"AI 改后"那一组上去。
+- `messages.content` 仍然是"当前显示的那一份"，用户改到正在显示的那一版时同步更新。
+- 用户改过另给一个标记 `user_edited`（`load_units` 的 `version_user_edited`），**不参与三色**。
+- FFI：`edit_version` 的语义改成**用户编辑**（只写用户层）；新增 `tool_edit_version` 给工具用。
+
+**临时探针**：`nmoi_storage_tool_edit_version_json` + 界面「更多 → 用工具改这一版（临时探针）」，
+用来在真机上把红/蓝造出来。真正的工具编辑要等 `core::edit::apply_edit` 桥出 FFI，**接上就删**。
+
+**测试**：`user_edit_does_not_mark_tool_edited`（改内容不变色、留用户标记）、
+`user_edit_and_tool_edit_live_in_different_layers`（改 raw 不影响 edited，反之亦然）、
+迁移测试补 v6 的两列默认为 NULL。

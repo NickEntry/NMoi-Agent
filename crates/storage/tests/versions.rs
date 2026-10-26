@@ -82,7 +82,11 @@ fn migration_v4_to_v5_keeps_rows_and_zeroes_counts() {
     // 升到 v5。
     {
         let mut conn = rusqlite::Connection::open(&path).unwrap();
-        assert_eq!(migrate::migrate(&mut conn, SCHEMA_VERSION).unwrap(), 5);
+        assert_eq!(
+            migrate::migrate(&mut conn, SCHEMA_VERSION).unwrap(),
+            SCHEMA_VERSION,
+            "迁移必须一步到位到当前版本"
+        );
         let (content, count, active): (String, i64, i64) = conn
             .query_row(
                 "SELECT content, version_count, version_active FROM messages WHERE id = 'm1'",
@@ -98,6 +102,15 @@ fn migration_v4_to_v5_keeps_rows_and_zeroes_counts() {
             })
             .unwrap();
         assert_eq!(versions, 0);
+        // v6 的用户编辑层（D148）：老版本行没有用户编辑，两列都是 NULL
+        let user: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT user_text, user_edit_of FROM message_versions WHERE message_id = 'm1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or((None, None));
+        assert_eq!(user, (None, None));
     }
 }
 
@@ -362,4 +375,68 @@ fn version_index_only_lists_messages_that_have_versions() {
     assert_eq!(brief.active, 2);
     assert_eq!(brief.view, VersionView::Raw);
     assert!(!brief.edited_by_tool);
+}
+/// 用户编辑（D148）：**改内容，不改颜色**。
+#[test]
+fn user_edit_does_not_mark_tool_edited() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, _session, message) = fixture(dir.path());
+    storage.save_generated_version(&message, "原文").unwrap();
+
+    storage
+        .user_edit_version(&message, 1, "用户改过的字")
+        .unwrap();
+
+    let list = storage.list_message_versions(&message).unwrap();
+    assert!(
+        !list.versions[0].edited_by_tool,
+        "用户编辑不许把这一版标成工具改过"
+    );
+    assert!(list.versions[0].user_edited, "但要留下\"用户改过\"这个标记");
+    assert_eq!(
+        shown_content(&storage, _session, &message),
+        "用户改过的字",
+        "当前显示的就是用户改完的那份"
+    );
+    // 视图没被改成 edited——颜色语义靠它，动了就全乱
+    assert_eq!(list.versions[0].view, VersionView::Raw);
+}
+
+/// 用户编辑与工具编辑各管一层：改原文不影响\"AI 改后\"，反之亦然。
+#[test]
+fn user_edit_and_tool_edit_live_in_different_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, message) = fixture(dir.path());
+    storage.save_generated_version(&message, "原文").unwrap();
+
+    // 工具改一次：这一版变成\"被 AI 改过\"，并且切到 edited
+    storage.mark_version_edited(&message, 1, "AI 改后").unwrap();
+    storage
+        .switch_message_version(&message, 1, VersionView::Edited)
+        .unwrap();
+
+    // 用户改当前这一组（edited）
+    storage
+        .user_edit_version(&message, 1, "用户在 AI 版上改的")
+        .unwrap();
+    assert_eq!(
+        shown_content(&storage, session, &message),
+        "用户在 AI 版上改的"
+    );
+
+    // 切回原文：看到的是 raw，不该出现用户的改写
+    let raw = storage
+        .switch_message_version(&message, 1, VersionView::Raw)
+        .unwrap();
+    assert_eq!(raw, "原文");
+
+    // 再切回 edited：用户改的那份还在
+    let edited = storage
+        .switch_message_version(&message, 1, VersionView::Edited)
+        .unwrap();
+    assert_eq!(edited, "用户在 AI 版上改的");
+
+    let list = storage.list_message_versions(&message).unwrap();
+    assert!(list.versions[0].edited_by_tool, "工具改过就是改过");
+    assert!(list.versions[0].user_edited);
 }

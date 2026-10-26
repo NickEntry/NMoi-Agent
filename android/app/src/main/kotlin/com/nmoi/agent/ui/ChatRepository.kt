@@ -143,6 +143,24 @@ internal object ChatRepository {
             .map { envelope -> envelope.optString("content", "") }
     }
 
+    /**
+     * **工具编辑**某一版（临时探针，D148）。
+     *
+     * 跟 [editVersion] 的区别：这条会置 `edited_by_tool`，也就是让 `n/n` 变蓝/红。
+     * `editVersion` 是用户手改，只写用户编辑层，不改变颜色。
+     */
+    suspend fun toolEditVersion(
+        databasePath: String,
+        messageId: String,
+        versionNo: Long,
+        text: String,
+    ): Result<String> = withHandle(databasePath) { handle ->
+        NmoiFfi.toolEditVersion(handle, messageId, versionNo, text)
+            .onSuccess { NLog.i("Version", "tool edit ok: no=$versionNo 新长度=${text.length}") }
+            .onFailure { NLog.w("Version", "tool edit 失败：no=$versionNo ${it.message}") }
+            .map { envelope -> envelope.optString("content", "") }
+    }
+
     /** 删一版；`versionNo = 0` 表示"只留当前这一版"。 */
     suspend fun deleteVersion(
         databasePath: String,

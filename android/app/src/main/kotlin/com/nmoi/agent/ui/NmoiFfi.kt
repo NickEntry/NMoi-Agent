@@ -86,6 +86,16 @@ internal object NmoiFfi {
         NativeBridge.editVersionJson(handle, message, versionNo, text)
     }
 
+    /** 工具编辑（临时探针）：会置 `edited_by_tool`，于是数字变蓝/红（D148）。 */
+    suspend fun toolEditVersion(
+        handle: Long,
+        message: String,
+        versionNo: Long,
+        text: String,
+    ): Result<JSONObject> = call("tool_edit_version") {
+        NativeBridge.toolEditVersionJson(handle, message, versionNo, text)
+    }
+
     /** 切版本 / 切原文-编辑。`view` 只收 `raw` / `edited`。 */
     suspend fun switchVersion(
         handle: Long,

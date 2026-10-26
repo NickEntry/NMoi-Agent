@@ -53,8 +53,13 @@ impl VersionView {
 pub struct MessageVersion {
     pub version_no: i64,
     pub active: bool,
-    /// 被工具/编辑改过。决定 UI 上那个数字的颜色（白 = 没有，蓝/红 = 有）。
+    /// 被**工具/AI** 改过。决定 UI 上那个数字的颜色（白 = 没有，蓝/红 = 有）。
+    ///
+    /// 注意：**用户编辑不会把它置 1**（D148）。用户改的是"他看到的那一份"，
+    /// 存在 `user_text` 里，颜色不受影响。
     pub edited_by_tool: bool,
+    /// 用户改过这一版（`user_text` 非空）。不参与三色，只是另一个标记。
+    pub user_edited: bool,
     pub view: VersionView,
     pub created_at: i64,
 }
@@ -183,7 +188,8 @@ impl Storage {
         )?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT version_no, edited_by_tool, active_view, created_at
+            "SELECT version_no, edited_by_tool, active_view, created_at,
+                    (user_text IS NOT NULL)
              FROM message_versions WHERE message_id = ?1 ORDER BY version_no",
         )?;
         let rows = stmt.query_map([&id], |row| {
@@ -194,6 +200,7 @@ impl Storage {
                 version_no,
                 active: version_no == active,
                 edited_by_tool: edited != 0,
+                user_edited: row.get::<_, i64>(4)? != 0,
                 view: VersionView::parse(&view).unwrap_or(VersionView::Raw),
                 created_at: row.get(3)?,
             })
@@ -218,12 +225,20 @@ impl Storage {
     ) -> Result<String, StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
-        let (raw, edited, edited_by_tool): (String, Option<String>, i64) = tx
+        let (raw, edited, edited_by_tool, user_text, user_edit_of) = tx
             .query_row(
-                "SELECT raw_text, edited_text, edited_by_tool
+                "SELECT raw_text, edited_text, edited_by_tool, user_text, user_edit_of
                  FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
                 params![id, version_no],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
             )
             .map_err(|_| {
                 StorageError::Inconsistent(format!("消息 {message_id} 没有第 {version_no} 版"))
@@ -234,10 +249,13 @@ impl Storage {
         } else {
             view
         };
-        let text = match effective {
-            VersionView::Raw => raw,
-            VersionView::Edited => edited.unwrap_or_default(),
-        };
+        let text = shown_text(
+            &raw,
+            edited.as_deref(),
+            user_text.as_deref(),
+            user_edit_of.as_deref(),
+            effective,
+        );
         tx.execute(
             "UPDATE message_versions SET active_view = ?1 WHERE message_id = ?2 AND version_no = ?3",
             params![effective.as_str(), id, version_no],
@@ -248,6 +266,53 @@ impl Storage {
         )?;
         tx.commit()?;
         Ok(text)
+    }
+
+    /// **用户**改这一版的正文（D148）。
+    ///
+    /// 跟 [`Self::mark_version_edited`] 的区别（这条区别是整套颜色语义的根）：
+    ///
+    /// - 用户编辑只写 `user_text`，**不碰 `edited_by_tool`**——用户改字不该让这一版变成"AI 改过"；
+    /// - 记下 `user_edit_of`＝改的时候正在看哪一组（`raw` / `edited`），
+    ///   因为同一个版本下原文和 AI 改后是两份内容，用户可以分别改；
+    /// - 这一版正在显示时，同步 `messages.content`（`content` 永远代表"当前显示的那一份"）。
+    ///
+    /// 返回改完之后应当显示的正文。
+    pub fn user_edit_version(
+        &mut self,
+        message_id: &MessageId,
+        version_no: i64,
+        text: &str,
+    ) -> Result<String, StorageError> {
+        let tx = self.conn.transaction()?;
+        let id = message_id.to_string();
+        let (edited_by_tool, active_view): (i64, String) = tx
+            .query_row(
+                "SELECT edited_by_tool, active_view FROM message_versions
+                 WHERE message_id = ?1 AND version_no = ?2",
+                params![id, version_no],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| {
+                StorageError::Inconsistent(format!("消息 {message_id} 没有第 {version_no} 版"))
+            })?;
+        // 没被工具改过的版本只有一组正文，用户改的就是那一组。
+        let target = if edited_by_tool == 0 {
+            VersionView::Raw
+        } else {
+            VersionView::parse(&active_view).unwrap_or(VersionView::Raw)
+        };
+        tx.execute(
+            "UPDATE message_versions SET user_text = ?1, user_edit_of = ?2
+             WHERE message_id = ?3 AND version_no = ?4",
+            params![text, target.as_str(), id, version_no],
+        )?;
+        tx.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2 AND version_active = ?3",
+            params![text, id, version_no],
+        )?;
+        tx.commit()?;
+        Ok(text.to_string())
     }
 
     /// 切到某一版，**视图沿用这一版自己记住的那个**（`active_view`）。
@@ -360,6 +425,8 @@ pub struct VersionBrief {
     pub active: i64,
     pub view: VersionView,
     pub edited_by_tool: bool,
+    /// 当前这一版被用户改过（不参与三色，只是另一个标记）。
+    pub user_edited: bool,
 }
 
 impl Storage {
@@ -376,7 +443,8 @@ impl Storage {
     ) -> Result<HashMap<String, VersionBrief>, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.version_count, m.version_active,
-                    COALESCE(v.edited_by_tool, 0), COALESCE(v.active_view, 'raw')
+                    COALESCE(v.edited_by_tool, 0), COALESCE(v.active_view, 'raw'),
+                    COALESCE(v.user_text, '') <> ''
              FROM messages m
              LEFT JOIN message_versions v
                     ON v.message_id = m.id AND v.version_no = m.version_active
@@ -388,6 +456,7 @@ impl Storage {
             let active: i64 = row.get(2)?;
             let edited: i64 = row.get(3)?;
             let view: String = row.get(4)?;
+            let user_edited: i64 = row.get(5)?;
             Ok((
                 id,
                 VersionBrief {
@@ -395,6 +464,7 @@ impl Storage {
                     active,
                     view: VersionView::parse(&view).unwrap_or(VersionView::Raw),
                     edited_by_tool: edited != 0,
+                    user_edited: user_edited != 0,
                 },
             ))
         })?;
@@ -404,6 +474,29 @@ impl Storage {
             out.insert(id, brief);
         }
         Ok(out)
+    }
+}
+
+/// 某一版在某个视图下应当显示的正文（D148）。
+///
+/// 优先级：**用户改过的那一组** > `edited_text`（仅当要看 edited）> `raw_text`。
+/// `user_edit_of` 记的是"用户改的是哪一组"，所以改了原文之后切到"编辑后"看到的
+/// 仍然是 AI 那一份，不会把用户的改写串到另一组上去。
+fn shown_text(
+    raw: &str,
+    edited: Option<&str>,
+    user_text: Option<&str>,
+    user_edit_of: Option<&str>,
+    view: VersionView,
+) -> String {
+    if let (Some(text), Some(of)) = (user_text, user_edit_of) {
+        if VersionView::parse(of).unwrap_or(VersionView::Raw) == view {
+            return text.to_string();
+        }
+    }
+    match view {
+        VersionView::Raw => raw.to_string(),
+        VersionView::Edited => edited.unwrap_or(raw).to_string(),
     }
 }
 

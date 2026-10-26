@@ -212,3 +212,12 @@ CREATE INDEX message_versions_by_message ON message_versions(message_id, version
 ALTER TABLE messages ADD COLUMN version_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN version_active INTEGER NOT NULL DEFAULT 0;
 "#;
+
+/// v6：**用户编辑层**（D148）。
+///
+/// 用户改的是"他当时看到的那一份"，**不改变"被 AI 改过"这个状态**——
+/// 颜色只看 `edited_by_tool`，用户改过只是另一个标记，不参与三色。
+pub const SCHEMA_V6: &str = r#"
+ALTER TABLE message_versions ADD COLUMN user_text TEXT;
+ALTER TABLE message_versions ADD COLUMN user_edit_of TEXT;
+"#;

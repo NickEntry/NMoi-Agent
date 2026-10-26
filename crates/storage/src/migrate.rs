@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::schema;
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub struct Migration {
     pub version: i64,
@@ -34,6 +34,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 5,
         sql: schema::SCHEMA_V5,
+    },
+    Migration {
+        version: 6,
+        sql: schema::SCHEMA_V6,
     },
 ];
 

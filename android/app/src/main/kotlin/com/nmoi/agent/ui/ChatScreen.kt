@@ -224,11 +224,26 @@ internal fun ChatScreen(
                 ChatRepository.editVersion(databasePath, message.id, versionNo, trimmed).fold(
                     onSuccess = {
                         reloadKey += 1
-                        notice = "已保存编辑（这一版变红：显示编辑后）"
+                        notice = "已保存（用户编辑：不改颜色）"
                     },
                     onFailure = { notice = "编辑失败：${it.message}" },
                 )
             }
+        }
+    }
+
+    // **临时探针**：用"工具编辑"这条路改一版，专门用来验红/蓝到底怎么来的（D148）。
+    // 真正的工具编辑要等 `core::edit::apply_edit` 桥出 FFI，那之前先用它把颜色造出来。
+    val toolEditProbe: (ChatMessage, Long) -> Unit = { message, versionNo ->
+        val marked = message.content + "\n\n（这一版是工具改的）"
+        scope.launch {
+            ChatRepository.toolEditVersion(databasePath, message.id, versionNo, marked).fold(
+                onSuccess = {
+                    reloadKey += 1
+                    notice = "工具改完了（这一版应当变红/蓝）"
+                },
+                onFailure = { notice = "工具编辑失败：${it.message}" },
+            )
         }
     }
 
@@ -477,6 +492,7 @@ internal fun ChatScreen(
                         editingVersion = sheetActive.toLong()
                         editing = sheetMessage
                     },
+                    onToolEdit = { toolEditProbe(sheetMessage, sheetActive.toLong()) },
                     // `versionActive` 兜底成 1：万一它是 0（老库/字段没读到），
                     // 传 0 会被 storage 当成"删除所有版本"，那不是用户点"删除此版本"的意思。
                     onDeleteThis = {
@@ -1760,6 +1776,7 @@ private fun messageSheetItems(
     onSelectOnly: () -> Unit,
     onSaveVersion: () -> Unit,
     onEdit: () -> Unit,
+    onToolEdit: () -> Unit,
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
 ): List<SheetItem> {
@@ -1773,6 +1790,12 @@ private fun messageSheetItems(
             label = "增强编辑",
             icon = ActionIcons.Pencil,
             hint = "增强编辑待接：要让模型改写这一段，得先接 turn_run（D136 之后）",
+        ),
+        // 临时探针：走"工具编辑"那条路，把 `edited_by_tool` 置上，用来验红/蓝（D148）。
+        SheetItem(
+            label = "用工具改这一版（临时探针）",
+            icon = ActionIcons.Pencil,
+            onClick = onToolEdit,
         ),
         SheetItem(
             label = "分享",

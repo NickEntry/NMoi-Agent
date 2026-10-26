@@ -284,13 +284,41 @@ pub extern "C" fn nmoi_storage_save_version_json(
     })
 }
 
-/// 把某一版的"编辑后"正文写进去，并把视图切到它（UI 的「编辑」按钮走这一条）。
+/// **用户**改某一版的正文（UI 的「编辑」走这一条，D148）。
 ///
-/// 两件事一次做完：`mark_version_edited` + `switch(view=edited)`。
-/// 分成两次调用也行，但中间失败会留下"改了内容、视图还在原文"的半截状态，
-/// 而用户点的是"编辑"，期待看到的就是编辑后的样子。
+/// 只写用户编辑层（`user_text` + `user_edit_of`），**不会**把这一版标成"AI 改过"——
+/// 用户改字不该让数字变红/蓝。颜色语义见 D148：红蓝只表示"被工具改过"。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_edit_version_json(
+    handle: u64,
+    message: *const c_char,
+    version_no: i64,
+    text: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let text = read_str(text, "text")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            let content = storage
+                .user_edit_version(&message_id, version_no, text)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "version_no": version_no,
+                "view": "user",
+                "content": content,
+            }))
+        })
+    })
+}
+
+/// **工具/AI** 改某一版的正文（会置 `edited_by_tool`，于是数字变成蓝/红）。
+///
+/// 现在是**临时探针**：`turn_run` 与 `core::edit::apply_edit` 都还没接，
+/// 但"红蓝到底怎么来的"必须先有办法在真机上造出来。接上真正的工具编辑后删掉它。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_tool_edit_version_json(
     handle: u64,
     message: *const c_char,
     version_no: i64,
@@ -478,6 +506,8 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "version_active": brief.map(|b| b.active).unwrap_or(0),
                                 "version_view": brief.map(|b| b.view.as_str()).unwrap_or("raw"),
                                 "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
+                                // 用户改过这一版没有——不参与三色（D148）
+                                "version_user_edited": brief.map(|b| b.user_edited).unwrap_or(false),
                             })
                         })
                         .collect();

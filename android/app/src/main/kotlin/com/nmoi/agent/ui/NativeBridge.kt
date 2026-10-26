@@ -46,6 +46,9 @@ internal object NativeBridge {
 
     external fun editVersionJson(handle: Long, message: String, versionNo: Long, text: String): String
 
+    /** 工具编辑（临时探针）：会置 `edited_by_tool`，数字变蓝/红（D148）。 */
+    external fun toolEditVersionJson(handle: Long, message: String, versionNo: Long, text: String): String
+
     external fun listConversationsJson(handle: Long, limit: Long, offset: Long): String
 
     /** 读会话的原子单元（消息区）。limit ≤ 0 = 全给。 */
