@@ -1,7 +1,7 @@
 //! 消息版本（D135 的规则、D137 的施工图）。
 //!
-//! 一句话：**每条消息可以有多版回复**，每版存两组正文——模型原始输出（`raw_text`）
-//! 与工具/编辑改过的那一份（`edited_text`）；`active_view` 记"上次看的是哪一组"。
+//! 一句话：**每条消息可以有多版回复**，每版存两组正文——模型原始输出（`origin_message`）
+//! 与工具/编辑改过的那一份（`tooledit_message`）；`active_view` 记"上次看的是哪一组"。
 //!
 //! 三条设计上的取舍：
 //!
@@ -12,7 +12,7 @@
 //! 2. `version_no` **永远是 1..=version_count 的连续整数**。删除版本后重新编号，
 //!    这样 UI 上的 `n/n` 不需要再处理空洞。
 //! 3. 每消息上限 [`MAX_VERSIONS`] 版，超了丢**最旧**的一版（丢的是旧，不是当前）。
-//! 4. **用户编辑就地改这两份正文**（D152）：改原文就写 `raw_text`，改 AI 那份就写 `edited_text`，
+//! 4. **用户编辑就地改这两份正文**（D152）：改原文就写 `origin_message`，改 AI 那份就写 `tooledit_message`，
 //!    两组各改各的列，互不覆盖。v6 那套"另存一份 user_text"已经删掉了——一版只存得下一份覆盖层，
 //!    改过一组再改另一组，前一次就没了。
 
@@ -90,7 +90,7 @@ impl Storage {
     pub fn save_generated_version(
         &mut self,
         message_id: &MessageId,
-        raw_text: &str,
+        origin_message: &str,
     ) -> Result<(i64, i64), StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
@@ -112,10 +112,10 @@ impl Storage {
         )?;
         let next = current + 1;
         tx.execute(
-            "INSERT INTO message_versions(message_id, version_no, raw_text, edited_text,
+            "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
                                           edited_by_tool, active_view, created_at)
              VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4)",
-            params![id, next, raw_text, crate::validate::now_ms()],
+            params![id, next, origin_message, crate::validate::now_ms()],
         )?;
 
         // 超上限：丢最旧的一版（当前这一版刚插入，永远不会是被丢的那个）。
@@ -140,7 +140,7 @@ impl Storage {
         )?;
         tx.execute(
             "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3 WHERE id = ?4",
-            params![count, active, raw_text, id],
+            params![count, active, origin_message, id],
         )?;
         tx.commit()?;
         Ok((active, count))
@@ -157,16 +157,16 @@ impl Storage {
         &mut self,
         message_id: &MessageId,
         version_no: i64,
-        edited_text: &str,
+        tooledit_message: &str,
     ) -> Result<(), StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
         seed_first_version(&tx, &id)?;
         let changed = tx.execute(
             "UPDATE message_versions
-             SET edited_text = ?1, edited_by_tool = 1
+             SET tooledit_message = ?1, edited_by_tool = 1
              WHERE message_id = ?2 AND version_no = ?3",
-            params![edited_text, id, version_no],
+            params![tooledit_message, id, version_no],
         )?;
         if changed == 0 {
             return Err(StorageError::Inconsistent(format!(
@@ -180,7 +180,7 @@ impl Storage {
                    SELECT 1 FROM message_versions
                    WHERE message_id = ?2 AND version_no = ?3 AND active_view = 'edited'
                )",
-            params![edited_text, id, version_no],
+            params![tooledit_message, id, version_no],
         )?;
         tx.commit()?;
         Ok(())
@@ -216,12 +216,12 @@ impl Storage {
         })?;
         let versions = rows.collect::<Result<Vec<_>, _>>()?;
         // 当前版当前视图该显示的正文：与 `switch_message_version` 用同一个函数算，
-        // 不在这里另写一份"看 edited 就取 edited_text"。
+        // 不在这里另写一份"看 edited 就取 tooledit_message"。
         let shown = match versions.iter().find(|version| version.active) {
             None => String::new(),
             Some(current) => {
                 let (raw, edited) = self.conn.query_row(
-                    "SELECT raw_text, edited_text FROM message_versions
+                    "SELECT origin_message, tooledit_message FROM message_versions
                      WHERE message_id = ?1 AND version_no = ?2",
                     params![id, current.version_no],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
@@ -251,7 +251,7 @@ impl Storage {
         let id = message_id.to_string();
         let (raw, edited, edited_by_tool) = tx
             .query_row(
-                "SELECT raw_text, edited_text, edited_by_tool
+                "SELECT origin_message, tooledit_message, edited_by_tool
                  FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
                 params![id, version_no],
                 |row| {
@@ -286,8 +286,8 @@ impl Storage {
 
     /// **用户**改这一版的正文——**就地改那一组**（D152）。
     ///
-    /// 改哪一组取决于这一版现在显示哪一组：显示原文就写 `raw_text`，显示 AI 改后那份就写
-    /// `edited_text`。两组各改各的列，所以"改红字"不会让"蓝字"回到最初的版本，反之亦然
+    /// 改哪一组取决于这一版现在显示哪一组：显示原文就写 `origin_message`，显示 AI 改后那份就写
+    /// `tooledit_message`。两组各改各的列，所以"改红字"不会让"蓝字"回到最初的版本，反之亦然
     /// （v6 的覆盖层做不到这件事，用户 2026-10-26 报的就是这个）。
     ///
     /// 颜色不受影响：`edited_by_tool` 一个字节都不动——它只表示"这一版被 AI 改过"（D148）。
@@ -322,8 +322,8 @@ impl Storage {
         };
         // 就地改：改哪一组写哪一组，另一组一个字节都不动。
         let column = match target {
-            VersionView::Raw => "raw_text",
-            VersionView::Edited => "edited_text",
+            VersionView::Raw => "origin_message",
+            VersionView::Edited => "tooledit_message",
         };
         tx.execute(
             &format!(
@@ -411,7 +411,7 @@ impl Storage {
         };
 
         let (raw, edited, view): (String, Option<String>, String) = tx.query_row(
-            "SELECT raw_text, edited_text, active_view FROM message_versions
+            "SELECT origin_message, tooledit_message, active_view FROM message_versions
              WHERE message_id = ?1 AND version_no = ?2",
             params![id, new_active],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -520,7 +520,7 @@ impl Storage {
 
 /// 某一版在某个视图下应当显示的正文。
 ///
-/// 只有两组，`raw_text` 与 `edited_text`（D152：用户编辑就地改这两列，不再有覆盖层）。
+/// 只有两组，`origin_message` 与 `tooledit_message`（D152：用户编辑就地改这两列，不再有覆盖层）。
 /// `Edited` 视图在没被工具改过时降级成原文——那是"只有一组正文"的正常情况。
 fn shown_text(raw: &str, edited: Option<&str>, view: VersionView) -> String {
     match view {
@@ -535,7 +535,7 @@ fn shown_text(raw: &str, edited: Option<&str>, view: VersionView) -> String {
 /// 消息**都是可点的，而绝大多数消息没有任何版本行——不自动补，用户看到的就是
 /// `工具编辑失败：… 消息 xxx 没有第 1 版`（2026-10-26 报，截图里就是这个）。
 ///
-/// `raw_text` 取 `messages.content`（**当前显示的那一份**），所以调用方传进来的是"改后"，
+/// `origin_message` 取 `messages.content`（**当前显示的那一份**），所以调用方传进来的是"改后"，
 /// 原文也不会被它顶掉。返回是否真的补了一版（测试用）。
 fn seed_first_version(tx: &Transaction<'_>, message_id: &str) -> Result<bool, StorageError> {
     let (count, content): (i64, String) = tx
@@ -549,7 +549,7 @@ fn seed_first_version(tx: &Transaction<'_>, message_id: &str) -> Result<bool, St
         return Ok(false);
     }
     tx.execute(
-        "INSERT INTO message_versions(message_id, version_no, raw_text, edited_text,
+        "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
                                       edited_by_tool, active_view, created_at)
          VALUES (?1, 1, ?2, NULL, 0, 'raw', ?3)",
         params![message_id, content, crate::validate::now_ms()],

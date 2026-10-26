@@ -556,3 +556,33 @@ fn deleting_a_tool_message_takes_the_whole_unit() {
     let storage = ready(&dir.path().join("app.db"));
     assert!(storage.load_units(session).unwrap().is_empty());
 }
+
+/// 一版只有 `origin_message` 时，**没有任何红蓝状态**（D154）。
+///
+/// 用户原话："只有 origin 的时候就是正常的不显示红蓝的。"
+/// 数据侧的表现是：切到 `edited` 会被降级成原文，概要说"没被工具改过"。
+#[test]
+fn a_version_without_tooledit_has_no_red_blue_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, message) = fixture(dir.path());
+    storage
+        .save_generated_version(&message, "只有原文")
+        .unwrap();
+
+    let list = storage.list_message_versions(&message).unwrap();
+    assert_eq!(list.count, 1);
+    assert!(!list.versions[0].edited_by_tool, "没有 tooledit 就没有红");
+    assert_eq!(list.shown, "只有原文");
+
+    // 界面点数字切"改后"：没有那一份，只能停在原文，不报错、也不造出一份空正文。
+    let text = storage
+        .switch_message_version(&message, 1, VersionView::Edited)
+        .unwrap();
+    assert_eq!(text, "只有原文");
+    let list = storage.list_message_versions(&message).unwrap();
+    assert_eq!(list.versions[0].view, VersionView::Raw, "视图不该被切走");
+
+    let brief = storage.version_index(session).unwrap();
+    let brief = brief.get(&message.to_string()).expect("有一版就有条目");
+    assert!(!brief.edited_by_tool);
+}

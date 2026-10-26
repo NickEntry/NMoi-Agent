@@ -238,3 +238,17 @@ UPDATE message_versions SET edited_text = user_text
 ALTER TABLE message_versions DROP COLUMN user_text;
 ALTER TABLE message_versions DROP COLUMN user_edit_of;
 "#;
+
+/// v8：列名改成**他心里的那两个词**（D154）。
+///
+/// 一版只有两种正文，不许再有第三种：
+/// - `origin_message`：原文（界面上那个蓝的）；
+/// - `tooledit_message`：AI 改过的那份（红的那份）。**没有它就不显示红蓝状态**。
+///
+/// 原来叫 `raw_text` / `edited_text`，名字里带着"另存了一层"的味道，
+/// 和 v6 那套覆盖层（已删）混在一起容易让人以为还有看不见的副本。
+/// 改名字不动数据：`RENAME COLUMN` 一个字节都不搬，`CHECK` 里的引用由 SQLite 自己跟着改。
+pub const SCHEMA_V8: &str = r#"
+ALTER TABLE message_versions RENAME COLUMN raw_text TO origin_message;
+ALTER TABLE message_versions RENAME COLUMN edited_text TO tooledit_message;
+"#;

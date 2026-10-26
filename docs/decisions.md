@@ -3154,3 +3154,34 @@ AI 改过的痕迹只剩正文本身。用户要的就是这个。
 代价（明确）：点工具卡片删除会把它的结果一并删掉——这是单元语义，不是误伤。
 
 **测试**：`deleting_a_tool_message_takes_the_whole_unit`（2 条一起走；删完重开库过语义校验）。
+
+## D154 一版只有两种正文：`origin_message` / `tooledit_message`（schema v8）
+
+**用户 2026-10-26 第五次反馈**（原话）：
+
+> 不要给我搞那种有不可见 raw 的情况，红蓝这种状态的情况下，蓝就是一个 origin_message，
+> 红就是 tooledit_message，这样区分来就行了，只存这两种，有 tooledit 消息的时候就会显示红蓝状态，
+> 只有 origin 的时候就是正常的不显示红蓝的。不然要是有那种看不见但是存了的消息数据，这不成屎山了？
+
+**改名，不动数据**（v8）：`raw_text` → `origin_message`、`edited_text` → `tooledit_message`。
+`RENAME COLUMN` 一个字节都不搬，`CHECK` 表达式里的引用由 SQLite 自己跟着改。
+
+**规则钉死**：
+
+| 库里有什么 | 界面 | 行为 |
+|---|---|---|
+| 只有 `origin_message` | **不显示红蓝** | 正常正文；点不到"切改后" |
+| 有 `tooledit_message` | 显示 `n/n`，蓝=看原文 / 红=看改后 | 点数字在两组之间切 |
+
+切到 `edited` 而这一版没有 `tooledit_message` 时**降级成原文**、不改视图状态（
+`a_version_without_tooledit_has_no_red_blue_state` 盯着）。
+
+**没有第三种正文**。v6 那套 `user_text` 覆盖层已经在 v7 删掉了；`edited_by_tool` 只剩一个作用——
+它是"这一版有没有 `tooledit_message`"的快照标记（`CHECK` 保证两者不可能不一致），
+`version_index` 一次 `LEFT JOIN` 就能取到，不用为每行多判一次 NULL。
+如果哪天觉得连这个布尔都算冗余，去掉它必须**重建表**（`CHECK` 引用了它，`DROP COLUMN` 不让），
+那时再单独一个版本做，不要顺手改。
+
+**`messages.content` 是什么**：它是"**当前显示的那一份**"的镜像，读路径（`load_units`）和发送都读它，
+不是第二份隐藏数据——每次切版本 / 编辑 / 删除版本都同步写它。想彻底去掉它要改读路径，
+那是另一件事，先不动。
