@@ -648,6 +648,15 @@ mod tests {
                 .to_string()
         }
 
+        // 时序不靠 sleep 猜：第二轮请求一到就举手（`2`），然后**卡在这里**等主线程放行（`3`）。
+        // 于是"有一轮在跑"这件事必然成立，慢 runner 上也不会自己先跑完。
+        //
+        // 原来这里是 `sleep(200ms)` 然后断言 running：Windows 上 200ms 可能还没走进登记（断言太早），
+        // 也可能整轮已经跑完（断言太晚）。两头都是竞态，只有让被测方自己报进度才稳。
+        use std::sync::{Arc, Condvar, Mutex};
+        let gate: Arc<(Mutex<u8>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+        let server_gate = gate.clone();
+
         let listener = TcpListener::bind("127.0.0.1:0").expect("起监听");
         let port = listener.local_addr().expect("取端口").port();
         let server = std::thread::spawn(move || {
@@ -657,7 +666,14 @@ mod tests {
             }
             if let Ok((mut stream, _)) = listener.accept() {
                 read_request(&mut stream);
-                std::thread::sleep(Duration::from_millis(1_000));
+                let (lock, ready) = &*server_gate;
+                let mut step = lock.lock().expect("gate");
+                *step = 2;
+                ready.notify_all();
+                while *step < 3 {
+                    step = ready.wait(step).expect("gate");
+                }
+                drop(step);
                 write_body(&mut stream, &tool_call_body());
             }
         });
@@ -695,10 +711,32 @@ mod tests {
             read_json(pointer)
         });
 
-        std::thread::sleep(Duration::from_millis(200));
+        // 等"第二轮已经在飞"这个事实，最多 10 秒（不看墙钟、不猜）。
+        {
+            let (lock, ready) = &*gate;
+            let mut step = lock.lock().expect("gate");
+            while *step < 2 {
+                let (again, waited) = ready
+                    .wait_timeout(step, Duration::from_secs(10))
+                    .expect("gate");
+                step = again;
+                if waited.timed_out() && *step < 2 {
+                    panic!("10 秒内没等到第二轮请求，说明这一轮根本没跑起来");
+                }
+            }
+        }
+
         let session_c = CString::new(session.clone()).unwrap();
         let cancelled = read_json(nmoi_turn_cancel_json(session_c.as_ptr()));
         assert_eq!(cancelled["running"], json!(true), "这会儿应该真有一轮在跑");
+
+        // 放行第二轮，让工具循环走到取消检查点。
+        {
+            let (lock, ready) = &*gate;
+            let mut step = lock.lock().expect("gate");
+            *step = 3;
+            ready.notify_all();
+        }
 
         let value = runner.join().expect("turn 线程");
         server.join().expect("服务器线程");
