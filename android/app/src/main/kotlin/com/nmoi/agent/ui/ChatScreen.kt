@@ -110,10 +110,13 @@ internal fun ChatScreen(
     // 分享底部两排：上排两个开关（思考调用 / 详细信息），下排两个动作（MD / 图片）。
     var shareOpen by remember { mutableStateOf(false) }
     // 「更多」是一个**自己画的底部面板**（不是 DropdownMenu）：要带图标、要盖住整屏。
-    var moreFor by remember { mutableStateOf<ChatMessage?>(null) }
+    //
+    // **只记 id，不记对象**（D155）：`ChatMessage` 是点开那一刻的副本，拿它当动作输入，
+    // 中间刷新过的版本/正文就用不上——"我明明改了，它复制的还是旧的"就是这么来的。
+    var moreForId by remember { mutableStateOf<String?>(null) }
     // 「编辑」：把某一版的正文改一遍（写 `edited_text` 并切到"编辑后"，D137）。
     // `editingVersion` 是**点开「编辑」那一刻面板确认过的版号**，不许回退到列表里的旧值。
-    var editing by remember { mutableStateOf<ChatMessage?>(null) }
+    var editingId by remember { mutableStateOf<String?>(null) }
     var editingVersion by remember { mutableStateOf(0L) }
     // 编辑框**预填的那一份正文**。必须是库里现读的 `shown`（屏幕上显示的就是它），
     // 不能用列表快照里的 content：两者一旦错开，就会出现"看着改后、编辑框里是原文"
@@ -126,10 +129,10 @@ internal fun ChatScreen(
     // 两者一旦错开就会出现"看着 2/2、编辑落到 1/2"（2026-10-26 报）。
     val moreVersion by produceState<ChatRepository.VersionInfo?>(
         initialValue = null,
-        moreFor?.id,
+        moreForId,
         reloadKey,
     ) {
-        value = moreFor?.id?.let { id ->
+        value = moreForId?.let { id ->
             withContext(Dispatchers.IO) {
                 ChatRepository.versions(File(context.filesDir, "nmoi.db").absolutePath, id)
                     .getOrNull()
@@ -319,12 +322,12 @@ internal fun ChatScreen(
     // 返回键要一层一层退（用户 2026-10-26 报：浮层弹出来后按返回直接退应用，不是关浮层）。
     // 优先级按叠放层次从高到低：编辑对话框 → 「更多」面板 → 分享面板 → 选择模式。
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
-    val overlayOpen = confirmDelete != null || editing != null || moreFor != null || shareOpen || selecting
+    val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen || selecting
     BackHandler(enabled = overlayOpen) {
         when {
             confirmDelete != null -> confirmDelete = null
-            editing != null -> editing = null
-            moreFor != null -> moreFor = null
+            editingId != null -> editingId = null
+            moreForId != null -> moreForId = null
             shareOpen -> shareOpen = false
             else -> {
                 selecting = false
@@ -411,18 +414,17 @@ internal fun ChatScreen(
                         },
                         onCopied = { notice = "已复制这条消息" },
                         onMoreMessage = { id ->
+                            // 只记 id（D155）：对象是这一拍的副本，写操作要用时现取。
+                            // 这一行仍是排查版本的**第一现场**，但打的是"此刻行内认为"的值。
                             val target = allMessages.firstOrNull { it.id == id }
-                            // 这一行是排查版本的**第一现场**：界面认为这条有几版、当前第几版、
-                            // 显示哪一组、有没有被编辑过。删除/切换不生效时先看它。
                             if (target != null) {
                                 NLog.i(
                                     "Version",
-                                    "打开更多：id=$id count=${target.versionCount} " +
-                                        "active=${target.versionActive} view=${target.versionView} " +
-                                        "edited=${target.versionEdited}",
+                                    "打开更多：id=$id 行内=${target.versionCount}/${target.versionActive} " +
+                                        "view=${target.versionView} edited=${target.versionEdited}",
                                 )
                             }
-                            moreFor = target
+                            moreForId = id
                         },
                         onVersionMessage = switchVersion,
                         // 「更多 → 分享」= 选中这一条并直接打开分享面板：
@@ -482,32 +484,50 @@ internal fun ChatScreen(
             )
         }
 
-        val editingMessage = editing
+        // 现取（D155）：编辑的是"这一条现在的内容"，不是点开那一刻的副本。
+        val editingMessage = editingId?.let { id -> allMessages.firstOrNull { it.id == id } }
         if (editingMessage != null) {
             EditVersionDialog(
                 initial = editingInitial,
-                onCancel = { editing = null },
+                onCancel = { editingId = null },
                 onSave = { text ->
-                    editing = null
+                    editingId = null
                     saveEdit(editingMessage, editingVersion.coerceAtLeast(1L), text, editingInitial)
                 },
             )
         }
 
-        val sheetMessage = moreFor
+        // 现取（D155）：面板显示的、动作改的，都是"现在这一条"。
+        val sheetMessage = moreForId?.let { id -> allMessages.firstOrNull { it.id == id } }
+        // 那一条已经不在了（删掉 / 换了会话）：把面板收掉。
+        // 不收的话浮层状态还挂着，按返回会先"退"这个看不见的层，用户以为返回没反应。
+        LaunchedEffect(moreForId, allMessages) {
+            if (moreForId != null && allMessages.isNotEmpty() &&
+                allMessages.none { it.id == moreForId }
+            ) {
+                moreForId = null
+            }
+        }
+        LaunchedEffect(editingId, allMessages) {
+            if (editingId != null && allMessages.isNotEmpty() &&
+                allMessages.none { it.id == editingId }
+            ) {
+                editingId = null
+            }
+        }
         if (sheetMessage != null) {
-            // 面板显示/动作统一用 `moreVersion`（开面板时现读的库）；还没读到时先用列表那份顶一下。
+            // 面板显示/动作统一用 `moreVersion`（开面板时现读的库）；还没读到时先用行内那份顶一下。
             val sheetCount = moreVersion?.count ?: sheetMessage.versionCount
             val sheetActive = (moreVersion?.active ?: sheetMessage.versionActive).coerceAtLeast(1)
-            // 第一现场：列表快照 vs 面板现读。两个数不一样，就说明是列表那一层滞后（§6.1 那条诊断）。
+            // 第一现场：**同一刻**两个来源（行内快照 / 现读库）。不相等说明行内那条旧了。
             val nowCount = moreVersion?.count ?: -1
             val nowActive = moreVersion?.active ?: -1
             val nowView = moreVersion?.view ?: "none"
             LaunchedEffect(moreVersion, sheetMessage.versionCount) {
                 NLog.i(
                     "Version",
-                    "面板 id=${sheetMessage.id} 列表=${sheetMessage.versionCount}/${sheetMessage.versionActive} " +
-                        "现读=$nowCount/$nowActive view=$nowView",
+                    "面板 id=${sheetMessage.id} 行内=${sheetMessage.versionCount}/${sheetMessage.versionActive} " +
+                        "view=${sheetMessage.versionView} | 现读=$nowCount/$nowActive view=$nowView",
                 )
             }
             val shown = sheetMessage.copy(
@@ -536,7 +556,7 @@ internal fun ChatScreen(
                         editingVersion = sheetActive.toLong()
                         editingInitial = moreVersion?.shown?.takeIf { it.isNotEmpty() }
                             ?: sheetMessage.content
-                        editing = sheetMessage
+                        editingId = sheetMessage.id
                     },
                     onToolEdit = { toolEditProbe(sheetMessage, sheetActive.toLong()) },
                     // `versionActive` 兜底成 1：万一它是 0（老库/字段没读到），
@@ -547,7 +567,7 @@ internal fun ChatScreen(
                     onDeleteAll = { confirmDelete = sheetMessage },
                 ),
                 onHint = { notice = it },
-                onDismiss = { moreFor = null },
+                onDismiss = { moreForId = null },
             )
         }
     }
