@@ -430,15 +430,15 @@ impl Storage {
         Ok((new_count, new_active, displayed))
     }
 
-    /// **删掉这条消息本身**（D152）：正文、版本记录、编辑审计一起没。
+    /// **删掉这条消息所在的整个单元**（D152 / D153）：正文、版本记录、编辑审计一起没。
     ///
-    /// 「更多 → 删除这条消息（含所有版本）」走这一条。不是"清空版本、正文留着"——
-    /// 那种折中用户明确说不要（2026-10-26："我要的是能彻底删掉所有版本消息且不保留该消息任何正文"）。
+    /// 「更多 → 删除这条消息（含所有版本）」走这一条。删的是**单元**不是单条：
+    /// 工具往返是 `assistant(tool_calls) + 全部 tool_result` 的整体，只删半边会留下
+    /// `unpaired_tool_call` 这种非法序列（L3 校验会报，模型也看不懂）。用户点的是"这条消息"，
+    /// 它和它的工具结果本来就是一件事，所以整单元一起走（2026-10-26 定）。
     ///
-    /// 只允许删**单元里只有它一条**的消息：工具往返是
-    /// `assistant(tool_calls) + 全部 tool_result` 的整体，删单边会留下非法序列
-    /// （`unpaired_tool_call`），那要整单元删，是删除流程的另一档。这里明确拒绝，不造坏数据。
-    pub fn delete_message(&mut self, message_id: &MessageId) -> Result<(), StorageError> {
+    /// 返回删掉几条消息（> 1 说明这条消息带着工具往返，界面要把这层说出来）。
+    pub fn delete_message(&mut self, message_id: &MessageId) -> Result<usize, StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
         let unit_id: String = tx
@@ -446,21 +446,21 @@ impl Storage {
                 row.get(0)
             })
             .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 不存在")))?;
-        let siblings: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM messages WHERE unit_id = ?1",
-            [&unit_id],
-            |row| row.get(0),
-        )?;
-        if siblings > 1 {
-            return Err(StorageError::Inconsistent(format!(
-                "消息 {message_id} 是工具往返的一部分（单元 {unit_id} 有 {siblings} 条），要整单元删"
-            )));
+        let siblings: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT id FROM messages WHERE unit_id = ?1")?;
+            let rows = stmt.query_map([&unit_id], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for sibling in &siblings {
+            tx.execute(
+                "DELETE FROM message_versions WHERE message_id = ?1",
+                [sibling],
+            )?;
+            tx.execute("DELETE FROM edits WHERE message_id = ?1", [sibling])?;
         }
-        tx.execute("DELETE FROM message_versions WHERE message_id = ?1", [&id])?;
-        tx.execute("DELETE FROM edits WHERE message_id = ?1", [&id])?;
-        tx.execute("DELETE FROM messages WHERE id = ?1", [&id])?;
+        tx.execute("DELETE FROM messages WHERE unit_id = ?1", [&unit_id])?;
         tx.commit()?;
-        Ok(())
+        Ok(siblings.len())
     }
 }
 

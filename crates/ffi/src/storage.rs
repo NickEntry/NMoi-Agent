@@ -460,8 +460,8 @@ pub extern "C" fn nmoi_storage_delete_version_json(
 
 /// 删掉这条消息本身（D152）：正文、版本记录、编辑审计一起没。
 ///
-/// 界面上的「删除这条消息（含所有版本）」走这一条。工具往返单元会被拒——那要整单元删，
-/// 是删除流程的另一档，这里不造坏数据。
+/// 界面上的「删除这条消息（含所有版本）」走这一条。删的是**单元**：工具往返是
+/// `assistant(tool_calls) + 全部 tool_result` 的整体，所以 `removed` 会 > 1。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_delete_message_json(
     handle: u64,
@@ -471,10 +471,11 @@ pub extern "C" fn nmoi_storage_delete_message_json(
         let message_text = read_str(message, "message")?;
         let message_id = parse_message(message_text)?;
         with_storage(handle, |storage| {
-            storage.delete_message(&message_id).map_err(storage_error)?;
+            let removed = storage.delete_message(&message_id).map_err(storage_error)?;
             Ok(json!({
                 "message": message_id.to_string(),
                 "deleted": true,
+                "removed": removed,
             }))
         })
     })

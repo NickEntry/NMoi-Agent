@@ -512,3 +512,47 @@ fn deleting_a_message_removes_its_text_and_versions() {
     );
     assert!(storage.version_index(session).unwrap().is_empty());
 }
+
+/// 工具往返整单元删（D153）：点的是"这条消息"，走的是它和它的工具结果。
+///
+/// 只删半边会留下 `unpaired_tool_call`，L3 校验会报、模型也读不懂——
+/// 所以删除一律按单元粒度，返回删了几条让界面能说出来。
+#[test]
+fn deleting_a_tool_message_takes_the_whole_unit() {
+    use nmoi_core::message::OutgoingToolCall;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("app.db"));
+    let session = storage.create_conversation("工具删", "device-a").unwrap();
+
+    let head = Message::tool_call_message(
+        MessageId::new(session, 1),
+        vec![OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}")],
+        3,
+        1_700_000_000_000,
+        LogicalClock::new(1),
+    );
+    let mut unit = AtomicUnit::tool_pair(head).unwrap();
+    unit.add_result(
+        Message::tool_result(
+            MessageId::new(session, 2),
+            "c1",
+            "contents",
+            1,
+            1_700_000_000_001,
+            LogicalClock::new(2),
+        )
+        .with_unit(unit.id.clone()),
+    )
+    .unwrap();
+    storage.append_unit(session, &unit).unwrap();
+
+    let removed = storage.delete_message(&MessageId::new(session, 1)).unwrap();
+    assert_eq!(removed, 2, "工具往返两条一起走");
+    assert!(storage.load_units(session).unwrap().is_empty());
+
+    // 删干净之后不该留下"有结果没发起"这种残局：重开一次库，语义校验会拦（`ready` 会 panic）。
+    drop(storage);
+    let storage = ready(&dir.path().join("app.db"));
+    assert!(storage.load_units(session).unwrap().is_empty());
+}

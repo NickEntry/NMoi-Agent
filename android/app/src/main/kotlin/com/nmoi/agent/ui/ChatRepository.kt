@@ -97,6 +97,18 @@ internal object ChatRepository {
         }
 
     /**
+     * 当前**看得见的那一份正文**（D153：所见即所得）。
+     *
+     * 有版本时取 `versions()` 里现算的 `shown`（= 屏幕上显示的那一组，含他自己改过的字）；
+     * 没有版本时退回消息正文。复制新版本、编辑预填都以它为准，**不用列表快照**——
+     * 快照滞后一拍，用户看到的就是"我明明改了，它复制的还是旧的"。
+     */
+    suspend fun shownText(databasePath: String, messageId: String, fallback: String): String {
+        val fresh = versions(databasePath, messageId).getOrNull() ?: return fallback
+        return fresh.shown.takeIf { it.isNotEmpty() } ?: fallback
+    }
+
+    /**
      * 记一版新正文（D137）。**现在只有"更多 → 复制为新版本"这个临时探针会调它**；
      * `turn_run` 接上之后，重新生成走同一条路。
      */
@@ -170,12 +182,18 @@ internal object ChatRepository {
      * 跟 [deleteVersion] 分开：那个删的是"一版"，这个删的是"一条消息"。
      * 工具往返单元会被 storage 拒（那要整单元删），`kind=storage` 带原因。
      */
-    suspend fun deleteMessage(databasePath: String, messageId: String): Result<Unit> =
+    suspend fun deleteMessage(databasePath: String, messageId: String): Result<Int> =
         withHandle(databasePath) { handle ->
             NmoiFfi.deleteMessage(handle, messageId)
-                .onSuccess { NLog.i("Version", "delete message ok: id=$messageId") }
+                .onSuccess { envelope ->
+                    NLog.i(
+                        "Version",
+                        "delete message ok: id=$messageId removed=${envelope.optInt("removed")}",
+                    )
+                }
                 .onFailure { NLog.w("Version", "delete message 失败：id=$messageId ${it.message}") }
-                .map { }
+                // `removed` > 1 说明这条消息带着工具往返（整单元一起删了）。
+                .map { envelope -> envelope.optInt("removed", 1) }
         }
 
     /**

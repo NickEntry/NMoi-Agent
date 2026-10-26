@@ -3130,3 +3130,27 @@ AI 改过的痕迹只剩正文本身。用户要的就是这个。
 **测试**：`editing_one_group_never_resets_the_other`（先改原文再改 AI 版、再改回来，两轮都不能丢）、
 `deleting_a_message_removes_its_text_and_versions`、`zero_version_number_is_refused_now_that_messages_can_be_deleted`、
 迁移用例改成断言 `user_text` / `user_edit_of` 两列不存在。
+
+## D153 「复制为新版本」取**现在显示的那一份**；删除按**单元**删
+
+**用户 2026-10-26 第四次反馈**（原话）：
+
+> 修改后复制为新版本不是基于当前状态的（当前切换在红就复制红，当前切换在蓝就复制蓝，
+> 为什么它给我复制的是原来的蓝，我明明已经改了？）你明白什么叫所见即所得吗？
+
+> 还有整单元删也补上吧。
+
+**① 复制的源文本现读。** 原来 `saveVersionProbe` 用的是列表快照里的 `content`——快照滞后一拍，
+于是就"我明明改了，它复制的还是旧的"。现在先 `versions()` 现读，用 `shown`
+（= 屏幕上显示的那一组，含他自己改过的字）当源；没有版本时才退回消息正文。
+同一条口径也用在编辑预填（D150）上：**看得见的那份 = 唯一的源**。
+
+**② 删除按单元粒度。** `delete_message` 改成删**整单元**并返回删掉几条：
+工具往返是 `assistant(tool_calls) + 全部 tool_result`，只删半边会留下
+`unpaired_tool_call`（L3 校验会报、模型也读不懂）。用户点的是"这条消息"，
+它和它的工具结果本来就是一件事。界面据 `removed` 说话："已删除这条消息（连同它的 2 条工具往返）"，
+确认框也把"工具往返一起删"写出来。
+
+代价（明确）：点工具卡片删除会把它的结果一并删掉——这是单元语义，不是误伤。
+
+**测试**：`deleting_a_tool_message_takes_the_whole_unit`（2 条一起走；删完重开库过语义校验）。

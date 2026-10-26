@@ -201,17 +201,21 @@ internal fun ChatScreen(
     // 这条把当前正文再存一版，专门用来验 D137 那一套；接上 turn_run 就删掉它。
     val saveVersionProbe: (ChatMessage) -> Unit = { message ->
         scope.launch {
+            // **所见即所得**（D153）：复制的必须是屏幕上现在显示的那一份——
+            // 切在红就复制改后的，切在蓝就复制原文，他改过的字也要在。
+            // 所以源文本现读（`versions().shown`），不用列表快照。
+            val existing = ChatRepository.versions(databasePath, message.id).getOrNull()
+            val source = existing?.shown?.takeIf { it.isNotEmpty() } ?: message.content
             // 这条消息还没有任何版本时，一次「复制」要落**两条**：
             // 先把现在显示的正文落成第 1 版，再把复制品落成第 2 版。
             // 只落一条的话 count=1，而界面按设计只在 count>1 时才显示 `n/n`——
             // 于是"点一次没反应、点两次才出 2/2"（2026-10-26 报的正是这个）。
-            val existing = ChatRepository.versions(databasePath, message.id).getOrNull()
             val needSeed = (existing?.count ?: 0) <= 0
             if (needSeed) {
-                ChatRepository.saveVersion(databasePath, message.id, message.content)
+                ChatRepository.saveVersion(databasePath, message.id, source)
                     .onFailure { notice = "存版本失败：${it.message}" }
             }
-            ChatRepository.saveVersion(databasePath, message.id, message.content).fold(
+            ChatRepository.saveVersion(databasePath, message.id, source).fold(
                 onSuccess = {
                     reloadKey += 1
                     notice = if (needSeed) "已复制为新版本（临时探针，两版）" else "已复制为新版本（临时探针）"
@@ -273,9 +277,13 @@ internal fun ChatScreen(
         NLog.i("Version", "点删除整条消息：id=${message.id}")
         scope.launch {
             ChatRepository.deleteMessage(databasePath, message.id).fold(
-                onSuccess = {
+                onSuccess = { removed ->
                     reloadKey += 1
-                    notice = "已删除这条消息"
+                    notice = if (removed > 1) {
+                        "已删除这条消息（连同它的 $removed 条工具往返）"
+                    } else {
+                        "已删除这条消息"
+                    }
                 },
                 onFailure = { notice = "删除失败：${it.message}" },
             )
@@ -1380,9 +1388,9 @@ private fun ConfirmDeleteDialog(
                     )
                     Text(
                         text = if (versionCount > 1) {
-                            "正文和全部 $versionCount 个版本一起删掉，收不回来。"
+                            "正文、全部 $versionCount 个版本，以及它的工具往返一起删掉，收不回来。"
                         } else {
-                            "正文和版本记录一起删掉，收不回来。"
+                            "正文、版本记录，以及它的工具往返一起删掉，收不回来。"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
