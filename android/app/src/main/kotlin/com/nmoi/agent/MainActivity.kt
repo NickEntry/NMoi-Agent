@@ -27,6 +27,7 @@ import com.nmoi.agent.ui.LogListScreen
 import com.nmoi.agent.ui.LogSettingsScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
+import com.nmoi.agent.ui.ProviderScreen
 import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen

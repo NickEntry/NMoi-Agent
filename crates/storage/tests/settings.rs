@@ -230,7 +230,7 @@ fn provider_scope_roundtrips_like_any_other_doc() {
     assert_eq!(Scope::Provider.as_str(), "provider");
     assert_eq!(Scope::parse("provider"), Some(Scope::Provider));
 
-    let (_dir, mut storage) = temp();
+    let (_dir, storage) = temp();
     let doc = serde_json::json!({
         "base_url": "https://example.invalid/v1",
         "model": "test-model",
