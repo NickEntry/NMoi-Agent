@@ -488,6 +488,8 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 - **硬上限变成了闸**：`commit()` 先查长度（`SUMMARY_MAX_TOKENS`）再查覆盖率，超长返回
   `CompressError::TooLong`，runner 把"先压短再提交"喂回去；退回次数（`max_rounds`）用尽转 `Forced`。
   顺序是故意的：先查覆盖率的话，模型为补覆盖率只会写得更长。
+- **兜底路径也受闸管**：`commit_fallback` 的指针清单上限 `FALLBACK_LIST_TOKENS = 1024`，
+  超了只列前面一部分并写"其余 N 条未列出，原文都在归档里"——归档一条不少，摘要不许爆。
 - **预算先扣固定成本**：`Budget::reserve_fixed` + `with_reserve_fixed()`，`usable()` 里减掉它，
   `evaluate_trigger` 因此自动按"扣过固定成本的窗口"算百分比。文档里那句"实测 128k 最坏 70.1% / 1M 43.9%"
   就是这条的量化依据。

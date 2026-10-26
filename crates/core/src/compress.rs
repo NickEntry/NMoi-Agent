@@ -51,6 +51,11 @@ pub mod runner;
 /// 补到 2 轮以上才回到 2.30 附近。所以这条是"下限"，不是"目标"。
 pub const MIN_HIDDEN_TURNS: usize = 2;
 
+/// 确定性兜底摘要里"逐条列出归档指针"那部分的 token 上限（D144 的长度闸也要管到兜底）。
+///
+/// 取摘要上限的一半：剩下的一半留给标题、统计行、以及"其余 N 条未列出"这类尾巴。
+pub const FALLBACK_LIST_TOKENS: u32 = 1024;
+
 pub const DRAFT_APPEND_TOOL: &str = "compress_draft_append";
 /// 局部改写草稿（唯一匹配）。
 pub const DRAFT_EDIT_TOOL: &str = "compress_draft_edit";
@@ -945,21 +950,36 @@ impl CompressionJob {
         now: i64,
     ) -> Result<CompressionOutcome, CompressError> {
         let mut lines = Vec::new();
+        let mut total = 0usize;
+        let mut listed_tokens: u32 = 0;
+        // 兜底摘要也得受长度闸管：条目太多时只列前一半预算，剩下的写一行"没列出"。
+        // 归档一条都不能少——列不列进摘要不影响回灌，摘要短了反而离预算线更远。
+        let mut dropped = 0usize;
         for unit in &self.above {
             for message in &unit.messages {
                 if message.content.trim().is_empty() {
                     continue;
                 }
+                total += 1;
                 let entry = archive.put(self.archive_entry(message, 1, now))?;
-                lines.push(format!(
-                    "[{} | {} | {} tok]",
-                    entry, message.source, message.tokens
-                ));
+                let line = format!("[{} | {} | {} tok]", entry, message.source, message.tokens);
+                let cost = estimate_tokens(&line);
+                if listed_tokens.saturating_add(cost) <= FALLBACK_LIST_TOKENS {
+                    listed_tokens += cost;
+                    lines.push(line);
+                } else {
+                    dropped += 1;
+                }
             }
         }
         // 上面已经写过一遍归档（幂等），`finish` 会再写一次同样的内容拿到同一批 ref。
+        let tail = if dropped == 0 {
+            String::new()
+        } else {
+            format!("\n（其余 {dropped} 条未列出，原文都在归档里，可按 ref 回灌）")
+        };
         let summary = format!(
-            "[压缩兜底：以下 {} 条消息已归档，原文可回灌]\n{}",
+            "[压缩兜底：共 {total} 条消息已归档，原文可回灌；下列 {} 条]\n{}{tail}",
             lines.len(),
             lines.join("\n")
         );
@@ -1339,6 +1359,48 @@ mod tests {
         let injection = outcome.summary_injection(MessageId::new(session, 5), LogicalClock::new(5));
         assert_eq!(injection.source, SourceTag::InstructionInjection);
         assert_eq!(injection.content, outcome.injected);
+    }
+
+    #[test]
+    fn fallback_summary_respects_length_gate() {
+        // 造一段"很多条短消息"的历史：兜底摘要逐条列指针会撑爆，闸必须把它压住。
+        let session = SessionId::new();
+        let mut units = Vec::new();
+        for seq in 1..=300u64 {
+            let role = if seq % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            let message = Message::text(
+                MessageId::new(session, seq),
+                role,
+                SourceTag::History,
+                format!("第 {seq} 条消息，正文略长一点好让指针行也长一点：{seq}{seq}{seq}"),
+                40,
+                0,
+                LogicalClock::new(seq),
+            );
+            units.push(AtomicUnit::turn(message).unwrap());
+        }
+        let mut job =
+            CompressionJob::start(session, &units, 400, 0, CompressionLimits::default()).unwrap();
+        let mut archive = MemoryArchive::new();
+        let outcome = job.commit_fallback(&mut archive, 10).unwrap();
+        assert!(outcome.forced);
+        assert!(
+            estimate_tokens(&outcome.summary) <= excerpt::SUMMARY_MAX_TOKENS,
+            "兜底摘要也得受长度闸管，实际 {} token",
+            estimate_tokens(&outcome.summary)
+        );
+        assert!(
+            outcome.summary.contains("未列出"),
+            "被压掉的条目要说出来，不能假装都列了"
+        );
+        assert!(
+            outcome.summary.contains("共"),
+            "总数要在，否则看不出漏了多少"
+        );
     }
 
     #[test]

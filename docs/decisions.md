@@ -2898,3 +2898,14 @@ runner 侧对 `TooLong` 的处理和 `Coverage` 一样：把"先删重复的、�
 
 测试两条：`commit_rejects_overlong_summary`（2200 字草稿 → `TooLong`，状态 `Rejected`，报的 token 真的超限）、
 `overlong_summary_burns_rounds_then_forces`（连续超限把 `max_rounds` 烧完 → `TooManyRounds` + `Forced`）。
+
+### D144 实现记录（补：兜底路径也受闸管）
+
+`commit_fallback` 以前会把每条归档指针都列进摘要，历史一长兜底摘要本身就超预算——
+等于"为了防止爆窗口而做的兜底，自己把窗口撑爆"。
+
+现在：指针清单上限 `FALLBACK_LIST_TOKENS = 1024`（摘要上限的一半，另一半留给标题与尾巴）。
+超了就只列前面一部分，尾巴写「其余 N 条未列出，原文都在归档里，可按 ref 回灌」，
+统计行同时给总数与已列数——**不许假装都列了**。归档一条不少（`archive.put` 在截断判断之外）。
+
+测试：`fallback_summary_respects_length_gate`（300 条短消息 → 兜底摘要 ≤ 2048 token，且含「未列出」「共」）。
