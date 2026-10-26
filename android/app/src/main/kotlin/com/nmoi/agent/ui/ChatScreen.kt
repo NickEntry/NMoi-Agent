@@ -195,10 +195,20 @@ internal fun ChatScreen(
     // 这条把当前正文再存一版，专门用来验 D137 那一套；接上 turn_run 就删掉它。
     val saveVersionProbe: (ChatMessage) -> Unit = { message ->
         scope.launch {
+            // 这条消息还没有任何版本时，一次「复制」要落**两条**：
+            // 先把现在显示的正文落成第 1 版，再把复制品落成第 2 版。
+            // 只落一条的话 count=1，而界面按设计只在 count>1 时才显示 `n/n`——
+            // 于是"点一次没反应、点两次才出 2/2"（2026-10-26 报的正是这个）。
+            val existing = ChatRepository.versions(databasePath, message.id).getOrNull()
+            val needSeed = (existing?.count ?: 0) <= 0
+            if (needSeed) {
+                ChatRepository.saveVersion(databasePath, message.id, message.content)
+                    .onFailure { notice = "存版本失败：${it.message}" }
+            }
             ChatRepository.saveVersion(databasePath, message.id, message.content).fold(
                 onSuccess = {
                     reloadKey += 1
-                    notice = "已复制为新版本（临时探针）"
+                    notice = if (needSeed) "已复制为新版本（临时探针，两版）" else "已复制为新版本（临时探针）"
                 },
                 onFailure = { notice = "存版本失败：${it.message}" },
             )

@@ -222,7 +222,13 @@ internal object ChatRepository {
             val envelope = JSONObject(NativeBridge.loadUnitsJson(handle, sessionId, limit))
             if (!envelope.ok()) return empty("读消息失败：${envelope.errorText()}")
             val page = parseUnits(envelope)
-            NLog.i("Chat", "会话 $sessionId 读到 ${page.units.size}/${page.total} 个单元")
+            // 带版本的条数：若列表里的 `n/n` 一直不出现，就看这个数——
+            // 它是 0 说明 `load_units` 的 JSON 没把版本字段带到 Kotlin 这一层。
+            val withVersion = page.units.sumOf { unit -> unit.messages.count { it.versionCount > 0 } }
+            NLog.i(
+                "Chat",
+                "会话 $sessionId 读到 ${page.units.size}/${page.total} 个单元（带版本 $withVersion 条）",
+            )
             ChatSnapshot(
                 page = page,
                 source = RowSource.Native,
