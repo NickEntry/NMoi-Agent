@@ -615,9 +615,8 @@ mod tests {
         shape.assistant(1);
         shape.assistant(1);
         let units = shape.units;
-        match choose_cut_for_window_shape(&units, 1, 2) {
-            Some(cut) => assert!(validate_position(&units, cut).is_ok()),
-            None => {}
+        if let Some(cut) = choose_cut_for_window_shape(&units, 1, 2) {
+            assert!(validate_position(&units, cut).is_ok());
         }
     }
 }
