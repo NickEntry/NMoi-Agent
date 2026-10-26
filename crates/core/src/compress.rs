@@ -608,8 +608,11 @@ pub struct CompressionTrace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompressionOutcome {
     pub divider: Divider,
-    /// 摘要正文（已经写进归档，`summary_ref` 指向它）。
+    /// 草稿正文（模型写的那份，不含摘录）。
     pub summary: String,
+    /// **真正进上下文的那份**：`summary` + 摘录块（`[原文节选]`）。
+    /// 归档里的内容、注入消息用的都是它——两边必须是同一份，否则重启前后看到的东西不一样。
+    pub injected: String,
     pub summary_ref: ArchiveRef,
     /// 线上每条被归档消息的引用（原文一条没删）。
     pub archived: Vec<ArchiveRef>,
@@ -636,8 +639,8 @@ impl CompressionOutcome {
             id,
             Role::User,
             SourceTag::InstructionInjection,
-            self.summary.clone(),
-            estimate_tokens(&self.summary),
+            self.injected.clone(),
+            estimate_tokens(&self.injected),
             self.divider.created_at,
             clock,
         )
@@ -703,6 +706,8 @@ pub struct CompressionJob {
     session: SessionId,
     cut_after_seq: u64,
     above: Vec<AtomicUnit>,
+    /// 窗口（线下）的冻结快照。摘录只从这里取，所以二次压缩天然是替换而不是叠加（D143）。
+    below: Vec<AtomicUnit>,
     draft: Draft,
     state: JobState,
     rounds: u32,
@@ -736,10 +741,15 @@ impl CompressionJob {
         if above.is_empty() {
             return Err(CompressError::EmptyWindow);
         }
+        let below: Vec<AtomicUnit> = match divider::split_index(units, cut) {
+            Ok(index) => units[index..].to_vec(),
+            Err(error) => return Err(CompressError::Divider(error)),
+        };
         Ok(Self {
             session,
             cut_after_seq: cut,
             above,
+            below,
             draft: Draft::new(limits.draft),
             state: JobState::Collecting,
             rounds: 0,
@@ -976,14 +986,21 @@ impl CompressionJob {
             }
         }
 
-        let summary_tokens = estimate_tokens(&summary);
+        // 摘要 + 摘录：真正进上下文的是这一份（D143）。
+        // 摘录只从窗口里取，所以二次压缩是替换——旧摘录只活在摘要正文里，不会再抄一遍。
+        let picked = excerpt::pick(&self.below);
+        let injected = match excerpt::render(&picked) {
+            Some(block) => format!("{summary}\n\n{block}"),
+            None => summary.clone(),
+        };
+        let summary_tokens = estimate_tokens(&injected);
         let anchor = self
             .above
             .last()
             .map(|unit| unit.last_message().id.clone())
             .unwrap_or_else(|| MessageId::new(self.session, self.cut_after_seq));
         let summary_entry = ArchiveEntry::capture(
-            &summary,
+            &injected,
             SourceTag::InstructionInjection,
             Origin::new(self.session, anchor, 0),
             summary_tokens,
@@ -996,9 +1013,10 @@ impl CompressionJob {
             self.session,
             self.cut_after_seq,
             format!(
-                "{summary_ref} | 压缩 {} 单元 → {} 字",
+                "{summary_ref} | 压缩 {} 单元 / 摘录 {} 条 → {} 字",
                 self.above.len(),
-                summary.chars().count()
+                picked.len(),
+                injected.chars().count()
             ),
             now,
         );
@@ -1027,6 +1045,7 @@ impl CompressionJob {
         Ok(CompressionOutcome {
             divider,
             summary,
+            injected,
             summary_ref,
             archived,
             entries,
@@ -1283,17 +1302,25 @@ mod tests {
         for rf in &outcome.archived {
             assert!(!archive.fetch(rf).unwrap().content.is_empty());
         }
-        // 摘要也进了归档，且能按 ref 取回原文
+        // 归档里存的是**注入份**（摘要 + 摘录），不是草稿本身；两者必须能在重启后对得上（D143）
         assert_eq!(
             archive.fetch(&outcome.summary_ref).unwrap().content,
-            outcome.summary
+            outcome.injected
+        );
+        assert!(
+            outcome.injected.starts_with(&outcome.summary),
+            "注入份必须以草稿摘要开头"
+        );
+        assert!(
+            outcome.injected.contains("[原文节选"),
+            "窗口里有原话时必须带摘录块"
         );
         assert_eq!(outcome.trace.draft_chars, outcome.summary.chars().count());
         assert_eq!(outcome.trace.units_above, 2);
-        // 注入消息：来源是运行时指令，内容就是摘要
+        // 注入消息：来源是运行时指令，内容是注入份
         let injection = outcome.summary_injection(MessageId::new(session, 5), LogicalClock::new(5));
         assert_eq!(injection.source, SourceTag::InstructionInjection);
-        assert_eq!(injection.content, outcome.summary);
+        assert_eq!(injection.content, outcome.injected);
     }
 
     #[test]

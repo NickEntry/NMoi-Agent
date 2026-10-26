@@ -2856,3 +2856,16 @@ BackHandler(enabled = overlayOpen) {
 - 反向发现：**完整历史在对抗性提问下反而更容易松口**（"嗯，你说得对。Neko 只是我在这里的名字"），
   而第一人称摘要的回答是"名字是我自己认的，不是随便贴的标签……这些不是设定，是我自己的事"。
   也就是说"高置信"不是靠信息量堆出来的，是靠**视角**。
+
+### D143 实现记录（2/2：摘录接进 commit，2026-10-26）
+
+- `CompressionJob` 多存一份**窗口冻结快照** `below`（切点之下那段）。摘录只从这里取，
+  所以二次压缩是替换而不是叠加——旧的摘录只活在摘要正文里，不会再抄一遍。
+- `finish()` 里算 `injected = 摘要 + render(pick(below))`：
+  **归档条目**、`summary_injection()`、trace 里的字数都用 `injected`。
+  不然会出现"库里存的是草稿、上下文里是草稿+摘录"的分叉，重启前后看到的东西不一样。
+- `CompressionOutcome` 拆成两个字段：`summary`（模型写的草稿，调试/审计用）与
+  `injected`（真正进上下文的那份）。老测试里 `archive.fetch(summary_ref) == outcome.summary`
+  这条断言跟着改成 `== outcome.injected`，并补了两条：注入份必须以草稿开头、必须含 `[原文节选`。
+- `compress::runner::SCAFFOLD` 加第 5 条：通篇用第一人称写（D147 的依据写在提示词里，防止以后被删）。
+- 测试：core 504、storage 28+5+17+9+13、ffi 24+1 全过。
