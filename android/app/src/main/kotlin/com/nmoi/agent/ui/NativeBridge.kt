@@ -42,6 +42,9 @@ internal object NativeBridge {
 
     external fun deleteVersionJson(handle: Long, message: String, versionNo: Long): String
 
+    /** 删掉这条消息本身（连正文带版本，D152）。 */
+    external fun deleteMessageJson(handle: Long, message: String): String
+
     external fun saveVersionJson(handle: Long, message: String, text: String): String
 
     external fun editVersionJson(handle: Long, message: String, versionNo: Long, text: String): String

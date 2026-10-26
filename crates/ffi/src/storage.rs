@@ -458,6 +458,28 @@ pub extern "C" fn nmoi_storage_delete_version_json(
     })
 }
 
+/// 删掉这条消息本身（D152）：正文、版本记录、编辑审计一起没。
+///
+/// 界面上的「删除这条消息（含所有版本）」走这一条。工具往返单元会被拒——那要整单元删，
+/// 是删除流程的另一档，这里不造坏数据。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_delete_message_json(
+    handle: u64,
+    message: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let message_id = parse_message(message_text)?;
+        with_storage(handle, |storage| {
+            storage.delete_message(&message_id).map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "deleted": true,
+            }))
+        })
+    })
+}
+
 /// 读一个会话的原子单元。
 ///
 /// `limit`：> 0 时只取最后 N 个单元（UI 首屏），`<= 0` 全给。`truncated` 告诉调用方
@@ -511,8 +533,6 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "version_active": brief.map(|b| b.active).unwrap_or(0),
                                 "version_view": brief.map(|b| b.view.as_str()).unwrap_or("raw"),
                                 "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
-                                // 用户改过这一版没有——不参与三色（D148）
-                                "version_user_edited": brief.map(|b| b.user_edited).unwrap_or(false),
                             })
                         })
                         .collect();

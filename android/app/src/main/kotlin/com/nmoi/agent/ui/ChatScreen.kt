@@ -119,6 +119,8 @@ internal fun ChatScreen(
     // 不能用列表快照里的 content：两者一旦错开，就会出现"看着改后、编辑框里是原文"
     // 而保存又落到改后那一组上（2026-10-26 报）。
     var editingInitial by remember { mutableStateOf("") }
+    // 待确认的"删除整条消息"（破坏性动作要确认，D152）。
+    var confirmDelete by remember { mutableStateOf<ChatMessage?>(null) }
     // 「更多」面板自己读一次库：显示与动作都用这一份。
     // 为什么不信列表里的字段：列表是快照，面板是"点开那一刻"的副本，
     // 两者一旦错开就会出现"看着 2/2、编辑落到 1/2"（2026-10-26 报）。
@@ -254,19 +256,28 @@ internal fun ChatScreen(
 
     val deleteVersion: (String, Long) -> Unit = { id, versionNo ->
         // 先记下"界面想删哪一版"，再看仓储那边回的 count/active：两行对不上就能定位。
-        NLog.i("Version", "点删除：id=$id 请求版号=$versionNo（0=删其余）")
+        NLog.i("Version", "点删除：id=$id 请求版号=$versionNo")
         scope.launch {
             ChatRepository.deleteVersion(databasePath, id, versionNo).fold(
                 onSuccess = { left ->
                     reloadKey += 1
-                    notice = when {
-                        // 0 = 清空版本记录（D151）：正文没动，只是不再有 n/n 与颜色。
-                        versionNo == 0L && left == 0 -> "版本记录已清空，正文保留"
-                        versionNo == 0L -> "已删除其余版本（剩 $left 版）"
-                        else -> "已删除这一版（剩 $left 版）"
-                    }
+                    notice = "已删除这一版（剩 $left 版）"
                 },
                 onFailure = { notice = "删版本失败：${it.message}" },
+            )
+        }
+    }
+
+    // 删整条消息（D152）：正文连版本一起没。破坏性动作，先问一次。
+    val deleteMessage: (ChatMessage) -> Unit = { message ->
+        NLog.i("Version", "点删除整条消息：id=${message.id}")
+        scope.launch {
+            ChatRepository.deleteMessage(databasePath, message.id).fold(
+                onSuccess = {
+                    reloadKey += 1
+                    notice = "已删除这条消息"
+                },
+                onFailure = { notice = "删除失败：${it.message}" },
             )
         }
     }
@@ -300,9 +311,10 @@ internal fun ChatScreen(
     // 返回键要一层一层退（用户 2026-10-26 报：浮层弹出来后按返回直接退应用，不是关浮层）。
     // 优先级按叠放层次从高到低：编辑对话框 → 「更多」面板 → 分享面板 → 选择模式。
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
-    val overlayOpen = editing != null || moreFor != null || shareOpen || selecting
+    val overlayOpen = confirmDelete != null || editing != null || moreFor != null || shareOpen || selecting
     BackHandler(enabled = overlayOpen) {
         when {
+            confirmDelete != null -> confirmDelete = null
             editing != null -> editing = null
             moreFor != null -> moreFor = null
             shareOpen -> shareOpen = false
@@ -449,6 +461,19 @@ internal fun ChatScreen(
             )
         }
 
+        val pendingDelete = confirmDelete
+        if (pendingDelete != null) {
+            ConfirmDeleteDialog(
+                preview = pendingDelete.content,
+                versionCount = pendingDelete.versionCount,
+                onCancel = { confirmDelete = null },
+                onConfirm = {
+                    confirmDelete = null
+                    deleteMessage(pendingDelete)
+                },
+            )
+        }
+
         val editingMessage = editing
         if (editingMessage != null) {
             EditVersionDialog(
@@ -511,7 +536,7 @@ internal fun ChatScreen(
                     onDeleteThis = {
                         deleteVersion(sheetMessage.id, sheetActive.toLong())
                     },
-                    onDeleteAll = { deleteVersion(sheetMessage.id, 0L) },
+                    onDeleteAll = { confirmDelete = sheetMessage },
                 ),
                 onHint = { notice = it },
                 onDismiss = { moreFor = null },
@@ -1284,26 +1309,109 @@ private fun EditVersionDialog(initial: String, onCancel: () -> Unit, onSave: (St
 }
 
 @Composable
-private fun DialogAction(label: String, primary: Boolean, onClick: () -> Unit) {
+private fun DialogAction(
+    label: String,
+    primary: Boolean,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val fill = when {
+        danger -> MaterialTheme.colorScheme.error
+        primary -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.surfaceContainer
+    }
+    val ink = when {
+        danger -> MaterialTheme.colorScheme.onError
+        primary -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = if (primary) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            MaterialTheme.colorScheme.surfaceContainer
-        },
+        color = fill,
         modifier = Modifier.clickable(onClick = onClick),
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,
-            color = if (primary) {
-                MaterialTheme.colorScheme.onPrimary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
+            color = ink,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
+    }
+}
+
+/**
+ * 删除整条消息前的确认（D152）。
+ *
+ * 这条动作把**正文、全部版本、编辑记录**一起删掉，收不回来——所以必须问一次，
+ * 而且要把"会删掉什么"写出来（用户 2026-10-26 明确要的是"不保留任何正文"，
+ * 那就更得先说清楚，别让他点完才发现）。
+ *
+ * 形制跟编辑框同一套：自绘居中卡片，不用系统 `AlertDialog`（那套在这两套主题下都不好对齐）。
+ */
+@Composable
+private fun ConfirmDeleteDialog(
+    preview: String,
+    versionCount: Int,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onCancel,
+                ),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "删除这条消息？",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = if (versionCount > 1) {
+                            "正文和全部 $versionCount 个版本一起删掉，收不回来。"
+                        } else {
+                            "正文和版本记录一起删掉，收不回来。"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    if (preview.isNotBlank()) {
+                        Text(
+                            text = preview.trim().take(80).let {
+                                if (preview.trim().length > 80) "$it…" else it
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DialogAction(label = "取消", primary = false, onClick = onCancel)
+                        Spacer(Modifier.width(8.dp))
+                        DialogAction(label = "删除", primary = false, danger = true, onClick = onConfirm)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1850,15 +1958,13 @@ private fun messageSheetItems(
             onClick = onDeleteThis,
         )
     }
-    if (message.versionCount >= 1) {
-        items += SheetItem(
-            // 单版时把"正文保留"写进标题：`hint` 只是行内灰字状态，不承担解释
-            // （面板里没有人画它，写在那里等于没写）。
-            label = if (message.versionCount > 1) "删除所有版本" else "删除所有版本（正文保留）",
-            icon = ActionIcons.Trash2,
-            onClick = onDeleteAll,
-        )
-    }
+    // 这一项删的是**整条消息**（正文一起没，D152）：所以只要有消息就给，不限版本数，
+    // 而且文案把"含所有版本"写出来——`hint` 面板不画，写在里面等于没写。
+    items += SheetItem(
+        label = "删除这条消息（含所有版本）",
+        icon = ActionIcons.Trash2,
+        onClick = onDeleteAll,
+    )
     return items
 }
 

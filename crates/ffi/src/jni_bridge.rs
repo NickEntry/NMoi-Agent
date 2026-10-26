@@ -495,6 +495,33 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteVersionJson<'lo
     to_jstring(&mut env, text)
 }
 
+/// `Native.deleteMessageJson(handle, message)`：删掉这条消息本身（连正文带版本，D152）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteMessageJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let text = guarded(move || match message {
+        Some(message) => {
+            let Ok(c_message) = CString::new(message) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `message` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_delete_message_json(
+                handle as u64,
+                c_message.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.saveVersionJson(handle, message, text)`：把这段文本记成该消息的新一版。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_saveVersionJson<'local>(

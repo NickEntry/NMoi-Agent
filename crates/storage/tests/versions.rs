@@ -102,15 +102,18 @@ fn migration_v4_to_v5_keeps_rows_and_zeroes_counts() {
             })
             .unwrap();
         assert_eq!(versions, 0);
-        // v6 的用户编辑层（D148）：老版本行没有用户编辑，两列都是 NULL
-        let user: (Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT user_text, user_edit_of FROM message_versions WHERE message_id = 'm1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap_or((None, None));
-        assert_eq!(user, (None, None));
+        // v7（D152）：用户编辑不再单开一层，那两列已经从表里删掉。
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(message_versions)").unwrap();
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1)).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert!(
+            !columns
+                .iter()
+                .any(|name| name == "user_text" || name == "user_edit_of"),
+            "v7 之后不该再有覆盖层：{columns:?}"
+        );
     }
 }
 
@@ -239,39 +242,26 @@ fn refusing_to_delete_the_last_version() {
     assert_eq!(storage.list_message_versions(&message).unwrap().count, 1);
 }
 
-/// D151：`0` 是**清空**，不是"留当前版"。
-///
-/// 用户 2026-10-26 的原话：「删除所有版本还是会保留当前版本，不对」——
-/// 他要的是把"版本"这件事撤销掉（`n/n` 与颜色一起消失），正文一个字节不动。
+/// D152：`0` 不再是"删所有版本"的暗号——删除版本与删除消息是两件事。
+/// 想连正文一起没，走 `delete_message`（测试在下面）。
 #[test]
-fn delete_all_versions_clears_every_row_and_keeps_the_displayed_text() {
+fn zero_version_number_is_refused_now_that_messages_can_be_deleted() {
     let dir = tempfile::tempdir().unwrap();
     let (mut storage, session, message) = fixture(dir.path());
     storage.save_generated_version(&message, "一").unwrap();
     storage.save_generated_version(&message, "二").unwrap();
-    storage.save_generated_version(&message, "三").unwrap();
-    storage
-        .switch_message_version(&message, 2, VersionView::Raw)
-        .unwrap();
 
-    let (count, active, shown) = storage.delete_message_version(&message, 0).unwrap();
-    assert_eq!((count, active), (0, 0), "清空之后没有「当前版」这回事");
-    assert_eq!(shown, "二");
-    assert_eq!(shown_content(&storage, session, &message), "二", "正文不动");
-    assert_eq!(
-        storage
-            .list_message_versions(&message)
-            .unwrap()
-            .versions
-            .len(),
-        0,
-        "版本行一条不剩"
+    let error = storage.delete_message_version(&message, 0).unwrap_err();
+    assert!(
+        error.to_string().contains("delete_message"),
+        "错误里要指出正确的入口：{error}"
     );
-    // 列表里不该再有版本条目：`n/n` 与颜色一起消失。
-    assert!(!storage
-        .version_index(session)
-        .unwrap()
-        .contains_key(&message.to_string()));
+    assert_eq!(
+        shown_content(&storage, session, &message),
+        "二",
+        "消息与正文都还在"
+    );
+    assert_eq!(storage.list_message_versions(&message).unwrap().count, 2);
 }
 
 #[test]
@@ -402,7 +392,10 @@ fn user_edit_does_not_mark_tool_edited() {
         !list.versions[0].edited_by_tool,
         "用户编辑不许把这一版标成工具改过"
     );
-    assert!(list.versions[0].user_edited, "但要留下\"用户改过\"这个标记");
+    assert_eq!(
+        list.shown, "用户改过的字",
+        "改的是正文本身（D152），不是另存一层"
+    );
     assert_eq!(
         shown_content(&storage, _session, &message),
         "用户改过的字",
@@ -448,5 +441,74 @@ fn user_edit_and_tool_edit_live_in_different_layers() {
 
     let list = storage.list_message_versions(&message).unwrap();
     assert!(list.versions[0].edited_by_tool, "工具改过就是改过");
-    assert!(list.versions[0].user_edited);
+}
+
+/// 用户 2026-10-26 报的那条：**改一组不许把另一组顶回最初的版本**。
+///
+/// v6 那套"另存一份 user_text"一版只有一份，改过原文再改 AI 那份，前一次就没了——
+/// 于是"编辑红字，蓝字那份变回最初的版本"，反之亦然。D152 之后就地把两组各改各的列。
+#[test]
+fn editing_one_group_never_resets_the_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, message) = fixture(dir.path());
+    storage.save_generated_version(&message, "原文").unwrap();
+    storage.mark_version_edited(&message, 1, "AI 改后").unwrap();
+
+    // ① 先改原文（蓝）
+    storage
+        .switch_message_version(&message, 1, VersionView::Raw)
+        .unwrap();
+    storage
+        .user_edit_version(&message, 1, "我改的原文")
+        .unwrap();
+    assert_eq!(shown_content(&storage, session, &message), "我改的原文");
+
+    // ② 再改 AI 那份（红）：原文那份必须原样留着
+    storage
+        .switch_message_version(&message, 1, VersionView::Edited)
+        .unwrap();
+    storage
+        .user_edit_version(&message, 1, "我改的 AI 版")
+        .unwrap();
+
+    assert_eq!(
+        storage
+            .switch_message_version(&message, 1, VersionView::Raw)
+            .unwrap(),
+        "我改的原文",
+        "改红字不该把蓝字顶回最初的版本"
+    );
+
+    // ③ 反过来：再改一次原文，AI 那份也不能丢
+    storage
+        .user_edit_version(&message, 1, "我又改了一次原文")
+        .unwrap();
+    assert_eq!(
+        storage
+            .switch_message_version(&message, 1, VersionView::Edited)
+            .unwrap(),
+        "我改的 AI 版",
+        "改蓝字不该把红字顶回最初的版本"
+    );
+}
+
+/// 删消息（D152）：正文、版本、审计一起没；工具往返单元拒绝。
+#[test]
+fn deleting_a_message_removes_its_text_and_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, message) = fixture(dir.path());
+    storage.save_generated_version(&message, "一").unwrap();
+    storage.save_generated_version(&message, "二").unwrap();
+
+    storage.delete_message(&message).unwrap();
+    assert!(storage.load_units(session).unwrap().is_empty(), "消息没了");
+    assert_eq!(
+        storage
+            .list_message_versions(&message)
+            .unwrap_err()
+            .to_string(),
+        "SQLite 错误: Query returned no rows",
+        "版本行跟着一起没了"
+    );
+    assert!(storage.version_index(session).unwrap().is_empty());
 }

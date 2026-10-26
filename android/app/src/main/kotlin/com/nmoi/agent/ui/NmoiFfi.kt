@@ -106,7 +106,11 @@ internal object NmoiFfi {
         NativeBridge.switchVersionJson(handle, message, versionNo, view)
     }
 
-    /** 删一版；`versionNo = 0` = 只留当前这一版。 */
+    /** 删掉这条消息本身（连正文带版本，D152）。 */
+    suspend fun deleteMessage(handle: Long, message: String): Result<JSONObject> =
+        call("delete_message") { NativeBridge.deleteMessageJson(handle, message) }
+
+    /** 删一版（`versionNo` 从 1 起；删整条消息走 [deleteMessage]）。 */
     suspend fun deleteVersion(
         handle: Long,
         message: String,

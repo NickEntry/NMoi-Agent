@@ -12,6 +12,9 @@
 //! 2. `version_no` **永远是 1..=version_count 的连续整数**。删除版本后重新编号，
 //!    这样 UI 上的 `n/n` 不需要再处理空洞。
 //! 3. 每消息上限 [`MAX_VERSIONS`] 版，超了丢**最旧**的一版（丢的是旧，不是当前）。
+//! 4. **用户编辑就地改这两份正文**（D152）：改原文就写 `raw_text`，改 AI 那份就写 `edited_text`，
+//!    两组各改各的列，互不覆盖。v6 那套"另存一份 user_text"已经删掉了——一版只存得下一份覆盖层，
+//!    改过一组再改另一组，前一次就没了。
 
 use std::collections::HashMap;
 
@@ -58,8 +61,6 @@ pub struct MessageVersion {
     /// 注意：**用户编辑不会把它置 1**（D148）。用户改的是"他看到的那一份"，
     /// 存在 `user_text` 里，颜色不受影响。
     pub edited_by_tool: bool,
-    /// 用户改过这一版（`user_text` 非空）。不参与三色，只是另一个标记。
-    pub user_edited: bool,
     pub view: VersionView,
     pub created_at: i64,
 }
@@ -198,8 +199,7 @@ impl Storage {
         )?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT version_no, edited_by_tool, active_view, created_at,
-                    (user_text IS NOT NULL)
+            "SELECT version_no, edited_by_tool, active_view, created_at
              FROM message_versions WHERE message_id = ?1 ORDER BY version_no",
         )?;
         let rows = stmt.query_map([&id], |row| {
@@ -210,7 +210,6 @@ impl Storage {
                 version_no,
                 active: version_no == active,
                 edited_by_tool: edited != 0,
-                user_edited: row.get::<_, i64>(4)? != 0,
                 view: VersionView::parse(&view).unwrap_or(VersionView::Raw),
                 created_at: row.get(3)?,
             })
@@ -221,26 +220,13 @@ impl Storage {
         let shown = match versions.iter().find(|version| version.active) {
             None => String::new(),
             Some(current) => {
-                let (raw, edited, user_text, user_edit_of) = self.conn.query_row(
-                    "SELECT raw_text, edited_text, user_text, user_edit_of
-                     FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
+                let (raw, edited) = self.conn.query_row(
+                    "SELECT raw_text, edited_text FROM message_versions
+                     WHERE message_id = ?1 AND version_no = ?2",
                     params![id, current.version_no],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                            row.get::<_, Option<String>>(3)?,
-                        ))
-                    },
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
                 )?;
-                shown_text(
-                    &raw,
-                    edited.as_deref(),
-                    user_text.as_deref(),
-                    user_edit_of.as_deref(),
-                    current.view,
-                )
+                shown_text(&raw, edited.as_deref(), current.view)
             }
         };
         Ok(VersionList {
@@ -263,9 +249,9 @@ impl Storage {
     ) -> Result<String, StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
-        let (raw, edited, edited_by_tool, user_text, user_edit_of) = tx
+        let (raw, edited, edited_by_tool) = tx
             .query_row(
-                "SELECT raw_text, edited_text, edited_by_tool, user_text, user_edit_of
+                "SELECT raw_text, edited_text, edited_by_tool
                  FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
                 params![id, version_no],
                 |row| {
@@ -273,8 +259,6 @@ impl Storage {
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
@@ -287,13 +271,7 @@ impl Storage {
         } else {
             view
         };
-        let text = shown_text(
-            &raw,
-            edited.as_deref(),
-            user_text.as_deref(),
-            user_edit_of.as_deref(),
-            effective,
-        );
+        let text = shown_text(&raw, edited.as_deref(), effective);
         tx.execute(
             "UPDATE message_versions SET active_view = ?1 WHERE message_id = ?2 AND version_no = ?3",
             params![effective.as_str(), id, version_no],
@@ -306,14 +284,13 @@ impl Storage {
         Ok(text)
     }
 
-    /// **用户**改这一版的正文（D148）。
+    /// **用户**改这一版的正文——**就地改那一组**（D152）。
     ///
-    /// 跟 [`Self::mark_version_edited`] 的区别（这条区别是整套颜色语义的根）：
+    /// 改哪一组取决于这一版现在显示哪一组：显示原文就写 `raw_text`，显示 AI 改后那份就写
+    /// `edited_text`。两组各改各的列，所以"改红字"不会让"蓝字"回到最初的版本，反之亦然
+    /// （v6 的覆盖层做不到这件事，用户 2026-10-26 报的就是这个）。
     ///
-    /// - 用户编辑只写 `user_text`，**不碰 `edited_by_tool`**——用户改字不该让这一版变成"AI 改过"；
-    /// - 记下 `user_edit_of`＝改的时候正在看哪一组（`raw` / `edited`），
-    ///   因为同一个版本下原文和 AI 改后是两份内容，用户可以分别改；
-    /// - 这一版正在显示时，同步 `messages.content`（`content` 永远代表"当前显示的那一份"）。
+    /// 颜色不受影响：`edited_by_tool` 一个字节都不动——它只表示"这一版被 AI 改过"（D148）。
     ///
     /// 还没记过版本的消息先落第 1 版，理由同 [`Self::mark_version_edited`]。
     ///
@@ -343,10 +320,16 @@ impl Storage {
         } else {
             VersionView::parse(&active_view).unwrap_or(VersionView::Raw)
         };
+        // 就地改：改哪一组写哪一组，另一组一个字节都不动。
+        let column = match target {
+            VersionView::Raw => "raw_text",
+            VersionView::Edited => "edited_text",
+        };
         tx.execute(
-            "UPDATE message_versions SET user_text = ?1, user_edit_of = ?2
-             WHERE message_id = ?3 AND version_no = ?4",
-            params![text, target.as_str(), id, version_no],
+            &format!(
+                "UPDATE message_versions SET {column} = ?1 WHERE message_id = ?2 AND version_no = ?3"
+            ),
+            params![text, id, version_no],
         )?;
         tx.execute(
             "UPDATE messages SET content = ?1 WHERE id = ?2 AND version_active = ?3",
@@ -374,21 +357,20 @@ impl Storage {
         self.switch_message_version(message_id, version_no, view)
     }
 
-    /// 删一版（`version_no = 0` 表示"删除所有版本、只留当前显示的那一版"）。
+    /// 删一版（`version_no > 0`）。只剩一版时拒绝——删到零版等于删消息，
+    /// 而那件事归 [`Self::delete_message`]（D152：删除版本与删除消息是两件事，不混）。
     ///
-    /// 两种语义，**不是**同一种：
-    ///
-    /// - `version_no > 0`：删这一版。只剩一版时拒绝（删到零版等于删消息，那组动词属于 D130）；
-    /// - `version_no == 0`：**清空整条消息的版本记录**（连当前版一起），正文保持"现在显示的那一份"。
-    ///   这是 D151 改的：原来是"留当前版"，用户 2026-10-26 说不对——他要的是把版本这件事撤销掉，
-    ///   不是把两版合成一版。清空之后 `n/n` 与颜色一起消失，正文一个字节不动。
-    ///
-    /// 返回 `(剩余版数, 当前版号, 当前应显示的正文)`；清空后前两个都是 0。
+    /// 返回 `(剩余版数, 当前版号, 当前应显示的正文)`。
     pub fn delete_message_version(
         &mut self,
         message_id: &MessageId,
         version_no: i64,
     ) -> Result<(i64, i64, String), StorageError> {
+        if version_no <= 0 {
+            return Err(StorageError::Inconsistent(
+                "删一版要传 1 起的版号；删整条消息走 delete_message".to_string(),
+            ));
+        }
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
         let (count, active): (i64, i64) = tx
@@ -399,36 +381,20 @@ impl Storage {
             )
             .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 不存在")))?;
 
-        if version_no == 0 {
-            let content: String =
-                tx.query_row("SELECT content FROM messages WHERE id = ?1", [&id], |row| {
-                    row.get(0)
-                })?;
-            tx.execute("DELETE FROM message_versions WHERE message_id = ?1", [&id])?;
-            tx.execute(
-                "UPDATE messages SET version_count = 0, version_active = 0 WHERE id = ?1",
-                [&id],
-            )?;
-            tx.commit()?;
-            return Ok((0, 0, content));
-        }
-
         if count <= 1 {
             return Err(StorageError::Inconsistent(format!(
-                "消息 {message_id} 只剩一版，删了就等于删消息（那要走删除消息的流程）"
+                "消息 {message_id} 只剩一版，删了就等于删消息（用「删除这条消息」）"
             )));
         }
 
-        {
-            let changed = tx.execute(
-                "DELETE FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
-                params![id, version_no],
-            )?;
-            if changed == 0 {
-                return Err(StorageError::Inconsistent(format!(
-                    "消息 {message_id} 没有第 {version_no} 版"
-                )));
-            }
+        let changed = tx.execute(
+            "DELETE FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
+            params![id, version_no],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::Inconsistent(format!(
+                "消息 {message_id} 没有第 {version_no} 版"
+            )));
         }
 
         renumber(&tx, &id)?;
@@ -438,40 +404,21 @@ impl Storage {
             |row| row.get(0),
         )?;
         // 当前版落在哪个新编号上：删的是前面的版本就往前挪，否则原样。
-        // `version_no == 0`（清空）在上面就返回了，走不到这里。
         let new_active = if version_no < active {
             (active - 1).max(1)
         } else {
             active.min(new_count)
         };
 
-        let (raw, edited, user_text, user_edit_of, view): (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-        ) = tx.query_row(
-            "SELECT raw_text, edited_text, user_text, user_edit_of, active_view
-             FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
+        let (raw, edited, view): (String, Option<String>, String) = tx.query_row(
+            "SELECT raw_text, edited_text, active_view FROM message_versions
+             WHERE message_id = ?1 AND version_no = ?2",
             params![id, new_active],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        // 显示哪一份**必须走 `shown_text`**：这里曾经自己拼了一遍"看 edited 就取 edited_text"，
-        // 于是用户改过的那一份被丢掉——删完版本，正文跳回 AI 那一份（2026-10-26 报）。
         let displayed = shown_text(
             &raw,
             edited.as_deref(),
-            user_text.as_deref(),
-            user_edit_of.as_deref(),
             VersionView::parse(&view).unwrap_or(VersionView::Raw),
         );
 
@@ -482,6 +429,39 @@ impl Storage {
         tx.commit()?;
         Ok((new_count, new_active, displayed))
     }
+
+    /// **删掉这条消息本身**（D152）：正文、版本记录、编辑审计一起没。
+    ///
+    /// 「更多 → 删除这条消息（含所有版本）」走这一条。不是"清空版本、正文留着"——
+    /// 那种折中用户明确说不要（2026-10-26："我要的是能彻底删掉所有版本消息且不保留该消息任何正文"）。
+    ///
+    /// 只允许删**单元里只有它一条**的消息：工具往返是
+    /// `assistant(tool_calls) + 全部 tool_result` 的整体，删单边会留下非法序列
+    /// （`unpaired_tool_call`），那要整单元删，是删除流程的另一档。这里明确拒绝，不造坏数据。
+    pub fn delete_message(&mut self, message_id: &MessageId) -> Result<(), StorageError> {
+        let tx = self.conn.transaction()?;
+        let id = message_id.to_string();
+        let unit_id: String = tx
+            .query_row("SELECT unit_id FROM messages WHERE id = ?1", [&id], |row| {
+                row.get(0)
+            })
+            .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 不存在")))?;
+        let siblings: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM messages WHERE unit_id = ?1",
+            [&unit_id],
+            |row| row.get(0),
+        )?;
+        if siblings > 1 {
+            return Err(StorageError::Inconsistent(format!(
+                "消息 {message_id} 是工具往返的一部分（单元 {unit_id} 有 {siblings} 条），要整单元删"
+            )));
+        }
+        tx.execute("DELETE FROM message_versions WHERE message_id = ?1", [&id])?;
+        tx.execute("DELETE FROM edits WHERE message_id = ?1", [&id])?;
+        tx.execute("DELETE FROM messages WHERE id = ?1", [&id])?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 /// 一条消息的版本概要（列表渲染用）：几版、当前第几版、当前看哪一组、有没有被编辑过。
@@ -491,8 +471,6 @@ pub struct VersionBrief {
     pub active: i64,
     pub view: VersionView,
     pub edited_by_tool: bool,
-    /// 当前这一版被用户改过（不参与三色，只是另一个标记）。
-    pub user_edited: bool,
 }
 
 impl Storage {
@@ -509,8 +487,7 @@ impl Storage {
     ) -> Result<HashMap<String, VersionBrief>, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.version_count, m.version_active,
-                    COALESCE(v.edited_by_tool, 0), COALESCE(v.active_view, 'raw'),
-                    COALESCE(v.user_text, '') <> ''
+                    COALESCE(v.edited_by_tool, 0), COALESCE(v.active_view, 'raw')
              FROM messages m
              LEFT JOIN message_versions v
                     ON v.message_id = m.id AND v.version_no = m.version_active
@@ -522,7 +499,6 @@ impl Storage {
             let active: i64 = row.get(2)?;
             let edited: i64 = row.get(3)?;
             let view: String = row.get(4)?;
-            let user_edited: i64 = row.get(5)?;
             Ok((
                 id,
                 VersionBrief {
@@ -530,7 +506,6 @@ impl Storage {
                     active,
                     view: VersionView::parse(&view).unwrap_or(VersionView::Raw),
                     edited_by_tool: edited != 0,
-                    user_edited: user_edited != 0,
                 },
             ))
         })?;
@@ -543,23 +518,11 @@ impl Storage {
     }
 }
 
-/// 某一版在某个视图下应当显示的正文（D148）。
+/// 某一版在某个视图下应当显示的正文。
 ///
-/// 优先级：**用户改过的那一组** > `edited_text`（仅当要看 edited）> `raw_text`。
-/// `user_edit_of` 记的是"用户改的是哪一组"，所以改了原文之后切到"编辑后"看到的
-/// 仍然是 AI 那一份，不会把用户的改写串到另一组上去。
-fn shown_text(
-    raw: &str,
-    edited: Option<&str>,
-    user_text: Option<&str>,
-    user_edit_of: Option<&str>,
-    view: VersionView,
-) -> String {
-    if let (Some(text), Some(of)) = (user_text, user_edit_of) {
-        if VersionView::parse(of).unwrap_or(VersionView::Raw) == view {
-            return text.to_string();
-        }
-    }
+/// 只有两组，`raw_text` 与 `edited_text`（D152：用户编辑就地改这两列，不再有覆盖层）。
+/// `Edited` 视图在没被工具改过时降级成原文——那是"只有一组正文"的正常情况。
+fn shown_text(raw: &str, edited: Option<&str>, view: VersionView) -> String {
     match view {
         VersionView::Raw => raw.to_string(),
         VersionView::Edited => edited.unwrap_or(raw).to_string(),

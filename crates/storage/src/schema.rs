@@ -221,3 +221,20 @@ pub const SCHEMA_V6: &str = r#"
 ALTER TABLE message_versions ADD COLUMN user_text TEXT;
 ALTER TABLE message_versions ADD COLUMN user_edit_of TEXT;
 "#;
+
+/// v7：**用户编辑就地改正文，不再单开一层**（D152）。
+///
+/// v6 那一层是"另存一份覆盖上去"，一版只有一份 `user_text`——于是改过"原文"再改"改后"，
+/// 前一次就被覆盖掉了（用户 2026-10-26 报的正是这个：改红字，蓝字那份回到最初的版本）。
+/// 现在两组正文**各改各的列**，谁也不会顶掉谁；颜色仍然只看 `edited_by_tool`（D148 的结论不变）。
+///
+/// 回填规则：`user_edit_of = 'raw'` 的写进 `raw_text`，`'edited'` 的写进 `edited_text`。
+/// 已经写进 `messages.content` 的那份不用动——它本来就是"当前显示的那一份"。
+pub const SCHEMA_V7: &str = r#"
+UPDATE message_versions SET raw_text = user_text
+ WHERE user_edit_of = 'raw' AND user_text IS NOT NULL;
+UPDATE message_versions SET edited_text = user_text
+ WHERE user_edit_of = 'edited' AND user_text IS NOT NULL AND edited_by_tool = 1;
+ALTER TABLE message_versions DROP COLUMN user_text;
+ALTER TABLE message_versions DROP COLUMN user_edit_of;
+"#;

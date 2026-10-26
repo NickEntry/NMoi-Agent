@@ -3094,3 +3094,39 @@ AI 改过的痕迹只剩正文本身。用户要的就是这个。
 **测试**：`version_display.rs` 新增 `editing_a_message_that_never_had_versions_seeds_the_first_one`
 （工具编辑 + 用户编辑各走一次，断言版本数仍是 1、`shown` 跟着改）；
 `versions.rs` 的 `delete_all_versions_keeps_the_displayed_one` 改名并改成清空语义。
+
+## D152 用户编辑**就地改正文**；「删除所有版本」= 删掉这条消息（schema v7）
+
+**用户 2026-10-26 第三次反馈**（两条，原话）：
+
+> 我发现编辑红字消息会导致蓝字消息变成最初的版本，编辑蓝字消息会导致红字消息变成最初的版本。
+> 我是想要可以直接强制修改它们存储的消息，而不是一个什么覆盖的（……）我想要的是那种直接修改它们数据的。
+>
+> 而且我要的是能彻底删掉所有版本消息且不保留该消息任何正文的啊。
+
+**① 覆盖层没了。** v6 的 `user_text + user_edit_of` 一版只有**一份**：改过原文再改 AI 那份，
+前一份就被顶掉——表现正是"编辑红字，蓝字回到最初的版本"。这不是显示问题，是那套模型只能存一份。
+
+现在：**改哪一组就写哪一组**（`raw_text` / `edited_text`），两组各改各的列，互不覆盖。
+`shown_text(raw, edited, view)` 只剩三个参数，覆盖层整个删掉。
+
+- schema **v7**：先把 `user_edit_of` 指到的那一组正文回填进 `raw_text` / `edited_text`，
+  再 `DROP COLUMN user_text` / `user_edit_of`（用户之前改过的内容一行都不丢）。
+- **D148 的存储形态作废，结论保留**：颜色只看 `edited_by_tool`；用户改字不改颜色。
+  `user_edited` 这个标记一并删了——"用户改过"和"原文本来就是用户写的"已经不可区分，留着只会误导。
+- 老约定仍然成立：还没记过版本的消息，第一次编辑先 `seed_first_version`（D151）。
+
+**② 删除版本与删除消息分开。** `delete_message_version(0)` 这个暗号取消（传 ≤0 直接报错，
+错误里写明该走 `delete_message`）。新增 `Storage::delete_message`：一条事务里删
+`message_versions` → `edits` → `messages`，**正文、版本、审计一起没**。
+
+- 只允许删**单元里只有它一条**的消息。工具往返是 `assistant(tool_calls) + 全部 tool_result`
+  的整体，删单边会造出 `unpaired_tool_call`，那种要整单元删，属于删除流程的另一档——明确拒绝。
+- FFI：`nmoi_storage_delete_message_json`；JNI：`Native.deleteMessageJson`；
+  Kotlin：`ChatRepository.deleteMessage`。
+- 界面：面板项改成「**删除这条消息（含所有版本）**」，任何消息都给（不限版本数），
+  点了先出确认框（正文/版本数/首 80 字预览 + 红色「删除」）。破坏性动作必须确认。
+
+**测试**：`editing_one_group_never_resets_the_other`（先改原文再改 AI 版、再改回来，两轮都不能丢）、
+`deleting_a_message_removes_its_text_and_versions`、`zero_version_number_is_refused_now_that_messages_can_be_deleted`、
+迁移用例改成断言 `user_text` / `user_edit_of` 两列不存在。

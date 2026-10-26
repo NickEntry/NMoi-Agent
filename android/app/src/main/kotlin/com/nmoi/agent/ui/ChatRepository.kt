@@ -165,7 +165,21 @@ internal object ChatRepository {
     }
 
     /**
-     * 删一版；`versionNo = 0` 表示"只留当前这一版"。
+     * 删掉这条消息本身（连正文带版本，D152）。
+     *
+     * 跟 [deleteVersion] 分开：那个删的是"一版"，这个删的是"一条消息"。
+     * 工具往返单元会被 storage 拒（那要整单元删），`kind=storage` 带原因。
+     */
+    suspend fun deleteMessage(databasePath: String, messageId: String): Result<Unit> =
+        withHandle(databasePath) { handle ->
+            NmoiFfi.deleteMessage(handle, messageId)
+                .onSuccess { NLog.i("Version", "delete message ok: id=$messageId") }
+                .onFailure { NLog.w("Version", "delete message 失败：id=$messageId ${it.message}") }
+                .map { }
+        }
+
+    /**
+     * 删一版；`versionNo` 从 1 起（删整条消息走 [deleteMessage]）。
      *
      * 返回**删完之后的版数**：界面要能说"剩 1 版了"，否则用户看不出这次点击到底做了什么
      * （2026-10-26 报：删除所有版本之后不知道删没删掉）。
