@@ -68,6 +68,8 @@ internal object ChatRepository {
         val active: Int,
         val edited: Boolean,
         val view: String,
+        /** 当前版、当前视图**该显示的正文**（库现算的那份）。编辑预填只用它。 */
+        val shown: String,
     )
 
     suspend fun versions(databasePath: String, messageId: String): Result<VersionInfo> =
@@ -89,6 +91,7 @@ internal object ChatRepository {
                     active = active,
                     edited = edited,
                     view = view,
+                    shown = envelope.optString("shown", ""),
                 )
             }
         }
@@ -161,12 +164,17 @@ internal object ChatRepository {
             .map { envelope -> envelope.optString("content", "") }
     }
 
-    /** 删一版；`versionNo = 0` 表示"只留当前这一版"。 */
+    /**
+     * 删一版；`versionNo = 0` 表示"只留当前这一版"。
+     *
+     * 返回**删完之后的版数**：界面要能说"剩 1 版了"，否则用户看不出这次点击到底做了什么
+     * （2026-10-26 报：删除所有版本之后不知道删没删掉）。
+     */
     suspend fun deleteVersion(
         databasePath: String,
         messageId: String,
         versionNo: Long,
-    ): Result<Unit> = withHandle(databasePath) { handle ->
+    ): Result<Int> = withHandle(databasePath) { handle ->
         NmoiFfi.deleteVersion(handle, messageId, versionNo)
             .onSuccess { envelope ->
                 NLog.i(
@@ -176,7 +184,7 @@ internal object ChatRepository {
                 )
             }
             .onFailure { NLog.w("Version", "delete 失败：请求=$versionNo ${it.message}") }
-            .map { }
+            .map { envelope -> envelope.optInt("count", 0) }
     }
 
     /**

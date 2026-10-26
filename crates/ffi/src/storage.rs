@@ -364,6 +364,9 @@ pub extern "C" fn nmoi_storage_versions_json(handle: u64, message: *const c_char
                 "message": message_id.to_string(),
                 "count": list.count,
                 "active": list.active,
+                // 当前版当前视图该显示的正文。界面「编辑」预填用它——
+                // 预填与屏幕上那份必须同源，不然就是"看着改后、编辑框里是原文"（2026-10-26 报）。
+                "shown": list.shown,
                 "versions": list
                     .versions
                     .iter()

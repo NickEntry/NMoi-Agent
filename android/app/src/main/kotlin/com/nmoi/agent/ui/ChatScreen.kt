@@ -115,6 +115,10 @@ internal fun ChatScreen(
     // `editingVersion` 是**点开「编辑」那一刻面板确认过的版号**，不许回退到列表里的旧值。
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
     var editingVersion by remember { mutableStateOf(0L) }
+    // 编辑框**预填的那一份正文**。必须是库里现读的 `shown`（屏幕上显示的就是它），
+    // 不能用列表快照里的 content：两者一旦错开，就会出现"看着改后、编辑框里是原文"
+    // 而保存又落到改后那一组上（2026-10-26 报）。
+    var editingInitial by remember { mutableStateOf("") }
     // 「更多」面板自己读一次库：显示与动作都用这一份。
     // 为什么不信列表里的字段：列表是快照，面板是"点开那一刻"的副本，
     // 两者一旦错开就会出现"看着 2/2、编辑落到 1/2"（2026-10-26 报）。
@@ -215,11 +219,12 @@ internal fun ChatScreen(
         }
     }
 
-    val saveEdit: (ChatMessage, Long, String) -> Unit = { message, versionNo, text ->
+    val saveEdit: (ChatMessage, Long, String, String) -> Unit = { message, versionNo, text, before ->
         val trimmed = text.trim()
         when {
             trimmed.isEmpty() -> notice = "编辑后的内容不能为空"
-            trimmed == message.content -> notice = "内容没变"
+            // 比的是**预填的那一份**，不是列表快照：快照滞后时会误判成"内容没变"。
+            trimmed == before.trim() -> notice = "内容没变"
             else -> scope.launch {
                 ChatRepository.editVersion(databasePath, message.id, versionNo, trimmed).fold(
                     onSuccess = {
@@ -252,9 +257,13 @@ internal fun ChatScreen(
         NLog.i("Version", "点删除：id=$id 请求版号=$versionNo（0=删其余）")
         scope.launch {
             ChatRepository.deleteVersion(databasePath, id, versionNo).fold(
-                onSuccess = {
+                onSuccess = { left ->
                     reloadKey += 1
-                    notice = if (versionNo == 0L) "已删除其余版本" else "已删除这一版"
+                    notice = when {
+                        left <= 1 -> "已删除其余版本，现在只剩这一版"
+                        versionNo == 0L -> "已删除其余版本（剩 $left 版）"
+                        else -> "已删除这一版（剩 $left 版）"
+                    }
                 },
                 onFailure = { notice = "删版本失败：${it.message}" },
             )
@@ -442,11 +451,11 @@ internal fun ChatScreen(
         val editingMessage = editing
         if (editingMessage != null) {
             EditVersionDialog(
-                initial = editingMessage.content,
+                initial = editingInitial,
                 onCancel = { editing = null },
                 onSave = { text ->
                     editing = null
-                    saveEdit(editingMessage, editingVersion.coerceAtLeast(1L), text)
+                    saveEdit(editingMessage, editingVersion.coerceAtLeast(1L), text, editingInitial)
                 },
             )
         }
@@ -488,8 +497,11 @@ internal fun ChatScreen(
                     },
                     onSaveVersion = { saveVersionProbe(sheetMessage) },
                     onEdit = {
-                        // 版号取**面板确认过的那个**，不是列表里的：这就是"编辑 2/2 却改到 1/2"的病根。
+                        // 版号与预填都取**面板确认过的那个**，不是列表里的：
+                        // 这就是"编辑 2/2 却改到 1/2"和"看着改后、编辑框里是原文"的病根。
                         editingVersion = sheetActive.toLong()
+                        editingInitial = moreVersion?.shown?.takeIf { it.isNotEmpty() }
+                            ?: sheetMessage.content
                         editing = sheetMessage
                     },
                     onToolEdit = { toolEditProbe(sheetMessage, sheetActive.toLong()) },
@@ -1204,8 +1216,9 @@ private fun AssistantMessage(
 /**
  * 编辑某一版的正文。
  *
- * 保存后：`edited_text` 写进去、视图切到"编辑后"——也就是那个数字变**红**。
- * 原文**不覆盖**（D135：每版存原文与修改后两组），所以点数字还能切回去看原文（变蓝）。
+ * **改的是"现在显示的那一组"**（D148）：显示着原文就改原文，显示着 AI 改后那份就改它——
+ * 两份各存各的，互不覆盖。改完还是显示他改的那份，**颜色不变**（颜色只表示"被 AI 改过"）。
+ * 预填的正文由调用方给（库里现读的 `shown`），不是列表快照里的 `content`。
  *
  * 用自绘的居中卡片，不用系统 `AlertDialog`：这里要放进原生 `EditText`（中文输入法那套），
  * 而系统对话框的尺寸与输入法联动在深浅两套主题下都不好对齐。
@@ -1237,7 +1250,7 @@ private fun EditVersionDialog(initial: String, onCancel: () -> Unit, onSave: (St
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "保存后变成「编辑后」那一组（数字变红）；原文仍然留着，点数字能切回去。",
+                        text = "改的是现在显示的那一组（原文 / AI 改后各存一份，互不覆盖）；颜色不变。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
@@ -1308,8 +1321,14 @@ private fun DialogAction(label: String, primary: Boolean, onClick: () -> Unit) {
  */
 @Composable
 private fun VersionControl(message: ChatMessage, onPick: (Long, String) -> Unit) {
-    if (message.versionCount <= 1) return
+    // 什么时候不画：**只有一版、而且这一版没被 AI 改过**。
+    // 只管条数会漏掉"一版被工具改过"——那时候数字有颜色、点它能切原文/改后，
+    // 藏起来等于把这个能力藏了（2026-10-26 报：改完只有一条消息，应该出现 1/1）。
+    if (message.versionCount <= 1 && !message.versionEdited) return
     val active = message.versionActive.coerceAtLeast(1)
+    // 列表里 `version_count` 可能是 0（那条字段滞后的老问题），但只要有 AI 标记就至少是 1 版；
+    // 不兜这一下会显示成 `1/0`。
+    val total = message.versionCount.coerceAtLeast(active)
     val numberColor = when {
         !message.versionEdited -> MaterialTheme.colorScheme.onSurface
         message.versionView == "edited" -> MaterialTheme.colorScheme.error
@@ -1326,7 +1345,7 @@ private fun VersionControl(message: ChatMessage, onPick: (Long, String) -> Unit)
             onClick = { onPick((active - 1).toLong(), "keep") },
         )
         Text(
-            text = "$active/${message.versionCount}",
+            text = "$active/$total",
             style = MaterialTheme.typography.labelMedium,
             color = numberColor,
             modifier = Modifier
@@ -1347,7 +1366,7 @@ private fun VersionControl(message: ChatMessage, onPick: (Long, String) -> Unit)
         VersionArrow(
             description = "下一版",
             rotate = -90f,
-            enabled = active < message.versionCount,
+            enabled = active < total,
             onClick = { onPick((active + 1).toLong(), "keep") },
         )
     }

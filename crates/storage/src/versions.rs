@@ -70,6 +70,12 @@ pub struct VersionList {
     pub count: i64,
     pub active: i64,
     pub versions: Vec<MessageVersion>,
+    /// **当前版、当前视图下应当显示的正文**（`shown_text` 算出来的那一份）。
+    ///
+    /// 给界面「编辑」用：预填的东西必须与屏幕上显示的是同一份，
+    /// 否则就会出现"看着改后、编辑框里是原文，存完正文又变成他打的那份"（2026-10-26 报）。
+    /// 让界面自己按 raw/edited 去拼，等于在 Kotlin 里再实现一遍显示规则——两份规则迟早分叉。
+    pub shown: String,
 }
 
 impl Storage {
@@ -206,10 +212,38 @@ impl Storage {
             })
         })?;
         let versions = rows.collect::<Result<Vec<_>, _>>()?;
+        // 当前版当前视图该显示的正文：与 `switch_message_version` 用同一个函数算，
+        // 不在这里另写一份"看 edited 就取 edited_text"。
+        let shown = match versions.iter().find(|version| version.active) {
+            None => String::new(),
+            Some(current) => {
+                let (raw, edited, user_text, user_edit_of) = self.conn.query_row(
+                    "SELECT raw_text, edited_text, user_text, user_edit_of
+                     FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
+                    params![id, current.version_no],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )?;
+                shown_text(
+                    &raw,
+                    edited.as_deref(),
+                    user_text.as_deref(),
+                    user_edit_of.as_deref(),
+                    current.view,
+                )
+            }
+        };
         Ok(VersionList {
             count,
             active,
             versions,
+            shown,
         })
     }
 
@@ -392,22 +426,35 @@ impl Storage {
             active.min(new_count)
         };
 
-        let (text, view): (String, String) = tx.query_row(
-            "SELECT raw_text, active_view FROM message_versions
-             WHERE message_id = ?1 AND version_no = ?2",
+        let (raw, edited, user_text, user_edit_of, view): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = tx.query_row(
+            "SELECT raw_text, edited_text, user_text, user_edit_of, active_view
+             FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
             params![id, new_active],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
-        let displayed = if view == "edited" {
-            let edited: Option<String> = tx.query_row(
-                "SELECT edited_text FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
-                params![id, new_active],
-                |row| row.get(0),
-            )?;
-            edited.unwrap_or(text)
-        } else {
-            text
-        };
+        // 显示哪一份**必须走 `shown_text`**：这里曾经自己拼了一遍"看 edited 就取 edited_text"，
+        // 于是用户改过的那一份被丢掉——删完版本，正文跳回 AI 那一份（2026-10-26 报）。
+        let displayed = shown_text(
+            &raw,
+            edited.as_deref(),
+            user_text.as_deref(),
+            user_edit_of.as_deref(),
+            VersionView::parse(&view).unwrap_or(VersionView::Raw),
+        );
 
         tx.execute(
             "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3 WHERE id = ?4",
