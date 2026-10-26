@@ -9,7 +9,7 @@
 - 最近更新：2026-10-24（0.14g **已实现、待真机验证**：助手去气泡 + 头像/名字/时间 + 动作行、长按选择消息、自研 Markdown 渲染，D129–D131；同轮 0.14e/0.14f：聊天页升主页 D125、气泡照 M3 D126；
   同轮：M3 的许可义务（`LICENSES/Apache-2.0.txt` + 声明 §3 + CI 闸，D127）、
   应用内「关于 → 开源许可」页 + 自己的 GPL 全文进包 + 闸改精确比对（D128））
-- 同轮（2026-10-26）：**压缩后窗口的最小形状** —— 人格/文风连续性怎么保（D143、§3.4.2）；结构 + 两模型行为都已实测（口癖率 / 思考要点命中 / 思考膨胀倍数）；另量了四本真实世界书的占用预算（D144）；侧面验证方法定在“文件口吻率”（D145）；**core 已落地**：`choose_cut_for_window_shape` + `compress::excerpt`，504 项测试
+- 同轮（2026-10-26）：**压缩后窗口的最小形状** —— 人格/文风连续性怎么保（D143、§3.4.2）；结构 + 两模型行为都已实测（口癖率 / 思考要点命中 / 思考膨胀倍数）；另量了四本真实世界书的占用预算（D144）；侧面验证方法定在“文件口吻率”（D145）；**core 已落地**：`choose_cut_for_window_shape` + `compress::excerpt`，504 项测试；**目标改写**：让 AI 觉得此前对话是它自己说的（归属感，不是措辞相似）；返回键分层（D146）
 - 上一轮：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 docs/compression.md、D115）
 - 同轮：0.14（应用图标 4 款 × 黑白底、设置里可切、默认 4 号黑底；D114）
 - 同轮：0.13（JNI 桥接上原生层，列表读真库；D112；真机清单 docs/verification.md）
@@ -54,6 +54,7 @@
 | P6.9d | 新建会话 + 存入（真机自验的写入口） | 已实现（待真机验证） | `createConversationJson` / `appendTextJson` 两个 JNI 符号；列表页左上「＋」新建并进入；输入岛「存入」= 存为用户消息、长按 = 存为助手消息；存完重读（`reloadKey`）。**动机**：没有写入口时，消息区只能靠桌面 CLI 造库才验得了 | `crates/ffi/src/jni_bridge.rs`、`ui/{ConversationRepository,ChatRepository,ChatScreen,ConversationListScreen}.kt` |
 | P6.9c | 消息区接 `load_units` | 已实现（待真机验证） | `loadUnitsJson` 走 JNI → `ChatRepository`（自己开库/关库、异常不冒到 UI）→ `ChatUnits` 一对一映射 core 的词（`turn` / `tool_pair` / `model_thinking` / `tool_call` / `tool_result` / `broken_block`）；渲染：用户右气泡、助手左气泡、思考块默认收起、工具单元折叠卡、断块显示 core 给的声明行、`incomplete` 显式标注；打开会话自动滚到最后一条。**缺**：分界线（FFI 还没提供）、往上翻页（只取最后 80 个单元）、Markdown 渲染 | `android/.../ui/{ChatUnits,ChatRepository,ChatScreen}.kt`、`crates/ffi/src/jni_bridge.rs` |
 | P6.9b | 应用内日志页（真机证据不再依赖 logcat） | 已实现：**三种通道**（上下文 / 请求 / 调试）；索引页 + 齿轮页 + 通道子页（待真机验证） | `NLog` 每条记录双写：logcat + `files/logs/nmoi.log`；上限默认 **8 MB**（2/4/8/16/32 可选，存 SharedPreferences `app_log/limit_bytes`），超限保留最新一半（`.tmp` → rename，D48）；通道子页 `LogChannelScreen`：查看（尾 64 KB）/ 复制（尾 256 KB）/ 导出（SAF 整份）/ 清除（二次确认）。起因：2026-10-23 真机冷启动后 `NMoi/` 前缀日志整段消失（`I` 级被 ROM 吞）。**已拆**：三种通道（上下文 / 请求 / 调试）各自文件与上限 + 索引页 + 齿轮设置页 + 通道子页（`LogKind` / `LogListScreen` / `LogChannelScreen` / `LogSettingsScreen`） | `android/.../ui/{LogKind,LogFile,NLog,LogListScreen,LogChannelScreen,LogSettingsScreen}.kt`、`{SettingsGroup,SettingsIndexScreen,AppearanceScreen,DebugScreen,GroupScreen}.kt`、`MainActivity.kt` |
+| P6.11 | 返回键分层：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出 | 已实现 Android（待真机验证） | 用户 2026-10-26 报：自绘浮层弹出来后按返回直接退应用。`ChatScreen` 一个按优先级分发的 `BackHandler`（编辑对话框 → 更多面板 → 分享面板 → 选择模式），`ConversationDrawer` 里助手面板各自一个；抽屉与页面栈仍在 `MainActivity`，内层后注册所以先轮到 | D146 |
 | P6.10 | 聊天页抽屉 + 面板契约第一批 | 已实现（未真机验证） | 会话列表收进左侧抽屉（宽 300dp、遮罩 alpha 0.60、点遮罩关闭、只位移不缩放、返回键在面板层先关抽屉）；落地与未落地清单见 D119。**缺**：拖动关闭/35% 阈值/8dp 阻尼/动画中不可点/令牌时长 | `android/.../ui/ConversationDrawer.kt`、`ChatScreen.kt`、D119 |
 | P6.8 | JNI 桥（Android ↔ Rust） | 已实现（未真机验证） | `crates/ffi/src/jni_bridge.rs`：4 个符号（版本 / 开库 / 关库 / 列会话），每个都转手调 C ABI（D112）；`jni` feature 默认关（MSRV 1.75 vs jni-sys 1.76+）；Kotlin 侧 `ui/NativeBridge.kt` + `ui/ConversationRepository.kt`，加载失败退回占位数据并在界面上直说；CI 用 cargo-ndk 编 `arm64-v8a/libnmoi_ffi.so`。**缺**：真机验证（V0–V5 在 `docs/verification.md`）、其它 ABI | `crates/ffi/src/jni_bridge.rs`、`android/.../ui/NativeBridge.kt`、`docs/verification.md` |
 | P6.6 | 平台自适应排版（竖屏 / 横屏 / 桌面） | 设计已定 + 草稿图 | §3.12 下半：Android 竖屏保留底部弹层；横屏与桌面把高频项提成输入岛按钮行、左栏常驻、右栏上下文窗口。草稿：`docs/ui/draft-composer.svg`、`docs/ui/draft-desktop.svg` | §3.12 |
@@ -250,6 +251,10 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 | 接模型跑通 | **已实测** | `compress::runner`：脚手架 + 工具循环 + 失败当工具结果喂回 + 退回后继续补；真机 2 次往返、2 次调用、覆盖率 3/3。**非流式**（D46）|
 
 ### 3.4.2 压缩后窗口的最小形状（人格 / 文风连续性，D143）
+
+**目标（用户 2026-10-26 定，比"风格延续"更准）**：让 AI 觉得**此前的对话是它自己说的**，从而保持相对的思维可信度（相对于某个模型而言）。不追求文本一致，追求**归属感**——历史在它眼里是"我的过去"，不是"一份别人给的摘要"。
+
+这个目标决定了验收要看什么：不是措辞相似度（实测连不压缩重跑都只有 7–21%），而是**它在用什么口吻讲那些事**（D145 的文件口吻率）。
 
 压缩把原文换成摘要之后，模型**自己最近说过的话一条原文都不剩**：`compress.draft` 只要求
 "数字、路径、命令、版本号逐字保留"，没有任何一条要求保住语气、自称、句法。于是同一个会话里

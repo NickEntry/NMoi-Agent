@@ -2791,3 +2791,32 @@ delete → load_units → 拒绝删最后一版 → switch(keep)），**全过**
 2. 行为侧只认**拉得开差距**的指标；本轮只有文件口吻率合格，因为它直接对应"当自己的事还是当材料"。
 3. 用盲评前必须做**差值校准**：先拿两段完全相同的文本给裁判，答不出"一样"就不采用它的结论。
 4. 把"文件口吻率 → 0" 写进 D143 的验收判据作为第三条（与要点命中、思考膨胀并列）。
+
+## D146 返回键要一层一层退：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出应用
+
+**用户 2026-10-26 报的 bug**：自绘浮层弹出来之后按返回**直接退出应用**，而不是关掉这一层。
+根因很直白：`MenuSheet` / `ShareOptionsSheet` / `EditVersionDialog` 都是自己画的 `Box` 遮罩层，
+不是 `Dialog`，所以系统返回键根本没有对应的处理器，一路传到底就成了"退出"。
+
+**做法**：`ChatScreen` 里一个**按优先级分发**的 `BackHandler`，而不是每一层各自注册一个
+（各自注册的话，谁最后进组合谁赢，顺序藏在组合顺序里，改一次布局就换一次行为）：
+
+```kotlin
+val overlayOpen = editing != null || moreFor != null || shareOpen || selecting
+BackHandler(enabled = overlayOpen) {
+    when {
+        editing != null -> editing = null      // 编辑对话框
+        moreFor != null -> moreFor = null      // 更多面板
+        shareOpen -> shareOpen = false         // 分享面板
+        else -> { selecting = false; selected = emptySet() }  // 选择模式
+    }
+}
+```
+
+抽屉里的助手面板同理，`ConversationDrawer` 自己注册 `BackHandler(enabled = assistantMenu)`。
+
+**分层依据**：`MainActivity` 的两个处理器（页面栈、抽屉）在子内容之前注册，内层后注册所以先轮到它。
+所以实际顺序是：**浮层 → 选择模式 → 页面栈 → 抽屉 → 退出**。
+
+**规矩（后面照这个来）**：以后再加任何"自己画的浮层"，必须同时在**最近的那一层**加返回处理，
+或者挂进已有的优先级链里；不许只靠点遮罩关闭——遮罩在无障碍与单手场景下都不是唯一退路。

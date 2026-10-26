@@ -7,6 +7,7 @@ import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -107,6 +108,10 @@ internal fun ConversationDrawer(
     var animating by remember { mutableStateOf(false) }
     val manual = dragging || animating
     val shownPx = if (animating) inertia.value else dragPx
+
+    // 助手面板盖在抽屉上面，返回键要先把这一层收掉，而不是把抽屉一起关掉（2026-10-26 报的同类问题）。
+    // 这里后于 MainActivity 的 drawerOpen 处理器注册，所以内层先轮到。
+    BackHandler(enabled = assistantMenu) { assistantMenu = false }
 
     Box(
         modifier = Modifier

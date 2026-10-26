@@ -246,9 +246,20 @@ internal fun ChatScreen(
     }
 
     // 选择模式也要吃返回键：先退选择，再谈退出页面（和抽屉同一套"后注册者优先"）。
-    BackHandler(enabled = selecting) {
-        selecting = false
-        selected = emptySet()
+    // 返回键要一层一层退（用户 2026-10-26 报：浮层弹出来后按返回直接退应用，不是关浮层）。
+    // 优先级按叠放层次从高到低：编辑对话框 → 「更多」面板 → 分享面板 → 选择模式。
+    // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
+    val overlayOpen = editing != null || moreFor != null || shareOpen || selecting
+    BackHandler(enabled = overlayOpen) {
+        when {
+            editing != null -> editing = null
+            moreFor != null -> moreFor = null
+            shareOpen -> shareOpen = false
+            else -> {
+                selecting = false
+                selected = emptySet()
+            }
+        }
     }
 
     // 存一条：`role` 是 core 的词（`user` / `assistant`）。
