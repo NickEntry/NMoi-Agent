@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 internal fun GroupScreen(
     group: SettingsGroup,
     onOpenPrompts: () -> Unit,
+    onOpenProvider: () -> Unit,
     onOpenLicenses: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -56,6 +57,11 @@ internal fun GroupScreen(
 
                 // 真正能进的入口：目前两处。接了新的就从 pendingRows 里删一行、在这里加一个 NavRow。
                 if (group == SettingsGroup.Models) {
+                    NavRow(
+                        title = "模型服务",
+                        subtitle = "端点 / 模型 / 供应商类型 / API Key（密钥单独加密存，不进库）",
+                        onClick = onOpenProvider,
+                    )
                     NavRow(
                         title = "七条压缩提示词",
                         subtitle = "draft / fallback.strip / fallback.merge / single / segment / merge_segments / verify",

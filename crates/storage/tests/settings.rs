@@ -222,3 +222,28 @@ fn typed_roundtrip_of_an_arbitrary_document() {
     };
     assert_eq!(back, Tiny { value: 7 });
 }
+
+/// D156：模型服务的设置和别的 scope 走同一条路（整份读写、跨重启活着）。
+#[test]
+fn provider_scope_roundtrips_like_any_other_doc() {
+    use nmoi_storage::settings::Scope;
+    assert_eq!(Scope::Provider.as_str(), "provider");
+    assert_eq!(Scope::parse("provider"), Some(Scope::Provider));
+
+    let (_dir, mut storage) = temp();
+    let doc = serde_json::json!({
+        "base_url": "https://example.invalid/v1",
+        "model": "test-model",
+        "kind": "openai_compatible",
+    });
+    storage
+        .put_setting(Scope::Provider, "default", &doc, 1_000)
+        .unwrap();
+    let loaded: Loaded<serde_json::Value> = storage
+        .load_setting(Scope::Provider, "default", 2_000)
+        .unwrap();
+    match loaded {
+        Loaded::Ready(back) => assert_eq!(back, doc),
+        other => panic!("应当是 Ready，实际 {other:?}"),
+    }
+}

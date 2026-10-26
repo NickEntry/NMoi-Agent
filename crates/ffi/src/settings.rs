@@ -38,7 +38,7 @@ fn parse_scope(text: &str) -> FfiResult<Scope> {
         FfiError::new(
             "bad_argument",
             format!(
-                "scope 只能是 model_overrides / assistant / conversation / roles，收到 `{text}`"
+                "scope 只能是 model_overrides / assistant / conversation / roles / provider / calibration，收到 `{text}`"
             ),
         )
     })

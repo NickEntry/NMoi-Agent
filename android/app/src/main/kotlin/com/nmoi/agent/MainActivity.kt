@@ -58,6 +58,8 @@ private sealed interface Route {
     data class SettingsGroupRoute(val group: SettingsGroup) : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
+    data object Provider : Route
+
     data object Prompts : Route
 
     /** 日志索引页：三种通道各一行，右上角齿轮进设置。 */
@@ -182,6 +184,10 @@ class MainActivity : ComponentActivity() {
                             },
                         )
 
+                        Route.Provider -> ProviderScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         Route.Prompts -> PromptsScreen(
                             onBack = { backStack = backStack.dropLast(1) },
                         )
@@ -250,6 +256,7 @@ class MainActivity : ComponentActivity() {
                             else -> GroupScreen(
                                 group = group,
                                 onOpenPrompts = { backStack = backStack + Route.Prompts },
+                                onOpenProvider = { backStack = backStack + Route.Provider },
                                 onOpenLicenses = { backStack = backStack + Route.Licenses },
                                 onBack = { backStack = backStack.dropLast(1) },
                             )

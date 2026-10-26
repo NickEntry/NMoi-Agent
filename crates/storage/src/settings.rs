@@ -36,6 +36,12 @@ pub enum Scope {
     Conversation,
     /// 五类模型角色（标题/压缩/翻译/视觉/建议）。key = `global`。
     Roles,
+    /// 模型服务（D156）：端点、模型名、供应商类型。key = `default`。
+    ///
+    /// **密钥不在这份文档里**——它由平台侧用 Keystore 加密后单独落在 `vault/` 下
+    /// （`docs/secrets.md` 的 L1）。这里存的是"能不能发请求"的那几个非敏感字段，
+    /// 所以导出/备份带着它走也不会带走凭据。
+    Provider,
     /// token 估算的校准（D95）。key = `模型|级别|内容类`。
     ///
     /// 严格说这是派生数据，不是设置；但它和设置一样要跨重启活着，
@@ -50,6 +56,7 @@ impl Scope {
             Scope::Assistant => "assistant",
             Scope::Conversation => "conversation",
             Scope::Roles => "roles",
+            Scope::Provider => "provider",
             Scope::Calibration => "calibration",
         }
     }
@@ -60,6 +67,7 @@ impl Scope {
             "assistant" => Some(Scope::Assistant),
             "conversation" => Some(Scope::Conversation),
             "roles" => Some(Scope::Roles),
+            "provider" => Some(Scope::Provider),
             "calibration" => Some(Scope::Calibration),
             _ => None,
         }

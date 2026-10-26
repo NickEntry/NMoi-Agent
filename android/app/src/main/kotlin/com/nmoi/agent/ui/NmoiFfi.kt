@@ -22,6 +22,9 @@ internal enum class SettingsScope(val wire: String) {
     Assistant("assistant"),
     Conversation("conversation"),
     Roles("roles"),
+
+    /** 模型服务（D156）：端点 / 模型名 / 供应商类型。密钥不在这里（见 [Vault]）。 */
+    Provider("provider"),
 }
 
 /**
@@ -246,4 +249,43 @@ internal object NmoiFfi {
                 envelope
             }
         }
+}
+
+/**
+ * 开库 → 跑一段 → 关库。**所有需要 storage 句柄的仓库共用这一份**（D156）。
+ *
+ * 每个仓库各抄一遍 open/close 的话，迟早有一处漏了 `finally`，
+ * 然后句柄泄漏到"库被锁住"——那种故障离现场很远，查起来最贵。
+ *
+ * `block` 必须写成 `suspend (Long) -> Result<T>`：里面要等 FFI（`NmoiFfi` 是挂起的）。
+ */
+internal suspend fun <T> withStorageHandle(
+    databasePath: String,
+    block: suspend (Long) -> Result<T>,
+): Result<T> {
+    if (!NativeBridge.loaded) {
+        return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
+    }
+    val opened = runCatching { JSONObject(NativeBridge.openStorageJson(databasePath)) }
+        .getOrElse {
+            return Result.failure(
+                NmoiFfiException("native_call", "打开库时报错：${it.message}"),
+            )
+        }
+    if (!opened.ok()) {
+        return Result.failure(
+            NmoiFfiException(opened.errorKind(), "打开库失败：${opened.errorText()}"),
+        )
+    }
+    if (opened.optString("state", "") != "ready") {
+        return Result.failure(
+            NmoiFfiException("blocked", "库没通过校验（state=${opened.optString("state")}）"),
+        )
+    }
+    val handle = opened.optLong("handle", 0L)
+    return try {
+        block(handle)
+    } finally {
+        runCatching { NativeBridge.closeStorageJson(handle) }
+    }
 }
