@@ -142,14 +142,40 @@ fn delete_all_versions_keeps_the_shown_text_not_the_raw_one() {
     storage.user_edit_version(&id, 2, typed).unwrap();
     assert_eq!(shown(&storage, session, &id), typed);
 
+    // D151：0 = 清空，连当前版一起删；正文保持"他最后看到的那一份"。
     let (count, active, displayed) = storage.delete_message_version(&id, 0).unwrap();
-    assert_eq!(count, 1, "删完只该剩一版");
-    assert_eq!(active, 1, "剩下的那版重编号成 1");
+    assert_eq!((count, active), (0, 0), "版本记录清空");
     assert_eq!(displayed, typed, "删完显示的必须是他最后看到的那份");
     assert_eq!(shown(&storage, session, &id), typed);
+    assert_eq!(
+        storage.list_message_versions(&id).unwrap().versions.len(),
+        0
+    );
+}
 
-    // 剩下的这一版仍是"被工具改过"，标记不能因为删除而丢。
+/// 真机报障：`工具编辑` 对着一条**从没记过版本**的消息点下去，
+/// 回的是 `storage: 数据不一致: 消息 xxx 没有第 1 版`（截图）。
+/// 现在写入路径自己补第 1 版：原文取当前正文，然后才标"被 AI 改过"。
+#[test]
+fn editing_a_message_that_never_had_versions_seeds_the_first_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("app.db"));
+    let (session, id) = seed_assistant(&mut storage, "原文");
+    // 真的没有版本行：清掉 seed_assistant 建的那一版，模拟"普通发出来的一条消息"。
+    storage.delete_message_version(&id, 0).unwrap();
+    assert_eq!(storage.list_message_versions(&id).unwrap().count, 0);
+
+    storage.mark_version_edited(&id, 1, "工具改的").unwrap();
+    let brief = storage.version_index(session).unwrap();
+    let brief = brief.get(&id.to_string()).expect("补出了第 1 版");
+    assert_eq!(brief.count, 1, "一条消息补成一版，不是两版");
+    assert!(brief.edited_by_tool);
+    assert_eq!(shown(&storage, session, &id), "原文", "工具改完仍显示原文");
+
+    let typed = "我自己改的";
+    storage.user_edit_version(&id, 1, typed).unwrap();
+    assert_eq!(shown(&storage, session, &id), typed);
     let list = storage.list_message_versions(&id).unwrap();
-    assert_eq!(list.count, 1);
-    assert!(list.versions[0].edited_by_tool);
+    assert_eq!(list.count, 1, "编辑不该凭空多出版本");
+    assert_eq!(list.shown, typed, "`shown` 要跟着改");
 }

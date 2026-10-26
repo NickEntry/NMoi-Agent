@@ -430,9 +430,11 @@ pub extern "C" fn nmoi_storage_switch_version_json(
     })
 }
 
-/// 删一版（`version_no = 0` 表示"删除所有版本、只留当前显示的那一版"）。
+/// 删版本。`version_no > 0` 删这一版；`version_no == 0` **清空这条消息的全部版本记录**
+/// （连当前版一起，正文保持现在显示的那一份，D151）。
 ///
-/// 只剩一版时拒绝删：删到零版等于删消息，而那组动词还没有。
+/// 删单版时只剩一版就拒绝：删到零版等于删消息，而那组动词还没有（D130）。
+/// 清空不受这条限制——它不动消息，只撤销"版本"这件事。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_delete_version_json(
     handle: u64,

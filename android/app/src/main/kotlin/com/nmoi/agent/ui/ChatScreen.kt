@@ -260,7 +260,8 @@ internal fun ChatScreen(
                 onSuccess = { left ->
                     reloadKey += 1
                     notice = when {
-                        left <= 1 -> "已删除其余版本，现在只剩这一版"
+                        // 0 = 清空版本记录（D151）：正文没动，只是不再有 n/n 与颜色。
+                        versionNo == 0L && left == 0 -> "版本记录已清空，正文保留"
                         versionNo == 0L -> "已删除其余版本（剩 $left 版）"
                         else -> "已删除这一版（剩 $left 版）"
                     }
@@ -1839,22 +1840,23 @@ private fun messageSheetItems(
             hint = "创建分支待接：要先把「从某条消息开始的新会话」建模",
         ),
     )
+    // 多版：两个都给。只有一版：只给"删除所有版本"——它是**清空版本记录**
+    // （连这一版一起删、正文不动，D151），所以单版也能用；"删除此版本"删到零版等于删消息，
+    // 那组动词还没做（D130），于是只在多版时出现。
     if (message.versionCount > 1) {
         items += SheetItem(
             label = "删除此版本",
             icon = ActionIcons.Trash2,
             onClick = onDeleteThis,
         )
+    }
+    if (message.versionCount >= 1) {
         items += SheetItem(
-            label = "删除所有版本",
+            // 单版时把"正文保留"写进标题：`hint` 只是行内灰字状态，不承担解释
+            // （面板里没有人画它，写在那里等于没写）。
+            label = if (message.versionCount > 1) "删除所有版本" else "删除所有版本（正文保留）",
             icon = ActionIcons.Trash2,
             onClick = onDeleteAll,
-        )
-    } else {
-        items += SheetItem(
-            label = "删除此版本",
-            icon = ActionIcons.Trash2,
-            hint = "只剩一版：删了就等于删消息，而那组动词还没有（D130）",
         )
     }
     return items

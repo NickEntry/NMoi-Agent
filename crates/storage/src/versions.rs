@@ -147,6 +147,9 @@ impl Storage {
 
     /// 把某一版标成"被工具编辑过"，并写下编辑后的正文。
     ///
+    /// 这一条消息还没记过版本时，**先把它现在的正文落成第 1 版**再标
+    /// （真机上"工具编辑"对绝大多数消息都是可点的，而绝大多数消息没有版本行）。
+    ///
     /// 只有 `active_view = 'edited'` 的那一版才需要同步 `messages.content`——
     /// 别的版本改内容不该影响屏幕上正显示的东西。
     pub fn mark_version_edited(
@@ -157,6 +160,7 @@ impl Storage {
     ) -> Result<(), StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
+        seed_first_version(&tx, &id)?;
         let changed = tx.execute(
             "UPDATE message_versions
              SET edited_text = ?1, edited_by_tool = 1
@@ -311,6 +315,8 @@ impl Storage {
     ///   因为同一个版本下原文和 AI 改后是两份内容，用户可以分别改；
     /// - 这一版正在显示时，同步 `messages.content`（`content` 永远代表"当前显示的那一份"）。
     ///
+    /// 还没记过版本的消息先落第 1 版，理由同 [`Self::mark_version_edited`]。
+    ///
     /// 返回改完之后应当显示的正文。
     pub fn user_edit_version(
         &mut self,
@@ -320,6 +326,7 @@ impl Storage {
     ) -> Result<String, StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
+        seed_first_version(&tx, &id)?;
         let (edited_by_tool, active_view): (i64, String) = tx
             .query_row(
                 "SELECT edited_by_tool, active_view FROM message_versions
@@ -369,9 +376,14 @@ impl Storage {
 
     /// 删一版（`version_no = 0` 表示"删除所有版本、只留当前显示的那一版"）。
     ///
-    /// 只剩一版时拒绝删除（`StorageError::Inconsistent`）：删到零版等于删消息，
-    /// 而那组动词属于 D130 的删除流程，不该在这里被顺手做掉。
-    /// 返回 `(剩余版数, 当前版号, 当前应显示的正文)`。
+    /// 两种语义，**不是**同一种：
+    ///
+    /// - `version_no > 0`：删这一版。只剩一版时拒绝（删到零版等于删消息，那组动词属于 D130）；
+    /// - `version_no == 0`：**清空整条消息的版本记录**（连当前版一起），正文保持"现在显示的那一份"。
+    ///   这是 D151 改的：原来是"留当前版"，用户 2026-10-26 说不对——他要的是把版本这件事撤销掉，
+    ///   不是把两版合成一版。清空之后 `n/n` 与颜色一起消失，正文一个字节不动。
+    ///
+    /// 返回 `(剩余版数, 当前版号, 当前应显示的正文)`；清空后前两个都是 0。
     pub fn delete_message_version(
         &mut self,
         message_id: &MessageId,
@@ -387,19 +399,27 @@ impl Storage {
             )
             .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 不存在")))?;
 
+        if version_no == 0 {
+            let content: String =
+                tx.query_row("SELECT content FROM messages WHERE id = ?1", [&id], |row| {
+                    row.get(0)
+                })?;
+            tx.execute("DELETE FROM message_versions WHERE message_id = ?1", [&id])?;
+            tx.execute(
+                "UPDATE messages SET version_count = 0, version_active = 0 WHERE id = ?1",
+                [&id],
+            )?;
+            tx.commit()?;
+            return Ok((0, 0, content));
+        }
+
         if count <= 1 {
             return Err(StorageError::Inconsistent(format!(
                 "消息 {message_id} 只剩一版，删了就等于删消息（那要走删除消息的流程）"
             )));
         }
 
-        if version_no == 0 {
-            // 删除所有版本：留当前版。
-            tx.execute(
-                "DELETE FROM message_versions WHERE message_id = ?1 AND version_no <> ?2",
-                params![id, active],
-            )?;
-        } else {
+        {
             let changed = tx.execute(
                 "DELETE FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
                 params![id, version_no],
@@ -418,9 +438,8 @@ impl Storage {
             |row| row.get(0),
         )?;
         // 当前版落在哪个新编号上：删的是前面的版本就往前挪，否则原样。
-        let new_active = if version_no == 0 {
-            1
-        } else if version_no < active {
+        // `version_no == 0`（清空）在上面就返回了，走不到这里。
+        let new_active = if version_no < active {
             (active - 1).max(1)
         } else {
             active.min(new_count)
@@ -545,6 +564,38 @@ fn shown_text(
         VersionView::Raw => raw.to_string(),
         VersionView::Edited => edited.unwrap_or(raw).to_string(),
     }
+}
+
+/// 一条消息还没记过版本时，把它现在的正文落成第 1 版。
+///
+/// 为什么放在写入路径里、而不是要求调用方先 seed：真机上「编辑」「工具编辑」对**绝大多数
+/// 消息**都是可点的，而绝大多数消息没有任何版本行——不自动补，用户看到的就是
+/// `工具编辑失败：… 消息 xxx 没有第 1 版`（2026-10-26 报，截图里就是这个）。
+///
+/// `raw_text` 取 `messages.content`（**当前显示的那一份**），所以调用方传进来的是"改后"，
+/// 原文也不会被它顶掉。返回是否真的补了一版（测试用）。
+fn seed_first_version(tx: &Transaction<'_>, message_id: &str) -> Result<bool, StorageError> {
+    let (count, content): (i64, String) = tx
+        .query_row(
+            "SELECT version_count, content FROM messages WHERE id = ?1",
+            [message_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 不存在")))?;
+    if count > 0 {
+        return Ok(false);
+    }
+    tx.execute(
+        "INSERT INTO message_versions(message_id, version_no, raw_text, edited_text,
+                                      edited_by_tool, active_view, created_at)
+         VALUES (?1, 1, ?2, NULL, 0, 'raw', ?3)",
+        params![message_id, content, crate::validate::now_ms()],
+    )?;
+    tx.execute(
+        "UPDATE messages SET version_count = 1, version_active = 1 WHERE id = ?1",
+        [message_id],
+    )?;
+    Ok(true)
 }
 
 /// 把版本号重新压成 1..=n（删过之后会留空洞，而 UI 的 `n/n` 不该看到空洞）。

@@ -239,8 +239,12 @@ fn refusing_to_delete_the_last_version() {
     assert_eq!(storage.list_message_versions(&message).unwrap().count, 1);
 }
 
+/// D151：`0` 是**清空**，不是"留当前版"。
+///
+/// 用户 2026-10-26 的原话：「删除所有版本还是会保留当前版本，不对」——
+/// 他要的是把"版本"这件事撤销掉（`n/n` 与颜色一起消失），正文一个字节不动。
 #[test]
-fn delete_all_versions_keeps_the_displayed_one() {
+fn delete_all_versions_clears_every_row_and_keeps_the_displayed_text() {
     let dir = tempfile::tempdir().unwrap();
     let (mut storage, session, message) = fixture(dir.path());
     storage.save_generated_version(&message, "一").unwrap();
@@ -251,17 +255,24 @@ fn delete_all_versions_keeps_the_displayed_one() {
         .unwrap();
 
     let (count, active, shown) = storage.delete_message_version(&message, 0).unwrap();
-    assert_eq!((count, active), (1, 1));
+    assert_eq!((count, active), (0, 0), "清空之后没有「当前版」这回事");
     assert_eq!(shown, "二");
-    assert_eq!(shown_content(&storage, session, &message), "二");
+    assert_eq!(shown_content(&storage, session, &message), "二", "正文不动");
     assert_eq!(
         storage
             .list_message_versions(&message)
             .unwrap()
             .versions
             .len(),
-        1
+        0,
+        "版本行一条不剩"
     );
+    // 列表里不该再有版本条目：`n/n` 与颜色一起消失。
+    assert!(storage
+        .version_index(session)
+        .unwrap()
+        .get(&message.to_string())
+        .is_none());
 }
 
 #[test]
