@@ -2909,3 +2909,26 @@ runner 侧对 `TooLong` 的处理和 `Coverage` 一样：把"先删重复的、�
 统计行同时给总数与已列数——**不许假装都列了**。归档一条不少（`archive.put` 在截断判断之外）。
 
 测试：`fallback_summary_respects_length_gate`（300 条短消息 → 兜底摘要 ≤ 2048 token，且含「未列出」「共」）。
+
+### D137 实现记录（第四层：面板自己读版本实况，2026-10-26）
+
+**用户报的两个现象**：① 看着 `2/2`，按下「编辑」却改到了 `1/2`；② 「复制为新版本」要点两次才生效。
+
+**病根是同一件事：面板拿着的是"点开那一刻的对象"，动作也用它。**
+`moreFor` 存的是 `ChatMessage` 副本，列表重读之后面板并不会更新；而「编辑」把 `message.versionActive`
+（副本里的旧值，可能是 0 或 1）直接当版号写库。于是**显示用一份、动作用另一份**，
+"看着 2/2 改到 1/2"就是这么来的。
+
+**改法**：谁要动谁，谁自己去问库。
+
+- `ChatRepository.versions(databasePath, messageId)`：读 `nmoi_storage_versions_json`，给
+  `VersionInfo(count, active, edited, view)`。多了个 `VersionInfo` 与 `NmoiFfi.versions()` 包装。
+- `ChatScreen` 加 `moreVersion`（`produceState`，key = `moreFor?.id` + `reloadKey`）：
+  面板一打开就现读一次库；`sheetCount` / `sheetActive` 优先用它，读不到才退回列表那份。
+- 「编辑」打开时把 `editingVersion = sheetActive` 记下来，保存时只用这个数；
+  「删除此版本」同样用 `sheetActive`。**任何一处都不再从列表快照里取版号。**
+- 加一行第一现场日志：`面板 id=… 列表=c/a 现读=c/a view=…`。
+  两个数不一样，就说明滞后在列表那一层（`load_units` / 列表快照），而不是面板——
+  这条日志正是以前一直缺的那个判据。
+
+**没解决的部分（要真机看日志才能定）**：列表快照为什么会滞后。这行日志一出来，答案就二选一了。

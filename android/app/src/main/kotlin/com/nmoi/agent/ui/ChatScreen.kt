@@ -111,8 +111,25 @@ internal fun ChatScreen(
     var shareOpen by remember { mutableStateOf(false) }
     // 「更多」是一个**自己画的底部面板**（不是 DropdownMenu）：要带图标、要盖住整屏。
     var moreFor by remember { mutableStateOf<ChatMessage?>(null) }
-    // 「编辑」：把某一版的正文改一遍（写 edited_text 并切到"编辑后"，D137）。
+    // 「编辑」：把某一版的正文改一遍（写 `edited_text` 并切到"编辑后"，D137）。
+    // `editingVersion` 是**点开「编辑」那一刻面板确认过的版号**，不许回退到列表里的旧值。
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
+    var editingVersion by remember { mutableStateOf(0L) }
+    // 「更多」面板自己读一次库：显示与动作都用这一份。
+    // 为什么不信列表里的字段：列表是快照，面板是"点开那一刻"的副本，
+    // 两者一旦错开就会出现"看着 2/2、编辑落到 1/2"（2026-10-26 报）。
+    val moreVersion by produceState<ChatRepository.VersionInfo?>(
+        initialValue = null,
+        moreFor?.id,
+        reloadKey,
+    ) {
+        value = moreFor?.id?.let { id ->
+            withContext(Dispatchers.IO) {
+                ChatRepository.versions(File(context.filesDir, "nmoi.db").absolutePath, id)
+                    .getOrNull()
+            }
+        }
+    }
     var includeThinkingTools by remember { mutableStateOf(false) }
     var includeDetails by remember { mutableStateOf(false) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
@@ -188,13 +205,12 @@ internal fun ChatScreen(
         }
     }
 
-    val saveEdit: (ChatMessage, String) -> Unit = { message, text ->
+    val saveEdit: (ChatMessage, Long, String) -> Unit = { message, versionNo, text ->
         val trimmed = text.trim()
         when {
             trimmed.isEmpty() -> notice = "编辑后的内容不能为空"
             trimmed == message.content -> notice = "内容没变"
             else -> scope.launch {
-                val versionNo = message.versionActive.coerceAtLeast(1).toLong()
                 ChatRepository.editVersion(databasePath, message.id, versionNo, trimmed).fold(
                     onSuccess = {
                         reloadKey += 1
@@ -405,17 +421,37 @@ internal fun ChatScreen(
                 onCancel = { editing = null },
                 onSave = { text ->
                     editing = null
-                    saveEdit(editingMessage, text)
+                    saveEdit(editingMessage, editingVersion.coerceAtLeast(1L), text)
                 },
             )
         }
 
         val sheetMessage = moreFor
         if (sheetMessage != null) {
+            // 面板显示/动作统一用 `moreVersion`（开面板时现读的库）；还没读到时先用列表那份顶一下。
+            val sheetCount = moreVersion?.count ?: sheetMessage.versionCount
+            val sheetActive = (moreVersion?.active ?: sheetMessage.versionActive).coerceAtLeast(1)
+            // 第一现场：列表快照 vs 面板现读。两个数不一样，就说明是列表那一层滞后（§6.1 那条诊断）。
+            val nowCount = moreVersion?.count ?: -1
+            val nowActive = moreVersion?.active ?: -1
+            val nowView = moreVersion?.view ?: "none"
+            LaunchedEffect(moreVersion, sheetMessage.versionCount) {
+                NLog.i(
+                    "Version",
+                    "面板 id=${sheetMessage.id} 列表=${sheetMessage.versionCount}/${sheetMessage.versionActive} " +
+                        "现读=$nowCount/$nowActive view=$nowView",
+                )
+            }
+            val shown = sheetMessage.copy(
+                versionCount = sheetCount,
+                versionActive = sheetActive,
+                versionView = moreVersion?.view ?: sheetMessage.versionView,
+                versionEdited = moreVersion?.edited ?: sheetMessage.versionEdited,
+            )
             MenuSheet(
-                title = if (sheetMessage.isUser) "这条用户消息" else "这条助手消息",
+                title = if (shown.isUser) "这条用户消息" else "这条助手消息",
                 items = messageSheetItems(
-                    message = sheetMessage,
+                    message = shown,
                     onShare = {
                         selecting = true
                         selected = setOf(sheetMessage.id)
@@ -427,15 +463,14 @@ internal fun ChatScreen(
                     },
                     onSaveVersion = { saveVersionProbe(sheetMessage) },
                     onEdit = {
+                        // 版号取**面板确认过的那个**，不是列表里的：这就是"编辑 2/2 却改到 1/2"的病根。
+                        editingVersion = sheetActive.toLong()
                         editing = sheetMessage
                     },
                     // `versionActive` 兜底成 1：万一它是 0（老库/字段没读到），
                     // 传 0 会被 storage 当成"删除所有版本"，那不是用户点"删除此版本"的意思。
                     onDeleteThis = {
-                        deleteVersion(
-                            sheetMessage.id,
-                            sheetMessage.versionActive.coerceAtLeast(1).toLong(),
-                        )
+                        deleteVersion(sheetMessage.id, sheetActive.toLong())
                     },
                     onDeleteAll = { deleteVersion(sheetMessage.id, 0L) },
                 ),

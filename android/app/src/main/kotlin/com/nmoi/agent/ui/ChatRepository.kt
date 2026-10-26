@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** 消息区这一屏的数据从哪来——跟列表页同一套口径，界面上要直说。 */
@@ -54,6 +55,43 @@ internal object ChatRepository {
             runCatching { NativeBridge.closeStorageJson(handle) }
         }
     }
+
+    /**
+     * 一条消息的版本实况：总共几版、当前第几版、这一版被编辑过没有、显示哪一组。
+     *
+     * 为什么单独给一条而不是读列表里的字段：面板曾经用「列表快照 + 点开时的那个对象」，
+     * 结果是**面板显示的和动作使用的不是同一份数据**——看着 2/2，编辑却落到 1/2（2026-10-26 报）。
+     * 面板要动谁，就自己来问一次库。
+     */
+    data class VersionInfo(
+        val count: Int,
+        val active: Int,
+        val edited: Boolean,
+        val view: String,
+    )
+
+    suspend fun versions(databasePath: String, messageId: String): Result<VersionInfo> =
+        withHandle(databasePath) { handle ->
+            NmoiFfi.versions(handle, messageId).map { envelope ->
+                val active = envelope.optInt("active", 0)
+                val rows = envelope.optJSONArray("versions") ?: JSONArray()
+                var edited = false
+                var view = "raw"
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    if (row.optInt("no", 0) == active) {
+                        edited = row.optBoolean("edited", false)
+                        view = row.optString("view", "raw")
+                    }
+                }
+                VersionInfo(
+                    count = envelope.optInt("count", 0),
+                    active = active,
+                    edited = edited,
+                    view = view,
+                )
+            }
+        }
 
     /**
      * 记一版新正文（D137）。**现在只有"更多 → 复制为新版本"这个临时探针会调它**；

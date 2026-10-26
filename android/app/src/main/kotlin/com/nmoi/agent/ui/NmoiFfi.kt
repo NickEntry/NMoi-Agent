@@ -72,6 +72,10 @@ internal object NmoiFfi {
             NativeBridge.saveVersionJson(handle, message, text)
         }
 
+    /** 读一条消息的全部版本（面板自己拉的真相，不依赖列表快照）。 */
+    suspend fun versions(handle: Long, message: String): Result<JSONObject> =
+        call("versions") { NativeBridge.versionsJson(handle, message) }
+
     /** 写入"编辑后"正文并切到它（UI 的「编辑」走这一条）。 */
     suspend fun editVersion(
         handle: Long,
