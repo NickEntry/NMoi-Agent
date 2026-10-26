@@ -62,7 +62,7 @@
 | P7.8 | 图片管线：上传压缩 + `view_image` + 历史摘图 | 设计已定（D72 / D73 / D74） | 原图不动、只生成发送副本（长边/总像素/字节三上限，Lanczos3，不超不重编码）；`view_image` 返回值是文字、分析在隔离子上下文里、思考落库；历史图片在下一次请求构造时换成占位引用（视觉覆盖开着才摘） | §3.20、D72–D74 |
 | P5.7 | token 估算（L0 / L1 / L2 校准） | L0 **已实测**，L1/L2 设计已定 | L0 对账结果（`relay-a/DeepSeek-V4-Flash`，1000/10000 字符各四类）：ASCII 0.62、中文 0.63、**混排 1.32（低估）**、代码 1.01。结论：不能乘全局系数，L2 按 (模型, 会话内容) 校准；未校准时绝对线判定乘 1.3。缺 L1 与 timing | `docs/token-estimation.md`、`scripts/token_check.py`、D91 |
 | P4.2 | 双线压缩（建议线 / 绝对线，单位可切） | 设计已定（D90） | 内部统一存 token；判定只在"造请求前"与"生成结束"；绝对线截断标 `incomplete`；压缩不可重入 | §3.22、D90 |
-| P4.4 | 压缩后窗口的最小形状（人格 / 文风连续性） | **已实现 core**（切点形状 + 摘录选择器 + 摘录进 commit + 第一人称脚手架）；未接 FFI / 请求构造 | 切点按"轮"定义：钉轮边界、A 槽 = 整轮助手发言组、结尾不强钉；摘录 **3 条**（饱和点）、挑干活原话、代码原样搬；**摘要用第一人称**（D147，比摘录更管用）；验收看"要点命中 ≥0.9 + 思考长度膨胀 ≤1.5× + 文件口吻 ≤5%"；触发线先扣固定成本（D144） | §3.4.2、D143、D144 |
+| P4.4 | 压缩后窗口的最小形状（人格 / 文风连续性） | **已实现 core**（切点形状 + 摘录选择器 + 摘录进 commit + 第一人称脚手架 + 摘要长度闸 + 预算扣固定成本）；未接 FFI / 请求构造 | 切点按"轮"定义：钉轮边界、A 槽 = 整轮助手发言组、结尾不强钉；摘录 **3 条**（饱和点）、挑干活原话、代码原样搬；**摘要用第一人称**（D147，比摘录更管用）；验收看"要点命中 ≥0.9 + 思考长度膨胀 ≤1.5× + 文件口吻 ≤5%"；触发线先扣固定成本（D144） | §3.4.2、D143、D144 |
 | P9.1 | 签名密钥与 CI 注入 | 设计已定（`docs/signing.md`） | environment secret + tag-only + 即用即焚；主密钥离线保存，CI 只是副本。**没有任何签名材料，未实测** | §3.16 |
 | P3.2 | 设置持久化（模型覆盖 / 助手 / 会话 / 角色） | 已实现 storage + FFI + Kotlin 绑定 | `settings(scope, doc_key, doc_version, payload, updated_at)` + `settings_repair`；`put/get/load_setting/list/delete` + 三态 `Loaded::{Missing,Ready,Reset}`。版本过新与解析失败都记一条修复（摘要只存哈希前 16 位），**不硬读、不静默**。FFI 面 `nmoi_settings_{put,get,list,delete,repairs,trim_repairs}_json`（C 侧 242 项检查）。Android 侧：`jni_bridge.rs` 加四个符号 + `NmoiFfi.kt`（IO 线程、`Result`、`SettingsScope` 枚举），CI 对账 8 个符号。**缺**：`SettingsRepository` 与逐项界面接线（layer 2/3） | `crates/storage/src/settings.rs`、`crates/ffi/src/settings.rs`、`crates/ffi/src/jni_bridge.rs`、`android/.../ui/NmoiFfi.kt`、D86 |
 | P2.10 | 断流标记落库（`incomplete`） | 已实现 core + storage | `Message.incomplete`（`#[serde(default)]`，旧数据能读）；`MemoryEngine::finish_turn_incomplete`；`TurnCompleted` 事件带标记；schema v2 = `ALTER TABLE messages ADD COLUMN incomplete`；往返与迁移各有测试 | D21、D43 |
@@ -485,6 +485,12 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
   产出**注入份** `injected = 摘要 + [原文节选]`；归档条目、`summary_injection()` 用的都是这一份，
   重启前后看到的内容一致。`CompressionOutcome` 因此分成两个字段：`summary`（草稿）与 `injected`（进上下文的）。
 - **脚手架提示词**（`compress::runner::SCAFFOLD`）加了第 5 条：**通篇用第一人称写**（D147）。
+- **硬上限变成了闸**：`commit()` 先查长度（`SUMMARY_MAX_TOKENS`）再查覆盖率，超长返回
+  `CompressError::TooLong`，runner 把"先压短再提交"喂回去；退回次数（`max_rounds`）用尽转 `Forced`。
+  顺序是故意的：先查覆盖率的话，模型为补覆盖率只会写得更长。
+- **预算先扣固定成本**：`Budget::reserve_fixed` + `with_reserve_fixed()`，`usable()` 里减掉它，
+  `evaluate_trigger` 因此自动按"扣过固定成本的窗口"算百分比。文档里那句"实测 128k 最坏 70.1% / 1M 43.9%"
+  就是这条的量化依据。
 - **未接**：FFI / UI 一行没动——`summary_injection` 目前只有 core 在用，请求构造那条路还没走压缩（`turn_run` 未接）。
 
 **结构事实（决定"人格设定能不能维持"）**：世界书条目注入在 **system 侧**，不参与历史压缩，

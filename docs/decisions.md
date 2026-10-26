@@ -2869,3 +2869,32 @@ BackHandler(enabled = overlayOpen) {
   这条断言跟着改成 `== outcome.injected`，并补了两条：注入份必须以草稿开头、必须含 `[原文节选`。
 - `compress::runner::SCAFFOLD` 加第 5 条：通篇用第一人称写（D147 的依据写在提示词里，防止以后被删）。
 - 测试：core 504、storage 28+5+17+9+13、ffi 24+1 全过。
+
+### D144 实现记录（2026-10-26）
+
+- `Budget` 加 `reserve_fixed` 字段 + `with_reserve_fixed(tokens)`；`usable()` 依次减 `reserve_output`
+  与 `reserve_fixed`。`evaluate_trigger` 用的是 `budget.usable()`，所以两条线自动按"扣过固定成本的窗口"算，
+  不用改判定表。
+- 传进来的必须是**最坏情况的固定占用**（sys + 世界书常驻 + 命中上限 + 摘要 + 摘录），不是当前实际占用——
+  拿实际值算，书一变窗口就变，判定会抖。
+- 测试三条：`fixed_costs_shrink_usable`（128k/4k 场景 124,000 → 104,000）、
+  `fixed_costs_make_threshold_fire_earlier`（同样 80k，扣 20k 固定成本后从 `None` 变 `Suggest`）、
+  `fixed_costs_never_underflow`（固定成本超过窗口时 `usable=0`、`ratio=1.0`，不出 NaN）。
+- **没做**：`reserve_fixed` 目前还没有人往里面填数——谁算世界书命中上限、谁调 `with_reserve_fixed`，
+  要等请求构造那条路（`turn_run`）接上时一起做。
+
+### D143 实现记录（3/3：摘要长度闸，2026-10-26）
+
+`commit()` 现在**先查长度再查覆盖率**：
+
+```text
+draft_tokens > SUMMARY_MAX_TOKENS (2048)
+  → rounds += 1；超 max_rounds 转 Forced + TooManyRounds
+  → 否则 state = Rejected + CompressError::TooLong { tokens, limit }
+```
+
+runner 侧对 `TooLong` 的处理和 `Coverage` 一样：把"先删重复的、可推断的内容，只留事实/决定/未完成项"喂回去。
+顺序是先查长度，因为反过来模型为补覆盖率只会写得更长。
+
+测试两条：`commit_rejects_overlong_summary`（2200 字草稿 → `TooLong`，状态 `Rejected`，报的 token 真的超限）、
+`overlong_summary_burns_rounds_then_forces`（连续超限把 `max_rounds` 烧完 → `TooManyRounds` + `Forced`）。

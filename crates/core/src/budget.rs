@@ -88,6 +88,12 @@ pub struct Budget {
     pub window_declared: u64,
     pub window_effective: u64,
     pub reserve_output: u64,
+    /// 固定成本：系统提示 + 世界书常驻 / 命中上限 + 摘要 + 摘录（D144）。
+    ///
+    /// 这几样**不随压缩变小**，所以必须先扣掉再算百分比。实测：128k 窗口下
+    /// 命中 10 条大条目 + 保留 40% 时，压缩完仍占 70.1%，等于每轮都在压；
+    /// 1M 窗口下同一情形只占 43.9%，余量 21 万 token。所以问题不在压缩算法，在预算口径。
+    pub reserve_fixed: u64,
     pub used: u64,
 }
 
@@ -97,8 +103,16 @@ impl Budget {
             window_declared,
             window_effective,
             reserve_output,
+            reserve_fixed: 0,
             used: 0,
         }
+    }
+
+    /// 扣掉固定成本（D144）。`tokens` 应该是"最坏情况下的固定占用"，
+    /// 不是当前实际占用——拿实际值算，书一变窗口就变，判定会抖。
+    pub fn with_reserve_fixed(mut self, tokens: u64) -> Self {
+        self.reserve_fixed = tokens;
+        self
     }
 
     pub fn from_profile(profile: &CacheProfile, reserve_output: u64) -> Self {
@@ -109,11 +123,12 @@ impl Budget {
         )
     }
 
-    /// 可用的输入预算：min(声明窗口, 实测上限) − 预留输出。
+    /// 可用的输入预算：min(声明窗口, 实测上限) − 预留输出 − 固定成本。
     pub fn usable(&self) -> u64 {
         self.window_declared
             .min(self.window_effective)
             .saturating_sub(self.reserve_output)
+            .saturating_sub(self.reserve_fixed)
     }
 
     pub fn remaining(&self) -> u64 {
@@ -1085,5 +1100,47 @@ mod tests {
         assert_eq!(breakdown.items_of(Segment::Skills), 1);
         let row_total: u64 = breakdown.rows().iter().map(|row| row.tokens).sum();
         assert_eq!(row_total, breakdown.total(), "总量必须等于各行之和");
+    }
+
+    // ---- D144：固定成本先扣 ----
+
+    #[test]
+    fn fixed_costs_shrink_usable() {
+        let plain = Budget::new(128_000, 128_000, 4_000);
+        let with_book = flat().with_reserve_fixed(20_000);
+        assert_eq!(plain.usable(), 124_000);
+        assert_eq!(with_book.usable(), 104_000);
+        fn flat() -> Budget {
+            Budget::new(128_000, 128_000, 4_000)
+        }
+    }
+
+    #[test]
+    fn fixed_costs_make_threshold_fire_earlier() {
+        let policy = TriggerPolicy::default();
+        let mut plain = Budget::new(128_000, 128_000, 4_000);
+        plain.used = 80_000;
+        let mut with_book = Budget::new(128_000, 128_000, 4_000).with_reserve_fixed(20_000);
+        with_book.used = 80_000;
+        // 不扣：0.75 × 124,000 = 93,000，还没到线
+        assert_eq!(
+            evaluate_trigger(&plain, 1_000, 0.0, &policy),
+            CompressionTrigger::None
+        );
+        // 扣掉 20k 固定成本：0.75 × 104,000 = 78,000，同样 80k 已经在线上
+        assert_eq!(
+            evaluate_trigger(&with_book, 1_000, 0.0, &policy),
+            CompressionTrigger::Suggest {
+                ratio: with_book.ratio()
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_costs_never_underflow() {
+        let budget = Budget::new(8_000, 8_000, 0).with_reserve_fixed(20_000);
+        assert_eq!(budget.usable(), 0);
+        assert_eq!(budget.ratio(), 1.0, "扣成 0 时比例按满算，不许出现 NaN");
+        assert_eq!(budget.remaining(), 0);
     }
 }

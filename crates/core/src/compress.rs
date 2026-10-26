@@ -659,6 +659,8 @@ pub enum CompressError {
     SessionMismatch { expected: SessionId, got: SessionId },
     #[error("草稿还没定稿：先调用 {DRAFT_DONE_TOOL}")]
     NotDone,
+    #[error("摘要太长：{tokens} token，上限 {limit}——先压短再提交")]
+    TooLong { tokens: u32, limit: u32 },
     #[error("覆盖率不足（还可退回 {rounds_left} 次）：{summary}")]
     Coverage { summary: String, rounds_left: u32 },
     #[error("退回次数已用尽（{max} 次），只能走确定性兜底")]
@@ -897,6 +899,22 @@ impl CompressionJob {
     ) -> Result<CompressionOutcome, CompressError> {
         if self.state != JobState::Done {
             return Err(CompressError::NotDone);
+        }
+        // 先查长度再查覆盖率：反过来的话，模型为了补覆盖率只会写得更长（D144 硬上限）。
+        let draft_tokens = estimate_tokens(self.draft.text());
+        if draft_tokens > excerpt::SUMMARY_MAX_TOKENS {
+            self.rounds += 1;
+            if self.rounds > self.max_rounds {
+                self.state = JobState::Forced;
+                return Err(CompressError::TooManyRounds {
+                    max: self.max_rounds,
+                });
+            }
+            self.state = JobState::Rejected;
+            return Err(CompressError::TooLong {
+                tokens: draft_tokens,
+                limit: excerpt::SUMMARY_MAX_TOKENS,
+            });
         }
         let coverage = check_coverage(&self.above, self.draft.text());
         if !coverage.is_complete() {
@@ -1321,6 +1339,51 @@ mod tests {
         let injection = outcome.summary_injection(MessageId::new(session, 5), LogicalClock::new(5));
         assert_eq!(injection.source, SourceTag::InstructionInjection);
         assert_eq!(injection.content, outcome.injected);
+    }
+
+    #[test]
+    fn commit_rejects_overlong_summary() {
+        let (session, units) = history();
+        let mut job =
+            CompressionJob::start(session, &units, 400, 0, CompressionLimits::default()).unwrap();
+        let long = "字".repeat(excerpt::SUMMARY_MAX_TOKENS as usize + 200);
+        job.handle(DRAFT_APPEND_TOOL, &format!(r#"{{"text":"{long}"}}"#))
+            .unwrap();
+        job.handle(DRAFT_DONE_TOOL, "{}").unwrap();
+        let mut archive = MemoryArchive::new();
+        match job.commit(&mut archive, 20).unwrap_err() {
+            CompressError::TooLong { tokens, limit } => {
+                assert_eq!(limit, excerpt::SUMMARY_MAX_TOKENS);
+                assert!(tokens > limit, "报的 token 数要真的超了上限");
+            }
+            other => panic!("期望 TooLong，得到 {other:?}"),
+        }
+        assert_eq!(job.state(), JobState::Rejected, "超长应当退回而不是硬提交");
+    }
+
+    #[test]
+    fn overlong_summary_burns_rounds_then_forces() {
+        let (session, units) = history();
+        let limits = CompressionLimits::default();
+        let mut job = CompressionJob::start(session, &units, 400, 0, limits).unwrap();
+        let long = "字".repeat(excerpt::SUMMARY_MAX_TOKENS as usize + 200);
+        job.handle(DRAFT_APPEND_TOOL, &format!(r#"{{"text":"{long}"}}"#))
+            .unwrap();
+        let mut archive = MemoryArchive::new();
+        // 第 1..=max_rounds 次退回，第 max_rounds+1 次转 Forced
+        for _ in 0..limits.max_rounds {
+            job.handle(DRAFT_DONE_TOOL, "{}").unwrap();
+            assert!(matches!(
+                job.commit(&mut archive, 20).unwrap_err(),
+                CompressError::TooLong { .. }
+            ));
+        }
+        job.handle(DRAFT_DONE_TOOL, "{}").unwrap();
+        assert!(matches!(
+            job.commit(&mut archive, 20).unwrap_err(),
+            CompressError::TooManyRounds { .. }
+        ));
+        assert_eq!(job.state(), JobState::Forced);
     }
 
     #[test]

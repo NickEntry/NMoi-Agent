@@ -267,6 +267,17 @@ pub fn drive<T: Transport, S: ArchiveStore>(
                     ));
                     seq += 1;
                 }
+                Err(CompressError::TooLong { tokens, limit }) => {
+                    report.rejections += 1;
+                    messages.push(plain_message(
+                        seq,
+                        Role::User,
+                        &format!(
+                            "拒绝提交：摘要 {tokens} token，超过上限 {limit}。先把重复的、可推断的内容删掉再压一遍（只留事实、决定、未完成项），然后重新调用 compress_draft_done。",
+                        ),
+                    ));
+                    seq += 1;
+                }
                 Err(error) => return Err(error),
             },
             JobState::Forced => {
