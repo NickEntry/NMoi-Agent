@@ -27,6 +27,7 @@ use crate::budget::{
     TriggerPolicy,
 };
 use crate::clock::LogicalClock;
+use crate::divider::ContextWindow;
 use crate::ids::{MessageId, SessionId, UnitId};
 use crate::message::{AtomicUnit, Message, OutgoingToolCall, Role};
 use crate::policy::AssistantPolicy;
@@ -42,6 +43,14 @@ use crate::workspace::Workspace;
 pub trait HistoryStore {
     fn append_unit(&mut self, session: SessionId, unit: &AtomicUnit) -> Result<(), String>;
     fn load_units(&self, session: SessionId) -> Result<Vec<AtomicUnit>, String>;
+
+    /// 当前窗口：最新分界线以下的单元 + 那条线的摘要（D149）。
+    ///
+    /// 默认实现把整条历史当窗口——**没画过线的会话行为完全不变**，
+    /// 测试里的内存实现也不用跟着改。真正认分界线的实现（SQLite）覆盖它。
+    fn load_window(&self, session: SessionId) -> Result<ContextWindow, String> {
+        Ok(ContextWindow::of_all(self.load_units(session)?))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -186,7 +195,12 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     now: i64,
 ) -> Result<SessionTurn, SessionError> {
     // 1. 用户消息先落库：用户说了什么，不因为后面失败而丢
-    let units_before = store.load_units(session).map_err(SessionError::Load)?;
+    //    读的是**窗口**不是整条历史（D149）：线上那一段已经被压成摘要，
+    //    再把原文整段发出去，等于压缩没发生。
+    let window = store.load_window(session).map_err(SessionError::Load)?;
+    let summary = window.summary_message(session, now);
+    let summary_tokens = window.summary_tokens();
+    let units_before = window.units;
 
     // 1.4 估算器：模型跟冻结值走（D76）——压缩判据与工具循环不能读两套模型名。
     let model = config
@@ -199,6 +213,7 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     if let Some(budget) = config.budget {
         if !config.suppress_compression {
             let used = tokens_of(&estimator, &units_before)
+                + summary_tokens
                 + u64::from(estimator.estimate(user_text).tokens);
             let peek = with_used(*budget, used);
             let avg = config.avg_per_turn.unwrap_or_else(|| {
@@ -237,7 +252,12 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     // 2. 把历史摊成消息序列，跑工具循环
     // 断块修复（P4.1 / D66）：不完整的工具单元在**这里**被翻译成文字块，
     // 库里的单元一个字节都不动——不改历史，只改"发出去的那一份"。
-    let mut history: Vec<Message> = crate::repair::normalize(&units_before);
+    // 摘要排在最前（D149）：它是线上那一段唯一的替身，排在历史之后就成了"补充说明"。
+    let mut history: Vec<Message> = Vec::with_capacity(units_before.len() + 2);
+    if let Some(summary) = summary {
+        history.push(summary);
+    }
+    history.extend(crate::repair::normalize(&units_before));
     history.push(user.clone());
 
     // 一轮之内模型冻结（D76）：这一轮的每一次请求都用同一份模型与思考设置，
@@ -337,6 +357,7 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
                 .chain(std::iter::once(&user_unit))
                 .map(|unit| u64::from(unit.token_total()))
                 .sum::<u64>()
+                + summary_tokens
                 + u64::from(estimate_tokens(&report.text))
                 + report
                     .tool_calls
@@ -363,7 +384,12 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     let calibration = if config.suppress_compression {
         None
     } else {
-        let whole = estimator.estimate_all(request_pieces(&units_before, &user, &report));
+        let whole = estimator.estimate_all(request_pieces(
+            &units_before,
+            window.summary.as_deref(),
+            &user,
+            &report,
+        ));
         estimator.observe_usage(u64::from(report.usage.prompt_tokens), &whole, now)
     };
 
@@ -388,10 +414,16 @@ fn tokens_of(estimator: &Estimator<'_>, units: &[AtomicUnit]) -> u64 {
 /// 少算一段，因子就虚高；多算一段，因子就虚低。
 fn request_pieces<'a>(
     units: &'a [AtomicUnit],
+    summary: Option<&'a str>,
     user: &'a Message,
     report: &'a crate::agent::TurnReport,
 ) -> Vec<&'a str> {
     let mut pieces = Vec::new();
+    // 摘要是请求的第一段（D149）：不算进来的话，压过的会话会显得"估多了"，
+    // 校准因子被拉低，下一轮就开始低估。
+    if let Some(summary) = summary {
+        pieces.push(summary);
+    }
     for unit in units {
         for message in &unit.messages {
             pieces.push(message.content.as_str());
@@ -459,6 +491,59 @@ mod tests {
 
         fn load_units(&self, _session: SessionId) -> Result<Vec<AtomicUnit>, String> {
             Ok(self.units.lock().unwrap().clone())
+        }
+    }
+
+    /// 已经压过一轮的会话：`load_units` 还是全量（线上原文都在），`load_window` 只给线下 + 摘要。
+    ///
+    /// 这正是 D149 的要点——**未压过的会话行为不变**，压过的会话走窗口。真实现是
+    /// `Storage::load_window`（`crates/storage/tests/window.rs` 盯着），这里只验编排层拿它怎么办。
+    struct WindowStore {
+        all: Vec<AtomicUnit>,
+        window: Vec<AtomicUnit>,
+        summary: Option<String>,
+    }
+
+    impl WindowStore {
+        fn new(all: Vec<AtomicUnit>, window: Vec<AtomicUnit>, summary: &str) -> Self {
+            Self {
+                all,
+                window,
+                summary: Some(summary.to_string()),
+            }
+        }
+
+        fn message(session: SessionId, seq: u64, role: Role, text: &str) -> AtomicUnit {
+            AtomicUnit::turn(Message::text(
+                MessageId::new(session, seq),
+                role,
+                SourceTag::History,
+                text,
+                text.chars().count() as u32,
+                1_000,
+                LogicalClock::new(seq),
+            ))
+            .unwrap()
+        }
+    }
+
+    impl HistoryStore for WindowStore {
+        fn append_unit(&mut self, _session: SessionId, unit: &AtomicUnit) -> Result<(), String> {
+            self.all.push(unit.clone());
+            self.window.push(unit.clone());
+            Ok(())
+        }
+
+        fn load_units(&self, _session: SessionId) -> Result<Vec<AtomicUnit>, String> {
+            Ok(self.all.clone())
+        }
+
+        fn load_window(&self, _session: SessionId) -> Result<ContextWindow, String> {
+            Ok(ContextWindow {
+                divider: None,
+                summary: self.summary.clone(),
+                units: self.window.clone(),
+            })
         }
     }
 
@@ -1298,5 +1383,97 @@ mod tests {
         let messages = conversation_of(&[unit, user]);
         assert_eq!(messages.len(), 1, "注入不该混进对话");
         assert_eq!(messages[0].content, "在吗");
+    }
+
+    /// 压过的会话：线上原文**不许**再发出去，摘要要排在历史最前面（D149）。
+    #[test]
+    fn a_compacted_session_sends_the_summary_instead_of_the_archived_units() {
+        let (_dir, workspace, policy) = setup();
+        let transport = Scripted::new(vec![text_body("接着来")]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+        let session = SessionId::new();
+
+        let archived = WindowStore::message(session, 1, Role::User, "线上那句早就压掉了");
+        let kept = WindowStore::message(session, 2, Role::Assistant, "线下这句还在窗口里");
+        let mut store = WindowStore::new(
+            vec![archived, kept.clone()],
+            vec![kept],
+            "第一人称摘要：我之前说过一句，然后答了一句。",
+        );
+
+        run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "继续",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &SessionConfig::default(),
+            1_000,
+        )
+        .unwrap();
+
+        let body = &transport.requests()[0];
+        assert!(
+            body.contains("第一人称摘要"),
+            "摘要必须发出去，否则模型前面的事全丢：{body}"
+        );
+        assert!(
+            !body.contains("线上那句早就压掉了"),
+            "线上原文不许再发：压了等于没压：{body}"
+        );
+        assert!(
+            body.contains("线下这句还在窗口里"),
+            "窗口里的要留着：{body}"
+        );
+        // 摘要排在最前：它得是"这件事的开头"，不是历史之后的补充说明。
+        let summary_at = body.find("第一人称摘要").unwrap();
+        let kept_at = body.find("线下这句还在窗口里").unwrap();
+        assert!(summary_at < kept_at, "摘要要在历史之前：{body}");
+    }
+
+    /// 摘要也要算进判据的 `used`：它是每轮都发的固定成本（D144 的口径）。
+    #[test]
+    fn the_summary_counts_toward_the_trigger() {
+        let (_dir, workspace, policy) = setup();
+        let transport = Scripted::new(vec![text_body("收到")]);
+        let client = ChatClient::new(transport);
+        let registry = ToolRegistry::workspace_defaults();
+        let session = SessionId::new();
+
+        let kept = WindowStore::message(session, 2, Role::Assistant, "还在窗口里");
+        let long_summary = "这是上一轮压出来的摘要，写得很长很长。".repeat(40);
+        let mut store = WindowStore::new(vec![kept.clone()], vec![kept], &long_summary);
+
+        let budget = Budget::new(10_000, 10_000, 0);
+        let trigger = lines(2_000, 9_000);
+        let config = SessionConfig {
+            budget: Some(&budget),
+            trigger: &trigger,
+            ..SessionConfig::default()
+        };
+        let turn = run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "在吗",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let signal = turn.compression.expect("给了预算就该有判据");
+        assert!(
+            signal.used_tokens > crate::tokens::estimate_tokens(&long_summary) as u64,
+            "摘要没进 used：{} 个 token 不算等于低估",
+            signal.used_tokens
+        );
     }
 }

@@ -73,7 +73,7 @@ pub use config::{
     default_thinking_field, Mark, ModelFlavor, ModelOverrides, OverrideState, ThinkingChoice,
     ThinkingContext,
 };
-pub use divider::{Divider, DividerError, DividerId, DividerKind};
+pub use divider::{ContextWindow, Divider, DividerError, DividerId, DividerKind};
 pub use edit::{apply_edit, set_locked, BlockSelector, EditError, EditOutcome, EditRequest};
 pub use events::{Event, EventBus, EventEnvelope, EventStream, StreamError};
 pub use facts::{

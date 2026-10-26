@@ -493,7 +493,14 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 - **预算先扣固定成本**：`Budget::reserve_fixed` + `with_reserve_fixed()`，`usable()` 里减掉它，
   `evaluate_trigger` 因此自动按"扣过固定成本的窗口"算百分比。文档里那句"实测 128k 最坏 70.1% / 1M 43.9%"
   就是这条的量化依据。
-- **未接**：FFI / UI 一行没动——`summary_injection` 目前只有 core 在用，请求构造那条路还没走压缩（`turn_run` 未接）。
+- **窗口读回（D149，2026-10-26 补）**：`divider::ContextWindow` + `Storage::load_window()`
+  ——最新一条分界线以下的单元 + 那条线 `note` 首段的 `ArchiveRef` 指向的摘要正文。
+  `run_session_turn` 读的是**窗口**，摘要当作请求的第一条（`summary_message()`），
+  并且算进 `used` 与校准的 `request_pieces`。手动线同样生效（线下是窗口，只是没有摘要）。
+  二次压缩用 `units_with_summary()` 把上一次的摘要当第一段原文压，不然会整段丢。
+  摘要**不落 `messages` 表**（理由见 D149）。
+- **仍未接**：FFI / UI 还没让用户看见压缩——`nmoi_turn_run_json` 里没有"先压再发"那一步
+  （`SessionError::CompactionRequired` 现在只是把错误给调用方），Android 侧也还没调 `turn_run`。
 
 **结构事实（决定"人格设定能不能维持"）**：世界书条目注入在 **system 侧**，不参与历史压缩，
 压缩前后注入的字节完全相同。压缩只影响"历史里那种语气接不接得上"，不影响条目本身在不在场。
@@ -1230,6 +1237,7 @@ L0 的 `estimate_tokens` 保留原样给流式与兜底。**接线已完成**（
 | 0.14d | **聊天页背景**（D122–D124，`docs/ui/appearance.md`）：纯色 / 图片 / 视频，**按助手归属**；`MediaCodec`+`MediaMuxer` 入库转码（≤720p / 30fps / 2Mbps / I 帧 1s / 无音轨）；不可见即停；换种类与启动时回收旧文件 | 视频这条要先把"库存在哪、谁拥有、怎么清"定死，再谈渲染；顺序反了会留下没人清的文件 |
 | 0.14b | **日志拆三种通道 + 设置子页化**（`docs/ui/structure.md`）：~~`NLog` 分 `context` / `request` / `debug` 三路~~ **已完成**；~~设置改成「分组索引 → 子页」~~ **已完成**（索引页六行 + 外观/调试两个真子页 + 其余四组灰行清单）、各自文件与上限；日志索引页三行 + 齿轮（三种开关与上限）；通道子页四动作；设置从六节平铺改成「分组索引 → 子页」，索引行右侧写当前值 | 现在一页把"开关 + 上限 + 四种动作 + 预览"挤在一起，手机上就是滚动里找东西。**先在界面上把入口/返回定下来，后面每接一个功能只是往对应子页里填**；顺序排在设置接线之前，因为接线的落点就是这些子页 |
 | 0.15 | **压缩失败阶梯**（D115）**设计已定，未实现**：L0 多步 → L1 备用多步（剔思考块压事实层 → 合并再压）→ L2 单步 → L3 分段（约 16 段；重叠窗口只当上下文；低置信丢弃用硬事实命中 + 锚点覆盖算，不信模型自评）→ L4 兜底；提示词全部可自定义 | 现在只有 L0，失败就只剩截断；"压不干净"比"没压"更伤，所以降级必须分档、每档判据写清 |
+| 0.16 | **窗口读回（D149）** **已完成 core**：`divider::ContextWindow`、`divider::effective_divider`、`Divider::summary_ref`、`Storage::load_window`（含摘要校验：引用悬空直接报错，不当成"没压过"）；`HistoryStore::load_window` 默认实现 = 整条历史（未压过的会话行为不变）；`run_session_turn` 按窗口组装请求、摘要排在最前、算进 `used` 与校准 | 没有这一步，压缩就算跑了也不影响请求——线上原文照样整段发出去 | D149 |
 
 1. ~~stage 0 代码 / CI 跑通~~（已绿：ubuntu + windows + MSRV 1.75 + rustfmt 阻塞 + clippy）
 2. ~~`core::provider` + `model_registry`（P2）~~ / ~~压缩草稿工具链（P4）~~ / ~~工具层与工具循环（P7）~~ 均已实现 core 且真机跑通

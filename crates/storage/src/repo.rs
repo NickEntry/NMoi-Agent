@@ -12,7 +12,7 @@ use uuid::Uuid;
 use nmoi_core::archive::{ArchiveEntry, ArchiveStat, ArchiveStore, Origin};
 use nmoi_core::clock::LogicalClock;
 use nmoi_core::compress::CompressionOutcome;
-use nmoi_core::divider::{Divider, DividerId, DividerKind};
+use nmoi_core::divider::{self, ContextWindow, Divider, DividerId, DividerKind};
 use nmoi_core::edit::EditOutcome;
 use nmoi_core::ids::{ArchiveRef, MessageId, SessionId, UnitId};
 use nmoi_core::message::{
@@ -753,6 +753,43 @@ impl Storage {
         }
         Ok(out)
     }
+
+    /// 当前窗口（D149）：最新一条分界线**以下**的单元，加上那条线压出来的摘要。
+    ///
+    /// 摘要不在 `messages` 表里，所以它得从线的 `note` 首段拿 `ArchiveRef`，再到 `archive` 读。
+    /// **读不到就报错**，不返回"没有摘要"：那会让调用方以为这个会话没压过，
+    /// 然后把已经压掉的原文整段当历史发出去——用户看到的是"它突然失忆，还把我拉回旧话题"。
+    pub fn load_window(&self, session: SessionId) -> Result<ContextWindow, StorageError> {
+        let units = self.load_units(session)?;
+        let dividers = self.load_dividers(session)?;
+        let Some((divider, start)) = divider::effective_divider(&units, &dividers) else {
+            return Ok(ContextWindow::of_all(units));
+        };
+        let summary = match divider.summary_ref() {
+            None => None,
+            Some(reference) => {
+                let content: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT content FROM archive WHERE ref = ?1 AND conv_id = ?2",
+                        params![reference.as_str(), session.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                Some(content.ok_or_else(|| {
+                    StorageError::Inconsistent(format!(
+                        "压缩线 {} 指向的摘要 {reference} 不在归档里",
+                        divider.id
+                    ))
+                })?)
+            }
+        };
+        Ok(ContextWindow {
+            divider: Some(divider.clone()),
+            summary,
+            units: units[start..].to_vec(),
+        })
+    }
 }
 
 /// 让 `ArchiveStore` 也能直接在存储层用。
@@ -987,5 +1024,11 @@ impl nmoi_core::session::HistoryStore for Storage {
 
     fn load_units(&self, session: SessionId) -> Result<Vec<AtomicUnit>, String> {
         Storage::load_units(self, session).map_err(|error| error.to_string())
+    }
+
+    /// 认分界线的实现走 SQLite 那份（D149）：编排层只看到"窗口"，
+    /// 不用自己知道 `archive` 里躺着摘要。
+    fn load_window(&self, session: SessionId) -> Result<ContextWindow, String> {
+        Storage::load_window(self, session).map_err(|error| error.to_string())
     }
 }

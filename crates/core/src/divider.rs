@@ -12,8 +12,14 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ids::{MessageId, SessionId};
-use crate::message::{AtomicUnit, Role};
+use crate::clock::LogicalClock;
+use crate::ids::{ArchiveRef, MessageId, SessionId};
+use crate::message::{AtomicUnit, Message, Role};
+use crate::source::SourceTag;
+use crate::tokens::estimate_tokens;
+
+/// 压缩线的 `note` 里，摘要引用与说明之间的分隔符（D143 定的格式）。
+pub const SUMMARY_NOTE_SEP: &str = " | ";
 
 /// 分界线 ID（UUIDv7，可排序）。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -120,6 +126,19 @@ impl Divider {
 
     pub fn user(session: SessionId, after_seq: u64, created_at: i64) -> Self {
         Self::new(session, after_seq, DividerKind::User, None, created_at)
+    }
+
+    /// 这条线对应的摘要归档引用（D149）。
+    ///
+    /// 格式是 D143 定的：`note` 的首段就是 `ArchiveRef`，后面才接人话。
+    /// 用户手插的线没有 note，返回 `None`——"线下是窗口"照样成立，只是没有摘要可注入。
+    pub fn summary_ref(&self) -> Option<ArchiveRef> {
+        if self.kind != DividerKind::Compression {
+            return None;
+        }
+        let note = self.note.as_deref()?;
+        let head = note.split(SUMMARY_NOTE_SEP).next()?.trim();
+        ArchiveRef::parse(head).ok()
     }
 }
 
@@ -335,6 +354,101 @@ pub fn boundary_message(units: &[AtomicUnit], after_seq: u64) -> Option<MessageI
         .iter()
         .find(|unit| last_seq_of(unit) == after_seq)
         .map(|unit| unit.last_message().id.clone())
+}
+
+// ---------------------------------------------------------------------------
+// 当前窗口（D149）：线下单元 + 线上那段的摘要
+// ---------------------------------------------------------------------------
+
+/// 当前窗口：最新一条分界线**以下**的单元，加上那条线压出来的摘要正文。
+///
+/// 摘要**不在** `messages` 表里（D149 说了为什么），所以它是这个结构的一部分而不是一条单元：
+/// 谁把窗口拼成请求，谁就得显式调用 [`ContextWindow::summary_message`] 把它放到最前面。
+/// 只有这一个入口——第二个入口迟早会被漏掉一个调用点，而漏掉的表现是"模型突然不记得前面的事了"。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContextWindow {
+    /// 生效的那条线（合法线里 `after_seq` 最大的那条）。`None` = 没画过线。
+    pub divider: Option<Divider>,
+    /// 线上那段的摘要（第一人称、含摘录块）。只有压缩线才有。
+    pub summary: Option<String>,
+    /// 窗口里的单元，仍是 `seq` 升序。
+    pub units: Vec<AtomicUnit>,
+}
+
+impl ContextWindow {
+    /// 没画过线的会话：整条历史就是窗口。行为与 D149 之前一致。
+    pub fn of_all(units: Vec<AtomicUnit>) -> Self {
+        Self {
+            divider: None,
+            summary: None,
+            units,
+        }
+    }
+
+    pub fn is_compacted(&self) -> bool {
+        self.summary.is_some()
+    }
+
+    /// 摘要占多少 token。计预算时**必须**加进去：它是每轮都要发的固定成本，
+    /// 不加就是在低估（D144 的口径）。
+    pub fn summary_tokens(&self) -> u64 {
+        self.summary
+            .as_deref()
+            .map(|text| u64::from(estimate_tokens(text)))
+            .unwrap_or(0)
+    }
+
+    /// 摘要装成一条注入消息，放在请求的最前面。
+    ///
+    /// `seq = 0`：它不是历史里的第几条，谁也别拿它去算下一条的号
+    /// （推 `seq` 会连带撞上窗口以下的消息）。
+    pub fn summary_message(&self, session: SessionId, now: i64) -> Option<Message> {
+        let text = self.summary.as_deref()?;
+        Some(Message::text(
+            MessageId::new(session, 0),
+            Role::User,
+            SourceTag::InstructionInjection,
+            text,
+            estimate_tokens(text),
+            now,
+            LogicalClock::new(0),
+        ))
+    }
+
+    /// 压缩的输入：**把上一次的摘要当成第一段原文**，接在窗口前面。
+    ///
+    /// 二次压缩必须带上它，否则这一次只压到"还在窗口里"的那些单元，
+    /// 上一次压出来的摘要整段丢掉——用户看到的就是"内容丢了"。
+    pub fn units_with_summary(&self, session: SessionId, now: i64) -> Vec<AtomicUnit> {
+        let mut units = Vec::with_capacity(self.units.len() + 1);
+        if let Some(message) = self.summary_message(session, now) {
+            if let Ok(unit) = AtomicUnit::turn(message) {
+                units.push(unit);
+            }
+        }
+        units.extend(self.units.iter().cloned());
+        units
+    }
+}
+
+/// 从一批分界线里挑出**生效的那一条**（合法线里切点最靠后的），连同它切出来的起点。
+///
+/// 失效的线（位置被删、落在单元内部）静默跳过，理由和 [`window_start`] 一样：
+/// 一条坏线不该让会话打不开，L3 校验会单独把它报出来。
+pub fn effective_divider<'a>(
+    units: &[AtomicUnit],
+    dividers: &'a [Divider],
+) -> Option<(&'a Divider, usize)> {
+    let mut best: Option<(&Divider, usize)> = None;
+    for divider in dividers {
+        let Ok(index) = split_index(units, divider.after_seq) else {
+            continue;
+        };
+        if best.map_or(true, |(_, start)| index > start) {
+            best = Some((divider, index));
+        }
+    }
+    best
 }
 
 #[cfg(test)]
