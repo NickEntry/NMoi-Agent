@@ -268,11 +268,10 @@ fn delete_all_versions_clears_every_row_and_keeps_the_displayed_text() {
         "版本行一条不剩"
     );
     // 列表里不该再有版本条目：`n/n` 与颜色一起消失。
-    assert!(storage
+    assert!(!storage
         .version_index(session)
         .unwrap()
-        .get(&message.to_string())
-        .is_none());
+        .contains_key(&message.to_string()));
 }
 
 #[test]
