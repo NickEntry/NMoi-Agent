@@ -688,7 +688,9 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// **不加 `#[cfg(unix)]`**：`envir_shell_without_a_runtime_spec…` 与门控那条在 Windows 上也跑，
+    /// 而它们只用到策略对象，不起进程。加过一次，CI 的 windows job 当场报
+    /// `cannot find function container_policy`（本地是 unix，看不出来）。
     fn container_policy() -> AssistantPolicy {
         AssistantPolicy::locked_down()
             .with_binding(crate::policy::WorkspaceBinding::read_write("test-ws"))
