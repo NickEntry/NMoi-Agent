@@ -76,6 +76,20 @@ internal object NativeBridge {
     /** 给正在跑的那一轮置取消标志。没在跑返回 `cancelled:false`，不是错误。 */
     external fun turnCancelJson(session: String): String
 
+    /**
+     * 一次性补全（D158）：**不落库、不进历史**。增强编辑要的是"拿一段文字回来"。
+     *
+     * 参数：`{provider{id,kind,base_url,api_key?}, model, prompt, system?, max_tokens?, temperature?}`。
+     */
+    external fun completeJson(config: String): String
+
+    /**
+     * 改一条消息的某一块（D158）：`block` 只收 `output` / `thinking` / `tool:<index>`。
+     *
+     * 工具调用只能改参数——名字与 `call_id` 不在射程里（它们决定这一块怎么被解释、跟谁配对）。
+     */
+    external fun applyBlockEditJson(handle: Long, message: String, block: String, content: String): String
+
     // 设置面（D86）：四个动词、scope 当参数传——core 那边就是这么切的，
     // 客户端不再按 scope 各包一个函数（加第五类时两边必然对不上）。
     // 这一层只负责搬字符串，语义包装在 `NmoiFfi`。

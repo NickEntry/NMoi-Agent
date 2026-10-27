@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use nmoi_core::agent::{Cancellation, TurnConfig};
 use nmoi_core::budget::{Budget, CompressAction, CompressionTrigger, TriggerPolicy};
 use nmoi_core::ids::SessionId;
+use nmoi_core::message::Role;
 use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
 use nmoi_core::provider::{ProviderConfig, ProviderKind};
 use nmoi_core::runtime::{ChatClient, ChatRequest};
@@ -489,6 +490,84 @@ pub extern "C" fn nmoi_turn_cancel_json(session: *const c_char) -> *mut c_char {
             }
             None => Ok(json!({ "cancelled": false, "running": false })),
         }
+    })
+}
+
+/// 一次性补全（D158）：**不发进会话历史，也不落库**。
+///
+/// 增强编辑要的是"拿一段文字回来"。用 `turn_run` 做这件事，会在历史里留下
+/// "用户让我改一条消息"和"模型回了新正文"这两条假对话——下一次压缩、下一次上下文
+/// 都会把它们当成真的。
+///
+/// 入参：`{provider{id,kind,base_url,api_key?}, model, prompt, system?, max_tokens?, temperature?}`
+/// 出参：`{text, reasoning, finish, usage{prompt, completion}}`
+///
+/// 思考内容单独给（`reasoning`），不混进 `text`：围栏解析在 `text` 上做，
+/// 掺进去的思考会被当成正文的一部分。
+#[no_mangle]
+pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(config, "config")?;
+        let root: Value = serde_json::from_str(text).map_err(|error| {
+            FfiError::new("bad_argument", format!("配置不是合法 JSON：{error}"))
+        })?;
+        if !root.is_object() {
+            return Err(bad("config", "必须是一个 JSON 对象"));
+        }
+        let provider = field(&root, "provider").ok_or_else(|| bad("provider", "是必填的"))?;
+        if !provider.is_object() {
+            return Err(bad("provider", "必须是对象"));
+        }
+        let provider_id = optional_str(provider, "id")?.unwrap_or_else(|| "ffi".to_string());
+        let kind = parse_provider_kind(&required_str(provider, "kind")?)?;
+        let base_url = required_str(provider, "base_url")?;
+        let api_key = optional_str(provider, "api_key")?;
+        let model = required_str(&root, "model")?;
+        let prompt = required_str(&root, "prompt")?;
+        if prompt.trim().is_empty() {
+            return Err(bad("prompt", "不能是空串"));
+        }
+        let system = optional_str(&root, "system")?;
+        let max_tokens = optional_u64(&root, "max_tokens")?.map(|value| value as u32);
+        let temperature = optional_f32(&root, "temperature")?;
+
+        let mut turns: Vec<(Role, &str)> = Vec::with_capacity(2);
+        if let Some(system) = system.as_deref() {
+            turns.push((Role::System, system));
+        }
+        turns.push((Role::User, prompt.as_str()));
+
+        let mut request = ChatRequest::from_turns(
+            ProviderConfig::new(&provider_id, kind, &base_url),
+            &model,
+            &turns,
+        )
+        .without_stream();
+        if let Some(key) = api_key.as_deref() {
+            if !key.trim().is_empty() {
+                request = request.api_key(key);
+            }
+        }
+        if let Some(tokens) = max_tokens {
+            request = request.max_tokens(tokens);
+        }
+        if let Some(temperature) = temperature {
+            request = request.temperature(temperature);
+        }
+
+        let client = ChatClient::new(PlainHttpTransport::default());
+        let done = client
+            .complete(&request)
+            .map_err(|error| FfiError::new("complete", error.to_string()))?;
+        Ok(json!({
+            "text": done.text,
+            "reasoning": done.reasoning,
+            "finish": done.finish.as_str(),
+            "usage": {
+                "prompt": done.usage.prompt_tokens,
+                "completion": done.usage.completion_tokens,
+            },
+        }))
     })
 }
 

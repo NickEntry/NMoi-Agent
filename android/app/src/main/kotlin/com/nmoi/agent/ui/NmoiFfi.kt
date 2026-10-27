@@ -126,6 +126,23 @@ internal object NmoiFfi {
     suspend fun turnCancel(session: String): Result<JSONObject> =
         call("turn_cancel") { NativeBridge.turnCancelJson(session) }
 
+    /**
+     * 一次性补全（D158）。**空串也是有意义的结果**（模型回了空），
+     * 所以只把 `ok:false` 当失败，交给调用方去判断拿到的东西能不能用。
+     */
+    suspend fun complete(config: JSONObject): Result<JSONObject> =
+        call("complete") { NativeBridge.completeJson(config.toString()) }
+
+    /** 改一条消息的某一块。`block` = `output` / `thinking` / `tool:<index>`。 */
+    suspend fun applyBlockEdit(
+        handle: Long,
+        message: String,
+        block: String,
+        content: String,
+    ): Result<JSONObject> = call("apply_block_edit") {
+        NativeBridge.applyBlockEditJson(handle, message, block, content)
+    }
+
     /** 删一版（`versionNo` 从 1 起；删整条消息走 [deleteMessage]）。 */
     suspend fun deleteVersion(
         handle: Long,

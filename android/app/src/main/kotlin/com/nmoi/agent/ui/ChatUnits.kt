@@ -32,6 +32,13 @@ internal data class ChatMessage(
     val versionView: String = "raw",
     /** 这一版被工具/编辑改过没有——决定那个 `n/n` 的颜色（白 / 蓝 / 红）。 */
     val versionEdited: Boolean = false,
+    /**
+     * 思考块（D158）。**以前只存不显示**：`reasoning` 列一直在库里，
+     * `load_units` 不带出来，界面上就永远看不见——"存了但看不见"正是他反感的那种。
+     */
+    val reasoning: String? = null,
+    /** 这条消息声明的工具调用（名字 + 参数原文）。增强编辑要能在界面上指出改的是哪一块。 */
+    val toolArgs: List<ToolCallArg> = emptyList(),
 ) {
     val isThinking: Boolean get() = source == "model_thinking"
     val isToolCall: Boolean get() = source == "tool_call"
@@ -40,8 +47,30 @@ internal data class ChatMessage(
     val isUser: Boolean get() = role == "user"
 }
 
-/** 断块（P4.1 / D67）的声明行：由 core 给，不由 UI 拼 `ID+块类+原因`。 */
-internal data class BrokenBlock(
+/** 一条工具调用（D158）：名字决定怎么解释它，`call_id` 决定它跟哪条结果配对。 */
+internal data class ToolCallArg(
+    val callId: String,
+    val name: String,
+    val arguments: String,
+)
+
+private fun parseToolArgs(array: JSONArray?): List<ToolCallArg> {
+    if (array == null) return emptyList()
+    return buildList {
+        for (index in 0 until array.length()) {
+            val row = array.optJSONObject(index) ?: continue
+            add(
+                ToolCallArg(
+                    callId = row.optString("call_id", ""),
+                    name = row.optString("name", ""),
+                    arguments = row.optString("arguments", ""),
+                ),
+            )
+        }
+    }
+}
+
+/** 断块（P4.1 / D67）的声明行：由 core 给，不由 UI 拼 `ID+块类+原因`。 */internal data class BrokenBlock(
     val id: String,
     val kind: String,
     val reason: String,
@@ -123,6 +152,8 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
                     versionActive = message.optInt("version_active", 0),
                     versionView = message.optString("version_view", "raw"),
                     versionEdited = message.optBoolean("version_edited", false),
+                    reasoning = message.optString("reasoning", "").ifBlank { null },
+                    toolArgs = parseToolArgs(message.optJSONArray("tool_call_args")),
                 ),
             )
         }

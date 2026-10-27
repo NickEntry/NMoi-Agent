@@ -661,3 +661,64 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnCancelJson<'local
     });
     to_jstring(&mut env, text)
 }
+
+// ---------------------------------------------------------------------------
+// 增强编辑（D158）：一次性补全 + 块级编辑
+// ---------------------------------------------------------------------------
+
+/// `NativeBridge.completeJson(config)`：一次性补全，**不用 storage 句柄**。
+///
+/// 没有句柄是有意的：这条路上一个字节都不落库。要落库的（改哪一块、写成哪一份正文）
+/// 由调用方在拿到结果之后自己决定，一次一个动作。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_completeJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::turn::nmoi_complete_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.applyBlockEditJson(handle, message, block, content)`：改消息的某一块。
+///
+/// 目前只有增强编辑用它：正文走版本那条路（红/蓝），思考和工具参数走这一条。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_applyBlockEditJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    message: JString<'local>,
+    block: JString<'local>,
+    content: JString<'local>,
+) -> jstring {
+    let message = read_string(&mut env, &message);
+    let block = read_string(&mut env, &block);
+    let content = read_string(&mut env, &content);
+    let text = guarded(move || match (message, block, content) {
+        (Some(message), Some(block), Some(content)) => {
+            let (Ok(c_message), Ok(c_block), Ok(c_content)) = (
+                CString::new(message),
+                CString::new(block),
+                CString::new(content),
+            ) else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::storage::nmoi_storage_apply_block_edit_json(
+                handle as u64,
+                c_message.as_ptr(),
+                c_block.as_ptr(),
+                c_content.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

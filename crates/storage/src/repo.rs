@@ -14,6 +14,7 @@ use nmoi_core::clock::LogicalClock;
 use nmoi_core::compress::CompressionOutcome;
 use nmoi_core::divider::{self, ContextWindow, Divider, DividerId, DividerKind};
 use nmoi_core::edit::EditOutcome;
+use nmoi_core::edit::{apply_edit, BlockSelector, EditRequest};
 use nmoi_core::ids::{ArchiveRef, MessageId, SessionId, UnitId};
 use nmoi_core::message::{
     AtomicUnit, ContentForm, Message, OutgoingToolCall, Role, UnitError, UnitKind,
@@ -601,6 +602,49 @@ impl Storage {
             )));
         }
         Ok(())
+    }
+
+    /// 块级编辑（D158）：改某条消息的**正文 / 思考 / 第 N 个工具调用的参数**。
+    ///
+    /// 为什么不用"整段正文"这一条路把它做完：三块存在不同的列里（`content` /
+    /// `reasoning` / `tool_calls`），"要改哪一块"必须由调用方说清。选错了不是报错，
+    /// 是**改到别的地方去**——用户在界面上点的是思考卡，结果正文变了，最难查。
+    ///
+    /// 写回走 [`Storage::save_message_edit`]：那一行与 `edits` 审计表在同一个事务里，
+    /// 所以"改了但没记账"这种半截状态不会出现。
+    ///
+    /// **工具调用只允许改参数**：名字与 `call_id` 不在 `apply_edit` 的射程里——
+    /// 名字决定了下一轮怎么解释这一块，`call_id` 决定它跟哪条结果配对。
+    /// 让编辑改这两样，等于让一条"历史"变成另一条历史。
+    pub fn apply_block_edit(
+        &mut self,
+        message_id: &MessageId,
+        block: BlockSelector,
+        content: &str,
+    ) -> Result<EditOutcome, StorageError> {
+        let (unit_text, session_text): (String, String) = self
+            .conn
+            .query_row(
+                "SELECT unit_id, conv_id FROM messages WHERE id = ?1",
+                [message_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| {
+                StorageError::Inconsistent(format!("消息 {message_id} 不存在，没法编辑"))
+            })?;
+        let session = session_text
+            .parse::<SessionId>()
+            .map_err(|error| StorageError::Inconsistent(format!("会话 id 不合法：{error}")))?;
+        let unit_id = unit_text
+            .parse::<UnitId>()
+            .map_err(|error| StorageError::Inconsistent(format!("单元 id 不合法：{error}")))?;
+
+        let mut unit = self.load_unit(&unit_id)?;
+        let request = EditRequest::new(unit_id, block, content).on_message(message_id.clone());
+        let outcome = apply_edit(&mut unit, &request)
+            .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
+        self.save_message_edit(session, &unit, &outcome)?;
+        Ok(outcome)
     }
 
     /// 某个会话的编辑次数（审计面板与测试用）。

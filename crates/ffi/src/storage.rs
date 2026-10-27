@@ -519,6 +519,20 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "role": message.role.as_str(),
                                 "source": message.source.as_str(),
                                 "content": message.content,
+                                // 思考块（D158）：以前只存不发，界面上根本看不到它——
+                                // "存了但看不见"正是用户最反感的那种。这里带出去。
+                                "reasoning": message.reasoning,
+                                // 工具调用的参数原文：增强编辑要能在界面上指出"改的是哪一块"，
+                                // 只给个数是不够的。
+                                "tool_call_args": message
+                                    .tool_calls
+                                    .iter()
+                                    .map(|call| json!({
+                                        "call_id": call.id,
+                                        "name": call.name,
+                                        "arguments": call.arguments,
+                                    }))
+                                    .collect::<Vec<_>>(),
                                 "tokens": message.tokens,
                                 "created_at": message.created_at,
                                 "incomplete": message.incomplete,
@@ -761,5 +775,82 @@ pub extern "C" fn nmoi_storage_diagnose_json(path: *const c_char) -> *mut c_char
         let path = read_str(path, "path")?;
         let report = Storage::diagnose_readonly(path).map_err(storage_error)?;
         Ok(serde_json::to_value(report).unwrap_or(Value::Null))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 块级编辑（D158）：增强编辑落地的最后一段
+// ---------------------------------------------------------------------------
+
+/// 一块内容的上限。**这是防呆，不是防攻击**：真被塞进 200 KB 的思考块，
+/// 下一次请求的预算会被它吃掉一大半，而用户在界面上根本翻不到底。
+const MAX_BLOCK_BYTES: usize = 200_000;
+
+/// `block` 只认三种串。**不猜**：猜错就是把内容写到另一列上，
+/// 而"点思考卡结果正文变了"这种故障在界面上看着像灵异事件。
+fn parse_block(text: &str) -> FfiResult<nmoi_core::edit::BlockSelector> {
+    use nmoi_core::edit::BlockSelector;
+    match text {
+        "output" => Ok(BlockSelector::Output),
+        "thinking" => Ok(BlockSelector::Thinking),
+        other => match other.strip_prefix("tool:") {
+            Some(index) => match index.parse::<usize>() {
+                Ok(index) if index < 64 => Ok(BlockSelector::ToolCall { index }),
+                _ => Err(FfiError::new(
+                    "bad_argument",
+                    format!("block `tool:<index>` 的 index 必须是 0–63 的整数，收到 `{other}`"),
+                )),
+            },
+            None => Err(FfiError::new(
+                "bad_argument",
+                format!("block 只能是 output / thinking / tool:<index>，收到 `{other}`"),
+            )),
+        },
+    }
+}
+
+/// 改一条消息的某一块。
+///
+/// 入参：`handle` / `message` / `block`（`output` | `thinking` | `tool:<index>`）/ `content`。
+/// 出参：`{message, block, revision, tokens_before, tokens_after, before_hash, after_hash}`。
+///
+/// 拒绝的情形（都是 `error`，不是"悄悄没改"）：
+/// `storage`（消息不存在 / 被用户锁定 / 内容没变化 / 单元里没有第 N 个工具调用）。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_apply_block_edit_json(
+    handle: u64,
+    message: *const c_char,
+    block: *const c_char,
+    content: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let message_text = read_str(message, "message")?;
+        let message_id = parse_message(message_text)?;
+        let block_text = read_str(block, "block")?;
+        let selector = parse_block(block_text)?;
+        let content_text = read_str(content, "content")?;
+        if content_text.len() > MAX_BLOCK_BYTES {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!(
+                    "content 太长（{} 字节，上限 {MAX_BLOCK_BYTES}）",
+                    content_text.len()
+                ),
+            ));
+        }
+        with_storage(handle, |storage| {
+            let outcome = storage
+                .apply_block_edit(&message_id, selector, content_text)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": outcome.message_id.to_string(),
+                "block": outcome.block,
+                "revision": outcome.revision,
+                "tokens_before": outcome.tokens_before,
+                "tokens_after": outcome.tokens_after,
+                "before_hash": outcome.before_hash,
+                "after_hash": outcome.after_hash,
+            }))
+        })
     })
 }
