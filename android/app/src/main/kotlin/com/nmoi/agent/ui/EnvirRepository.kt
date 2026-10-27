@@ -121,6 +121,33 @@ internal object EnvirRepository {
 
     fun prootPath(context: Context): File = File(runtimeDir(context), "libnmoi_proot.so")
 
+    /**
+     * 给动态链接器用的库目录：`filesDir/envir/lib/`，里面两条**符号链接**指到 `nativeLibraryDir`。
+     *
+     * 为什么不直接 `LD_PRELOAD=<nativeLibraryDir>/libnmoi_talloc.so`：那个变量会被 proot 带进
+     * 容器，而容器里没有 `/data/app/…` 这个路径，于是**每一条 guest 命令**都会先打一行
+     * `ERROR: ld.so: object '…libnmoi_talloc.so' from LD_PRELOAD cannot be preloaded … ignored`。
+     * 功能上无害，但用户的输出里全是这行，等于没输出。
+     *
+     * 换成符号链接：`libtalloc.so.2` 保持**上游那个文件名**，链接指向 APK 的 lib 目录
+     * （那一份的 SELinux 标签可执行，mmap 得过）；`libandroid-shmem.so` 同理。
+     * 符号链接本身在 App 私有目录里，但被 mmap 的是它指向的 inode，权限按 inode 算。
+     */
+    fun libDir(context: Context): File = File(envirDir(context), "lib")
+
+    /** 建/刷新那两条链接。每次启动都重建：升级 APK 之后 `nativeLibraryDir` 的路径会变。 */
+    fun ensureLibLinks(context: Context): Result<File> = runCatching {
+        val dir = libDir(context).apply { mkdirs() }
+        val runtime = runtimeDir(context)
+        for (name in listOf("libtalloc.so.2", "libandroid-shmem.so")) {
+            val packaged = File(runtime, if (name == "libtalloc.so.2") "libnmoi_talloc.so" else name)
+            val link = File(dir, name)
+            java.nio.file.Files.deleteIfExists(link.toPath())
+            java.nio.file.Files.createSymbolicLink(link.toPath(), packaged.toPath())
+        }
+        dir
+    }
+
     /** 运行时齐不齐。缺哪件就把名字说出来——"跑不起来"这种话没法排查。 */
     fun missingRuntime(context: Context): List<String> =
         Runtime.filterNot { File(runtimeDir(context), it.packaged).isFile }.map { it.label }
@@ -132,6 +159,20 @@ internal object EnvirRepository {
      * 只有 state 而没有 rootfs（用户清了应用缓存）时，界面要是还说"已装"，
      * 后面每一条命令都会以一个看不懂的错收场。
      */
+    /**
+     * 把这一轮真正用到的三个路径写一行日志。
+     *
+     * 为什么写：这些路径**都不是我们拼的**，是从框架读回来的——
+     * `filesDir` 在单用户机上是 `/data/user/0/<pkg>/files`，在工作资料（user 10）上是
+     * `/data/user/10/<pkg>/files`，写死 `/data/data` 或 `/data/user/0` 都会在那个场景下指错地方；
+     * `nativeLibraryDir` 更是每次升级 APK 都会变（`/data/app/~~<hash>/…/lib/arm64`）。
+     * 所以这里不"回退"也不"猜"，只把读到的值记下来：真出问题时一眼能看出是哪一段不对。
+     */
+    fun describePaths(context: Context): String =
+        "filesDir=${context.filesDir.absolutePath} " +
+            "nativeLibraryDir=${runtimeDir(context).absolutePath} " +
+            "envir=${envirDir(context).absolutePath}"
+
     fun installed(context: Context): Installed? {
         val state = stateFile(context)
         if (!state.isFile) return null
@@ -199,6 +240,7 @@ internal object EnvirRepository {
         onPhase: (Phase) -> Unit,
     ): Result<Installed> {
         onPhase(Phase.Runtime)
+        NLog.i("Envir", "安装路径：${describePaths(context)}")
         // 运行时是随 APK 装好的（jniLibs → nativeLibraryDir），这里只核对它在不在。
         val missing = missingRuntime(context)
         if (missing.isNotEmpty()) {
@@ -372,21 +414,27 @@ internal object EnvirRepository {
         timeoutSeconds: Long = 40,
     ): Result<Probe> = withContext(Dispatchers.IO) {
         runCatching {
-            val libs = runtimeDir(context)
             val tmp = File(envirDir(context), "tmp").apply { mkdirs() }
             val builder = ProcessBuilder(args)
             builder.directory(File(context.filesDir, "workspace").apply { mkdirs() })
             builder.redirectErrorStream(false)
-            // 两道都得给（见 Runtime 那段注释）：
-            //   LD_LIBRARY_PATH → 让没有 SONAME 的 libandroid-shmem.so 按**文件名**被找到；
-            //   LD_PRELOAD      → 让带 SONAME 的 libtalloc.so.2 先被加载，proot 的 NEEDED 凭 SONAME 认它。
-            builder.environment()["LD_LIBRARY_PATH"] = libs.absolutePath
-            builder.environment()["LD_PRELOAD"] = File(libs, "libnmoi_talloc.so").absolutePath
+            // 库目录里是两条指到 nativeLibraryDir 的符号链接（见 libDir 那段注释）：
+            // 名字保持上游的 `libtalloc.so.2` / `libandroid-shmem.so`，链接器按名找得到。
+            val libs = ensureLibLinks(context).getOrElse { error(it.message ?: "建库链接失败") }.absolutePath
+            NLog.i("Envir", "自检路径：${describePaths(context)}")
+            builder.environment()["LD_LIBRARY_PATH"] = libs
             // proot 默认去 termux 的路径找 loader（编译进去的），我们包里没有那个目录，
             // 所以必须用 `PROOT_LOADER` 指到 nativeLibraryDir 里那一份（D169）。
-            builder.environment()["PROOT_LOADER"] = File(libs, "libnmoi_proot_loader.so").absolutePath
+            builder.environment()["PROOT_LOADER"] =
+                File(runtimeDir(context), "libnmoi_proot_loader.so").absolutePath
             builder.environment()["PROOT_TMP_DIR"] = tmp.absolutePath
             builder.environment()["PROOT_NO_SECCOMP"] = "1"
+            // **PATH 必须给**：不给的话容器里的 sh 继承的是 Android 的 PATH（/product/bin:/system/bin…），
+            // 那些目录在容器里不存在，于是 `head`/`uname`/`ls` 全是 "not found"（退出码 127）。
+            builder.environment()["PATH"] =
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            builder.environment()["HOME"] = "/root"
+            builder.environment()["TERM"] = "xterm-256color"
             val started = System.currentTimeMillis()
             val process = builder.start()
             val stdout = StringBuilder()
@@ -415,7 +463,7 @@ internal object EnvirRepository {
 
     /** 进容器跑一句话：`os-release` 头两行 + 内核版本（**会是手机的内核**，这正是要让人看见的）。 */
     fun rootfsCommand(context: Context, rootfs: String): List<String> {
-        val libs = runtimeDir(context)
+        val libs = libDir(context)
         return listOf(
             prootPath(context).absolutePath,
             "-0",
@@ -426,7 +474,9 @@ internal object EnvirRepository {
             "-w", "/root",
             "/bin/sh",
             "-c",
-            "head -2 /etc/os-release; echo ---; uname -r; echo ---; ls /usr/bin | wc -l",
+            // 用绝对路径：这条命令存在的意义就是"别的都坏了也能跑"，不能依赖 PATH。
+            "/usr/bin/head -2 /etc/os-release; echo ---; /usr/bin/uname -r; " +
+                "echo ---; /usr/bin/ls /usr/bin | /usr/bin/wc -l",
         ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}（LD_LIBRARY_PATH=${libs.absolutePath}）") }
     }
 

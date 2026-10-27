@@ -499,7 +499,7 @@ val x = 1
 3. **一张截图**：标题下方版本行 + 列表区 + 底部数据源那行，一张就够
 4. 设备信息：`adb shell getprop ro.product.cpu.abi`、`adb shell getprop ro.build.version.sdk`
 
-打码：序列号、用户名路径、任何 token。路径里的 `/data/user/0/com.nmoi.agent/...` 不用码。
+打码：序列号、用户名路径、任何 token。路径里的 `/data/user/<uid>/com.nmoi.agent/...` 不用码。
 
 ## 5. 现象 → 先看哪里（省时间用）
 
@@ -572,7 +572,7 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
 3. **一张截图**：标题下方版本行 + 列表区 + 底部数据源那行，一张就够
 4. 设备信息：`adb shell getprop ro.product.cpu.abi`、`adb shell getprop ro.build.version.sdk`
 
-打码：序列号、用户名路径、任何 token。路径里的 `/data/user/0/com.nmoi.agent/...` 不用码。
+打码：序列号、用户名路径、任何 token。路径里的 `/data/user/<uid>/com.nmoi.agent/...` 不用码。
 
 ## 5. 现象 → 先看哪里（省时间用）
 

@@ -3694,3 +3694,19 @@ proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/pr
 
 **代价（说清楚）**：换签名的第一个包**装不上去**，必须先卸载——库和设置全没。
 所以这次升级是一次性的。之后每个包都能直接覆盖。
+
+### D171 路径不拼、只读：`filesDir` 与 `nativeLibraryDir` 都从框架取
+
+用户 2026-10-27 提醒："不能确定用户是 0 还是 999 还是别的，用 `/data/data` 替代 `/data/user/0` 更靠谱"。
+
+**结论：两个都不写死，也不做"检测 + 回退"——因为我们根本不拼这个字符串。**
+`context.filesDir` 本身就是"检测"的结果：单用户机上是 `/data/user/0/<pkg>/files`，
+工作资料（user 10）上就是 `/data/user/10/<pkg>/files`，多用户/镜像机上是各自的值。
+`/data/data/<pkg>` 是**指向 user 0 的兼容符号链接**，在非 0 用户下会指到错的地方，
+所以它只适合写在文档/命令行示例里，不适合写进代码。
+
+`nativeLibraryDir` 同理，而且它每次升级 APK 都会变（`/data/app/~~<hash>/<pkg>-<hash>/lib/arm64`），
+凡是需要它的地方一律现取（`EnvirRepository.runtimeDir`），不缓存。
+
+为了让"路径不对"这件事可查，`describePaths()` 把 `filesDir` / `nativeLibraryDir` / `envir`
+三个真实值写进日志（安装一次、每次自检一次），出问题时不用猜这台机器上是什么。
