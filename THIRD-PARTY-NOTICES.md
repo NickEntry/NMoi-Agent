@@ -133,6 +133,7 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
 | 上游名字 | 包里的名字 | 版本 | 许可 | 来源 | 字节数 / sha256 前 16 |
 |---|---|---|---|---|---|
 | `proot` | `libnmoi_proot.so` | 5.1.107.101 | **GPL-2.0-or-later** | 包 `proot_5.1.107.101_aarch64.deb`；上游 <https://github.com/termux/proot>（tag `v5.1.107.101`） | 259,784 / `bc3e541674827637` |
+| `libexec/proot/loader` | `libnmoi_proot_loader.so` | 5.1.107.101 | **GPL-2.0-or-later** | 同上（proot 自己的静态 ELF 载入器） | 18,136 / `1da54355333cca3f` |
 | `libtalloc.so.2` | `libnmoi_talloc.so` | 2.5.0 | **LGPL-3.0** | 包 `libtalloc_2.5.0_aarch64.deb`；上游 <https://www.samba.org/ftp/talloc/> | 33,592 / `742b438c4d09e276` |
 | `libandroid-shmem.so` | `libandroid-shmem.so`（**原名不动**） | 0.7 | **BSD-3-Clause** | 包 `libandroid-shmem_0.7_aarch64.deb`；上游 <https://github.com/termux/libandroid-shmem> | 14,432 / `84475798e07c8174` |
 
@@ -158,9 +159,11 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
   ——GPL-2.0-only 与 LGPL-3.0 不能组合，**GPL-3.0 可以**，所以"or later"这一条必须保留在声明里。
   （Termux 自己的 `TERMUX_PKG_LICENSE` 把 libtalloc 记成 `GPL-3.0`，而上游 2.5.0 的 `LICENSE`
   是 LGPL-3.0 全文；两种记法在本项目下都兼容，这里按上游那份记。）
-- **只跑本机架构**：deb 里另有 `libexec/proot/loader` / `loader32`（QEMU 跑外来架构二进制时才用），
-  **没有进包**——我们只跑 arm64 rootfs，不给跨架构执行留口子。**推断**：不装它不影响原生 arm64 运行，
-  真机上如果报 `the loader was not found or doesn't work`，那是有人拿它跑了别的架构，不是装坏了。
+- **loader 是必需品**（D169，推翻了 D164 里"只有 -q 才用"的推断）：容器里的 `/bin/sh` 是
+  ELF，`PT_INTERP` 写着 `/lib/ld-linux-aarch64.so.1`——**那是容器里的路径**，内核在宿主机上
+  看不到，必须由 proot 自带的静态 loader 把「二进制 + 解释器」一起映射。真机实证：不装它时
+  `proot error: execve("/usr/bin/sh"): No such file or directory`；装上并用 `PROOT_LOADER`
+  指过去之后正常。`loader32` 仍然不带（arm64 rootfs 里没有 32 位 ELF）。
 
 **rootfs 不在这个包里**：Ubuntu Base 26.04.1 LTS arm64（33.4 MB）由用户在安装页触发下载，
 许可随镜像里各个软件包自己的 `copyright` 走，装好之后在容器内 `/usr/share/doc/*/copyright` 可读。

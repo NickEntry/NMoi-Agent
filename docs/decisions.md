@@ -3642,3 +3642,30 @@ Cannot run program "/data/user/0/com.nmoi.agent/files/envir/bin/proot"
   + `anthropic-version: 2023-06-01`）、Gemini `models[].name`（去掉 `models/` 前缀，钥匙走 `?key=`）。
 - **日志只打 `host + path`**：Gemini 的钥匙在 query 里，一律抹掉（`ModelCatalog.safeUrl`）。
 - 只读：拉取不改库，改配置仍然只由「保存」那一下完成。
+
+### D169 proot 的 `loader` 是必需品（D164 的推断被真机推翻）
+
+D164 当时判断"`libexec/proot/loader` 只有 `-q` 跑外来架构才用，不打包"，D166 照这个判断只带了
+proot + 两个 .so。真机上 `proot --version` 通过（107 ms），但「进容器」报：
+
+```
+proot error: execve("/usr/bin/sh"): No such file or directory
+proot info: possible causes:
+  * the program is a script but its interpreter (eg. /bin/sh) was not found;
+  * the program is an ELF but its interpreter (eg. ld-linux.so) was not found;
+  ...
+  * the loader was not found or doesn't work.
+```
+
+**原因**：容器里的 `/bin/sh` 是 ELF，`PT_INTERP` 写的是 `/lib/ld-linux-aarch64.so.1`——
+**容器里的路径**。`execve` 之后内核按**宿主根**去找这个解释器，手机上当然没有，于是 ENOENT。
+proot 的解法就是它自己那个**静态** loader（18,136 字节，无 `PT_INTERP`）：由它把「tracee 二进制 +
+容器里的解释器」一起 mmap 起来再跳。少了这一步，任何动态链接的 guest 程序都起不来。
+
+**改法**：`loader` 也进 `jniLibs-prebuilt/arm64-v8a/libnmoi_proot_loader.so`
+（sha256 前 16 = `1da54355333cca3f`），运行时给 `PROOT_LOADER=<nativeLibraryDir>/libnmoi_proot_loader.so`。
+proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/proot/loader`（我们包里没有），
+所以这个环境变量**必须给**，不是可选项。`loader32` 仍然不带：arm64 rootfs 里没有 32 位 ELF。
+
+**教训**：`--version` 能跑只能证明"三件套能被链接器拉起来"，**证明不了容器能起进程**。
+自检那两条命令要分开看：第一条过了、第二条没过，问题就在 guest 一侧（解释器/loader/rootfs 完整性）。

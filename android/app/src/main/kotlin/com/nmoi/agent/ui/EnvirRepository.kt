@@ -63,6 +63,11 @@ internal object EnvirRepository {
      */
     val Runtime = listOf(
         RuntimeFile(packaged = "libnmoi_proot.so", label = "proot", version = "5.1.107.101"),
+        // **loader 是必需品，不是可选项**（D169）。proot 起 tracee 的时候，PT_INTERP 里写的是
+        // `/lib/ld-linux-aarch64.so.1` —— 那是**容器里**的路径，内核在宿主上看不到它，
+        // 于是必须由 proot 自己的静态 loader 把「二进制 + 解释器」一起映射起来。
+        // 少了它：`proot error: execve("/usr/bin/sh"): No such file or directory`。
+        RuntimeFile(packaged = "libnmoi_proot_loader.so", label = "loader", version = "5.1.107.101"),
         RuntimeFile(packaged = "libnmoi_talloc.so", label = "libtalloc.so.2", version = "2.5.0"),
         RuntimeFile(packaged = "libandroid-shmem.so", label = "libandroid-shmem.so", version = "0.7"),
     )
@@ -377,6 +382,9 @@ internal object EnvirRepository {
             //   LD_PRELOAD      → 让带 SONAME 的 libtalloc.so.2 先被加载，proot 的 NEEDED 凭 SONAME 认它。
             builder.environment()["LD_LIBRARY_PATH"] = libs.absolutePath
             builder.environment()["LD_PRELOAD"] = File(libs, "libnmoi_talloc.so").absolutePath
+            // proot 默认去 termux 的路径找 loader（编译进去的），我们包里没有那个目录，
+            // 所以必须用 `PROOT_LOADER` 指到 nativeLibraryDir 里那一份（D169）。
+            builder.environment()["PROOT_LOADER"] = File(libs, "libnmoi_proot_loader.so").absolutePath
             builder.environment()["PROOT_TMP_DIR"] = tmp.absolutePath
             builder.environment()["PROOT_NO_SECCOMP"] = "1"
             val started = System.currentTimeMillis()

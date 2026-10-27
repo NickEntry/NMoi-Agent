@@ -195,16 +195,16 @@ jobs:
           set -euo pipefail
           apk=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
           unzip -l "$apk" | grep -E 'lib/arm64-v8a/' || true
-          # 三件必须躺在 lib/arm64-v8a/ 里（原生库目录，安装时被解到可执行的位置），
+          # 四件必须躺在 lib/arm64-v8a/ 里（原生库目录，安装时被解到可执行的位置），
           # 不是 assets：Android 10 起 App 私有目录不许 exec，assets 那条路真机上是 error=13。
           # 大小一起对账——"名字对、内容是 0 字节"是最容易漏过去的坏法。
-          for pair in "libnmoi_proot.so:259784" "libnmoi_talloc.so:33592" "libandroid-shmem.so:14432"; do
+          for pair in "libnmoi_proot.so:259784" "libnmoi_proot_loader.so:18136" "libnmoi_talloc.so:33592" "libandroid-shmem.so:14432"; do
             want=${pair%%:*}; size=${pair##*:}
             got=$(unzip -l "$apk" | awk -v w="lib/arm64-v8a/$want" '$NF == w { print $1 }')
             [ "$got" = "$size" ] \
               || { echo "lib/arm64-v8a/$want 大小是 ${got:-缺失}，应为 $size（D165 / D166）" >&2; exit 1; }
           done
-          echo "隔离环境运行时三件齐全 ✓"
+          echo "隔离环境运行时四件齐全 ✓"
 
       - uses: actions/upload-artifact@v4
         with:

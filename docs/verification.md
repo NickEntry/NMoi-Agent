@@ -718,9 +718,10 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
 **运行时不再复制**（D166）：proot 与两个 .so 随 APK 装在 `nativeLibraryDir` 里
 （`lib/arm64-v8a/libnmoi_proot.so` 等），所以进这一页时三行就已经有字节数了。
 
-1. 设置 → 工具与工作区 → 最下面「隔离环境」→ 状态卡：三行运行时分别是
-   `proot · 5.1.107.101 · 259784 字节`、`libtalloc.so.2 · 2.5.0 · 33592 字节`、
-   `libandroid-shmem.so · 0.7 · 14432 字节`。少了哪一行就是那个 APK 没打全（CI 有道闸卡这个）。
+1. 设置 → 工具与工作区 → 最下面「隔离环境」→ 状态卡：四行运行时分别是
+   `proot · 5.1.107.101 · 259784 字节`、`loader · 5.1.107.101 · 18136 字节`、
+   `libtalloc.so.2 · 2.5.0 · 33592 字节`、`libandroid-shmem.so · 0.7 · 14432 字节`。
+   少了哪一行就是那个 APK 没打全（CI 有道闸卡这个）。
 2. 点「安装」：进度条 + "下载 rootfs x.x MB / 33.4 MB（nn%）" → "解包中… 已处理 N 条"（在涨）
    → "收尾…" → "装好了"。
 3. 装完的状态卡：`Ubuntu Base 26.04.1 LTS`、`/data/user/…/files/envir/ubuntu`、
@@ -733,6 +734,9 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
      `nativeLibraryDir` 是空的（看第 1 条那三行字节数是不是"这个 APK 里没有"）。
    - `library "libtalloc.so.2" not found` → `LD_PRELOAD` 那段没进去（日志 `logcat -s Envir` 打的是完整命令与环境）。
    - `library "libandroid-shmem.so" not found` → `LD_LIBRARY_PATH` 没指到 lib 目录。
+   - `execve("/usr/bin/sh"): No such file or directory` 并且 causes 里有
+     "the loader was not found or doesn't work" → `PROOT_LOADER` 没指到
+     `libnmoi_proot_loader.so`（D169）；这一条**只在「进容器」出现**，`--version` 是过的。
 5. 点「进容器」。**判据**：退出码 0，三行 + `---` + **手机的内核版本**（"容器里没有内核"，不是 bug）
    + `---` + 一个数字（`/usr/bin` 的条目数）。
    失败对照：`can't chdir to "/root"` → rootfs 没解全（回第 3 条看文件数）；
