@@ -736,18 +736,9 @@ fn map_io_error(error: io::Error, what: &str) -> TransportError {
 /// 这里用一个**跨平台都能跑**的实现把这句话兑现：证书用内置根（webpki-roots），
 /// 不依赖系统证书库，所以行为在三端一致。
 #[cfg(feature = "tls")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HttpsTransport {
     pub plain: PlainHttpTransport,
-}
-
-#[cfg(feature = "tls")]
-impl Default for HttpsTransport {
-    fn default() -> Self {
-        Self {
-            plain: PlainHttpTransport::default(),
-        }
-    }
 }
 
 #[cfg(feature = "tls")]
@@ -951,7 +942,6 @@ mod tests {
         assert!(error.to_string().contains("short"), "{error}");
     }
 
-    #[test]
     /// https 现在**走 TLS**，不再回 `Unsupported`（D161）。
     ///
     /// 连 127.0.0.1 的关端口：握手之前就失败，所以这条测试不碰外网，
@@ -972,6 +962,7 @@ mod tests {
         assert!(matches!(error, TransportError::Connect { .. }));
     }
 
+    #[test]
     fn https_is_refused_with_a_pointer_instead_of_silently_failing() {
         let transport = PlainHttpTransport::default();
         let error = transport
