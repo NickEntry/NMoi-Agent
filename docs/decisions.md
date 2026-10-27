@@ -3515,3 +3515,17 @@ Android 10+ 还有 seccomp 过滤，这也是 termux 维护自己 fork 的原因
 `java.util.zip.GZIPInputStream` + 一个最小 tar 读取器，不引依赖）→
 `WorkSpace-EnvirShell` 工具（`proot -0 -r <rootfs> -b /dev -b /proc -b /sys -w /root /bin/sh -c <cmd>`，
 超时/输出上限跟 `System-Shell` 共用同一份实现）。
+
+### D164 修正（实现时撞上的）：`.deb` 不能在运行时解
+
+原计划"运行时下载 termux 的 `.deb` 再解开"。动手时撞到一件事：`.deb` 里是
+`data.tar.xz`，**XZ 没有 JDK 自带实现**（`GZIPInputStream` 能解 gz，解不了 xz），
+要用就得引 `org.tukaani:xz` 或者自己写 XZ 解码器——两条都不划算，而且这条路只是为了
+拿三个文件。
+
+**改成**：三件二进制（`proot`、`libtalloc.so.2`、`libandroid-shmem.so`）**打进 assets**，
+安装时复制到 `filesDir/envir/bin/` 并 `chmod +x`；rootfs 仍然运行时下载（`tar.gz`，不需要 xz）。
+
+代价与义务：我们从"取用者"变成"再分发者"，所以 GPLv2 §3 的义务要自己履行——
+`LICENSES/GPL-2.0.txt` 进包、notice 里写明版本（proot 5.1.107.101）、上游仓库、
+我们未修改，以及可获取源码的位置。这件事下一轮随二进制一起提交。
