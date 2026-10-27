@@ -419,7 +419,8 @@ mod tests {
         );
         let text = outcome.text();
         let value: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["stdout"], json!("x"));
+        // Windows 的换行是 \r\n：断言的是"内容对不对"，不是"行尾是不是 LF"。
+        assert_eq!(value["stdout"].as_str().unwrap().trim(), "x");
     }
 
     #[test]
@@ -434,7 +435,11 @@ mod tests {
         let value: Value = serde_json::from_str(&outcome.text()).unwrap();
         assert_eq!(value["timed_out"], json!(true));
         // 被信号杀掉时没有退出码；写成 0 会被当成成功。
+        // Windows 上强杀 powershell 会得到 1（不是信号），所以那边只要求"不是 0"。
+        #[cfg(unix)]
         assert_eq!(value["exit_code"], Value::Null);
+        #[cfg(windows)]
+        assert_ne!(value["exit_code"], json!(0));
     }
 
     #[test]
