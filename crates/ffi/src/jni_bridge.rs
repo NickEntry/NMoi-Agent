@@ -608,3 +608,56 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_editVersionJson<'loca
     });
     to_jstring(&mut env, result)
 }
+
+// ---------------------------------------------------------------------------
+// 发请求：一轮会话（D157 之后 UI 真的能发了）
+// ---------------------------------------------------------------------------
+
+/// `NativeBridge.turnRunJson(config)`：跑一轮会话。**阻塞**，必须在 IO 线程上调。
+///
+/// 这一层只搬字符串，不碰字段：字段名与校验都在 `crate::turn::parse_config` 里，
+/// 在 Kotlin 那边再拼一遍就会有两份口径，迟早对不上。
+///
+/// config 的字段（一个 JSON 对象）：
+/// `storage`（open 拿到的句柄）/ `session` / `provider{id,kind,base_url,api_key}` /
+/// `model` / `user_text` / `now_ms` / 可选 `max_tokens` / `temperature` / `max_rounds`。
+///
+/// 返回 `turn_json` 的信封；失败是 `ok:false` 的 JSON（kind 有 `turn` / `busy` /
+/// `compaction_required` / `storage` / `bad_argument`）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnRunJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::turn::nmoi_turn_run_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.turnCancelJson(session)`：给正在跑的那一轮置取消标志。
+///
+/// 没在跑就是空操作（`{"cancelled":false,"running":false}`），不是错误——
+/// 用户点"停止"晚了一拍不该看到一条红色报错。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnCancelJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => match c_string(session, "session") {
+            Ok(c_session) => take_json(crate::turn::nmoi_turn_cancel_json(c_session.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

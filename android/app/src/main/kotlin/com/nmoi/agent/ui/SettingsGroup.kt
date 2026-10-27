@@ -33,9 +33,12 @@ internal fun pendingRows(group: SettingsGroup): List<PendingRow> = when (group) 
     )
 
     SettingsGroup.Models -> listOf(
-        // 「供应商与密钥」已经接上了（D156 的模型服务页），从这里删掉，
-        // 别留一行"待接"跟真入口并排摆着。
-        PendingRow("模型列表", "按供应商分组；每行带上下文窗口与能力位", "待接 P3"),
+        // 「供应商与密钥」已经接上了（D156 单条 → D157 多套 + 模型表）。
+        PendingRow(
+            "模型能力位",
+            "上下文窗口 / 定价 / 输入输出模态：引擎现在还没有读它们的地方，先不存",
+            "待接 P3",
+        ),
     )
 
     SettingsGroup.Tools -> listOf(

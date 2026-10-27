@@ -63,6 +63,19 @@ internal object NativeBridge {
     /** 存一句话为消息（不发模型）。这是接入 `turn_run` 之前唯一的写入口。 */
     external fun appendTextJson(handle: Long, session: String, role: String, text: String, nowMs: Long): String
 
+    /**
+     * 跑一轮会话：**真的发请求**（D157 之后 UI 才接到这条）。
+     *
+     * 阻塞到模型收尾或轮数用尽，所以只能在 IO 线程上调（[NmoiFfi] 已经这么做了）。
+     * 参数是一个 JSON 对象，字段名见 `crates/ffi/src/turn.rs` 的 `parse_config`：
+     * `storage` / `session` / `provider{id,kind,base_url,api_key}` / `model` /
+     * `user_text` / `now_ms`，可选 `max_tokens` / `temperature` / `max_rounds`。
+     */
+    external fun turnRunJson(config: String): String
+
+    /** 给正在跑的那一轮置取消标志。没在跑返回 `cancelled:false`，不是错误。 */
+    external fun turnCancelJson(session: String): String
+
     // 设置面（D86）：四个动词、scope 当参数传——core 那边就是这么切的，
     // 客户端不再按 scope 各包一个函数（加第五类时两边必然对不上）。
     // 这一层只负责搬字符串，语义包装在 `NmoiFfi`。

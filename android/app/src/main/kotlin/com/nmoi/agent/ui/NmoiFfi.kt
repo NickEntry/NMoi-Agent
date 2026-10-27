@@ -113,6 +113,19 @@ internal object NmoiFfi {
     suspend fun deleteMessage(handle: Long, message: String): Result<JSONObject> =
         call("delete_message") { NativeBridge.deleteMessageJson(handle, message) }
 
+    /**
+     * 跑一轮会话：真发请求、落库、回 `turn_json`（D157）。
+     *
+     * `call` 已经把整段放在 `Dispatchers.IO` 上——这一条会阻塞到模型收尾，
+     * 放主线程就是 ANR。**取消**走 [turnCancel]，不是靠丢线程。
+     */
+    suspend fun turnRun(config: JSONObject): Result<JSONObject> =
+        call("turn_run") { NativeBridge.turnRunJson(config.toString()) }
+
+    /** 请求取消正在跑的那一轮。没在跑不算失败（`cancelled:false`）。 */
+    suspend fun turnCancel(session: String): Result<JSONObject> =
+        call("turn_cancel") { NativeBridge.turnCancelJson(session) }
+
     /** 删一版（`versionNo` 从 1 起；删整条消息走 [deleteMessage]）。 */
     suspend fun deleteVersion(
         handle: Long,

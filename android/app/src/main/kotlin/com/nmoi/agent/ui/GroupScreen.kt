@@ -58,8 +58,8 @@ internal fun GroupScreen(
                 // 真正能进的入口：目前两处。接了新的就从 pendingRows 里删一行、在这里加一个 NavRow。
                 if (group == SettingsGroup.Models) {
                     NavRow(
-                        title = "模型服务",
-                        subtitle = "端点 / 模型 / 供应商类型 / API Key（密钥单独加密存，不进库）",
+                        title = "供应商",
+                        subtitle = "多套端点 / 密钥 / 模型；「当前」那一套用于发请求（密钥单独加密存，不进库）",
                         onClick = onOpenProvider,
                     )
                     NavRow(

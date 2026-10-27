@@ -27,7 +27,8 @@ import com.nmoi.agent.ui.LogListScreen
 import com.nmoi.agent.ui.LogSettingsScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
-import com.nmoi.agent.ui.ProviderScreen
+import com.nmoi.agent.ui.ProviderEditScreen
+import com.nmoi.agent.ui.ProviderListScreen
 import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
@@ -59,7 +60,11 @@ private sealed interface Route {
     data class SettingsGroupRoute(val group: SettingsGroup) : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
+    /** 供应商列表（D157）。编辑页、模型表都从这一页 push 进去。 */
     data object Provider : Route
+
+    /** 供应商编辑页。`id == null` = 新建（页面自己先定下 id，保存两次也只会有一份）。 */
+    data class ProviderEdit(val id: String?) : Route
 
     data object Prompts : Route
 
@@ -185,8 +190,17 @@ class MainActivity : ComponentActivity() {
                             },
                         )
 
-                        Route.Provider -> ProviderScreen(
+                        Route.Provider -> ProviderListScreen(
                             onBack = { backStack = backStack.dropLast(1) },
+                            onCreate = { backStack = backStack + Route.ProviderEdit(null) },
+                            onOpen = { id -> backStack = backStack + Route.ProviderEdit(id) },
+                        )
+
+                        is Route.ProviderEdit -> ProviderEditScreen(
+                            providerId = route.id,
+                            onBack = { backStack = backStack.dropLast(1) },
+                            // 删掉了就退回列表：留在编辑页会编辑一份已经不存在的配置。
+                            onDeleted = { backStack = backStack.dropLast(1) },
                         )
 
                         Route.Prompts -> PromptsScreen(

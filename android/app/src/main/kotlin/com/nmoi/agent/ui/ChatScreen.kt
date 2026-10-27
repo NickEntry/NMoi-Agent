@@ -104,6 +104,9 @@ internal fun ChatScreen(
     var reloadKey by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // 正在跑的那一轮挂在哪个会话上——点"停止"要的就是这个 id。
+    // 单独存一份而不是直接读 `sessionId`：跑的过程中用户可能切了会话。
+    var runningSession by remember { mutableStateOf<String?>(null) }
     // 选择模式：长按任意一条进入，点别的消息加选，顶部条上复制 / 分享。
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<String>()) }
@@ -336,13 +339,13 @@ internal fun ChatScreen(
         }
     }
 
-    // 存一条：`role` 是 core 的词（`user` / `assistant`）。
+    // 只落库、不请求（长按 ↑ 的那两项，PLAN §3.12）：语义是"先记下来、晚点再发"。
     // 会话不存在就先建——建失败要说原因，不能静默丢掉用户刚打的字。
-    val submit: (String) -> Unit = { role ->
+    val appendOnly: (String) -> Unit = { role ->
         val text = draft.trim()
         when {
             text.isEmpty() -> notice = "先写点什么"
-            busy -> notice = "上一条还在存"
+            busy -> notice = "上一轮还没结束（要打断就先点停止）"
             else -> scope.launch {
                 busy = true
                 val sid = sessionId ?: onCreateSession()
@@ -353,12 +356,61 @@ internal fun ChatScreen(
                         onSuccess = {
                             draft = ""
                             reloadKey += 1
-                            notice = if (role == "user") "已存为用户消息" else "已存为助手消息"
+                            notice = if (role == "user") {
+                                "已存为用户消息（没发给模型）"
+                            } else {
+                                "已存为助手消息（没发给模型）"
+                            }
                         },
                         onFailure = { notice = "存失败：${it.message}" },
                     )
                 }
                 busy = false
+            }
+        }
+    }
+
+    // 真的发一轮（D157）：用户那句话由 `run_session_turn` 在发之前就落库了，
+    // 所以失败也要重读一次界面——[TurnRepository.wasUserTextSaved] 判它到底存没存。
+    val sendTurn: () -> Unit = {
+        val text = draft.trim()
+        when {
+            text.isEmpty() -> notice = "先写点什么"
+            busy -> notice = "上一轮还没结束（要打断就先点停止）"
+            else -> scope.launch {
+                busy = true
+                notice = "正在请求模型…"
+                val sid = sessionId ?: onCreateSession()
+                if (sid == null) {
+                    notice = "建会话失败：原因在 设置 → 调试 → 日志"
+                    busy = false
+                } else {
+                    runningSession = sid
+                    val result = TurnRepository.send(context, databasePath, sid, text)
+                    runningSession = null
+                    busy = false
+                    result.fold(
+                        onSuccess = { outcome ->
+                            draft = ""
+                            reloadKey += 1
+                            notice = outcome.describe()
+                        },
+                        onFailure = { error ->
+                            // 请求可能死在半路，但用户那句话**已经进库了**——这是
+                            // `run_session_turn` 的第一步。所以先重读，再决定草稿留不留。
+                            reloadKey += 1
+                            val saved = withContext(Dispatchers.IO) {
+                                TurnRepository.wasUserTextSaved(databasePath, sid, text)
+                            }
+                            if (saved) draft = ""
+                            notice = buildString {
+                                append("请求失败：")
+                                append(error.message)
+                                append(if (saved) "（你这句话已经存进库里了）" else "（这句话没存进去）")
+                            }
+                        },
+                    )
+                }
             }
         }
     }
@@ -448,9 +500,28 @@ internal fun ChatScreen(
                     unsaved = sessionId == null,
                     onHint = { notice = it },
                     onEditTextReady = { editTextRef.value = it },
-                    onSend = { submit("user") },
-                    onSaveAssistant = { submit("assistant") },
-                    onSaveUser = { submit("user") },
+                    onSend = sendTurn,
+                    onStop = {
+                        val running = runningSession
+                        if (running == null) {
+                            notice = "这一轮已经收尾了"
+                        } else {
+                            scope.launch {
+                                TurnRepository.cancel(running).fold(
+                                    onSuccess = { cancelled ->
+                                        notice = if (cancelled) {
+                                            "已请求停止：当前这一次请求回来之后就不再往下走了"
+                                        } else {
+                                            "这一轮已经收尾了"
+                                        }
+                                    },
+                                    onFailure = { notice = "取消失败：${it.message}" },
+                                )
+                            }
+                        }
+                    },
+                    onSaveAssistant = { appendOnly("assistant") },
+                    onSaveUser = { appendOnly("user") },
                 )
             } else {
                 // 选择模式下藏起输入区，但留 10dp 底边，免得最后一条消息贴住屏幕边缘。
@@ -1755,6 +1826,7 @@ private fun Composer(
     onHint: (String) -> Unit,
     onEditTextReady: (EditText) -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     onSaveAssistant: () -> Unit,
     onSaveUser: () -> Unit,
 ) {
@@ -1832,6 +1904,7 @@ private fun Composer(
                         enabled = canSend && draft.isNotBlank(),
                         busy = busy,
                         onSend = onSend,
+                        onStop = onStop,
                         onSaveAssistant = onSaveAssistant,
                         onSaveUser = onSaveUser,
                     )
@@ -1841,9 +1914,10 @@ private fun Composer(
 
         Text(
             text = if (unsaved) {
-                "这是还没落库的新会话：第一条消息存下去时才建会话。"
+                "这是还没落库的新会话：第一条消息发出去时才建会话。"
             } else {
-                "发送还没接：点 ↑ 只是把话存进库里，不请求模型；长按 ↑ 可以选「仅保存为助手/用户消息」。"
+                "点 ↑ 发请求；生成中再点一下是停止（停在这一次请求回来之后）。" +
+                    "长按 ↑ 可以只保存、不发送。"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1856,22 +1930,22 @@ private fun Composer(
  * 发送 / 停止：**同一个按钮换形态**（PLAN §3.12）。
  *
  * - 空闲：↑，草稿非空才亮；
- * - 生成中：方块。现在没有可生成的东西，`busy` 只覆盖"正在写库"那一瞬间，
- *   所以停止态是**灰的**——`turn_run` 接上之后它才真有东西可停。
+ * - 生成中：方块，点它 = 取消（`turn_cancel`，在下一个回合边界断开，D58 那条代价）；
  * - **长按出菜单**（用户 2026-10-21 定的）：仅保存为助手消息 / 仅保存为用户消息。
- *   这两项走 `append_text`，现在就能用；语义是"先记下来、晚点再发"，不是发给模型。
+ *   这两项走 `append_text`，语义是"先记下来、晚点再发"，**不发请求**。
  */
 @Composable
 private fun SendStopButton(
     enabled: Boolean,
     busy: Boolean,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     onSaveAssistant: () -> Unit,
     onSaveUser: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val active = enabled && !busy
-    val background = if (active) {
+    val background = if (active || busy) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f)
@@ -1883,7 +1957,12 @@ private fun SendStopButton(
                 .size(44.dp)
                 .pointerInput(active, busy) {
                     detectTapGestures(
-                        onTap = { if (active) onSend() },
+                        onTap = {
+                            when {
+                                busy -> onStop()
+                                active -> onSend()
+                            }
+                        },
                         onLongPress = { if (!busy) menuOpen = true },
                     )
                 },
@@ -1893,7 +1972,7 @@ private fun SendStopButton(
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (busy) ActionIcons.Square else ActionIcons.ArrowUp,
-                        contentDescription = if (busy) "停止（待接 turn_run）" else "发送",
+                        contentDescription = if (busy) "停止" else "发送",
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(18.dp),
                     )

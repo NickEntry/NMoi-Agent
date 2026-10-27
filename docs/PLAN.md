@@ -6,7 +6,11 @@
 
 - 上游设计：`docs/design/context-modes-design-v1.1.md`、`docs/design/platform-client-plan.md`、`docs/design/context-experiments-report.md`
 - 决策记录：`docs/decisions.md`（D1–D9 来自计划文档，D10 起是本仓库新增）
-- 最近更新：2026-10-24（0.14g **已实现、待真机验证**：助手去气泡 + 头像/名字/时间 + 动作行、长按选择消息、自研 Markdown 渲染，D129–D131；同轮 0.14e/0.14f：聊天页升主页 D125、气泡照 M3 D126；
+- 最近更新：2026-10-27（**一步到位那一轮**：0.14j 供应商多套 + 模型表（D157）、
+  0.14k `turn_run` 接进聊天页 —— `↑` 真的发请求、生成中同一按钮变停止。两件都是
+  **已实现、待真机验证**（Kotlin 只能在 CI 里编）；同轮：文档同步 `docs/decisions.md` D157、
+  `docs/ui/structure.md` 供应商三页、`docs/verification.md` V9）
+- 上一轮：2026-10-24（0.14g **已实现、待真机验证**：助手去气泡 + 头像/名字/时间 + 动作行、长按选择消息、自研 Markdown 渲染，D129–D131；同轮 0.14e/0.14f：聊天页升主页 D125、气泡照 M3 D126；
   同轮：M3 的许可义务（`LICENSES/Apache-2.0.txt` + 声明 §3 + CI 闸，D127）、
   应用内「关于 → 开源许可」页 + 自己的 GPL 全文进包 + 闸改精确比对（D128））
 - 同轮（2026-10-26）：**压缩后窗口的最小形状** —— 人格/文风连续性怎么保（D143、§3.4.2）；结构 + 两模型行为都已实测（口癖率 / 思考要点命中 / 思考膨胀倍数）；另量了四本真实世界书的占用预算（D144）；侧面验证方法定在“文件口吻率”（D145）；**core 已落地**：`choose_cut_for_window_shape` + `compress::excerpt`，504 项测试；**目标改写**：让 AI 觉得此前对话是它自己说的（归属感，不是措辞相似）；返回键分层（D146）
@@ -1249,6 +1253,8 @@ L0 的 `estimate_tokens` 保留原样给流式与兜底。**接线已完成**（
 | 0.14f | **气泡照 Material 3**（D126） | **已实现（待真机验证）**：用户 `primaryContainer` 右、圆角 16、无尾巴；`widthIn(max = 屏宽 × 0.78)` 按内容收放；同角色 4dp / 异角色 12dp；时间 `labelSmall`；`createdAt == 0` 时不显示 | `ui/ChatScreen.kt`；D126 |
 | 0.14h | **消息动作与分享**（D132 / D133 / D134） | **已实现（待真机验证）**：时间改成毫秒 + 跟系统 12/24 小时制（真机上出现过 `+58782-03-11`）；助手侧缩到 26+8、思考/工具卡放开到整行；动作行固定四图标（复制真做，刷新 / TTS / 翻译灰）；「更多」按序：编辑 / 增强编辑（待接）/ 用工具改这一版（临时探针）/ 分享 / 选择消息 / 复制为新版本（临时探针）/ 创建分支（待接）/ 删除此版本（多版才出现）/ 删除这条消息（含所有版本）（**总在**，D152/D153）；分享底部两排（思考调用 / 详细信息 + MD / 图片（灰）），MD 走 `ACTION_SEND` | `ui/ChatScreen.kt`、`ui/ConversationRepository.kt`；D132–D134、D153 |
 | 0.14i | **消息版本**（D135 / D137，**存储形态已由 D152–D154 取代**） | **已实现（待真机验证）**：schema v8——一版只有两份正文 `origin_message` / `tooledit_message`，`active_view` 记上次看哪一组；v6 的 `user_text` 覆盖层在 v7 已删。storage：save_generated_version / mark_version_edited / user_edit_version（就地改当前那份）/ list_message_versions（多返回 `shown`）/ switch_message_version / delete_message_version / delete_message（整单元）；测试 19+4 条。FFI：versions / switch_version / delete_version / delete_message / save_version / edit_version。界面：`< n/n >` 只在有 tooledit 或多版时出现，蓝=看原文、红=看改后；编辑预填与复制都取现读的 `shown`；删除先确认、按单元删。`turn_run` 接上后删掉两个临时探针 | D135、D137、D150–D154 |
+| 0.14j | **供应商多套 + 模型表**（D157） | **已实现（待真机验证）**：`settings(provider, <id>)` 一份一个供应商（`name` / `kind` / `base_url` / `models[]` / `active_model`），当前那套存 `settings(provider,"active")`；密钥分文件 `vault/provider-<id>.bin`（`id=default` 沿用 `provider.bin`，老配置不用重填）。老形状读取时就地解释，不做迁移。界面：列表（搜索 + 首字圆标 + 「当前」标记）→ 编辑（页签 配置/模型；配置 = 名称/类型/Base URL/密钥打码 + 显隐/保存/设为当前；模型 = 点行设为当前、铅笔改、＋添加，只存 `max_tokens` 与 `temperature`）。没有"是否启用"开关——`active` 是唯一答案 | `ui/{ProviderScreens,ProviderRepository,Vault}.kt`、`MainActivity.kt`；D157 |
+| 0.14k | **`turn_run` 接进聊天页**（D157） | **已实现（待真机验证）**：`↑` 真的发请求（`JNI turnRunJson` ← `NmoiFfi.turnRun` ← `TurnRepository.send`），按"现读当前供应商 + 现解钥匙"组请求；成功后落库刷新，提示行写字数/轮数/工具次数；**失败也重读**（用户那句话在发之前就落库了），并现读库判断草稿清不清；生成中同一按钮变方块 = `turn_cancel`（停在回合边界）；长按 ↑ 仍是"只保存不发送"（走 `append_text`）。临时探针「复制为新版本」「用工具改这一版」保留，等增强编辑接上再删 | `ui/{ChatScreen,TurnRepository,NmoiFfi,NativeBridge}.kt`、`crates/ffi/src/jni_bridge.rs`；D157 |
 | 0.14g | **消息区按截图重定**（D129 / D130 / D131） | **已实现（待真机验证）**：① 助手消息**去气泡**——头像 28dp + 名字 + 时间 + Markdown 正文，思考/工具/断块仍是卡片（左缩进 38dp）；② 用户消息：名字+时间+头像一行、气泡、下面一排动作（复制真做；重新生成/编辑灰着等 `turn_run` / `edit`）；③ **长按 = 选择模式**：选择条（取消 / 已选 N / 复制 / 删除灰）、点选加减、复制按 `seq` 拼进剪贴板、选择时藏输入区、返回键先退选择、换会话清零；④ `ui/Markdown.kt` 自研最小渲染器（标题/围栏代码/列表/引用/分隔线/段落 + 行内粗斜体删除线行内代码链接上色），不引库；表格/嵌套/图片原样显示 | `ui/{ChatScreen,Markdown,ActionIcons,Controls}.kt`；D129–D131 |
 | 0.14c | ~~**主题三态 + 外观子页接线**（D120）~~ **已完成**：`NMoiTheme(dark)` 两套 token（深/浅各自的背景、卡片、正文色，正文不用纯白）、`ThemeMode` + `ThemeStore`、跟随系统走 `isSystemInDarkTheme()`；冷启动窗口底色按主题选（`values-night` + `onCreate` 里改 window 背景），避免闪一帧；外观子页加「主题 / 聊天页背景 / 自定义主题」三节（后两节灰行 + 三色预览位）；输入框文字色改成跟主题取；**系统栏图标跟着主题反色**（`WindowCompat`，浅色下图标变深，真机上踩过白图标白底）；显式声明 `androidx.core:core-ktx` | 深色只有一套的时候，"黑白可切"是个空话；而自定义主题要等新 scope，先留位不挡路 |
 | 0.14d | **聊天页背景**（D122–D124，`docs/ui/appearance.md`）：纯色 / 图片 / 视频，**按助手归属**；`MediaCodec`+`MediaMuxer` 入库转码（≤720p / 30fps / 2Mbps / I 帧 1s / 无音轨）；不可见即停；换种类与启动时回收旧文件 | 视频这条要先把"库存在哪、谁拥有、怎么清"定死，再谈渲染；顺序反了会留下没人清的文件 |
