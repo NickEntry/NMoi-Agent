@@ -546,47 +546,48 @@ internal fun ChatScreen(
                     onSaveUser = { appendOnly("user") },
                 )
 
-                if (modelSheet) {
-                    MenuSheet(
-                        title = "用哪个模型",
-                        items = choices.map { (provider, model) ->
-                            SheetItem(
-                                label = "${provider.name.ifBlank { provider.id }} / ${model.id}",
-                                icon = ActionIcons.Cpu,
-                                hint = null,
-                                onClick = {
-                                    modelSheet = false
-                                    scope.launch {
-                                        val next = assistant.copy(
-                                            providerId = provider.id,
-                                            modelId = model.id,
-                                        )
-                                        AssistantRepository.save(databasePath, next).fold(
-                                            onSuccess = {
-                                                assistant = next
-                                                notice = "这一轮起用 ${model.id}"
-                                            },
-                                            onFailure = { notice = "切换失败：${it.message}" },
-                                        )
-                                    }
-                                },
-                            )
-                        }.ifEmpty {
-                            listOf(
-                                SheetItem(
-                                    label = "还没有可用的模型",
-                                    hint = "先去 设置 → 模型与提示词 → 供应商 里填一套端点与模型",
-                                ),
-                            )
-                        },
-                        onHint = { notice = it },
-                        onDismiss = { modelSheet = false },
-                    )
-                }
             } else {
                 // 选择模式下藏起输入区，但留 10dp 底边，免得最后一条消息贴住屏幕边缘。
                 Spacer(Modifier.heightIn(min = 10.dp))
             }
+        }
+
+        if (modelSheet) {
+            MenuSheet(
+                title = "用哪个模型",
+                items = choices.map { (provider, model) ->
+                    SheetItem(
+                        label = "${provider.name.ifBlank { provider.id }} / ${model.id}",
+                        icon = ActionIcons.Cpu,
+                        hint = null,
+                        onClick = {
+                            modelSheet = false
+                            scope.launch {
+                                val next = assistant.copy(
+                                    providerId = provider.id,
+                                    modelId = model.id,
+                                )
+                                AssistantRepository.save(databasePath, next).fold(
+                                    onSuccess = {
+                                        assistant = next
+                                        notice = "这一轮起用 ${model.id}"
+                                    },
+                                    onFailure = { notice = "切换失败：${it.message}" },
+                                )
+                            }
+                        },
+                    )
+                }.ifEmpty {
+                    listOf(
+                        SheetItem(
+                            label = "还没有可用的模型",
+                            hint = "先去 设置 → 模型与提示词 → 供应商 里填一套端点与模型",
+                        ),
+                    )
+                },
+                onHint = { notice = it },
+                onDismiss = { modelSheet = false },
+            )
         }
 
         if (shareOpen) {

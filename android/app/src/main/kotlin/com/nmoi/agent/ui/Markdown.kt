@@ -198,7 +198,8 @@ internal fun inlineMarkdown(text: String, codeBackground: Color, linkColor: Colo
                 }
 
                 // 公式：原样、等宽、带底。排版引擎还没接，不给它加"看起来渲染过"的样式（D131）。
-                text[i] == '$' && text.indexOf('$', i + 1) > 0 -> {
+                // 只认 `$x$` 这一类：紧挨着一个字符才算，`$5 和 $6` 这种价格不该被当成公式。
+                text[i] == '$' && text.indexOf('$', i + 1) > i + 2 -> {
                     val end = text.indexOf('$', i + 1)
                     withStyle(
                         SpanStyle(
@@ -250,6 +251,9 @@ internal fun inlineMarkdown(text: String, codeBackground: Color, linkColor: Colo
 internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
     val blocks = remember(text) { parseMarkdown(text) }
     val codeBackground = MaterialTheme.colorScheme.surfaceContainer
+    // 行内代码的底色**要淡得多**：块级代码是一整块面，行内只是一两个词。
+    // 用同一个色会变成"荧光笔划在字上"，一换行就是两截色块（2026-10-27 真机看着像鬼画符）。
+    val inlineCodeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
     val linkColor = MaterialTheme.colorScheme.primary
     val inlineColor = MaterialTheme.colorScheme.onSurface
 
@@ -288,7 +292,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                 }
 
                 MdKind.Heading -> Text(
-                    text = inlineMarkdown(block.text, codeBackground, linkColor),
+                    text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
                     style = MaterialTheme.typography.bodyMedium,
                     fontSize = when (block.level) {
                         1 -> 20.sp
@@ -310,7 +314,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.width(14.dp),
                     )
                     Text(
-                        text = inlineMarkdown(block.text, codeBackground, linkColor),
+                        text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 15.sp,
                         lineHeight = 22.sp,
@@ -327,7 +331,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.width(22.dp),
                     )
                     Text(
-                        text = inlineMarkdown(block.text, codeBackground, linkColor),
+                        text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 15.sp,
                         lineHeight = 22.sp,
@@ -346,7 +350,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                             .background(MaterialTheme.colorScheme.outlineVariant),
                     )
                     Text(
-                        text = inlineMarkdown(block.text, codeBackground, linkColor),
+                        text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 15.sp,
                         lineHeight = 22.sp,
@@ -356,7 +360,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                 }
 
                 MdKind.Paragraph -> Text(
-                    text = inlineMarkdown(block.text, codeBackground, linkColor),
+                    text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
                     style = MaterialTheme.typography.bodyMedium,
                     fontSize = 15.sp,
                     lineHeight = 22.sp,
