@@ -34,6 +34,7 @@ pub mod router;
 pub mod runtime;
 pub mod session;
 pub mod settings;
+pub mod shell;
 pub mod skills;
 pub mod source;
 pub mod speech;

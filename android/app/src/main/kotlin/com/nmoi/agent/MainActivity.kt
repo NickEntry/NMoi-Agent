@@ -32,6 +32,7 @@ import com.nmoi.agent.ui.ProviderListScreen
 import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
+import com.nmoi.agent.ui.ToolsScreen
 import com.nmoi.agent.ui.theme.NMoiTheme
 import com.nmoi.agent.ui.theme.SystemBarsForTheme
 import com.nmoi.agent.ui.theme.ThemeStore
@@ -258,6 +259,10 @@ class MainActivity : ComponentActivity() {
                                         iconWarning = "切换没生效，详情看 logcat（tag: NMoiIcon）"
                                     }
                                 },
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+
+                            SettingsGroup.Tools -> ToolsScreen(
                                 onBack = { backStack = backStack.dropLast(1) },
                             )
 

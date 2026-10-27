@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1756,25 +1757,38 @@ private fun ToolPairCard(unit: ChatUnit) {
                     )
                 }
                 if (expanded) {
-                    unit.messages.forEach { message ->
-                        Text(
-                            text = buildString {
-                                append(if (message.isToolResult) "← 结果" else "→ 调用")
-                                val id = message.toolCallId
-                                if (id != null) append(" [$id]")
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                        Text(
-                            text = message.content.ifEmpty { "（空）" },
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            lineHeight = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
+                    // 配对：`call_id` 是唯一能对上"这次调用"和"那条结果"的东西。
+                    // 配不上（断块、被取消的批）就照老样子单独列出来，别假装配上了。
+                    val results = unit.messages
+                        .filter { it.isToolResult }
+                        .associateBy { it.toolCallId.orEmpty() }
+                    val pairs = unit.messages.flatMap { message ->
+                        message.toolArgs.map { arg -> arg to results[arg.callId] }
+                    }
+                    if (pairs.isNotEmpty()) {
+                        pairs.forEach { (arg, result) ->
+                            ToolCallBlock(command = arg, result = result)
+                        }
+                    } else {
+                        unit.messages.forEach { message ->
+                            Text(
+                                text = buildString {
+                                    append(if (message.isToolResult) "← 结果" else "→ 调用")
+                                    message.toolCallId?.let { append(" [$it]") }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                            Text(
+                                text = message.content.ifEmpty { "（空）" },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
             }
@@ -2134,5 +2148,169 @@ private fun NativeEditText(
                 editText.setSelection(value.length)
             }
         },
+    )
+}
+/**
+ * 一次工具调用 + 它的结果（D159）。
+ *
+ * 形状照用户给的那张图：**命令**一块、**输出**一块（stdout / stderr 两个页签），
+ * 各带复制。命令是模型传来的 `arguments.command`，输出是结果里那份结构化 JSON。
+ *
+ * 为什么不再"把参数和结果原样铺出来"：一条 `ls -la` 的输出几十行，
+ * 原样铺开之后人根本看不出哪段是命令、哪段是 stdout、哪段是报错。
+ */
+@Composable
+private fun ToolCallBlock(command: ToolCallArg, result: ChatMessage?) {
+    val context = LocalContext.current
+    val payload = result?.content?.let { text ->
+        runCatching { JSONObject(text) }.getOrNull()?.takeIf { it.has("stdout") || it.has("stderr") }
+    }
+    val shown = if (payload != null) {
+        payload.optString("command", "")
+    } else {
+        runCatching { JSONObject(command.arguments).optString("command", "") }.getOrNull().orEmpty()
+    }
+    val label = if (command.name == "System-Shell") "运行命令" else command.name
+    // 用「选过没有」+ 默认页签，而不是在组合过程里改状态：组合里赋值会多走一轮重组。
+    var picked by remember(result?.id) { mutableStateOf<Int?>(null) }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            if (result == null) {
+                Text(
+                    text = "没有结果（这一批里它没跑完）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
+        Text(
+            text = "命令",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        MonoBox(text = shown.ifEmpty { command.arguments })
+        CopyHint(text = shown.ifEmpty { command.arguments }, onCopied = { putClipboard(context, "命令", it) })
+
+        if (payload == null) {
+            if (result != null) {
+                Text(
+                    text = "输出",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                MonoBox(text = result.content.ifEmpty { "（空）" })
+            }
+            return@Column
+        }
+
+        val stdout = payload.optString("stdout", "")
+        val stderr = payload.optString("stderr", "")
+        // 失败时默认停在 stderr：让人第一眼看到的就是报错，而不是一片空白。
+        val failed = (payload.opt("exit_code") as? Number)?.toInt()?.let { it != 0 } ?: true
+        val defaultTab = if (failed && stderr.isNotBlank() && stdout.isBlank()) 1 else 0
+        val tab = picked ?: defaultTab
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "输出",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            val exit = payload.opt("exit_code")
+            Text(
+                text = buildString {
+                    append(if (exit == null || exit == JSONObject.NULL) "被信号终止" else "退出码 $exit")
+                    if (payload.optBoolean("timed_out", false)) append(" · 超时")
+                    if (payload.optBoolean("truncated", false)) append(" · 已截断")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Row(modifier = Modifier.padding(top = 4.dp)) {
+            TabChip("stdout", selected = tab == 0) { picked = 0 }
+            Spacer(Modifier.width(6.dp))
+            TabChip("stderr", selected = tab == 1) { picked = 1 }
+        }
+
+        val body = if (tab == 0) stdout else stderr
+        MonoBox(text = body.ifEmpty { "（无输出）" })
+        CopyHint(text = body, onCopied = { putClipboard(context, if (tab == 0) "stdout" else "stderr", it) })
+    }
+}
+
+@Composable
+private fun TabChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/** 等宽的一块内容。太长就截断显示——**复制复制的是全文**，不是这一屏。 */
+@Composable
+private fun MonoBox(text: String) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    ) {
+        Text(
+            text = if (text.length > 4000) {
+                text.take(4000) + "\n…（还有 ${text.length - 4000} 字，复制能拿到全文）"
+            } else {
+                text
+            },
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun CopyHint(text: String, onCopied: (String) -> Unit) {
+    if (text.isEmpty()) return
+    Text(
+        text = "复制",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .clickable { onCopied(text) }
+            .padding(top = 4.dp, bottom = 2.dp),
     )
 }

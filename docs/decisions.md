@@ -3367,3 +3367,35 @@ D156 只做了"一套端点 + 一把钥匙"。发请求那条路要用哪一套�
   走 `nmoi_workspace_open_json` 绑定，零权限。
 - 容器：proot + Ubuntu 最新发行 rootfs，**首次使用时下载**。下载源两项：
   「Ubuntu」（官方地址）与「自定义」（自定义时输入框才亮）。
+
+## D160 工作区落地 + `System-Shell` + 工具结果卡（D159 的第一段）
+
+**工作区**：`filesDir/workspace`（真实路径 `/data/user/<uid>/com.nmoi.agent/files/workspace`），
+不进 `/sdcard`。Kotlin 先 `mkdirs()` 再 `nmoi_workspace_open_json` 绑；每轮开、轮末关
+（`try/finally`）。绑不上不中断这一轮——文件工具与命令不可用，聊天照旧。
+六件文件工具从这一版起在真机上**真的能跑了**（以前 FFI 那条路从来没传过 workspace 句柄）。
+
+**`System-Shell`**（`crates/core/src/shell.rs`）：
+
+- 只有 `Capability::NativeShell` 门控放行才可能被调到；没有工作区绑定连门都过不去
+  （`check` 回 `no_workspace`）。
+- 平台壳：Unix 是 `/bin/sh -c`（Android 上优先 `/system/bin/sh`），Windows 是
+  `powershell -NoProfile -NonInteractive -Command`。
+- 起进程 `process_group(0)`，超时 `kill(-pgid, SIGKILL)`（**不是**只杀子进程，
+  否则 `sleep 1000 &` 会留在后台）；Windows 用 `taskkill /T /F`。
+- stdout / stderr 各开一个读线程（单读一个会在管道写满时互锁），各封顶 64 KiB，
+  超了继续读但丢弃并在结果里标 `truncated`。
+- 结果 JSON：`command` / `exit_code`（被信号杀是 `null`）/ `stdout` / `stderr` /
+  `truncated` / `timed_out` / `duration_ms`。
+- 默认超时 30 s，上限 300 s；`cwd` 只能用工作区内的相对路径。
+- 6 条测试：门控先于一切、没工作区拒绝、两个流分开、cwd 是工作区根、超时被杀（退出码 null）、cwd 越界被拒。
+
+**开关**：`native_shell` 由 FFI 的 turn 配置带进来（默认 `false`），
+Kotlin 侧存 SharedPreferences（`nmoi.local`），**不进库、不进导出**（见 D159 的理由）。
+界面：设置 → 工具与工作区 → `System-Shell` 开关 + 一次确认卡；
+`WorkSpace-EnvirShell` 这一版是**灰的说明行**（运行时没打包，拨了也不生效的开关比没有更糟）。
+
+**结果卡**：工具往返展开后按 `call_id` 配对，一条调用 = 一块：
+「命令」+ 等宽框 + 复制，「输出」+ `stdout`/`stderr` 页签 + 复制，
+右上角写退出码 / 超时 / 截断。失败且 stderr 非空、stdout 为空时**默认停在 stderr**。
+配不上结果的调用单独标「没有结果（这一批里它没跑完）」。

@@ -132,6 +132,8 @@ struct TurnInput {
     temperature: Option<f32>,
     budget: Option<Budget>,
     avg_per_turn: Option<u64>,
+    /// 原生命令（`System-Shell`）这一轮开不开。**默认关**：它是这个 App 能跑的最危险的一把。
+    native_shell: bool,
 }
 
 fn bad(field: &str, expected: &str) -> FfiError {
@@ -279,16 +281,20 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         temperature: optional_f32(&root, "temperature")?,
         budget,
         avg_per_turn: optional_u64(&root, "avg_per_turn")?,
+        native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
     })
 }
 
 fn policy_for(input: &TurnInput) -> AssistantPolicy {
     match input.workspace {
+        // 没有工作区就没有可跑的目录：连带原生命令也开不了（`check` 会回 no_workspace）。
         None => AssistantPolicy::locked_down(),
         Some(_) if input.read_only => AssistantPolicy::locked_down()
-            .with_binding(WorkspaceBinding::read_only("ffi-workspace")),
+            .with_binding(WorkspaceBinding::read_only("ffi-workspace"))
+            .enable_native_shell(input.native_shell),
         Some(_) => AssistantPolicy::locked_down()
-            .with_binding(WorkspaceBinding::read_write("ffi-workspace")),
+            .with_binding(WorkspaceBinding::read_write("ffi-workspace"))
+            .enable_native_shell(input.native_shell),
     }
 }
 

@@ -722,3 +722,39 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_applyBlockEditJson<'l
     });
     to_jstring(&mut env, text)
 }
+
+// ---------------------------------------------------------------------------
+// 工作区（D159）：`System-Shell` 要有起点，六个文件工具也要先绑一个根
+// ---------------------------------------------------------------------------
+
+/// `NativeBridge.openWorkspaceJson(root)`：把 App 私有目录绑成工作区，回 `{id}`。
+///
+/// 路径由 Kotlin 给（`filesDir/workspace`）。**不传 `/sdcard`**：那要额外权限，
+/// 而且用户 2026-10-27 明确要求走 `/data/user/...` 这种 App 私有位置。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_openWorkspaceJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    root: JString<'local>,
+) -> jstring {
+    let root = read_string(&mut env, &root);
+    let text = guarded(move || match root {
+        Some(root) => match c_string(root, "root") {
+            Ok(c_root) => take_json(crate::workspace::nmoi_workspace_open_json(c_root.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.closeWorkspaceJson(id)`：解绑。幂等。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_closeWorkspaceJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+) -> jstring {
+    let text = guarded(|| take_json(crate::workspace::nmoi_workspace_close_json(handle as u64)));
+    to_jstring(&mut env, text)
+}

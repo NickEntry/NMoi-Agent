@@ -70,39 +70,53 @@ internal object TurnRepository {
             "会话 $sessionId 发往 ${provider.id}（${provider.kind}）模型 ${model.id} 带钥匙=${key != null}",
         )
 
-        withStorageHandle(databasePath) { handle ->
-            val config = JSONObject()
-                .put("storage", handle)
-                .put("session", sessionId)
-                .put(
-                    "provider",
-                    JSONObject()
-                        .put("id", provider.id)
-                        .put("kind", provider.kind)
-                        .put("base_url", provider.baseUrl.trim())
-                        .also { row -> if (key != null) row.put("api_key", key) },
-                )
-                .put("model", model.id)
-                .put("user_text", text)
-                .put("now_ms", System.currentTimeMillis())
-                .also { row ->
-                    model.maxTokens?.let { row.put("max_tokens", it) }
-                    model.temperature?.let { row.put("temperature", it) }
-                }
-
-            NmoiFfi.turnRun(config)
-                .map { envelope -> parse(envelope) }
-                .onSuccess { outcome ->
-                    NLog.i(
-                        "Turn",
-                        "完成：rounds=${outcome.rounds} tool=${outcome.toolCalls} " +
-                            "finished=${outcome.finished} cancelled=${outcome.cancelled} " +
-                            "长度=${outcome.assistant?.length ?: 0}",
+        // 工作区：先建目录再绑。绑不上不是这一轮的致命错误——文件工具与命令不可用而已，
+        // 聊天本身还能继续（所以只记一条日志，不中断）。
+        val workspace = ToolingRepository.open(context)
+        if (workspace.isFailure) {
+            NLog.w("Turn", "工作区绑不上：${workspace.exceptionOrNull()?.message}")
+        }
+        val nativeShell = ToolingRepository.nativeShell(context) && workspace.isSuccess
+        try {
+            withStorageHandle(databasePath) { handle ->
+                val config = JSONObject()
+                    .put("storage", handle)
+                    .put("session", sessionId)
+                    .put(
+                        "provider",
+                        JSONObject()
+                            .put("id", provider.id)
+                            .put("kind", provider.kind)
+                            .put("base_url", provider.baseUrl.trim())
+                            .also { row -> if (key != null) row.put("api_key", key) },
                     )
-                }
-                .onFailure { error ->
-                    NLog.w("Turn", "失败：kind=${(error as? NmoiFfiException)?.kind} ${error.message}")
-                }
+                    .put("model", model.id)
+                    // 工作区句柄 0 = 没绑（FFI 那边 `optional_u64(...).filter(|id| *id != 0)` 会忽略它）。
+                    .put("workspace", workspace.getOrNull() ?: 0L)
+                    .put("native_shell", nativeShell)
+                    .put("user_text", text)
+                    .put("now_ms", System.currentTimeMillis())
+                    .also { row ->
+                        model.maxTokens?.let { row.put("max_tokens", it) }
+                        model.temperature?.let { row.put("temperature", it) }
+                    }
+
+                NmoiFfi.turnRun(config)
+                    .map { envelope -> parse(envelope) }
+                    .onSuccess { outcome ->
+                        NLog.i(
+                            "Turn",
+                            "完成：rounds=${outcome.rounds} tool=${outcome.toolCalls} " +
+                                "finished=${outcome.finished} cancelled=${outcome.cancelled} " +
+                                "长度=${outcome.assistant?.length ?: 0}",
+                        )
+                    }
+                    .onFailure { error ->
+                        NLog.w("Turn", "失败：kind=${(error as? NmoiFfiException)?.kind} ${error.message}")
+                    }
+            }
+        } finally {
+            workspace.getOrNull()?.let { ToolingRepository.close(it) }
         }
     }
 

@@ -36,6 +36,12 @@ internal object NativeBridge {
 
     external fun closeStorageJson(handle: Long): String
 
+    /** 把 App 私有目录绑成工作区（D159），回 `{handle, root}`。目录要先建好。 */
+    external fun openWorkspaceJson(root: String): String
+
+    /** 解绑工作区。幂等。 */
+    external fun closeWorkspaceJson(handle: Long): String
+
     external fun versionsJson(handle: Long, message: String): String
 
     external fun switchVersionJson(handle: Long, message: String, versionNo: Long, view: String): String

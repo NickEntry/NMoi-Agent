@@ -128,7 +128,7 @@ impl<'a> ToolContext<'a> {
     }
 
     /// 过门控。过了才返回工作区。
-    fn gate(&self, capability: Capability) -> Result<&Workspace, ToolOutcome> {
+    pub(crate) fn gate(&self, capability: Capability) -> Result<&Workspace, ToolOutcome> {
         if let Err(reason) = self.policy.check(capability) {
             return Err(ToolOutcome::denied(capability, reason));
         }
@@ -172,6 +172,8 @@ impl ToolRegistry {
         registry.register(Box::new(ListDirTool));
         registry.register(Box::new(FindFilesTool));
         registry.register(Box::new(SearchTool));
+        // 原生命令（D159）：声明另外由 `Capability::NativeShell` 门控，默认不出现。
+        registry.register(Box::new(crate::shell::SystemShellTool));
         registry
     }
 
@@ -265,7 +267,7 @@ impl std::fmt::Debug for ToolRegistry {
 // 参数小工具
 // ---------------------------------------------------------------------------
 
-fn required_str(args: &Value, key: &str) -> Result<String, ToolOutcome> {
+pub(crate) fn required_str(args: &Value, key: &str) -> Result<String, ToolOutcome> {
     args.get(key)
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -718,7 +720,7 @@ mod tests {
     fn registry_declares_six_workspace_tools() {
         let registry = ToolRegistry::workspace_defaults();
         let names = registry.names();
-        assert_eq!(names.len(), 6, "{names:?}");
+        assert_eq!(names.len(), 7, "{names:?}");
         for name in [
             "edit_file",
             "find_files",
@@ -730,7 +732,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 6);
+        assert_eq!(specs.len(), 7);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }
