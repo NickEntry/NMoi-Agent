@@ -54,8 +54,8 @@ import kotlinx.coroutines.withContext
  *
  * 形状上是照别的客户端那套"供应商列表 + 供应商详情"来的，但**不做**它们那些按钮：
  *
- * - 没有「是否启用」开关。**当前是哪一套由列表里的「当前」标记说**，只有一条"设为当前"
- *   的显式动作——一个开关改不了"发请求用哪一套"，摆上去就是假开关。
+ * - **没有「当前 / 设为当前」**（D161）：「用哪一套」归助手，供应商页只是目录。
+ *   这里只有一个"默认模型"标记——新建助手时拿它当初始值。
  * - 没有「获取账户余额」「网络代理」「多 Key 模式」「自定义 Header」：这些在本项目里
  *   一条代码都没有读它们。要做也是先把那条路接上，再放控件。
  * - 没有「API 路径」：路径由 `kind` 决定（`crates/core/src/transport.rs`），
@@ -124,11 +124,7 @@ internal fun ProviderListScreen(
                             if (index > 0) {
                                 RowDivider(leading = 52.dp)
                             }
-                            ProviderRow(
-                                entry = entry,
-                                current = entry.id == page?.activeId,
-                                onClick = { onOpen(entry.id) },
-                            )
+                            ProviderRow(entry = entry, onClick = { onOpen(entry.id) })
                         }
                     }
                 }
@@ -143,7 +139,8 @@ internal fun ProviderListScreen(
                     )
                 }
                 Text(
-                    text = "「当前」那一套决定发请求用哪个端点、哪把钥匙、哪个模型。",
+                    text = "这里只是目录：有什么端点、有什么模型。用哪一个由助手决定，" +
+                        "在聊天页顶部那条切换。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
@@ -157,7 +154,7 @@ internal fun ProviderListScreen(
  * 供应商编辑页。`providerId == null` = 新建。
  *
  * 两张页签共用**一个保存按钮**：字段是表单，改一半就落库会留下"半份配置"。
- * 只有「设为当前」是立刻生效的独立动作——它改的不是这份配置，是"用哪一份"。
+ * 「用哪一个」不在这里改：那是助手的配置（聊天页顶部那条）。
  */
 @Composable
 internal fun ProviderEditScreen(
@@ -209,7 +206,7 @@ internal fun ProviderEditScreen(
         }
     }
 
-    fun persist(setCurrent: Boolean) {
+    fun persist() {
         val cleaned = models
             .map { it.copy(id = it.id.trim()) }
             .filter { it.id.isNotEmpty() }
@@ -247,7 +244,6 @@ internal fun ProviderEditScreen(
             } else {
                 withContext(Dispatchers.IO) { Vault.save(context, id, keyDraft.trim()) }
             }
-            val activated = if (setCurrent) ProviderRepository.setActive(databasePath, id) else null
             saving = false
 
             if (stored.isFailure) {
@@ -266,12 +262,7 @@ internal fun ProviderEditScreen(
                 keyOnDisk = true
                 keyHint = withContext(Dispatchers.IO) { ProviderRepository.keyHint(context, id) }
             }
-            notice = when {
-                activated?.isFailure == true ->
-                    "已保存；设为当前失败：${activated.exceptionOrNull()?.message}"
-                setCurrent -> "已保存，并设为当前"
-                else -> "已保存"
-            }
+            notice = "已保存"
         }
     }
 
@@ -358,24 +349,9 @@ internal fun ProviderEditScreen(
                         label = if (saving) "保存中…" else "保存",
                         enabled = !saving,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        onClick = { persist(setCurrent = providerId == null) },
+                        onClick = { persist() },
                     )
 
-                    if (providerId != null) {
-                        SecondaryButton(
-                            label = "设为当前（发请求用这一套）",
-                            enabled = !saving,
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            onClick = {
-                                scope.launch {
-                                    ProviderRepository.setActive(databasePath, id).fold(
-                                        onSuccess = { notice = "已设为当前" },
-                                        onFailure = { notice = "设当前失败：${it.message}" },
-                                    )
-                                }
-                            },
-                        )
-                    }
                 } else {
                     GroupCard(modifier = Modifier.padding(top = 8.dp)) {
                         models.forEachIndexed { index, model ->
@@ -402,13 +378,13 @@ internal fun ProviderEditScreen(
                         )
                     }
 
-                    Hint("点一行 = 把这一行设为当前模型；右边的铅笔是改它。")
+                    Hint("点一行 = 把这一行设成这个供应商的**默认模型**；右边的铅笔是改它。真正发请求用哪个，由助手决定。")
 
                     PrimaryButton(
                         label = if (saving) "保存中…" else "保存",
                         enabled = !saving,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        onClick = { persist(setCurrent = providerId == null) },
+                        onClick = { persist() },
                     )
                 }
 
@@ -730,7 +706,7 @@ private fun Segmented(
 
 /** 列表里的一行供应商：首字圆标 + 名字 + 类型/模型数 + 「当前」标记。 */
 @Composable
-private fun ProviderRow(entry: ProviderEntry, current: Boolean, onClick: () -> Unit) {
+private fun ProviderRow(entry: ProviderEntry, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -770,39 +746,11 @@ private fun ProviderRow(entry: ProviderEntry, current: Boolean, onClick: () -> U
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        StatusChip(
-            text = if (current) "当前" else "未启用",
-            strong = current,
-        )
         Text(
             text = "›",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 6.dp),
-        )
-    }
-}
-
-/** 状态：底色 + 文字两重信号，不只靠颜色。 */
-@Composable
-private fun StatusChip(text: String, strong: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = if (strong) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (strong) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
         )
     }
 }

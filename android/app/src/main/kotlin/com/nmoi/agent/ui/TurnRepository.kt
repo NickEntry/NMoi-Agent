@@ -50,18 +50,30 @@ internal object TurnRepository {
         sessionId: String,
         text: String,
     ): Result<TurnOutcome> = withContext(Dispatchers.IO) {
-        val provider = ProviderRepository.active(databasePath)
+        // 用哪一套由**助手**决定（D161）：供应商页只是目录，不再有"当前"。
+        val assistant = AssistantRepository.current(databasePath)
             .getOrElse { return@withContext Result.failure(it) }
-        val model = provider.model
-        if (!provider.isRunnable || model == null) {
+        if (!assistant.isRunnable) {
             return@withContext Result.failure(
                 NmoiFfiException(
-                    "no_provider",
-                    "「${provider.name.ifBlank { provider.id }}」还没填端点或模型" +
-                        "（设置 → 模型与提示词 → 供应商）",
+                    "no_model",
+                    "还没选模型：聊天页顶部的模型条里挑一个（供应商先要在设置里配好）",
                 ),
             )
         }
+        val provider = ProviderRepository.load(databasePath, assistant.providerId)
+            .getOrElse { return@withContext Result.failure(it) }
+        val model = provider.models.firstOrNull { it.id == assistant.modelId } ?: provider.model
+        if (model == null) {
+            return@withContext Result.failure(
+                NmoiFfiException(
+                    "no_model",
+                    "「${provider.name.ifBlank { provider.id }}」里没有模型 ${assistant.modelId}",
+                ),
+            )
+        }
+        val temperature = assistant.temperature ?: model.temperature
+        val maxTokens = assistant.maxTokens ?: model.maxTokens
 
         val key = Vault.load(context, provider.id)
         // 只记"有没有"，不记内容也不记长度：长度也是信息。
@@ -97,8 +109,8 @@ internal object TurnRepository {
                     .put("user_text", text)
                     .put("now_ms", System.currentTimeMillis())
                     .also { row ->
-                        model.maxTokens?.let { row.put("max_tokens", it) }
-                        model.temperature?.let { row.put("temperature", it) }
+                        maxTokens?.let { row.put("max_tokens", it) }
+                        temperature?.let { row.put("temperature", it) }
                     }
 
                 NmoiFfi.turnRun(config)

@@ -146,6 +146,26 @@ internal fun ChatScreen(
     var includeThinkingTools by remember { mutableStateOf(false) }
     var includeDetails by remember { mutableStateOf(false) }
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
+    // 用哪一套端点 / 哪个模型归**助手**（D161）。这一屏只负责显示和切换它。
+    var assistant by remember { mutableStateOf(AssistantEntry()) }
+    var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
+    var modelSheet by remember { mutableStateOf(false) }
+    LaunchedEffect(sessionId, reloadKey) {
+        withContext(Dispatchers.IO) {
+            AssistantRepository.current(databasePath).onSuccess { assistant = it }
+            AssistantRepository.choices(databasePath).onSuccess { choices = it }
+        }
+    }
+    val modelLabel = remember(assistant, choices) {
+        choices.firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
+            ?.label()
+            ?: if (assistant.isRunnable) {
+                "${assistant.providerId} / ${assistant.modelId}"
+            } else {
+                "还没选模型"
+            }
+    }
+
     // 原生 EditText 的引用：抽屉打开时要主动清焦点 + 收输入法。
     // Compose 的 clearFocus 对 AndroidView 里的原生控件不一定生效，所以这里拿真控件。
     val editTextRef = remember { mutableStateOf<EditText?>(null) }
@@ -446,6 +466,7 @@ internal fun ChatScreen(
                     onOpenDrawer = onOpenDrawer,
                     onNewChat = onNewChat,
                 )
+                ModelBar(label = modelLabel, onClick = { modelSheet = true })
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -524,6 +545,44 @@ internal fun ChatScreen(
                     onSaveAssistant = { appendOnly("assistant") },
                     onSaveUser = { appendOnly("user") },
                 )
+
+                if (modelSheet) {
+                    MenuSheet(
+                        title = "用哪个模型",
+                        items = choices.map { (provider, model) ->
+                            SheetItem(
+                                label = "${provider.name.ifBlank { provider.id }} / ${model.id}",
+                                icon = ActionIcons.Cpu,
+                                hint = null,
+                                onClick = {
+                                    modelSheet = false
+                                    scope.launch {
+                                        val next = assistant.copy(
+                                            providerId = provider.id,
+                                            modelId = model.id,
+                                        )
+                                        AssistantRepository.save(databasePath, next).fold(
+                                            onSuccess = {
+                                                assistant = next
+                                                notice = "这一轮起用 ${model.id}"
+                                            },
+                                            onFailure = { notice = "切换失败：${it.message}" },
+                                        )
+                                    }
+                                },
+                            )
+                        }.ifEmpty {
+                            listOf(
+                                SheetItem(
+                                    label = "还没有可用的模型",
+                                    hint = "先去 设置 → 模型与提示词 → 供应商 里填一套端点与模型",
+                                ),
+                            )
+                        },
+                        onHint = { notice = it },
+                        onDismiss = { modelSheet = false },
+                    )
+                }
             } else {
                 // 选择模式下藏起输入区，但留 10dp 底边，免得最后一条消息贴住屏幕边缘。
                 Spacer(Modifier.heightIn(min = 10.dp))
@@ -2313,4 +2372,37 @@ private fun CopyHint(text: String, onCopied: (String) -> Unit) {
             .clickable { onCopied(text) }
             .padding(top = 4.dp, bottom = 2.dp),
     )
+}
+
+/** 聊天页顶部那条"现在用哪个模型"。点开是选择面板（D161）。 */
+@Composable
+private fun ModelBar(label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 60.dp, end = 16.dp)
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = ActionIcons.Cpu,
+            contentDescription = "当前模型",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 4.dp).weight(1f, fill = false),
+        )
+        Icon(
+            imageVector = ActionIcons.ChevronDown,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(12.dp).padding(start = 2.dp),
+        )
+    }
 }

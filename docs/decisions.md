@@ -3428,3 +3428,17 @@ D38 原本写"TLS 由平台侧传输实现"。那样要 Rust 往 JVM 回调（`A
 "用哪一套"归**助手**（`settings(assistant, <id>)`：`provider_id` + `model_id` + `temperature` +
 `max_tokens`），聊天页顶部显示当前助手的模型并可切换。`provider.active_model` 与
 `settings(provider,"active")` 都要退场，`turn_run` 改成"从当前助手的配置取"。
+
+### D161 后半段（已落地）：模型归属搬到助手
+
+- `settings(assistant, "default")` = `{name, provider_id, model_id, temperature?, max_tokens?}`。
+  这一版只有**一个**助手（多助手要先给"会话属于哪个助手"建模），但归属现在就定死：
+  「用哪一套」在助手，不在供应商。
+- 供应商页退成**目录**：不再有「当前 / 设为当前」，列表只剩名字 + 类型 + 模型数；
+  模型表里的标记改叫**默认模型**（新建助手时拿它当初始值）。
+  `settings(provider,"active")` 只剩两处用途：读老数据时兜底、`ProviderRepository::active` 的兼容路径。
+- 聊天页顶部加一条**模型条**（`provider / model`），点开是自绘选择面板，
+  选完直接写助手配置——下次发送就用它（`TurnRepository` 每次现读助手，不缓存快照）。
+- 参数优先级：助手上的 `temperature` / `max_tokens` 覆盖模型上的；都没填就不传。
+- 一条兜底：助手配置读不到（老库）时，从供应商目录推导一份**但不写库**——
+  读不该有副作用；用户第一次点选择才落盘。
