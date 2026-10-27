@@ -3669,3 +3669,28 @@ proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/pr
 
 **教训**：`--version` 能跑只能证明"三件套能被链接器拉起来"，**证明不了容器能起进程**。
 自检那两条命令要分开看：第一条过了、第二条没过，问题就在 guest 一侧（解释器/loader/rootfs 完整性）。
+
+### D170 固定签名：一把钥匙，两边 secret，CI 注入
+
+**为什么必须固定**：AGP 的 debug keystore 是**构建机自己生成**的，每个 CI runner 一把新钥匙。
+于是两次构建的包签名不同，第二个包装不上去，只能卸载重装（会话库、设置全丢）。
+用户 2026-10-27 提的正是这件事。
+
+**做法**：
+- 钥匙：RSA 4096，PKCS12，别名 `nmoi`，有效期到 2056-10-19；证书
+  `SHA-256: 1A:29:73:…:0D:AA:A4`（公钥摘要，公开，写进仓库当闸）。
+  文件在本机 `/workspace/keystore/`（仓库外、600），**主密钥要离线另存两份**。
+- 注入：`build.gradle.kts` 读 `NMOI_KEYSTORE_PATH` / `NMOI_KEYSTORE_PASSWORD` /
+  `NMOI_KEY_ALIAS` / `NMOI_KEY_PASSWORD`；**四样齐了才建 `signingConfigs.fixed`**，
+  `debug` buildType 改用它；缺任何一样就退回默认 debug 签名（本机随手试用，不承诺可覆盖安装）。
+- CI：`android` job 里 `解出签名材料`（secret → `$RUNNER_TEMP/nmoi-release.jks`，umask 077，
+  不打印内容）→ 打包 → `验签`（`apksigner verify --print-certs`，指纹与仓库里那串比对，
+  不一致直接红）。
+- secret 名字四处一致（`docs/signing.md`）：`ANDROID_KEYSTORE_B64`、`ANDROID_KEYSTORE_PASSWORD`、
+  `ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`；GitHub 与 Codeberg 各一份。
+
+**为什么签名跑在 debug 变体上**：现在唯一在发、也唯一被装的就是 `app-debug.apk`。
+单独出 release 会得到两个包，而"装哪个"这件事每次都要重新解释一遍。等 1.0 再拆 release 渠道。
+
+**代价（说清楚）**：换签名的第一个包**装不上去**，必须先卸载——库和设置全没。
+所以这次升级是一次性的。之后每个包都能直接覆盖。

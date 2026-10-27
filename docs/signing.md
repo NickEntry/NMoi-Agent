@@ -12,7 +12,8 @@
 - **`applicationId = com.nmoi.agent`**。Kotlin 的 `namespace` 另用 `com.nmoi.agent`，
   两者不必相同——前者是安装身份，后者是代码包名。
 - **1.0 之前，keystore 丢了就换新的**：项目还没对外宣传，卸载重装、数据从零再来一次，
-  成本是零。"离线两份"那套等 1.0 再严格执行。
+  成本是零。**但现在这把钥匙已经有了（D170）**，而且已经灌进两边的 secret——
+  真丢了就是"已装的包再也覆盖不上"，所以从这一刻起请按第 1 节备份。"离线两份"那套等 1.0 再严格执行。
 - 但**同一个阶段内必须固定同一套 keystore**：CI runner 每次都是全新虚拟机，Android 的
   debug keystore 由构建机自动生成——签出来的包签名各不相同，第二个包就装不上去，只能先卸载
   （会话库、设置全丢）。所以从第一个 APK 起就走本节这套 secret 注入，而不是靠 debug 签名。
@@ -36,7 +37,19 @@
 
 ## 2. 两边怎么配
 
-### GitHub：用 environment secret，不用仓库级 secret
+### 现在的实际做法（D170，2026-10-27）
+
+`ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD`
+四个 secret 已经分别放进 **GitHub 仓库级 secret** 与 **Codeberg 仓库级 secret**，
+`.github/workflows/ci.yml` 的 `android` job 在打包前把它们解到 `$RUNNER_TEMP/nmoi-release.jks`，
+再以 `NMOI_*` 环境变量交给 Gradle（`android/app/build.gradle.kts` 的 `signingConfigs`）。
+打包之后那一步 `验签` 会拿证书指纹跟仓库里写死的**公开**指纹比对，指纹不对就红灯。
+
+**为什么这里是仓库级、而不是下面说的 environment secret**：这个 job 就是每天跑的 CI，
+挂了 `environment: release` 每次都要人工点一次批准，等于把日常构建变慢。等真要做
+"打 tag 才出正式包"的发布流程时，再把它挪到带 `environment` 的独立 workflow 里。
+
+### （原计划）GitHub：用 environment secret，不用仓库级 secret
 
 ```
 仓库 → Settings → Environments → New environment: release
@@ -55,10 +68,12 @@ Repo → Settings → Secrets → Add secret（名字同上，逐条加）
 
 pipeline 里只有**声明了 `secrets:` 的步骤**才拿得到，且默认不注入来自 fork 的 PR。
 
-## 3. 可粘贴的 workflow（现在**没有**放进 `.github/workflows/`）
+## 3. 早先的可粘贴片段（**已经被 ci.yml 采纳**，留作记录）
 
-没放进 `workflows/` 的理由：当前没有任何签名材料，放进去只会让 CI 天天红；红久了就没人看了。
-等材料到位，把下面这段搬进 `.github/workflows/release.yml`。
+下面这段当初没放进 `workflows/`（理由是"没有材料，红久了没人看"）。材料到位后，
+它被并进了 `.github/workflows/ci.yml` 的 `android` job（差别：不是独立 workflow、
+不是 `environment`，见上一节），所以**不要**再把它另存一份——
+两份就会漂移，而漂移的那一份通常是没人跑的那一份。
 
 ```yaml
 name: release
@@ -141,6 +156,14 @@ steps:
 ## 6. 现在的状态
 
 - `.gitignore` 已挡住 `*.jks` / `*.keystore` / `*.p12` / `*.pfx` / `signing/` / `keystore.properties`。
-- 上面那段 workflow **未实测**：没有材料，也没有 Android 构建链（本机没有 SDK）。
-- 一旦有材料：先在一台机器上手动跑通一次签名，再把同一套 env 搬进 CI。
-  **CI 里第一次绿灯不等于能安装**——装到真机上看 `apksigner verify` 才算。
+- **已有一把固定钥匙**（D170，2026-10-27 生成，RSA 4096，有效期到 2056-10-19）：
+  证书指纹 `SHA-256: 1A:29:73:7E:02:41:CB:A1:5F:2E:89:D1:77:31:D2:2D:17:6E:CC:32:EF:42:50:B7:7E:AF:D2:49:F8:0D:AA:A4`
+  （指纹是公钥摘要，不是秘密，所以写进仓库当闸用）。
+- **文件在哪**：本机 `/workspace/keystore/nmoi-release.jks`（口令在同目录 `release.env`，
+  600 权限，**不在仓库里**，仓库外）。**请自己再离线存两份**——手机上的这一份不算备份。
+- **两边的 secret 都灌好了**：GitHub 仓库级 4 个、Codeberg 仓库级 4 个（同名）。
+- **签名流程：待这一轮 CI 验证**（`解出签名材料` → `打包` → `验签` 三步）。
+  绿了之后把 run id 记在这里；没绿之前别当它已经成立。
+- **Codeberg 只有 secret，没有 Android 构建**：那儿是 Forgejo Actions（仓库已开），
+  但托管 runner 没有 Android SDK / NDK，装一套要几个 GB，不适合跑在共享 runner 上。
+  要比包的话，把 secret 用上就行（同一个 job 定义搬过去），或者来自托管 runner。

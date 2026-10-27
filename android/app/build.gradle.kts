@@ -1,3 +1,4 @@
+import java.io.File
 import org.gradle.api.tasks.Sync
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -23,6 +24,17 @@ val syncNotices by tasks.registering(Sync::class) {
     from(repoRoot.resolve("LICENSE")) { into("notices") }
     into(noticesAssetsRoot)
 }
+
+// 固定签名（D170）。四样环境变量齐了就签名，缺任何一样就安静地退回 debug 签名。
+//
+// 为什么非要固定：Android 的 debug keystore 是**构建机自己生成**的，每个 CI runner 一把新钥匙，
+// 于是两次构建出来的包签名不同——第二个包装不上去，只能先卸载（会话库、设置全丢）。
+// 固定之后，以后每个包都能直接覆盖安装。
+//
+// 名字用 NMOI_*：CI 里那 4 个 secret 叫 ANDROID_*（见 docs/signing.md），注入时改名成这四个，
+// 这样仓库里既不出现口令，也不会把 secret 名写死在两处。
+val signingPath = System.getenv("NMOI_KEYSTORE_PATH")
+val fixedSigning = !signingPath.isNullOrBlank() && File(signingPath).isFile
 
 android {
     // D116：namespace 就是 Kotlin 包名，全小写；applicationId 也用它，三者完全一致。
@@ -65,10 +77,27 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    signingConfigs {
+        if (fixedSigning) {
+            create("fixed") {
+                storeFile = File(signingPath!!)
+                storePassword = System.getenv("NMOI_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("NMOI_KEY_ALIAS")
+                keyPassword = System.getenv("NMOI_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             // 不混淆：骨架阶段要能看懂堆栈，混淆留到 release 那一版再说。
             isMinifyEnabled = false
+            // 有固定签名就用它（D170）。没有就走 AGP 的默认 debug key —— 那只适合本机随手试。
+            signingConfig = if (fixedSigning) {
+                signingConfigs.getByName("fixed")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         release {
             isMinifyEnabled = false
