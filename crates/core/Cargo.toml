@@ -7,9 +7,11 @@ license.workspace = true
 description = "NMoi-Agent 的无头核心：数据模型、原子单元、事件流、上下文模式设施"
 
 [features]
-default = ["bpe"]
+default = ["bpe", "tls"]
 # L1 本地 BPE（D94）。关掉之后 `tokens` 退回 L0 + L2，二进制不增 7MB。
 bpe = ["dep:tiktoken-rs"]
+# HTTPS（D161）。关掉的话 `HttpsTransport` 不存在，只剩明文——Android 上等于发不出请求。
+tls = ["dep:rustls", "dep:webpki-roots"]
 
 [dependencies]
 serde.workspace = true
@@ -19,6 +21,8 @@ uuid.workspace = true
 thiserror.workspace = true
 regex.workspace = true
 libc.workspace = true
+rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
 tiktoken-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

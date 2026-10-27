@@ -39,7 +39,7 @@ use nmoi_core::provider::{ProviderConfig, ProviderKind};
 use nmoi_core::runtime::{ChatClient, ChatRequest};
 use nmoi_core::session::{run_session_turn, SessionConfig, SessionError, SessionTurn};
 use nmoi_core::tools::ToolRegistry;
-use nmoi_core::transport::PlainHttpTransport;
+use nmoi_core::transport::HttpsTransport;
 use nmoi_core::workspace::Workspace;
 use nmoi_storage::Storage;
 use serde_json::{json, Value};
@@ -440,7 +440,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             plan: None,
         };
 
-        let client = ChatClient::new(PlainHttpTransport::default());
+        let client = ChatClient::new(HttpsTransport::default());
         // 会话记住这一轮用的模型（D101）：上下文面板靠它选词表、按模型取校准。
         // 写失败不让这一轮失败——为了一个显示用的列把用户刚说的话丢掉不值（同 D98 的校准写回）。
         let _ = storage.set_conversation_model(input.session, &input.model);
@@ -561,7 +561,7 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
             request = request.temperature(temperature);
         }
 
-        let client = ChatClient::new(PlainHttpTransport::default());
+        let client = ChatClient::new(HttpsTransport::default());
         let done = client
             .complete(&request)
             .map_err(|error| FfiError::new("complete", error.to_string()))?;

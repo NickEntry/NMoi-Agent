@@ -19,6 +19,13 @@ authors = ["NickEntry"]
 [workspace.dependencies]
 # `System-Shell` 要按进程组杀超时进程（`kill(-pgid)`），std 里没有这个。
 libc = "0.2"
+# TLS（D161）：`ring` 而不是 `aws-lc-rs`——后者要 cmake/Go，Android 交叉编译会掉进坑里。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
+# MSRV 1.75（D10）的 Cargo 解析不了 **edition2024** 的包：`zeroize 1.9` 就是第一个撞上的。
+# 钉在 1.8.1（同样的 API，edition 2021），否则 `cargo check` 连 manifest 都读不进来。
+# 等 MSRV 上调或者工具链升到能解析 edition2024 时，这一行可以删。
+zeroize = "=1.8.1"
 serde = { version = "=1.0.197", features = ["derive"] }
 serde_json = "=1.0.114"
 sha2 = "=0.10.8"

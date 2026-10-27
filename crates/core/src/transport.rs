@@ -323,11 +323,15 @@ fn default_port(scheme: &str) -> Option<u16> {
 fn connect(target: &Url, connect_timeout: Duration) -> Result<TcpStream, TransportError> {
     if target.scheme != "http" {
         return Err(TransportError::Unsupported(format!(
-            "明文传输只支持 http://，收到 {}://（TLS 由平台侧传输实现，见 D38）",
+            "明文传输只支持 http://，收到 {}://（https 要用 `HttpsTransport`，见 D38 / D161）",
             target.scheme
         )));
     }
+    connect_tcp(target, connect_timeout)
+}
 
+/// 只负责"连上去"，不看协议。TLS 那条路也用它。
+fn connect_tcp(target: &Url, connect_timeout: Duration) -> Result<TcpStream, TransportError> {
     let addresses = (target.host.as_str(), target.port)
         .to_socket_addrs()
         .map_err(|error| TransportError::Connect {
@@ -455,7 +459,9 @@ fn has_header(headers: &[(String, String)], name: &str) -> bool {
         .any(|(key, _)| key.eq_ignore_ascii_case(name))
 }
 
-fn read_response(mut reader: BufReader<TcpStream>) -> Result<HttpResponse, TransportError> {
+fn read_response<R: Read + Send + 'static>(
+    mut reader: BufReader<R>,
+) -> Result<HttpResponse, TransportError> {
     // 1xx 是过渡响应：读完接着读真正的那个（网关发 100 Continue 时会碰到）。
     loop {
         let (status, _reason) = read_status_line(&mut reader)?;
@@ -474,7 +480,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<HttpResponse, Trans
     }
 }
 
-fn read_line(reader: &mut BufReader<TcpStream>) -> Result<String, TransportError> {
+fn read_line<R: Read>(reader: &mut BufReader<R>) -> Result<String, TransportError> {
     let mut line = Vec::new();
     let read = reader
         .read_until(b'\n', &mut line)
@@ -493,7 +499,7 @@ fn read_line(reader: &mut BufReader<TcpStream>) -> Result<String, TransportError
         .to_string())
 }
 
-fn read_status_line(reader: &mut BufReader<TcpStream>) -> Result<(u16, String), TransportError> {
+fn read_status_line<R: Read>(reader: &mut BufReader<R>) -> Result<(u16, String), TransportError> {
     let line = read_line(reader)?;
     let mut parts = line.splitn(3, ' ');
     let version = parts.next().unwrap_or_default();
@@ -510,8 +516,8 @@ fn read_status_line(reader: &mut BufReader<TcpStream>) -> Result<(u16, String), 
     Ok((code, parts.next().unwrap_or_default().to_string()))
 }
 
-fn read_headers(
-    reader: &mut BufReader<TcpStream>,
+fn read_headers<R: Read>(
+    reader: &mut BufReader<R>,
 ) -> Result<Vec<(String, String)>, TransportError> {
     let mut headers = Vec::new();
     let mut total = 0usize;
@@ -541,8 +547,8 @@ fn read_headers(
     }
 }
 
-fn boxed_body(
-    reader: BufReader<TcpStream>,
+fn boxed_body<R: Read + Send + 'static>(
+    reader: BufReader<R>,
     status: u16,
     headers: &[(String, String)],
 ) -> Result<Box<dyn ResponseBody>, TransportError> {
@@ -722,6 +728,92 @@ fn map_io_error(error: io::Error, what: &str) -> TransportError {
     }
 }
 
+/// `http://` 交给明文实现，`https://` 走 rustls（D161）。
+///
+/// 为什么 TLS 落在 Rust 侧而不是平台侧：D38 的原话是"TLS 由平台侧传输实现"，
+/// 但平台侧实现意味着 Rust 要往 JVM 回调（AttachCurrentThread + 逐块搬 body），
+/// 那条路的出错面比 rustls 大得多，而且 Linux/Windows 还得各写一份。
+/// 这里用一个**跨平台都能跑**的实现把这句话兑现：证书用内置根（webpki-roots），
+/// 不依赖系统证书库，所以行为在三端一致。
+#[cfg(feature = "tls")]
+#[derive(Debug, Clone)]
+pub struct HttpsTransport {
+    pub plain: PlainHttpTransport,
+}
+
+#[cfg(feature = "tls")]
+impl Default for HttpsTransport {
+    fn default() -> Self {
+        Self {
+            plain: PlainHttpTransport::default(),
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+impl HttpsTransport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 内置根证书。`true` = 用 webpki-roots 里那一份 Mozilla 根集合。
+    fn tls_config() -> std::sync::Arc<rustls::ClientConfig> {
+        use std::sync::Arc;
+        static CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+        CONFIG
+            .get_or_init(|| {
+                let provider = Arc::new(rustls::crypto::ring::default_provider());
+                let mut roots = rustls::RootCertStore::empty();
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let config = rustls::ClientConfig::builder_with_provider(provider)
+                    .with_safe_default_protocol_versions()
+                    .expect("rustls 默认协议版本")
+                    .with_root_certificates(roots)
+                    .with_no_client_auth();
+                Arc::new(config)
+            })
+            .clone()
+    }
+}
+
+#[cfg(feature = "tls")]
+impl Transport for HttpsTransport {
+    fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+        let target = Url::parse(&request.url)?;
+        if target.scheme != "https" {
+            // http 原样交给明文实现：两条路共用同一份头部构造与响应解析。
+            return self.plain.execute(request);
+        }
+
+        let head = build_head(&request, &target, &self.plain.user_agent)?;
+        let stream = connect_tcp(&target, self.plain.connect_timeout)?;
+        apply_read_timeout(&stream, request.read_timeout_ms, self.plain.read_timeout)?;
+
+        let server_name =
+            rustls::pki_types::ServerName::try_from(target.host.clone()).map_err(|error| {
+                TransportError::Connect {
+                    host: target.host.clone(),
+                    message: format!("主机名不能用作 TLS 名称: {error}"),
+                }
+            })?;
+        let connection =
+            rustls::ClientConnection::new(Self::tls_config(), server_name).map_err(|error| {
+                TransportError::Connect {
+                    host: target.host.clone(),
+                    message: format!("TLS 初始化失败: {error}"),
+                }
+            })?;
+        let mut tls = rustls::StreamOwned::new(connection, stream);
+
+        tls.write_all(head.as_bytes())
+            .and_then(|_| tls.write_all(&request.body))
+            .and_then(|_| tls.flush())
+            .map_err(|error| map_io_error(error, "发送请求"))?;
+
+        read_response(BufReader::with_capacity(16 * 1024, tls))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,6 +952,26 @@ mod tests {
     }
 
     #[test]
+    /// https 现在**走 TLS**，不再回 `Unsupported`（D161）。
+    ///
+    /// 连 127.0.0.1 的关端口：握手之前就失败，所以这条测试不碰外网，
+    /// 但足以证明"scheme=https 时选的是 TLS 那条路"——回 `Unsupported` 就说明没选对。
+    #[cfg(feature = "tls")]
+    #[test]
+    fn https_goes_through_tls_instead_of_being_refused() {
+        let transport = HttpsTransport::default();
+        let request = HttpRequest::post_json(
+            "https://127.0.0.1:1/v1/chat/completions",
+            "{}".as_bytes().to_vec(),
+        );
+        let error = transport.execute(request).unwrap_err();
+        assert!(
+            !matches!(error, TransportError::Unsupported(_)),
+            "https 不该再被当成不支持：{error}"
+        );
+        assert!(matches!(error, TransportError::Connect { .. }));
+    }
+
     fn https_is_refused_with_a_pointer_instead_of_silently_failing() {
         let transport = PlainHttpTransport::default();
         let error = transport

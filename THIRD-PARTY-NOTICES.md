@@ -104,6 +104,22 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
 
 细则、路径与"安装后能解压覆盖到安装目录"这条约束见 `docs/packaging.md`。
 
+
+### 3.x TLS（D161，进包）
+
+发请求要 HTTPS，Rust 侧这一层由以下几个 crate 提供。它们**编译进 `libnmoi_ffi.so`**，
+所以随每个产物一起分发。
+
+| 组件 | 版本 | 许可 | 说明 |
+|---|---|---|---|
+| `rustls` | 0.23.x | Apache-2.0 OR MIT OR ISC（三选一，本项目按 Apache-2.0 使用） | TLS 实现（纯 Rust 协议栈） |
+| `ring` | 0.17.x | Apache-2.0 AND ISC（含 ISC 风格的第三方代码） | 密码学原语 |
+| `webpki-roots` | 0.26.x | **MPL-2.0** | Mozilla 根证书集合（数据）。MPL-2.0 与 GPL-3.0 兼容；该 crate 的源码在 crates.io 与上游仓库公开可取 |
+| `rustls-pki-types` / `zeroize` / `subtle` / `untrusted` / `log` / `once_cell` | 见 `Cargo.lock` | Apache-2.0 OR MIT（`untrusted` 为 ISC） | 传递依赖，全文引用 Apache-2.0 / MIT |
+
+`zeroize` 在 `Cargo.toml` 里被钉在 `=1.8.1`：1.9 起用了 **edition2024**，
+而工作区 MSRV 是 1.75（D10），老 Cargo 连它的 manifest 都解析不了。
+
 ## 6. 更新这份文件
 
 新增任何外部图形/字体/代码时，同一次提交里改这一处：加一行来源与许可、把全文放进

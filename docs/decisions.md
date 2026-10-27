@@ -3399,3 +3399,32 @@ Kotlin 侧存 SharedPreferences（`nmoi.local`），**不进库、不进导出**
 「命令」+ 等宽框 + 复制，「输出」+ `stdout`/`stderr` 页签 + 复制，
 右上角写退出码 / 超时 / 截断。失败且 stderr 非空、stdout 为空时**默认停在 stderr**。
 配不上结果的调用单独标「没有结果（这一批里它没跑完）」。
+
+## D161 发请求这条路：HTTPS + INTERNET（真机第一轮日志的直接结论）
+
+2026-10-27 真机第一次发请求，三连失败，根因只有两个：
+
+1. `连接失败 127.0.0.1:8790: Operation not permitted (os error 1)` —— **清单里没有
+   `android.permission.INTERNET`**。以前从没发生过网络请求，这条权限一直没加；
+   Android 上缺它时 `connect()` 回的就是 EPERM，看起来像"被防火墙拦了"。
+2. `传输层不支持: 明文传输只支持 http://，收到 https://` —— core 里只有
+   `PlainHttpTransport`，**整个项目没有 TLS**。任何正规供应商都是 https，等于一条都发不出去。
+
+**做法**：新增 `HttpsTransport`（`crates/core/src/transport.rs`，feature `tls`，默认开）。
+`http://` 原样交给 `PlainHttpTransport`，`https://` 用 rustls + 内置根证书（webpki-roots）。
+为此把 `read_response` / `read_line` / `read_status_line` / `read_headers` / `boxed_body`
+从"只吃 `BufReader<TcpStream>`"泛化成 `Read + Send`——两条路共用同一份头部构造与响应解析，
+不复制一份解析器（复制就会有两份行为，迟早分叉）。
+
+D38 原本写"TLS 由平台侧传输实现"。那样要 Rust 往 JVM 回调（`AttachCurrentThread` + 逐块搬 body），
+出错面比 rustls 大得多，而且 Linux/Windows 还要各写一份。改成"Rust 侧一份跨平台实现"，
+三端行为一致——这是对 D38 的一次修订，理由记在这里。
+
+**依赖与 MSRV**：rustls 0.23 会拖进 `zeroize 1.9`，那是 edition2024 的包，1.75 的 Cargo
+连 manifest 都读不进来。所以 `zeroize` 钉在 `=1.8.1`。除 TLS 外还加了 `libc`（杀进程组用）。
+两者都写进了 `THIRD-PARTY-NOTICES.md`（`webpki-roots` 是 MPL-2.0，与 GPL-3.0 兼容）。
+
+**下一层（未动工，形状已定）**：供应商页只当**目录**——有什么供应商、有什么模型、参数怎么设；
+"用哪一套"归**助手**（`settings(assistant, <id>)`：`provider_id` + `model_id` + `temperature` +
+`max_tokens`），聊天页顶部显示当前助手的模型并可切换。`provider.active_model` 与
+`settings(provider,"active")` 都要退场，`turn_run` 改成"从当前助手的配置取"。
