@@ -190,19 +190,19 @@ jobs:
             exit 1
           fi
           echo "声明齐全：$(printf '%s\n' "$listing" | grep -cE 'assets/notices/.+\..+') 个文件"
-      - name: 隔离环境运行时进包（D165）
+      - name: 隔离环境运行时进包（D165 / D166）
         run: |
           set -euo pipefail
           apk=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
-          unzip -l "$apk" | grep -E 'assets/envir/' || true
-          # 三件少一件都跑不起来：proot 的 NEEDED 就是那两个 .so，缺了它连 --version 都起不来。
-          # 大小一起对账——"名字对、内容是 0 字节"是最容易漏过去的一种坏法（git 没提交二进制、
-          # 或者 .gitattributes 把文件 LFS 化了）。
-          for pair in "proot:259784" "libtalloc.so.2:33592" "libandroid-shmem.so:14432"; do
+          unzip -l "$apk" | grep -E 'lib/arm64-v8a/' || true
+          # 三件必须躺在 lib/arm64-v8a/ 里（原生库目录，安装时被解到可执行的位置），
+          # 不是 assets：Android 10 起 App 私有目录不许 exec，assets 那条路真机上是 error=13。
+          # 大小一起对账——"名字对、内容是 0 字节"是最容易漏过去的坏法。
+          for pair in "libnmoi_proot.so:259784" "libnmoi_talloc.so:33592" "libandroid-shmem.so:14432"; do
             want=${pair%%:*}; size=${pair##*:}
-            got=$(unzip -l "$apk" | awk -v w="assets/envir/$want" '$NF == w { print $1 }')
+            got=$(unzip -l "$apk" | awk -v w="lib/arm64-v8a/$want" '$NF == w { print $1 }')
             [ "$got" = "$size" ] \
-              || { echo "assets/envir/$want 大小是 ${got:-缺失}，应为 $size（D164 / D165）" >&2; exit 1; }
+              || { echo "lib/arm64-v8a/$want 大小是 ${got:-缺失}，应为 $size（D165 / D166）" >&2; exit 1; }
           done
           echo "隔离环境运行时三件齐全 ✓"
 

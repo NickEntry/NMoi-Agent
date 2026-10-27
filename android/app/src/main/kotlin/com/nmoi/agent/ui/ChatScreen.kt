@@ -42,6 +42,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -105,6 +110,11 @@ internal fun ChatScreen(
     var reloadKey by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // 刚发出去的那句话：**先进消息区**（用户 2026-10-27："发送的时候先把消息推到消息框"），
+    // 输入框当场清空。这一条不进库、也不算"已存"——库里有没有得等这一轮收尾后现读。
+    var pending by remember { mutableStateOf<PendingSend?>(null) }
+    // "这一轮正在等模型"——只给消息区那个"正在生成…"占位用（`busy` 还管别的事）。
+    var waiting by remember { mutableStateOf(false) }
     // 正在跑的那一轮挂在哪个会话上——点"停止"要的就是这个 id。
     // 单独存一份而不是直接读 `sessionId`：跑的过程中用户可能切了会话。
     var runningSession by remember { mutableStateOf<String?>(null) }
@@ -407,19 +417,29 @@ internal fun ChatScreen(
             busy -> notice = "上一轮还没结束（要打断就先点停止）"
             else -> scope.launch {
                 busy = true
-                notice = "正在请求模型…"
+                notice = null
+                // 先上屏、先清输入框，再谈请求：发送这件事对用户来说是**立刻发生**的，
+                // 那一秒里输入框还留着字，看起来就像没发出去（2026-10-27 报的就是这个）。
+                pending = PendingSend(text = text, at = System.currentTimeMillis())
+                waiting = true
+                draft = ""
                 val sid = sessionId ?: onCreateSession()
                 if (sid == null) {
+                    // 连会话都建不出来：把字放回输入框，别吞掉用户刚打的。
+                    pending = null
+                    waiting = false
+                    draft = text
                     notice = "建会话失败：原因在 设置 → 调试 → 日志"
                     busy = false
                 } else {
                     runningSession = sid
                     val result = TurnRepository.send(context, databasePath, sid, text)
                     runningSession = null
+                    pending = null
+                    waiting = false
                     busy = false
                     result.fold(
                         onSuccess = { outcome ->
-                            draft = ""
                             reloadKey += 1
                             notice = outcome.describe()
                         },
@@ -430,11 +450,12 @@ internal fun ChatScreen(
                             val saved = withContext(Dispatchers.IO) {
                                 TurnRepository.wasUserTextSaved(databasePath, sid, text)
                             }
-                            if (saved) draft = ""
+                            // 没存进去就把字还回去：宁可让他看到重复的一句，也不要静默丢字。
+                            if (!saved) draft = text
                             notice = buildString {
                                 append("请求失败：")
                                 append(error.message)
-                                append(if (saved) "（你这句话已经存进库里了）" else "（这句话没存进去）")
+                                append(if (saved) "（你这句话已经存进库里了）" else "（这句话没存进去，已放回输入框）")
                             }
                         },
                     )
@@ -482,6 +503,8 @@ internal fun ChatScreen(
                 } else {
                     MessageArea(
                         snapshot = snapshot,
+                        pending = pending,
+                        pendingAssistant = waiting,
                         selecting = selecting,
                         selected = selected,
                         onLongPressMessage = { id ->
@@ -1055,6 +1078,9 @@ private fun BlankConversationHint() {
 @Composable
 private fun MessageArea(
     snapshot: ChatSnapshot?,
+    /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
+    pending: PendingSend?,
+    pendingAssistant: Boolean,
     selecting: Boolean,
     selected: Set<String>,
     onLongPressMessage: (String) -> Unit,
@@ -1076,7 +1102,7 @@ private fun MessageArea(
     }
 
     val page = snapshot.page
-    if (page == null || page.isEmpty) {
+    if ((page == null || page.isEmpty) && pending == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -1098,14 +1124,18 @@ private fun MessageArea(
         return
     }
 
+    val units = page?.units.orEmpty()
+    val truncated = page?.truncated == true
     val listState = rememberLazyListState()
-    val headerCount = if (page.truncated) 1 else 0
+    val headerCount = if (truncated) 1 else 0
     val maxBubble = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
-    LaunchedEffect(page.units.size, page.truncated) {
-        val target = headerCount + page.units.lastIndex
-        if (target >= 0) listState.scrollToItem(target)
+    // 发出去那一刻 `pending` 会插在末尾，所以它也要进 key——否则新气泡在屏幕外面。
+    LaunchedEffect(units.size, truncated, pending, pendingAssistant) {
+        val target = headerCount + units.size + if (pending != null) 1 else 0 +
+            if (pendingAssistant) 1 else 0
+        if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
     LazyColumn(
@@ -1117,21 +1147,26 @@ private fun MessageArea(
         // 同角色 4dp、异角色 12dp（D126）：4 是基准间距，换人时再加 8。
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (page.truncated) {
+        if (truncated) {
             item {
                 Text(
-                    text = "上面还有更早的消息：共 ${page.total} 个单元，这里只读了最后 ${page.units.size} 个",
+                    text = "上面还有更早的消息：共 ${page?.total} 个单元，这里只读了最后 ${units.size} 个",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 )
             }
         }
-        itemsIndexed(page.units) { index, unit ->
-            val previous = page.units.getOrNull(index - 1)
+        itemsIndexed(units) { index, unit ->
+            val previous = units.getOrNull(index - 1)
             val gap = if (previous != null && previous.alignsRight() != unit.alignsRight()) 8.dp else 0.dp
+            // 一轮助手的话可能被拆成好几个单元（工具往返一段、正文一段），抬头只画一次。
+            val assistantSide = unit.isToolPair || unit.messages.none { it.isUser }
+            val previousAssistantSide = previous != null &&
+                (previous.isToolPair || previous.messages.none { it.isUser })
             UnitBlock(
                 unit = unit,
+                showHeader = assistantSide && !previousAssistantSide,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 selecting = selecting,
@@ -1144,8 +1179,77 @@ private fun MessageArea(
                 onVersionMessage = onVersionMessage,
             )
         }
+
+        val outbox = pending
+        if (outbox != null) {
+            item(key = "pending-user") {
+                // 这一条还没从库里读回来（`run_session_turn` 是先落库再发请求，
+                // 但读完要等这一轮收尾），所以先按用户消息的形状画出来。
+                UserMessage(
+                    message = ChatMessage(
+                        id = "pending:user",
+                        seq = Long.MAX_VALUE,
+                        role = "user",
+                        source = "history",
+                        content = outbox.text,
+                        tokens = 0,
+                        createdAt = outbox.at,
+                        incomplete = false,
+                        locked = false,
+                        toolCalls = 0,
+                        toolCallId = null,
+                    ),
+                    maxBubble = maxBubble,
+                    selecting = false,
+                    isSelected = false,
+                    onLongPress = {},
+                    onTap = {},
+                    onCopied = {},
+                    onShare = {},
+                    onMore = {},
+                    onVersion = { _, _ -> },
+                )
+            }
+        }
+        if (pendingAssistant) {
+            item(key = "pending-assistant") {
+                PendingAssistantRow()
+            }
+        }
     }
 }
+
+/**
+ * "模型还没回"的占位。**它不落库**，只是一个呼吸中的小字——
+ * 用户要能看出"发出去了、在等"，而不是盯着输入框猜。
+ */
+@Composable
+private fun PendingAssistantRow() {
+    val transition = rememberInfiniteTransition(label = "pending")
+    val alpha by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 900), RepeatMode.Reverse),
+        label = "pending-alpha",
+    )
+    Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Spacer(Modifier.width(42.dp))
+        Text(
+            text = "正在生成…",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+        )
+    }
+}
+
+/**
+ * 抬头该用哪个时间：优先这一段里**正文**那条的时间（用户看到的就是它），
+ * 纯工具单元没有正文，退回单元自己的时间。思考块的时间更早，不拿它当抬头。
+ */
+private fun ChatUnit.headerAt(): Long =
+    messages.firstOrNull { !it.isThinking && !it.isToolCall && !it.isToolResult }?.createdAt
+        ?: messages.firstOrNull()?.createdAt
+        ?: createdAt
 
 /** 这个单元整体靠哪边——只用来算"换人"的间距，不参与别的判断。 */
 private fun ChatUnit.alignsRight(): Boolean =
@@ -1155,6 +1259,8 @@ private fun ChatUnit.alignsRight(): Boolean =
 @Composable
 private fun UnitBlock(
     unit: ChatUnit,
+    /** 这一段是不是"这一轮助手的头一块"。连续的工具卡/正文只画一次抬头。 */
+    showHeader: Boolean,
     maxBubble: Dp,
     gapAbove: Dp,
     selecting: Boolean,
@@ -1171,6 +1277,13 @@ private fun UnitBlock(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         val broken = unit.broken
+        // 抬头（头像 + 助手 + 时间）要在**思考块与工具卡的上方**（用户 2026-10-27 报：
+        // 思考卡排在"助手"名字上面，看着像别人说的话）。所以这里统一先画抬头，
+        // 再画这一段的卡和正文；助手连续几段只画第一个，不然一轮里会冒出三四行"助手"。
+        val assistantSide = unit.isToolPair || unit.messages.none { it.isUser }
+        if (assistantSide && showHeader) {
+            AssistantHeader(createdAt = unit.headerAt())
+        }
         if (broken != null) {
             BrokenCard(declaration = broken.declaration, reason = broken.reason)
         }
@@ -1179,7 +1292,8 @@ private fun UnitBlock(
         } else {
             unit.messages.forEach { message ->
                 when {
-                    message.isThinking -> ThinkingBlock(message)
+                    // 空的思考消息没有内容可指，画一个"思考 · 0 字"的空壳只会让人以为坏了。
+                    message.isThinking -> if (message.content.isNotBlank()) ThinkingBlock(message)
                     message.isUser -> UserMessage(
                         message = message,
                         maxBubble = maxBubble,
@@ -1199,6 +1313,7 @@ private fun UnitBlock(
                         message.reasoning?.takeIf { it.isNotBlank() }?.let { ReasoningCard(it) }
                         AssistantMessage(
                             message = message,
+                            showHeader = false,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -1214,6 +1329,14 @@ private fun UnitBlock(
         }
     }
 }
+
+/**
+ * 刚发出去、还没从库里读回来的那一句。
+ *
+ * 它**不是**一条"看不见的存了的数据"（铁律 ② 管的是库里）：这一条只活在内存里，
+ * 屏幕上看得见，`turn_run` 收尾后就用库里那份替换掉它。
+ */
+private data class PendingSend(val text: String, val at: Long)
 
 private const val USER_NAME = "我"
 private const val ASSISTANT_NAME = "助手"
@@ -1398,6 +1521,8 @@ private fun UserMessage(
 @Composable
 private fun AssistantMessage(
     message: ChatMessage,
+    /** 抬头由 [UnitBlock] 统一画（思考卡/工具卡要排在它下面），所以这里默认不画。 */
+    showHeader: Boolean = false,
     selecting: Boolean,
     isSelected: Boolean,
     onLongPress: () -> Unit,
@@ -1420,27 +1545,7 @@ private fun AssistantMessage(
     Column(modifier = Modifier.fillMaxWidth().then(tint)) {
         // 头像 + 名字/时间占一行；**正文在它们下面整行铺开**，
         // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
-        Row(verticalAlignment = Alignment.Top) {
-            InitialAvatar(letter = "助", size = 32.dp, mine = false)
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text(
-                    text = ASSISTANT_NAME,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                )
-                if (stamp != null) {
-                    Text(
-                        text = stamp,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                        maxLines = 1,
-                        modifier = Modifier.padding(top = 1.dp),
-                    )
-                }
-            }
-        }
+        if (showHeader) AssistantHeader(createdAt = message.createdAt)
         MarkdownBody(
             text = message.content.ifEmpty { "（空消息）" },
             modifier = Modifier
@@ -1472,6 +1577,39 @@ private fun AssistantMessage(
             onMore = onMore,
             versionControl = { VersionControl(message = message, onPick = onVersion) },
         )
+    }
+}
+
+/**
+ * 助手抬头：头像 + 名字 + 时间。
+ *
+ * 单独拎出来是因为它要画在**思考块和工具卡的上方**（2026-10-27 报），
+ * 而那些卡片不在 `AssistantMessage` 里，而是在同一个单元的更上面。
+ */
+@Composable
+private fun AssistantHeader(createdAt: Long) {
+    val context = LocalContext.current
+    val stamp = stampOf(context, createdAt)
+    Row(verticalAlignment = Alignment.Top) {
+        InitialAvatar(letter = "助", size = 32.dp, mine = false)
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(
+                text = ASSISTANT_NAME,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            if (stamp != null) {
+                Text(
+                    text = stamp,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    maxLines = 1,
+                    modifier = Modifier.padding(top = 1.dp),
+                )
+            }
+        }
     }
 }
 

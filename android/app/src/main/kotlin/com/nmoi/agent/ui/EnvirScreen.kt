@@ -98,7 +98,8 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                             )
                             Text(
                                 text = "装一次 = 一个能在里面跑 Ubuntu 的私有目录。" +
-                                    "运行时（proot + 两个 .so，约 300 KB）从 APK 里复制，rootfs（33.4 MB）联网下载。",
+                                    "运行时（proot + 两个 .so，约 300 KB）随 APK 装好、不用联网，" +
+                                    "rootfs（33.4 MB）点安装时下载。",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp),
@@ -130,6 +131,12 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 2.dp),
                             )
+                            Text(
+                                text = current.linkNote,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
                             if (!current.sha256.isNullOrEmpty()) {
                                 MonoText("sha256 ${current.sha256.take(16)}…")
                             } else {
@@ -146,15 +153,15 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                     RowDivider()
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
-                            text = "运行时",
+                            text = "运行时（随 APK 装在 lib 目录里）",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         for ((file, bytes) in EnvirRepository.runtimeBytes(context)) {
                             Text(
-                                text = "${file.name} · ${file.version} · " +
-                                    if (bytes >= 0) "$bytes 字节" else "还没复制",
+                                text = "${file.label} · ${file.version} · " +
+                                    if (bytes >= 0) "$bytes 字节" else "这个 APK 里没有",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,

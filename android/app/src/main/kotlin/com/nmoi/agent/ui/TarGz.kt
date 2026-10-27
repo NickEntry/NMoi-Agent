@@ -50,6 +50,8 @@ internal object TarGz {
         val dirs: Int,
         val symlinks: Int,
         val hardLinks: Int,
+        /** 硬链接退化成符号链接的条数（文件系统不许建硬链接时，比如 Android 的 app 私有目录）。 */
+        val linkFallbacks: Int,
         val skipped: List<String>,
         val bytes: Long,
     )
@@ -70,6 +72,7 @@ internal object TarGz {
         var dirs = 0
         var symlinks = 0
         var hardLinks = 0
+        var linkFallbacks = 0
         var bytes = 0L
         val skipped = mutableListOf<String>()
         // 硬链接的源还没解出来的：等整条流走完再补（tar 不保证顺序，不能假设源在前）。
@@ -161,10 +164,13 @@ internal object TarGz {
                         // 硬链接：**建真硬链接**。复制内容会把 coreutils 那一百多份 10 MB applet
                         // 变成 1 GB 以上的磁盘占用，rootfs 一装就爆。
                         target.parentFile?.mkdirs()
-                        if (!makeHardLink(target, resolve(root, link))) {
-                            pendingLinks += path to link
-                        } else {
-                            hardLinks += 1
+                        when (linkInto(target, resolve(root, link))) {
+                            LinkKind.Hard -> hardLinks += 1
+                            LinkKind.Relative -> {
+                                symlinks += 1
+                                linkFallbacks += 1
+                            }
+                            LinkKind.None -> pendingLinks += path to link
                         }
                         skipEntry(stream, size)
                     }
@@ -193,10 +199,13 @@ internal object TarGz {
         // 流走完了再补硬链接：tar 不保证"源在前"，但**到这一步源一定都在磁盘上**。
         for ((path, link) in pendingLinks) {
             val target = resolve(root, path)
-            if (target != null && makeHardLink(target, resolve(root, link))) {
-                hardLinks += 1
-            } else {
-                skipped += "硬链接源不存在：$path -> $link"
+            when (linkInto(target, resolve(root, link))) {
+                LinkKind.Hard -> hardLinks += 1
+                LinkKind.Relative -> {
+                    symlinks += 1
+                    linkFallbacks += 1
+                }
+                LinkKind.None -> skipped += "硬链接源不存在：$path -> $link"
             }
         }
 
@@ -205,6 +214,7 @@ internal object TarGz {
             dirs = dirs,
             symlinks = symlinks,
             hardLinks = hardLinks,
+            linkFallbacks = linkFallbacks,
             skipped = skipped,
             bytes = bytes,
         )
@@ -274,13 +284,32 @@ internal object TarGz {
         return false
     }
 
-    /** 建真硬链接（同一个文件系统内）；建不出来返回 false，由调用方记账，不退化成复制。 */
-    private fun makeHardLink(target: File, source: File?): Boolean {
-        if (source == null || !source.isFile) return false
-        return runCatching {
+    private enum class LinkKind { Hard, Relative, None }
+
+    /**
+     * 硬链接条目落地：**先建真硬链接，不行退成符号链接，绝不复制内容**。
+     *
+     * Android 的 app 私有目录不许建硬链接（`link(2)` 被 SELinux 挡：真机上 Ubuntu Base 那
+     * 115 条硬链接**全部**失败，界面上的 `链接 287+0` 就是这么来的），而复制一份内容意味着
+     * coreutils 那一百多条 10 MB applet 变成 1 GB 以上。符号链接两头都躲开了：
+     * 容器里 `cat` 一样能跑，因为它本来只关心 `argv[0]`。
+     */
+    private fun linkInto(target: File?, source: File?): LinkKind {
+        if (target == null || source == null || !source.isFile) return LinkKind.None
+        val hard = runCatching {
             java.nio.file.Files.deleteIfExists(target.toPath())
             java.nio.file.Files.createLink(target.toPath(), source.toPath())
         }.isSuccess
+        if (hard) return LinkKind.Hard
+        // 相对路径：容器里也成立（绝对路径得指到宿主机的 /data/...，在 guest 里不存在）。
+        val relative = runCatching {
+            target.toPath().parent.relativize(source.toPath()).toString()
+        }.getOrNull() ?: return LinkKind.None
+        val linked = runCatching {
+            java.nio.file.Files.deleteIfExists(target.toPath())
+            java.nio.file.Files.createSymbolicLink(target.toPath(), java.nio.file.Paths.get(relative))
+        }.isSuccess
+        return if (linked) LinkKind.Relative else LinkKind.None
     }
 
     /**

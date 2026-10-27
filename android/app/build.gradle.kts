@@ -48,6 +48,12 @@ android {
     // 真正要防的是"忘了放"和"放了个旧副本"，前者由这条 srcDir 保证，后者由不提交副本保证。
     sourceSets.getByName("main").assets.srcDir(noticesAssetsRoot)
 
+    // 隔离环境那三个预编译二进制（D166）。**不能放 `src/main/jniLibs/`**：那个目录被
+    // `.gitignore` 忽略了（CI 的 `cargo ndk -o …/jniLibs` 会往里写 libnmoi_ffi.so），
+    // 放进去等于提交一个空目录。所以单开一个目录再挂进 jniLibs——
+    // 两边的产物在打包时合并，APK 里都是 `lib/arm64-v8a/`。
+    sourceSets.getByName("main").jniLibs.srcDir("src/main/jniLibs-prebuilt")
+
     buildFeatures {
         compose = true
         // 骨架阶段没有 BuildConfig 需求；开着会随包带一份常量，关掉等真要用再开。
@@ -74,6 +80,15 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // **必须是 true**（D166）：隔离环境那三个二进制要"落在 nativeLibraryDir 里"才跑得起来。
+            // Android 10（targetSdk 29+）起，App 私有目录里的文件**不许 exec**（W^X）——
+            // 真机上就是那句 `Cannot run program "…/files/envir/bin/proot": error=13, Permission denied`。
+            // 只有 APK 里 `lib/<abi>/` 下的东西会被装到可执行的 nativeLibraryDir，而安装器
+            // **只按 `.so` 后缀**挑文件、不检查内容，所以三个二进制就按 lib*.so 的名字放进去。
+            // 代价：这 13 MB 的 libnmoi_ffi.so 也会被解出来（多占一份设备存储），换来的是整个隔离环境能跑。
+            useLegacyPackaging = true
         }
     }
 }

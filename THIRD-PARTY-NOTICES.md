@@ -122,15 +122,24 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
 
 ## 3.y 隔离环境运行时（D164 / D165，进包）
 
-三件 Android/arm64 二进制，**打进 APK 的 `assets/envir/`**，安装隔离环境时复制到
-`filesDir/envir/bin/` 并 `chmod +x`。取用自 Termux 官方仓库（`packages.termux.dev`），
-**我们未做任何修改**（未 patch、未 strip、未重编）。
+三件 Android/arm64 二进制，源码位置 `android/app/src/main/jniLibs-prebuilt/arm64-v8a/`
+（挂进 Gradle 的 `jniLibs` 源集，`useLegacyPackaging = true`），打进 **APK 的 `lib/arm64-v8a/`**。取用自 Termux 官方仓库（`packages.termux.dev`），
+**字节内容未做任何修改**（未 patch、未 strip、未重编，sha256 与上游一致）。
 
-| 文件（assets 名） | 版本 | 许可 | 来源 | 字节数 / sha256 前 16 |
-|---|---|---|---|---|
-| `proot` | 5.1.107.101 | **GPL-2.0-or-later** | 包 `proot_5.1.107.101_aarch64.deb`；上游 <https://github.com/termux/proot>（tag `v5.1.107.101`） | 259,784 / `bc3e541674827637` |
-| `libtalloc.so.2` | 2.5.0 | **LGPL-3.0** | 包 `libtalloc_2.5.0_aarch64.deb`；上游 <https://www.samba.org/ftp/talloc/> | 33,592 / `742b438c4d09e276` |
-| `libandroid-shmem.so` | 0.7 | **BSD-3-Clause** | 包 `libandroid-shmem_0.7_aarch64.deb`；上游 <https://github.com/termux/libandroid-shmem> | 14,432 / `84475798e07c8174` |
+为什么要"装成 `.so`"（D166）：Android 10（targetSdk 29+）起 App 私有目录里的文件**不许 exec**
+（W^X，真机上是 `error=13, Permission denied`），只有 APK 的 `lib/<abi>/` 会被安装器解到
+可执行的 `nativeLibraryDir`，而它**只按 `.so` 后缀**挑文件、不看内容。于是：
+
+| 上游名字 | 包里的名字 | 版本 | 许可 | 来源 | 字节数 / sha256 前 16 |
+|---|---|---|---|---|---|
+| `proot` | `libnmoi_proot.so` | 5.1.107.101 | **GPL-2.0-or-later** | 包 `proot_5.1.107.101_aarch64.deb`；上游 <https://github.com/termux/proot>（tag `v5.1.107.101`） | 259,784 / `bc3e541674827637` |
+| `libtalloc.so.2` | `libnmoi_talloc.so` | 2.5.0 | **LGPL-3.0** | 包 `libtalloc_2.5.0_aarch64.deb`；上游 <https://www.samba.org/ftp/talloc/> | 33,592 / `742b438c4d09e276` |
+| `libandroid-shmem.so` | `libandroid-shmem.so`（**原名不动**） | 0.7 | **BSD-3-Clause** | 包 `libandroid-shmem_0.7_aarch64.deb`；上游 <https://github.com/termux/libandroid-shmem> | 14,432 / `84475798e07c8174` |
+
+改名不是修改：`libtalloc.so.2` 改名之后**它自带的 SONAME 还是 `libtalloc.so.2`**，运行时用
+`LD_PRELOAD` 按路径加载它，`proot` 的 `NEEDED` 凭 SONAME 就认得出；`libandroid-shmem.so`
+**没有 SONAME**，只能靠文件名被找到，所以它保持原名，由 `LD_LIBRARY_PATH` 指到同一个目录。
+`proot` 本身是按路径 exec 的（`libnmoi_proot.so`），叫什么无所谓。
 
 全文：`LICENSES/GPL-2.0.txt`（proot 的 `COPYING`）、`LICENSES/LGPL-3.0.txt`（`talloc-2.5.0/LICENSE`）、
 `LICENSES/BSD-3-Clause-libandroid-shmem.txt`（deb 里的 `copyright` 逐字副本）。

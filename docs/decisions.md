@@ -3570,3 +3570,75 @@ filesDir/envir/tmp/                                               ← PROOT_TMP_
 
 **这一条没做的事**：`WorkSpace-EnvirShell` 工具还没接（§PLAN 0.14o），所以界面上仍然没有它的开关。
 只有"装了什么"和"能不能跑"，没有"拨了不生效"的东西。
+
+### D166 运行时改走 `jniLibs`：私有目录不许 exec（真机实测）
+
+用户装完 D165 的安装页，装是装上了（`5407 文件 / 755 目录 / 链接 287+0`），自检报：
+
+```
+Cannot run program "/data/user/0/com.nmoi.agent/files/envir/bin/proot"
+(in directory ".../files/workspace"): error=13, Permission denied
+```
+
+**原因不是权限位**：文件已 `chmod 700`（`setExecutable(true, true)` 返回 true），而是
+**Android 10（targetSdk ≥ 29）的 W^X 政策**——App 私有目录对 App 自己可写，因此
+在 SELinux 里被标成**不可执行**；`execve` 一律 EACCES。可写与可执行被系统强制互斥。
+
+**唯一可执行的落点**是 APK 的 `lib/<abi>/`：安装器把它解到 `applicationInfo.nativeLibraryDir`，
+那个目录只读、且 SELinux 允许 exec。安装器**只按 `.so` 后缀**挑文件、不检查内容，
+所以三个二进制装成 `.so`：
+
+| 上游 | 包内 | 运行时怎么被找到 |
+|---|---|---|
+| `proot` | `libnmoi_proot.so` | 按路径 exec（名字无所谓） |
+| `libtalloc.so.2` | `libnmoi_talloc.so` | 它自带 SONAME `libtalloc.so.2` → `LD_PRELOAD=<绝对路径>` 先加载，`NEEDED` 凭 SONAME 命中 |
+| `libandroid-shmem.so` | `libandroid-shmem.so`（原名） | **没有 SONAME**，只能按文件名找 → `LD_LIBRARY_PATH=nativeLibraryDir` |
+
+落点：源码在 `android/app/src/main/jniLibs-prebuilt/arm64-v8a/`，由
+`sourceSets.getByName("main").jniLibs.srcDir(...)` 挂进 jniLibs 源集——**不能放 `src/main/jniLibs/`**，
+那个目录被 `.gitignore` 忽略（CI 的 `cargo ndk -o …/jniLibs` 往里写 `libnmoi_ffi.so`），
+放进去等于提交一个空目录。
+
+配套：`packaging { jniLibs { useLegacyPackaging = true } }`。**没有这一行，lib 不会被解到磁盘**，
+`nativeLibraryDir` 里是空的，前面那套白搭。代价是那 13 MB 的 `libnmoi_ffi.so` 也会被解出来。
+
+**同一轮撞到的第二个 Android 限制**：`Files.createLink` 在 app 私有目录也失败
+（115/115 条硬链接全挂，界面上的 `链接 287+0` 就是这么来的）。所以 `TarGz` 的硬链接改成
+**真硬链接 → 符号链接（相对路径）→ 记账跳过**，三级，**绝不复制内容**
+（coreutils 那一百多条 10 MB applet，复制一份就是 1 GB）。state.json 里多记 `link_fallbacks`，
+界面上写"115 条退化成符号链接，功能不受影响"——不写的话那个 `+0` 看起来像解坏了。
+
+顺带：老版本留在 `filesDir/envir/bin/` 的那份运行时会被 `install()` 顺手删掉。
+
+### D167 发送：先上屏、先清输入框，再谈请求
+
+用户 2026-10-27 报："发送的时候是先把消息推到消息框啊，而不是在输入框进行"——
+原来的实现是**等 `turn_run` 整轮返回**才把 `draft` 清空，所以那一两分钟里他打的字一直躺在输入框里，
+看起来像没发出去。
+
+**改成**：点发送那一刻就
+1. 把这句话作为 `PendingSend(text, at)` 画进消息区（用户气泡，正常样式）；
+2. `draft` 当场清空；
+3. 消息区末尾挂一行"正在生成…"（呼吸小字，不落库）。
+
+`PendingSend` **只活在这一轮的界面状态里**，不进库、不算"已存"。这一轮收尾后（成功或失败）
+一律清掉它、从库里重读——**库里那份才是真相**。失败且 `wasUserTextSaved == false` 时，
+把正文**放回输入框**并在提示里写明"已放回输入框"：宁可让他看到重复的一句，也不要静默丢字。
+
+这条不违反铁律 ②：那条管的是"**库里**存了但界面上看不见"，这里是反过来——
+**界面上先有、库里随后才有**，而且收尾后立刻以库里那份为准。
+
+### D168 供应商：从端点读回模型清单
+
+模型 ID 是"少一个字符 404、多一个后缀 400"的东西（`sn-deepseek-v4-1-flash-1017` 这种），
+让他手打就是让他反复猜。`GET {base_url}/models` 本来就不要钱，所以：
+
+- **「测试连接」**（配置页，Base URL 下面）：只发一个 GET，回来写
+  `通了：HTTP 200 · 12 个模型 · 380 ms`，失败写 `HTTP 401 …`。它同时验证地址、钥匙、网络三样。
+- **「从端点拉取模型」**（模型页）：把清单并进模型表，**已有的一条都不动**
+  （参数可能是手填的），只追加缺的；模型表为空时顺手把第一个设成默认模型。
+- 密钥取**当前表单里的值**优先，没有再读磁盘上那把（刚填完还没保存的也能测）。
+- 三家形状不同，都只有一层：OpenAI 系 `data[].id`、Anthropic `data[].id`（头用 `x-api-key`
+  + `anthropic-version: 2023-06-01`）、Gemini `models[].name`（去掉 `models/` 前缀，钥匙走 `?key=`）。
+- **日志只打 `host + path`**：Gemini 的钥匙在 query 里，一律抹掉（`ModelCatalog.safeUrl`）。
+- 只读：拉取不改库，改配置仍然只由「保存」那一下完成。

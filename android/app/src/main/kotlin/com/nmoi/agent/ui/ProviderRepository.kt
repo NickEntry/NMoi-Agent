@@ -61,6 +61,12 @@ internal data class ProviderList(val activeId: String?, val rows: List<ProviderE
 internal object ProviderKinds {
     const val DEFAULT = "openai_compatible"
 
+    /** 四个 wire 名的字符串常量：凡是要按 kind 分支的地方都引这里，别再手打一次。 */
+    const val WIRE_OPENAI = "openai_compatible"
+    const val WIRE_RESPONSES = "openai_responses"
+    const val WIRE_ANTHROPIC = "anthropic"
+    const val WIRE_GEMINI = "gemini"
+
     val ALL = listOf(
         Kind("openai_compatible", "兼容"),
         Kind("openai_responses", "Responses"),

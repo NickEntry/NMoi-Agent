@@ -182,6 +182,9 @@ internal fun ProviderEditScreen(
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var modelDraft by remember { mutableStateOf<ModelDraft?>(null) }
+    // 从端点读模型清单：只读一次 GET，改配置仍然只由「保存」落库。
+    var fetching by remember { mutableStateOf(false) }
+    var fetchNote by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(providerId) {
         if (providerId != null) {
@@ -266,6 +269,52 @@ internal fun ProviderEditScreen(
         }
     }
 
+    /**
+     * 拉一次模型清单。
+     *
+     * 密钥用**当前表单里的值**优先（用户可能刚填完还没保存），没有再读磁盘上那把。
+     * [merge] = true 是"拉取模型"（并进列表），false 是"测试连接"（只看通不通）。
+     */
+    fun pull(reason: String, merge: Boolean) {
+        if (fetching) return
+        val base = baseUrl.trim()
+        if (!base.startsWith("http://") && !base.startsWith("https://")) {
+            notice = "先填 API Base URL（要以 http:// 或 https:// 开头）"
+            return
+        }
+        fetching = true
+        fetchNote = null
+        scope.launch {
+            val key = withContext(Dispatchers.IO) {
+                keyDraft.trim().ifEmpty { Vault.load(context, id) }
+            }
+            val fetched = withContext(Dispatchers.IO) {
+                ModelCatalog.fetch(base, kind, key)
+            }
+            fetching = false
+            if (!fetched.ok) {
+                fetchNote = "失败：${fetched.error ?: "HTTP ${fetched.status}"}"
+                notice = "拉模型失败（HTTP ${fetched.status}）"
+                return@launch
+            }
+            if (!merge) {
+                fetchNote = "通了：HTTP ${fetched.status} · ${fetched.ids.size} 个模型 · ${fetched.durationMs} ms"
+                notice = null
+                return@launch
+            }
+            val (next, added) = ModelCatalog.merge(models, fetched.ids)
+            models = next
+            if (activeModel.isBlank()) activeModel = next.firstOrNull()?.id.orEmpty()
+            fetchNote = when {
+                fetched.ids.isEmpty() -> "端点回了 HTTP ${fetched.status}，但清单是空的"
+                added == 0 -> "一共 ${fetched.ids.size} 个模型，都是已有的（没有覆盖你填的参数）"
+                else -> "新增 $added 个（共 ${next.size} 个）· ${fetched.durationMs} ms · 记得点保存"
+            }
+            notice = null
+            NLog.i("Provider", "${reason}：新增 $added，共 ${next.size}")
+        }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             ScreenTopBar(
@@ -316,6 +365,21 @@ internal fun ProviderEditScreen(
                             modifier = Modifier.padding(horizontal = 8.dp),
                         )
                         Hint("带不带 /v1 看供应商怎么说，这里不替你补。")
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "只发一个 GET /models：证明地址、钥匙、网络三样都对。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextAction(
+                                label = if (fetching) "测着…" else "测试连接",
+                                onClick = { pull("测试连接", merge = false) },
+                            )
+                        }
                     }
 
                     GroupCard(modifier = Modifier.padding(top = 12.dp)) {
@@ -376,9 +440,28 @@ internal fun ProviderEditScreen(
                             label = "添加模型",
                             onClick = { modelDraft = ModelDraft() },
                         )
+                        RowDivider(leading = 14.dp)
+                        AddRow(
+                            label = if (fetching) "从端点拉取模型…" else "从端点拉取模型",
+                            onClick = { pull("拉取模型", merge = true) },
+                        )
                     }
 
                     Hint("点一行 = 把这一行设成这个供应商的**默认模型**；右边的铅笔是改它。真正发请求用哪个，由助手决定。")
+
+                    val pulled = fetchNote
+                    if (pulled != null) {
+                        Text(
+                            text = pulled,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (pulled.startsWith("失败")) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        )
+                    }
 
                     PrimaryButton(
                         label = if (saving) "保存中…" else "保存",

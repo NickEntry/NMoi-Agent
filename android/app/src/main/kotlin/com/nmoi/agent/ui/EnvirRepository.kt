@@ -45,21 +45,31 @@ internal object EnvirRepository {
         bytes = 35_092_106L,
     )
 
-    /** 运行时三件；`asset` 是 assets 里的文件名，`name` 是落到 bin 里的名字。 */
+    /**
+     * 运行时三件。**它们不是 assets，是 `jniLibs`**（D166）。
+     *
+     * 原因只有一条：Android 10（targetSdk 29+）起，App 私有目录里的文件**不许 exec**——
+     * 真机上那句 `Cannot run program "…/files/envir/bin/proot": error=13, Permission denied`
+     * 就是这个。只有 APK 的 `lib/<abi>/` 会被装到可执行的 `nativeLibraryDir`，
+     * 而安装器只按 `.so` 后缀挑文件、不看内容，所以：
+     *
+     * - `proot` → `libnmoi_proot.so`（我们按路径 exec 它，叫什么无所谓）；
+     * - `libtalloc.so.2` → `libnmoi_talloc.so`（它自带 SONAME `libtalloc.so.2`，
+     *   用 `LD_PRELOAD` 按路径加载之后，proot 的 `NEEDED` 能凭 SONAME 认出来）；
+     * - `libandroid-shmem.so` → **原名不动**（它没有 SONAME，只能靠文件名找，
+     *   所以 `LD_LIBRARY_PATH` 指到同一个目录，让它按名字被找到）。
+     *
+     * 三个文件的字节内容**一个都没改**（sha256 与上游一致），改的只是磁盘上的名字。
+     */
     val Runtime = listOf(
-        RuntimeFile(asset = "proot", name = "proot", executable = true, version = "5.1.107.101"),
-        RuntimeFile(asset = "libtalloc.so.2", name = "libtalloc.so.2", executable = false, version = "2.5.0"),
-        RuntimeFile(
-            asset = "libandroid-shmem.so",
-            name = "libandroid-shmem.so",
-            executable = false,
-            version = "0.7",
-        ),
+        RuntimeFile(packaged = "libnmoi_proot.so", label = "proot", version = "5.1.107.101"),
+        RuntimeFile(packaged = "libnmoi_talloc.so", label = "libtalloc.so.2", version = "2.5.0"),
+        RuntimeFile(packaged = "libandroid-shmem.so", label = "libandroid-shmem.so", version = "0.7"),
     )
 
     data class Source(val label: String, val url: String, val sha256: String?, val bytes: Long)
 
-    data class RuntimeFile(val asset: String, val name: String, val executable: Boolean, val version: String)
+    data class RuntimeFile(val packaged: String, val label: String, val version: String)
 
     /** 装好之后写在 `state.json` 里的东西：**界面上要能一条条指出来**，所以字段就是给界面用的。 */
     data class Installed(
@@ -73,17 +83,30 @@ internal object EnvirRepository {
         val dirs: Int,
         val symlinks: Int,
         val hardLinks: Int,
+        val linkFallbacks: Int,
         val skipped: Int,
     ) {
         val skippedNote: String
             get() = if (skipped == 0) "没有跳过任何条目" else "跳过 $skipped 条（解包报告的清单在日志里）"
+
+        /** 硬链接退化这件事要说出来：不然 `链接 287+0` 看起来像解坏了。 */
+        val linkNote: String
+            get() = if (linkFallbacks == 0) {
+                "硬链接都建成了真链接"
+            } else {
+                "$linkFallbacks 条硬链接退化成符号链接（这个文件系统不许建硬链接，功能不受影响）"
+            }
     }
 
     // ------------------------------------------------------------------ 路径
 
     fun envirDir(context: Context): File = File(context.filesDir, "envir")
 
-    fun binDir(context: Context): File = File(envirDir(context), "bin")
+    /**
+     * 运行时所在目录 = APK 的 native lib 目录（安装器解出来的那一份，可执行）。
+     * 每次升级 APK 路径都会变，所以**不能缓存**，只能现取。
+     */
+    fun runtimeDir(context: Context): File = File(context.applicationInfo.nativeLibraryDir)
 
     fun rootfsDir(context: Context): File = File(envirDir(context), "ubuntu")
 
@@ -91,7 +114,11 @@ internal object EnvirRepository {
 
     fun stateFile(context: Context): File = File(envirDir(context), "state.json")
 
-    fun prootPath(context: Context): File = File(binDir(context), "proot")
+    fun prootPath(context: Context): File = File(runtimeDir(context), "libnmoi_proot.so")
+
+    /** 运行时齐不齐。缺哪件就把名字说出来——"跑不起来"这种话没法排查。 */
+    fun missingRuntime(context: Context): List<String> =
+        Runtime.filterNot { File(runtimeDir(context), it.packaged).isFile }.map { it.label }
 
     // ------------------------------------------------------------------ 读状态
 
@@ -106,7 +133,7 @@ internal object EnvirRepository {
         val parsed = runCatching { JSONObject(state.readText()) }.getOrNull() ?: return null
         val rootfs = File(parsed.optString("rootfs", rootfsDir(context).absolutePath))
         if (!File(rootfs, "usr/bin/env").exists() && !File(rootfs, "bin/sh").exists()) return null
-        if (!prootPath(context).isFile) return null
+        if (missingRuntime(context).isNotEmpty()) return null
         return Installed(
             label = parsed.optString("label", "未知来源"),
             url = parsed.optString("url", ""),
@@ -118,13 +145,16 @@ internal object EnvirRepository {
             dirs = parsed.optInt("dirs", 0),
             symlinks = parsed.optInt("symlinks", 0),
             hardLinks = parsed.optInt("hard_links", 0),
+            linkFallbacks = parsed.optInt("link_fallbacks", 0),
             skipped = parsed.optInt("skipped", 0),
         )
     }
 
     /** 运行时三件的实际大小（界面用；缺文件时是 -1）。 */
-    fun runtimeBytes(context: Context): List<Pair<RuntimeFile, Long>> =
-        Runtime.map { it to if (File(binDir(context), it.name).isFile) File(binDir(context), it.name).length() else -1L }
+    fun runtimeBytes(context: Context): List<Pair<RuntimeFile, Long>> = Runtime.map { file ->
+        val onDisk = File(runtimeDir(context), file.packaged)
+        file to if (onDisk.isFile) onDisk.length() else -1L
+    }
 
     // ------------------------------------------------------------------ 进度
 
@@ -164,7 +194,16 @@ internal object EnvirRepository {
         onPhase: (Phase) -> Unit,
     ): Result<Installed> {
         onPhase(Phase.Runtime)
-        copyRuntime(context).onFailure { return Result.failure(it) }
+        // 运行时是随 APK 装好的（jniLibs → nativeLibraryDir），这里只核对它在不在。
+        val missing = missingRuntime(context)
+        if (missing.isNotEmpty()) {
+            return Result.failure(
+                IOException("这个 APK 里没有 arm64 的运行时（缺 ${missing.joinToString("、")}）"),
+            )
+        }
+        // 老版本（≤ D165）把运行时复制到 files/envir/bin 并 chmod，D166 起不再用；
+        // 留着它只会让人以为"proot 在那儿"，顺手清掉。
+        runCatching { deleteTree(File(envirDir(context), "bin")) }
 
         val archive = archiveFile(context)
         val part = File(archive.parentFile, archive.name + ".part")
@@ -207,6 +246,7 @@ internal object EnvirRepository {
             dirs = report.dirs,
             symlinks = report.symlinks,
             hardLinks = report.hardLinks,
+            linkFallbacks = report.linkFallbacks,
             skipped = report.skipped.size,
         )
         writeState(context, installed, report.skipped)
@@ -218,24 +258,6 @@ internal object EnvirRepository {
                 "链接 ${report.symlinks}+${report.hardLinks}，跳过 ${report.skipped.size}",
         )
         return Result.success(installed)
-    }
-
-    /** assets → `bin/`。**每次都覆盖**：用户升级 APK 之后，bin 里那份可能是老版本。 */
-    private fun copyRuntime(context: Context): Result<Unit> {
-        val bin = binDir(context)
-        bin.mkdirs()
-        return runCatching {
-            for (file in Runtime) {
-                val target = File(bin, file.name)
-                context.assets.open("envir/${file.asset}").use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                if (file.executable && !target.setExecutable(true, true)) {
-                    throw IOException("${file.name} 拿不到执行位（filesDir 挂的是 noexec？）")
-                }
-            }
-            Unit
-        }.onFailure { NLog.w("Envir", "复制运行时失败：${it.message}") }
     }
 
     private fun download(
@@ -303,9 +325,10 @@ internal object EnvirRepository {
             put("dirs", installed.dirs)
             put("symlinks", installed.symlinks)
             put("hard_links", installed.hardLinks)
+            put("link_fallbacks", installed.linkFallbacks)
             put("skipped", installed.skipped)
             put("runtime", JSONObject().apply {
-                for (file in Runtime) put(file.name, file.version)
+                for (file in Runtime) put(file.label, file.version)
             })
             put("state_version", 1)
         }
@@ -344,12 +367,16 @@ internal object EnvirRepository {
         timeoutSeconds: Long = 40,
     ): Result<Probe> = withContext(Dispatchers.IO) {
         runCatching {
-            val bin = binDir(context)
+            val libs = runtimeDir(context)
             val tmp = File(envirDir(context), "tmp").apply { mkdirs() }
             val builder = ProcessBuilder(args)
             builder.directory(File(context.filesDir, "workspace").apply { mkdirs() })
             builder.redirectErrorStream(false)
-            builder.environment()["LD_LIBRARY_PATH"] = bin.absolutePath
+            // 两道都得给（见 Runtime 那段注释）：
+            //   LD_LIBRARY_PATH → 让没有 SONAME 的 libandroid-shmem.so 按**文件名**被找到；
+            //   LD_PRELOAD      → 让带 SONAME 的 libtalloc.so.2 先被加载，proot 的 NEEDED 凭 SONAME 认它。
+            builder.environment()["LD_LIBRARY_PATH"] = libs.absolutePath
+            builder.environment()["LD_PRELOAD"] = File(libs, "libnmoi_talloc.so").absolutePath
             builder.environment()["PROOT_TMP_DIR"] = tmp.absolutePath
             builder.environment()["PROOT_NO_SECCOMP"] = "1"
             val started = System.currentTimeMillis()
@@ -380,7 +407,7 @@ internal object EnvirRepository {
 
     /** 进容器跑一句话：`os-release` 头两行 + 内核版本（**会是手机的内核**，这正是要让人看见的）。 */
     fun rootfsCommand(context: Context, rootfs: String): List<String> {
-        val bin = binDir(context)
+        val libs = runtimeDir(context)
         return listOf(
             prootPath(context).absolutePath,
             "-0",
@@ -392,7 +419,7 @@ internal object EnvirRepository {
             "/bin/sh",
             "-c",
             "head -2 /etc/os-release; echo ---; uname -r; echo ---; ls /usr/bin | wc -l",
-        ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}（LD_LIBRARY_PATH=${bin.absolutePath}）") }
+        ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}（LD_LIBRARY_PATH=${libs.absolutePath}）") }
     }
 
     // ------------------------------------------------------------------ 删除

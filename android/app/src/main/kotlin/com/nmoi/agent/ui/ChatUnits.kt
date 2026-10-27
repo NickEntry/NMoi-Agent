@@ -54,6 +54,19 @@ internal data class ToolCallArg(
     val arguments: String,
 )
 
+/**
+ * 读一个字符串字段。
+ *
+ * **JSON 的 null 会被 `optString` 变成字面量 `"null"`**（Android 的 org.json 走
+ * `JSON.toString(NULL)`，结果就是这四个字母）。界面上真的会把它显示出来——
+ * 思考块里那个 `null` 就是这么来的，不是模型说的。所以字符串字段一律走这里。
+ */
+private fun JSONObject.text(key: String, fallback: String = ""): String {
+    if (isNull(key)) return fallback
+    val raw = optString(key, fallback)
+    return if (raw == "null") fallback else raw
+}
+
 private fun parseToolArgs(array: JSONArray?): List<ToolCallArg> {
     if (array == null) return emptyList()
     return buildList {
@@ -61,9 +74,9 @@ private fun parseToolArgs(array: JSONArray?): List<ToolCallArg> {
             val row = array.optJSONObject(index) ?: continue
             add(
                 ToolCallArg(
-                    callId = row.optString("call_id", ""),
-                    name = row.optString("name", ""),
-                    arguments = row.optString("arguments", ""),
+                    callId = row.text("call_id"),
+                    name = row.text("name"),
+                    arguments = row.text("arguments"),
                 ),
             )
         }
@@ -105,17 +118,17 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
             val unit = items.optJSONObject(index) ?: continue
             add(
                 ChatUnit(
-                    id = unit.optString("id", ""),
-                    kind = unit.optString("kind", "turn"),
+                    id = unit.text("id"),
+                    kind = unit.text("kind", "turn"),
                     closed = unit.optBoolean("closed", true),
                     createdAt = unit.optLong("created_at", 0L),
                     messages = parseMessages(unit.optJSONArray("messages")),
                     broken = unit.optJSONObject("broken")?.let { block ->
                         BrokenBlock(
-                            id = block.optString("id", ""),
-                            kind = block.optString("kind", ""),
-                            reason = block.optString("reason", ""),
-                            declaration = block.optString("declaration", "这一段当时断了"),
+                            id = block.text("id"),
+                            kind = block.text("kind"),
+                            reason = block.text("reason"),
+                            declaration = block.text("declaration", "这一段当时断了"),
                         )
                     },
                 ),
@@ -123,7 +136,7 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
         }
     }
     return ChatPage(
-        sessionId = envelope.optString("session", ""),
+        sessionId = envelope.text("session"),
         units = units,
         total = envelope.optInt("units_total", units.size),
         truncated = envelope.optBoolean("truncated", false),
@@ -137,22 +150,22 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
             val message = array.optJSONObject(index) ?: continue
             add(
                 ChatMessage(
-                    id = message.optString("id", ""),
+                    id = message.text("id"),
                     seq = message.optLong("seq", 0L),
-                    role = message.optString("role", "assistant"),
-                    source = message.optString("source", "history"),
-                    content = message.optString("content", ""),
+                    role = message.text("role", "assistant"),
+                    source = message.text("source", "history"),
+                    content = message.text("content"),
                     tokens = message.optLong("tokens", 0L),
                     createdAt = message.optLong("created_at", 0L),
                     incomplete = message.optBoolean("incomplete", false),
                     locked = message.optBoolean("locked", false),
                     toolCalls = message.optInt("tool_calls", 0),
-                    toolCallId = message.optString("tool_call_id", "").ifEmpty { null },
+                    toolCallId = message.text("tool_call_id").ifEmpty { null },
                     versionCount = message.optInt("version_count", 0),
                     versionActive = message.optInt("version_active", 0),
-                    versionView = message.optString("version_view", "raw"),
+                    versionView = message.text("version_view", "raw"),
                     versionEdited = message.optBoolean("version_edited", false),
-                    reasoning = message.optString("reasoning", "").ifBlank { null },
+                    reasoning = message.text("reasoning").ifBlank { null },
                     toolArgs = parseToolArgs(message.optJSONArray("tool_call_args")),
                 ),
             )
