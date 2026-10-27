@@ -134,6 +134,8 @@ struct TurnInput {
     avg_per_turn: Option<u64>,
     /// 原生命令（`System-Shell`）这一轮开不开。**默认关**：它是这个 App 能跑的最危险的一把。
     native_shell: bool,
+    /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
+    thinking: Option<String>,
 }
 
 fn bad(field: &str, expected: &str) -> FfiError {
@@ -282,7 +284,49 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         budget,
         avg_per_turn: optional_u64(&root, "avg_per_turn")?,
         native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
+        thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
     })
+}
+
+/// 思考强度（D162）。`auto` = **不注任何字段**，让模型自己决定。
+///
+/// 字段族由 `default_thinking_field` 按 (provider, 模型风味) 选：OpenAI 系是 `reasoning_effort`，
+/// Anthropic / Gemini 是预算式字段。所以这里只填 `effort`，不自己拼 JSON——
+/// 拼错一个键，模型会当没看见，用户看到的是"我选了 max 它没反应"。
+fn apply_thinking(request: ChatRequest, kind: ProviderKind, level: &str) -> FfiResult<ChatRequest> {
+    use nmoi_core::config::{default_thinking_field, ModelFlavor, ThinkingContext};
+    use nmoi_core::provider::{ThinkingEffort, ThinkingSetting};
+
+    let level = level.trim();
+    if level.eq_ignore_ascii_case("auto") {
+        return Ok(request);
+    }
+    let setting = if level.eq_ignore_ascii_case("off") {
+        ThinkingSetting::disabled()
+    } else {
+        let effort = match level.to_ascii_lowercase().as_str() {
+            "minimal" => ThinkingEffort::Minimal,
+            "low" => ThinkingEffort::Low,
+            "medium" => ThinkingEffort::Medium,
+            "high" => ThinkingEffort::High,
+            "xhigh" => ThinkingEffort::XHigh,
+            "max" => ThinkingEffort::Max,
+            other => {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!(
+                        "thinking 只能是 auto / off / minimal / low / medium / high / xhigh / max，收到 `{other}`"
+                    ),
+                ))
+            }
+        };
+        ThinkingSetting {
+            field: default_thinking_field(&ThinkingContext::new(kind, ModelFlavor::Other)),
+            effort: Some(effort),
+            ..ThinkingSetting::default()
+        }
+    };
+    Ok(request.thinking(setting))
 }
 
 fn policy_for(input: &TurnInput) -> AssistantPolicy {
@@ -414,6 +458,9 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         }
         if let Some(temperature) = input.temperature {
             request = request.temperature(temperature);
+        }
+        if let Some(level) = input.thinking.as_deref() {
+            request = apply_thinking(request, input.provider_kind, level)?;
         }
 
         // 校准按模型取：换模型就是另一套口径（D95 的键里有模型）。
@@ -616,6 +663,29 @@ mod tests {
         let error = parse(&broken).unwrap_err();
         assert_eq!(error.kind, "bad_argument");
         assert!(error.message.contains("`model`"), "{}", error.message);
+    }
+
+    /// `auto` = 一个字段都不注；给了档位 = 真的落到 `thinking.effort` 上。
+    #[test]
+    fn thinking_levels_land_on_the_request() {
+        use nmoi_core::provider::{ProviderConfig, ThinkingEffort};
+        let base = || {
+            ChatRequest::new(
+                ProviderConfig::new("p", ProviderKind::OpenAiCompatible, "http://127.0.0.1:1/v1"),
+                "m",
+            )
+        };
+
+        let auto = apply_thinking(base(), ProviderKind::OpenAiCompatible, "auto").unwrap();
+        assert_eq!(auto.thinking.effort, None, "auto 不该注任何字段");
+
+        let high = apply_thinking(base(), ProviderKind::OpenAiCompatible, "high").unwrap();
+        assert_eq!(high.thinking.effort, Some(ThinkingEffort::High));
+
+        let off = apply_thinking(base(), ProviderKind::OpenAiCompatible, "off").unwrap();
+        assert_eq!(off.thinking.effort, None);
+
+        assert!(apply_thinking(base(), ProviderKind::OpenAiCompatible, "超高").is_err());
     }
 
     #[test]

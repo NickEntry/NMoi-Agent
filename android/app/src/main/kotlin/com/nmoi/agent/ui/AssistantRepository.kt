@@ -18,6 +18,8 @@ internal data class AssistantEntry(
     /** 覆盖模型上的默认参数；`null` = 用模型自己那份。 */
     val temperature: Double? = null,
     val maxTokens: Int? = null,
+    /** 思考强度（D162）：`auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。 */
+    val thinking: String = "auto",
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
@@ -71,6 +73,7 @@ internal object AssistantRepository {
                 .put("name", entry.name)
                 .put("provider_id", entry.providerId)
                 .put("model_id", entry.modelId)
+                .put("thinking", entry.thinking)
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
@@ -79,7 +82,7 @@ internal object AssistantRepository {
                 .onSuccess {
                     NLog.i(
                         "Assistant",
-                        "当前模型：${entry.providerId} / ${entry.modelId}",
+                        "当前模型：${entry.providerId} / ${entry.modelId} · 思考=${entry.thinking}",
                     )
                 }
                 .onFailure { NLog.w("Assistant", "保存助手配置失败：${it.message}") }
@@ -102,6 +105,7 @@ internal object AssistantRepository {
             null
         },
         maxTokens = doc.optInt("max_tokens", 0).takeIf { it > 0 },
+        thinking = doc.optString("thinking", "auto").ifBlank { "auto" },
     )
 }
 

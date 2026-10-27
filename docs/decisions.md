@@ -3442,3 +3442,15 @@ D38 原本写"TLS 由平台侧传输实现"。那样要 Rust 往 JVM 回调（`A
 - 参数优先级：助手上的 `temperature` / `max_tokens` 覆盖模型上的；都没填就不传。
 - 一条兜底：助手配置读不到（老库）时，从供应商目录推导一份**但不写库**——
   读不该有副作用；用户第一次点选择才落盘。
+
+## D162 思考强度与思考块
+
+- **思考强度**（`FFI turn.thinking` → `ThinkingSetting.effort`）：`auto`（**一个字段都不注**）/
+  `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。字段族交给
+  `default_thinking_field(kind, flavor)`——不自己拼 JSON，拼错一个键模型就当没看见。
+  存在**助手**上（`settings(assistant,"default").thinking`），聊天页那颗仪表盘图标进档位面板。
+- **思考块显示**：`load_units` 从这一版起带 `reasoning`（D158 就带上了），
+  聊天页在助手正文上方放一张折叠卡（默认收起，只显示字数）。
+  以前 `reasoning` 只存不显示，是铁律 ② 直接踩线的一处——这一版补上。
+- 模型不支持某一档时不静默丢弃：`TurnPlan` 那条路会记 `Dropped { reason }`；
+  这条 FFI 路径没有冻结计划，所以只保证"发出去的是你要的那一档"，界面文案写"下一轮生效"。

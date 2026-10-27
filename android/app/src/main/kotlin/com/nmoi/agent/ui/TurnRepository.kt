@@ -106,6 +106,7 @@ internal object TurnRepository {
                     // 工作区句柄 0 = 没绑（FFI 那边 `optional_u64(...).filter(|id| *id != 0)` 会忽略它）。
                     .put("workspace", workspace.getOrNull() ?: 0L)
                     .put("native_shell", nativeShell)
+                .put("thinking", assistant.thinking)
                     .put("user_text", text)
                     .put("now_ms", System.currentTimeMillis())
                     .also { row ->

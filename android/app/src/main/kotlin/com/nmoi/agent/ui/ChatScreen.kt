@@ -150,11 +150,15 @@ internal fun ChatScreen(
     var assistant by remember { mutableStateOf(AssistantEntry()) }
     var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
     var modelSheet by remember { mutableStateOf(false) }
+    var thinkingSheet by remember { mutableStateOf(false) }
     LaunchedEffect(sessionId, reloadKey) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
             AssistantRepository.choices(databasePath).onSuccess { choices = it }
         }
+    }
+    val thinkingLabel = remember(assistant.thinking) {
+        THINKING_LEVELS.firstOrNull { it.first == assistant.thinking }?.second ?: assistant.thinking
     }
     val modelLabel = remember(assistant, choices) {
         choices.firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
@@ -521,6 +525,8 @@ internal fun ChatScreen(
                     busy = busy,
                     unsaved = sessionId == null,
                     onHint = { notice = it },
+                    onThinking = { thinkingSheet = true },
+                    thinkingLabel = thinkingLabel,
                     onEditTextReady = { editTextRef.value = it },
                     onSend = sendTurn,
                     onStop = {
@@ -587,6 +593,34 @@ internal fun ChatScreen(
                 },
                 onHint = { notice = it },
                 onDismiss = { modelSheet = false },
+            )
+        }
+
+        if (thinkingSheet) {
+            MenuSheet(
+                title = "思考强度",
+                items = THINKING_LEVELS.map { (wire, label) ->
+                    SheetItem(
+                        label = if (wire == assistant.thinking) "$label（当前）" else label,
+                        icon = ActionIcons.Gauge,
+                        hint = null,
+                        onClick = {
+                            thinkingSheet = false
+                            scope.launch {
+                                val next = assistant.copy(thinking = wire)
+                                AssistantRepository.save(databasePath, next).fold(
+                                    onSuccess = {
+                                        assistant = next
+                                        notice = "思考强度：$label（下一轮开始生效）"
+                                    },
+                                    onFailure = { notice = "保存失败：${it.message}" },
+                                )
+                            }
+                        },
+                    )
+                },
+                onHint = { notice = it },
+                onDismiss = { thinkingSheet = false },
             )
         }
 
@@ -1122,17 +1156,22 @@ private fun UnitBlock(
                         onVersion = { no, view -> onVersionMessage(message.id, no, view) },
                     )
 
-                    else -> AssistantMessage(
-                        message = message,
-                        selecting = selecting,
-                        isSelected = message.id in selected,
-                        onLongPress = { onLongPressMessage(message.id) },
-                        onTap = { if (selecting) onToggleMessage(message.id) },
-                        onCopied = onCopied,
-                        onShare = { onShareMessage(message.id) },
-                        onMore = { onMoreMessage(message.id) },
-                        onVersion = { no, view -> onVersionMessage(message.id, no, view) },
-                    )
+                    else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        // 思考块（D162）：以前 `reasoning` 只存不显示，界面上永远看不见——
+                        // 那是铁律 ②（不许有存了但看不见的东西）直接踩线的一处。
+                        message.reasoning?.takeIf { it.isNotBlank() }?.let { ReasoningCard(it) }
+                        AssistantMessage(
+                            message = message,
+                            selecting = selecting,
+                            isSelected = message.id in selected,
+                            onLongPress = { onLongPressMessage(message.id) },
+                            onTap = { if (selecting) onToggleMessage(message.id) },
+                            onCopied = onCopied,
+                            onShare = { onShareMessage(message.id) },
+                            onMore = { onMoreMessage(message.id) },
+                            onVersion = { no, view -> onVersionMessage(message.id, no, view) },
+                        )
+                    }
                 }
             }
         }
@@ -1898,6 +1937,8 @@ private fun Composer(
     busy: Boolean,
     unsaved: Boolean,
     onHint: (String) -> Unit,
+    onThinking: () -> Unit,
+    thinkingLabel: String,
     onEditTextReady: (EditText) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -1951,8 +1992,8 @@ private fun Composer(
                     )
                     IconActionButton(
                         image = ActionIcons.Gauge,
-                        description = "思考强度",
-                        onClick = { onHint("思考强度待接：滑块 + 模型能力位（P3.4，D37）") },
+                        description = "思考强度：$thinkingLabel",
+                        onClick = onThinking,
                         compact = true,
                     )
                     IconActionButton(
@@ -2405,5 +2446,58 @@ private fun ModelBar(label: String, onClick: () -> Unit) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(12.dp).padding(start = 2.dp),
         )
+    }
+}
+
+/** 思考强度档位：wire 值必须跟 `crates/ffi/src/turn.rs` 的 `apply_thinking` 对表。 */
+private val THINKING_LEVELS = listOf(
+    "auto" to "自动（不注字段）",
+    "off" to "关闭",
+    "low" to "低",
+    "medium" to "中",
+    "high" to "高",
+    "max" to "最大",
+)
+
+/**
+ * 一条消息的思考块（D162）。折叠起来只占一行，点开看全文。
+ *
+ * 为什么不做成"气泡旁边的小字"：思考经常几百字，铺开之后正文就被挤到屏外，
+ * 而那才是他要读的东西。
+ */
+@Composable
+private fun ReasoningCard(text: String) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded },
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = ActionIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(12.dp),
+                )
+                Text(
+                    text = if (expanded) "思考（点一下收起）" else "思考 · ${text.length} 字",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
+            if (expanded) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
     }
 }
