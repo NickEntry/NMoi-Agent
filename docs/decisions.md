@@ -3710,3 +3710,30 @@ proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/pr
 
 为了让"路径不对"这件事可查，`describePaths()` 把 `filesDir` / `nativeLibraryDir` / `envir`
 三个真实值写进日志（安装一次、每次自检一次），出问题时不用猜这台机器上是什么。
+
+### D172 `WorkSpace-EnvirShell` 接进工具面
+
+容器能跑通（D171）之后的下一件：让模型在容器里执行命令。形状照 D159 定的来，一处没改。
+
+- **core**：`crates/core/src/shell.rs` 里加 `EnvirSpec`（proot / loader / lib_dir / rootfs / tmp，
+  五个**宿主机**绝对路径）与 `EnvirShellTool`。`System-Shell` 与它共用同一个 `execute()`——
+  超时、杀进程组、双流并读、每流 64 KiB 封顶只有一份实现。两份实现迟早会在"容器里的超时"
+  和"原生命令的超时"之间分叉，而那种分叉没人测得到。
+- **命令行长这样**：`proot -0 -r <rootfs> -b /dev -b /proc -b /sys -b <工作区>:/root/workspace
+  -w /root/workspace /bin/sh -c <命令>`。容器里看到的工作区固定是 `/root/workspace`，
+  与宿主机 `filesDir/workspace` 是同一个目录。
+- **环境变量**：`LD_LIBRARY_PATH`（库里那两条符号链接）、`PROOT_LOADER`、`PROOT_TMP_DIR`、
+  `PROOT_NO_SECCOMP=1`、**`PATH`**（guest 那五条目录）、`HOME=/root`、`TERM`。
+  `PATH` 是真机撞出来的：不给的话容器里的 `sh` 继承 Android 的 PATH，`head`/`uname`/`ls`
+  全 "not found"、退出码 127。
+- **门控**：`Capability::ContainerExec`，默认关。FFI 只在收到完整的 `envir` 五件套时
+  `enable_container(true)`；开关关着或没装，core 连这个工具都不会声明（不是"声明了再报错"）。
+- **`cwd`**：模型给的相对目录只做**词法**校验（不许绝对路径、不许 `..`）——它在容器里，
+  宿主机上不存在，没法也不该 `canonicalize`。用法是往 `-w` 后面接。
+- **界面**：设置 → 工具与工作区里 `WorkSpace-EnvirShell` 从"灰行"变成**真开关**（默认关，
+  开之前一次确认）；环境没装时它仍是灰的（拨了不生效的开关比没有更糟）。
+- **测试**：拿一个**假 proot**（把 `-c` 后面那段当真命令跑）验我们这一侧——命令拼得对、
+  `PATH` 是 guest 的、超时会杀、没坐标会明说、门控挡得住。proot 本身是别人的活，真机验。
+
+**没做的**：容器里的网络（`apt update` 需要 DNS 与 `/etc/resolv.conf`，proot 默认不带），
+以及"容器里能不能访问宿主的网络"这个问题还没定；工作区挂载是只读写工作区，别的一概不绑。

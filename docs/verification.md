@@ -767,3 +767,32 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
    切到「模型」页点「从端点拉取模型」：模型表多出若干行，**原来手填的那几条参数没变**；
    提示写"新增 N 个（共 M 个）· 记得点保存"。点「保存」之后重进这一页，清单还在。
    失败：`HTTP 404` → 那份供应商的 `base_url` 少写或多写了版本段（约定是 `…/v1`）。
+
+### V13 容器里的命令（`WorkSpace-EnvirShell`，D172）
+
+**这一版会碰什么**：命令只跑在 `filesDir/envir/ubuntu` 那份 rootfs 里；唯一共享的是工作区
+（容器里是 `/root/workspace`）。开这个开关之前不会有一条命令发出去。
+
+1. 设置 → 工具与工作区：环境已装时，`WorkSpace-EnvirShell` 是**能拨的开关**（默认关）；
+   如果环境没装，它仍是灰的，副标题写"先把下面那个环境装上"。
+2. 拨开 → 确认卡（写清"工作区是共享的，在容器里删掉的东西手机上也没了"）→ 开关变开。
+   杀掉 App 重进：仍然开着（只存本机）。
+3. 回聊天页，发一句会用到容器的话，例如
+   `在隔离环境里跑 uname -a 和 cat /etc/os-release，告诉我是什么系统`。
+   **判据**：消息里出现工具卡（名字是 `WorkSpace-EnvirShell`）→ 展开是命令 + stdout/stderr
+   两个页签；stdout 里能看到 `Ubuntu` 与手机内核号；右上角"退出码 0"。
+4. 让它证明"只共享工作区"：`ls /root/workspace` 应当能看到你工作区里的文件；
+   `ls /sdcard` 应当报 `No such file or directory`（容器里没有那个路径）。
+5. 让它建个文件：`在容器里的工作区建 hello.txt 写上 hi` → 回聊天页用 `read_file` 读 `hello.txt`。
+   **判据**：读得到（同一个目录），说明绑定是真绑上了。
+6. 超时：`跑 sleep 60`。**判据**：约 30 秒后工具卡写"被信号终止 · 超时"，这一轮正常收尾。
+7. 关掉开关再发同样的请求。**判据**：**没有工具卡**，模型只回文字。
+
+失败对照：
+
+| 现象 | 先看 | 多半是 |
+|---|---|---|
+| 工具卡里 `隔离环境没就绪` | 设置里环境是否已装 | 开关开着但 rootfs 被删了（重装一次） |
+| `proot error: ... /bin/sh: No such file` | `logcat -s Envir` 的"自检路径" | `envir` 五件套里某个路径不对（升级 APK 后 `nativeLibraryDir` 变了，重启 App 即可） |
+| 命令全 `not found`、退出码 127 | stdout 里 `echo $PATH` | guest 的 PATH 没给（回归） |
+| `proot: can't chdir to ...` | 命令里的 `cwd` | 模型给了个容器里不存在的相对目录 |

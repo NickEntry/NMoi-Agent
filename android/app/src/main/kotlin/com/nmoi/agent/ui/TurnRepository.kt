@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import android.content.Context
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -91,6 +92,14 @@ internal object TurnRepository {
         val nativeShell = ToolingRepository.nativeShell(context) && workspace.isSuccess
         try {
             withStorageHandle(databasePath) { handle ->
+                // 隔离环境（D172）：**装好了 + 开关开着**才把坐标交给 core。
+                // 只给一半（开关开着但没装）会让模型看到一个"声明了但一调就失败"的工具，
+                // 所以这里两个条件都满足才发，界面上也照这个口径显示。
+                val envir = if (ToolingRepository.envirShell(context)) {
+                    EnvirRepository.installed(context)
+                } else {
+                    null
+                }
                 val config = JSONObject()
                     .put("storage", handle)
                     .put("session", sessionId)
@@ -107,6 +116,7 @@ internal object TurnRepository {
                     .put("workspace", workspace.getOrNull() ?: 0L)
                     .put("native_shell", nativeShell)
                 .put("thinking", assistant.thinking)
+                    .also { row -> envir?.let { row.put("envir", envirJson(context, it)) } }
                     .put("user_text", text)
                     .put("now_ms", System.currentTimeMillis())
                     .also { row ->
@@ -132,6 +142,17 @@ internal object TurnRepository {
             workspace.getOrNull()?.let { ToolingRepository.close(it) }
         }
     }
+
+    /** 交给 core 的五个宿主机路径。少一个 core 会在解析时点名，不会拼出一条半截命令。 */
+    private fun envirJson(
+        context: Context,
+        installed: EnvirRepository.Installed,
+    ): JSONObject = JSONObject()
+        .put("proot", EnvirRepository.prootPath(context).absolutePath)
+        .put("loader", File(EnvirRepository.runtimeDir(context), "libnmoi_proot_loader.so").absolutePath)
+        .put("lib_dir", EnvirRepository.ensureLibLinks(context).getOrThrow().absolutePath)
+        .put("rootfs", installed.rootfs)
+        .put("tmp", File(EnvirRepository.envirDir(context), "tmp").apply { mkdirs() }.absolutePath)
 
     /** 点"停止"。没在跑不算失败：`cancelled:false` 只说明它已经收尾了。 */
     suspend fun cancel(sessionId: String): Result<Boolean> =

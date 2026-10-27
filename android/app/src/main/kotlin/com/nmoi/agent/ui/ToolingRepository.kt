@@ -18,6 +18,7 @@ import java.io.File
 internal object ToolingRepository {
     private const val PREFS = "nmoi.local"
     private const val KEY_NATIVE_SHELL = "tool.native_shell"
+    private const val KEY_ENVIR_SHELL = "tool.envir_shell"
 
     /** 工作区根目录。**先建好再绑**：FFI 那边不替用户建目录（绑错路径要当场知道）。 */
     fun workspaceRoot(context: Context): File =
@@ -54,6 +55,25 @@ internal object ToolingRepository {
     fun nativeShell(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_NATIVE_SHELL, false)
+
+    /**
+     * 本机开关：容器里的命令（`WorkSpace-EnvirShell`，D172）。默认关。
+     *
+     * 跟 `native_shell` 一样**只存本机**：它描述的是"这台设备上允不允许"，换机导入一个 `true`
+     * 只会得到"看着开着、其实没有 rootfs"。真正的可用性由 `EnvirRepository.installed()` 说话，
+     * 这里只表示用户的意愿。
+     */
+    fun envirShell(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ENVIR_SHELL, false)
+
+    fun setEnvirShell(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_ENVIR_SHELL, enabled)
+            .apply()
+        NLog.i("Tools", "WorkSpace-EnvirShell 开关：${if (enabled) "开" else "关"}")
+    }
 
     fun setNativeShell(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

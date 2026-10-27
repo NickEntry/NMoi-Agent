@@ -73,8 +73,11 @@ Linux 上 PRoot 没有必要：命名空间是真的，伪 chroot 只会更慢�
 **实现状态（D165）**：第 2 步（rootfs 下载 → 校验 → 解包 → 版本记录）与第 3 步的启动器参数
 （`proot -0 -r <rootfs> -b /dev -b /proc -b /sys -w /root`，加上 `LD_LIBRARY_PATH` / `PROOT_TMP_DIR`）
 已经落在 `ui/EnvirRepository.kt` 与 `ui/EnvirScreen.kt`，界面里还带一个自检按钮能就地跑一次。
-**还没做**：第 1 步能力探测（`/proc` 可读性、ptrace 是否被拦、剩余空间）、第 4 步工作区挂载、
-第 5 步工具接线（`WorkSpace-EnvirShell`）、第 6 步进程组回收。布局与理由见 D165。
+**第 4 步（工作区挂载）与第 5 步（工具接线）已经做了**（D172）：工作区只绑到
+`/root/workspace` 一个目录（读写），工具是 `WorkSpace-EnvirShell`，门控 `ContainerExec` 默认关。
+
+**还没做**：第 1 步能力探测（`/proc` 可读性、ptrace 是否被拦、剩余空间）与第 6 步的
+"反复进出 20 次不泄漏进程"验收；容器里的网络（DNS / `resolv.conf`）也没接。布局与理由见 D165。
 
 **已知死穴（必须先说清）**：PRoot 不能嵌套运行。我们自己的开发沙箱就是 PRoot，
 所以"在沙箱里测 PRoot"这条路走不通——容器相关测试只能在真机/CI 的普通容器里跑，

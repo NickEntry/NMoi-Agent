@@ -135,6 +135,9 @@ pub struct SessionConfig<'a> {
     ///
     /// 传了它，压缩判据、工具循环的每一轮、思考字段都读同一份值——中途改设置不会传染进来。
     pub plan: Option<&'a crate::turn::TurnPlan>,
+    /// 容器运行时的坐标（D172）。`None` = 这一轮没有隔离环境可用，
+    /// `WorkSpace-EnvirShell` 不会被声明（门控也没开）。
+    pub envir: Option<&'a crate::shell::EnvirSpec>,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -174,6 +177,7 @@ impl Default for SessionConfig<'_> {
             retry: None,
             suppress_compression: false,
             plan: None,
+            envir: None,
         }
     }
 }
@@ -264,6 +268,9 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     // 工具声明也用同一份名单。冻结在**发出去的那一份**上生效，base 由调用方持有。
     let mut frozen_base = base.clone();
     let mut ctx = ToolContext::new(policy, workspace);
+    if let Some(envir) = config.envir {
+        ctx = ctx.with_envir(envir);
+    }
     if let Some(plan) = config.plan {
         plan.apply(&mut frozen_base);
         ctx = ctx.with_declared(plan.declared_tools());

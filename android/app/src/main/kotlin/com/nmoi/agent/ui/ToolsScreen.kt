@@ -44,8 +44,9 @@ import androidx.compose.ui.unit.sp
  *   能碰的就是这个 App 能碰的文件。
  * - 隔离环境：**装在你自己的私有目录里**（proot + Ubuntu rootfs，D165）。这一行是入口，
  *   点进去装/看/删/自检；没装时它写清"未安装"和体积，不写成灰字糊过去。
- * - `WorkSpace-EnvirShell`：工具这一版**还没接**，所以这里仍是一行灰的说明，
- *   不是一个能拨的开关——但文案跟着"环境装没装"变，否则用户装完了还看到"没打进包"。
+ * - `WorkSpace-EnvirShell`（D172）：**真的开关**，默认关。环境没装时它是灰的——
+ *   拨了也不会生效的那种开关比没有更糟；装了之后拨开要过一次确认（容器里的命令能改容器的一切，
+ *   而工作区是共享的）。
  */
 @Composable
 internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
@@ -55,6 +56,9 @@ internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
     val root = remember { ToolingRepository.workspaceRoot(context).absolutePath }
     // 从安装页回来时这个 composable 会重新组合，所以每次读到的都是当下的状态。
     val envir = remember { EnvirRepository.installed(context) }
+    // 容器里的命令（D172）：开关是"用户允不允许"，能不能跑由 `envir` 说话。
+    var envirShell by remember { mutableStateOf(ToolingRepository.envirShell(context)) }
+    var confirmEnvirShell by remember { mutableStateOf(false) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -118,33 +122,26 @@ internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                         modifier = Modifier.padding(start = 14.dp),
                     )
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "WorkSpace-EnvirShell",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                text = "未就绪",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text(
-                            text = if (envir == null) {
-                                "隔离环境里的命令。先把下面那个环境装上，这一项才有东西可跑——" +
-                                    "拨了也不会生效的那种开关比没有更糟，所以现在不给开关。"
+                    ToolSwitchRow(
+                        title = "WorkSpace-EnvirShell",
+                        subtitle = if (envir == null) {
+                            "隔离环境里的命令。**先把下面那个环境装上**——没有 rootfs 就没有东西可跑，" +
+                                "所以这一行现在是灰的。"
+                        } else {
+                            "在容器里的 Ubuntu 里跑命令，起点是工作区（容器里看到的是 /root/workspace）。" +
+                                "容器里动什么都不影响这台手机；工作区是唯一共享的地方。默认关。"
+                        },
+                        checked = envir != null && envirShell,
+                        enabled = envir != null,
+                        onChecked = { next ->
+                            if (next) {
+                                confirmEnvirShell = true
                             } else {
-                                "环境已经装好（${envir.label}），但工具这一层还没接：现在还没有开关，" +
-                                    "模型也不会自己进去跑命令。"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
+                                ToolingRepository.setEnvirShell(context, false)
+                                envirShell = false
+                            }
+                        },
+                    )
                 }
 
                 SectionLabel("隔离环境")
@@ -194,6 +191,17 @@ internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
         }
     }
 
+    if (confirmEnvirShell) {
+        ConfirmEnvirShellDialog(
+            onCancel = { confirmEnvirShell = false },
+            onConfirm = {
+                confirmEnvirShell = false
+                ToolingRepository.setEnvirShell(context, true)
+                envirShell = true
+            },
+        )
+    }
+
     if (confirmShell) {
         ConfirmShellDialog(
             onCancel = { confirmShell = false },
@@ -232,6 +240,7 @@ private fun ToolSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onChecked: (Boolean) -> Unit,
 ) {
     Row(
@@ -243,7 +252,11 @@ private fun ToolSwitchRow(
                 text = title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                },
             )
             Text(
                 text = subtitle,
@@ -253,7 +266,7 @@ private fun ToolSwitchRow(
             )
         }
         Spacer(Modifier.size(8.dp))
-        Switch(checked = checked, onCheckedChange = onChecked)
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onChecked)
     }
 }
 
@@ -282,6 +295,50 @@ private fun ConfirmShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
                     Text(
                         text = "命令跑在这个 App 的身份下：工作区以外、只要 App 有权限的地方它也能碰。" +
                             "删目录、改系统设置这类事收不回来。你随时可以在这一页关掉。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        DialogChip("取消", onClick = onCancel)
+                        Spacer(Modifier.size(8.dp))
+                        DialogChip("打开", primary = true, onClick = onConfirm)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 打开容器命令前的确认。跟 `System-Shell` 一样的形状，但危险面小一档：
+ *  容器里动什么都不影响手机，共享的只有工作区。 */
+@Composable
+private fun ConfirmEnvirShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(onClick = onCancel),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "允许模型在容器里跑命令？",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "命令跑在容器里的 Ubuntu 里：装包、改容器的 /、删容器里的东西都只影响那份 rootfs。" +
+                            "**工作区是共享的**——它在容器里是 /root/workspace，在里面 rm 掉的东西，手机上也没了。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp),

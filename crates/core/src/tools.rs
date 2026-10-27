@@ -110,6 +110,9 @@ pub struct ToolContext<'a> {
     /// 前者是"这一轮明确一个都不声明"，后者是"没算过"。混起来会出现
     /// "模型不支持工具，却还是把声明表发出去了"。
     pub declared: Option<&'a [String]>,
+    /// 容器运行时的坐标（D172）。`None` = 隔离环境没就绪，
+    /// `WorkSpace-EnvirShell` 就算被声明了也只会回一句"没就绪"。
+    pub envir: Option<&'a crate::shell::EnvirSpec>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -118,7 +121,14 @@ impl<'a> ToolContext<'a> {
             policy,
             workspace,
             declared: None,
+            envir: None,
         }
+    }
+
+    /// 这一轮有容器可用。
+    pub fn with_envir(mut self, envir: &'a crate::shell::EnvirSpec) -> Self {
+        self.envir = Some(envir);
+        self
     }
 
     /// 用冻结好的名单声明工具。
@@ -174,6 +184,8 @@ impl ToolRegistry {
         registry.register(Box::new(SearchTool));
         // 原生命令（D159）：声明另外由 `Capability::NativeShell` 门控，默认不出现。
         registry.register(Box::new(crate::shell::SystemShellTool));
+        // 容器里的命令（D172）：由 `Capability::ContainerExec` 门控，同样默认不出现。
+        registry.register(Box::new(crate::shell::EnvirShellTool));
         registry
     }
 
@@ -717,10 +729,15 @@ mod tests {
     }
 
     #[test]
-    fn registry_declares_six_workspace_tools() {
+    fn registry_declares_the_workspace_tools_and_both_shells() {
         let registry = ToolRegistry::workspace_defaults();
         let names = registry.names();
-        assert_eq!(names.len(), 7, "{names:?}");
+        // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）。
+        // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
+        assert_eq!(names.len(), 8, "{names:?}");
+        for name in ["System-Shell", "WorkSpace-EnvirShell"] {
+            assert!(names.contains(&name), "缺少 {name}");
+        }
         for name in [
             "edit_file",
             "find_files",
@@ -732,7 +749,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 7);
+        assert_eq!(specs.len(), 8);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }

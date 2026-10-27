@@ -38,11 +38,13 @@ use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
 use nmoi_core::provider::{ProviderConfig, ProviderKind};
 use nmoi_core::runtime::{ChatClient, ChatRequest};
 use nmoi_core::session::{run_session_turn, SessionConfig, SessionError, SessionTurn};
+use nmoi_core::shell::EnvirSpec;
 use nmoi_core::tools::ToolRegistry;
 use nmoi_core::transport::HttpsTransport;
 use nmoi_core::workspace::Workspace;
 use nmoi_storage::Storage;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 
 use crate::handles::{storage_path, with_workspace};
 use crate::json::{read_str, run_json, FfiError, FfiResult};
@@ -136,6 +138,45 @@ struct TurnInput {
     native_shell: bool,
     /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
     thinking: Option<String>,
+    /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
+    /// 五个路径全是**宿主机**上的绝对路径，由调用方（Kotlin）现取现传。
+    envir: Option<EnvirSpec>,
+}
+
+/// 解析 `envir`（D172）。**五个字段缺一不可**：少一个就是一条拼不起来的命令行，
+/// 与其让它在 proot 那边变成一个看不懂的报错，不如在这里点名。
+fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
+    let Some(value) = field(root, "envir") else {
+        return Ok(None);
+    };
+    if !value.is_object() {
+        return Err(bad(
+            "envir",
+            "必须是对象（proot / loader / lib_dir / rootfs / tmp）",
+        ));
+    }
+    let mut paths = Vec::with_capacity(5);
+    for name in ["proot", "loader", "lib_dir", "rootfs", "tmp"] {
+        paths.push(PathBuf::from(envir_path(value, name)?));
+    }
+    Ok(Some(EnvirSpec {
+        proot: paths[0].clone(),
+        loader: paths[1].clone(),
+        lib_dir: paths[2].clone(),
+        rootfs: paths[3].clone(),
+        tmp: paths[4].clone(),
+    }))
+}
+
+/// `envir` 里的一个路径。**报错带上前缀**（`envir.loader`）：
+/// 只说 `loader` 的话，日志里看不出是顶层字段还是这一块里的。
+fn envir_path(parent: &Value, name: &str) -> FfiResult<String> {
+    match parent.get(name) {
+        Some(Value::String(text)) if !text.trim().is_empty() => Ok(text.clone()),
+        Some(Value::String(_)) => Err(bad(&format!("envir.{name}"), "不能是空字符串")),
+        Some(_) => Err(bad(&format!("envir.{name}"), "必须是字符串")),
+        None => Err(bad(&format!("envir.{name}"), "是必填的")),
+    }
 }
 
 fn bad(field: &str, expected: &str) -> FfiError {
@@ -285,6 +326,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         avg_per_turn: optional_u64(&root, "avg_per_turn")?,
         native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
+        envir: parse_envir(&root)?,
     })
 }
 
@@ -330,15 +372,19 @@ fn apply_thinking(request: ChatRequest, kind: ProviderKind, level: &str) -> FfiR
 }
 
 fn policy_for(input: &TurnInput) -> AssistantPolicy {
+    // 容器要有 rootfs 才能开（D172）：没有坐标就只是"界面看着能开"。
+    let container = input.envir.is_some();
     match input.workspace {
         // 没有工作区就没有可跑的目录：连带原生命令也开不了（`check` 会回 no_workspace）。
         None => AssistantPolicy::locked_down(),
         Some(_) if input.read_only => AssistantPolicy::locked_down()
             .with_binding(WorkspaceBinding::read_only("ffi-workspace"))
-            .enable_native_shell(input.native_shell),
+            .enable_native_shell(input.native_shell)
+            .enable_container(container),
         Some(_) => AssistantPolicy::locked_down()
             .with_binding(WorkspaceBinding::read_write("ffi-workspace"))
-            .enable_native_shell(input.native_shell),
+            .enable_native_shell(input.native_shell)
+            .enable_container(container),
     }
 }
 
@@ -485,6 +531,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             cancel: &cancel,
             // FFI 这条路径还没有设置面，冻结等 `nmoi_turn_*` 接上设置之后再做。
             plan: None,
+            envir: input.envir.as_ref(),
         };
 
         let client = ChatClient::new(HttpsTransport::default());
@@ -643,6 +690,31 @@ mod tests {
 
     fn parse(text: &str) -> FfiResult<TurnInput> {
         parse_config(text)
+    }
+
+    /// `envir` 要五个路径，缺一个就点名（D172）。这条不是洁癖：
+    /// 少一个字段拼出来的命令行会让 proot 在真机上给一句看不懂的错。
+    #[test]
+    fn envir_needs_all_five_paths() {
+        let full = json!({"envir": {
+            "proot": "/a/proot", "loader": "/a/loader", "lib_dir": "/a/lib",
+            "rootfs": "/a/rootfs", "tmp": "/a/tmp"
+        }});
+        let spec = parse_envir(&full)
+            .expect("五个都在应当解析出来")
+            .expect("Some");
+        assert_eq!(spec.proot.to_string_lossy(), "/a/proot");
+        assert_eq!(spec.rootfs.to_string_lossy(), "/a/rootfs");
+
+        assert!(parse_envir(&json!({})).expect("没有就不管").is_none());
+
+        let missing = json!({"envir": {"proot": "/a/proot"}});
+        let error = parse_envir(&missing).expect_err("缺字段要报错");
+        assert!(
+            error.message.contains("envir.loader"),
+            "报错要点名缺的是哪个：{}",
+            error.message
+        );
     }
 
     fn minimal() -> String {
