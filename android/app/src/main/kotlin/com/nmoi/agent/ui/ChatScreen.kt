@@ -151,6 +151,9 @@ internal fun ChatScreen(
     var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
     var modelSheet by remember { mutableStateOf(false) }
     var thinkingSheet by remember { mutableStateOf(false) }
+    // 增强编辑：待改的那条 + 正在跑（跑的时候不让点第二次）
+    var enhanceFor by remember { mutableStateOf<ChatMessage?>(null) }
+    var enhanceBusy by remember { mutableStateOf(false) }
     LaunchedEffect(sessionId, reloadKey) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
@@ -596,6 +599,36 @@ internal fun ChatScreen(
             )
         }
 
+        val pendingEnhance = enhanceFor
+        if (pendingEnhance != null) {
+            EnhanceDialog(
+                busy = enhanceBusy,
+                onCancel = { if (!enhanceBusy) enhanceFor = null },
+                onRun = { instruction ->
+                    if (!enhanceBusy) {
+                        enhanceBusy = true
+                        scope.launch {
+                            val result = EditRepository.enhance(
+                                context = context,
+                                databasePath = databasePath,
+                                message = pendingEnhance,
+                                instruction = instruction,
+                            )
+                            enhanceBusy = false
+                            result.fold(
+                                onSuccess = { report ->
+                                    enhanceFor = null
+                                    reloadKey += 1
+                                    notice = report.describe()
+                                },
+                                onFailure = { notice = "增强编辑失败：${it.message}" },
+                            )
+                        }
+                    }
+                },
+            )
+        }
+
         if (thinkingSheet) {
             MenuSheet(
                 title = "思考强度",
@@ -725,6 +758,10 @@ internal fun ChatScreen(
                         editingId = sheetMessage.id
                     },
                     onToolEdit = { toolEditProbe(sheetMessage, sheetActive.toLong()) },
+                    onEnhance = {
+                        moreForId = null
+                        enhanceFor = sheetMessage
+                    },
                     // `versionActive` 兜底成 1：万一它是 0（老库/字段没读到），
                     // 传 0 会被 storage 当成"删除所有版本"，那不是用户点"删除此版本"的意思。
                     onDeleteThis = {
@@ -2127,6 +2164,7 @@ private fun messageSheetItems(
     onSaveVersion: () -> Unit,
     onEdit: () -> Unit,
     onToolEdit: () -> Unit,
+    onEnhance: () -> Unit,
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
 ): List<SheetItem> {
@@ -2137,9 +2175,9 @@ private fun messageSheetItems(
             onClick = onEdit,
         ),
         SheetItem(
-            label = "增强编辑",
-            icon = ActionIcons.Pencil,
-            hint = "增强编辑待接：要让模型改写这一段，得先接 turn_run（D136 之后）",
+            label = "增强编辑（让模型改这一条）",
+            icon = ActionIcons.Wrench,
+            onClick = onEnhance,
         ),
         // 临时探针：走"工具编辑"那条路，把 `edited_by_tool` 置上，用来验红/蓝（D148）。
         SheetItem(
@@ -2499,5 +2537,106 @@ private fun ReasoningCard(text: String) {
                 )
             }
         }
+    }
+}
+
+/**
+ * 增强编辑的输入框（D163）：只问"要改成什么样"。
+ *
+ * 为什么不做成"把正文摆出来让你改"：那是「编辑」。这一个的输入是**要求**，
+ * 输出是模型改写后的结果，落在同一版的红字那一份上。
+ */
+@Composable
+private fun EnhanceDialog(busy: Boolean, onCancel: () -> Unit, onRun: (String) -> Unit) {
+    var instruction by remember { mutableStateOf("") }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onCancel,
+                ),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "增强编辑",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "说说要改成什么样。模型会改正文；如果这条消息有思考块或工具参数，也可以一起改" +
+                            "（改后的正文放进「改后」那一份，原文不动）。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    ) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = instruction,
+                            onValueChange = { instruction = it },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(
+                                MaterialTheme.colorScheme.primary,
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        DialogChip(label = "取消", onClick = onCancel)
+                        Spacer(Modifier.width(8.dp))
+                        DialogChip(
+                            label = if (busy) "改写中…" else "开始改写",
+                            primary = true,
+                            onClick = { onRun(instruction) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DialogChip(label: String, primary: Boolean = false, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (primary) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceContainer
+        },
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (primary) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
     }
 }
