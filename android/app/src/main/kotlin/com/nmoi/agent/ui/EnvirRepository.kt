@@ -13,6 +13,8 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 隔离环境（D164 / D165）：proot 运行时 + Ubuntu rootfs。
@@ -146,6 +148,17 @@ internal object EnvirRepository {
      * 它会让 `installed()` 判成"已装"，然后每条命令都在一个缺文件的系统里跑。
      */
     suspend fun install(
+        context: Context,
+        source: Source,
+        onPhase: (Phase) -> Unit,
+    ): Result<Installed> = withContext(Dispatchers.IO) { installBlocking(context, source, onPhase) }
+
+    /**
+     * 真正干活的那一半：**只在 IO 上跑**。包装成上面那个 `withContext`，是因为
+     * 这里一次要写 110 MB、解 6564 个条目、下 33 MB——从主线程调一次就是一次 ANR，
+     * 而调用方（界面）永远会忘记切线程，所以干脆不让它有这个机会。
+     */
+    private suspend fun installBlocking(
         context: Context,
         source: Source,
         onPhase: (Phase) -> Unit,
@@ -325,7 +338,11 @@ internal object EnvirRepository {
         val timedOut: Boolean,
     )
 
-    suspend fun probe(context: Context, args: List<String>, timeoutSeconds: Long = 40): Result<Probe> =
+    suspend fun probe(
+        context: Context,
+        args: List<String>,
+        timeoutSeconds: Long = 40,
+    ): Result<Probe> = withContext(Dispatchers.IO) {
         runCatching {
             val bin = binDir(context)
             val tmp = File(envirDir(context), "tmp").apply { mkdirs() }
@@ -356,6 +373,7 @@ internal object EnvirRepository {
                 timedOut = !finished,
             )
         }
+    }
 
     /** `proot --version`：只证明"三件套能被链接器加载起来"。 */
     fun versionCommand(context: Context): List<String> = listOf(prootPath(context).absolutePath, "--version")
@@ -380,10 +398,12 @@ internal object EnvirRepository {
     // ------------------------------------------------------------------ 删除
 
     /** 连运行时一起删。留一半的"已装"最坑人，所以这里就是**全清**。 */
-    suspend fun delete(context: Context): Result<Unit> = runCatching {
-        deleteTree(envirDir(context))
-        NLog.i("Envir", "隔离环境已删除（含运行时）")
-    }.onFailure { NLog.w("Envir", "删除隔离环境失败：${it.message}") }
+    suspend fun delete(context: Context): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            deleteTree(envirDir(context))
+            NLog.i("Envir", "隔离环境已删除（含运行时）")
+        }.onFailure { NLog.w("Envir", "删除隔离环境失败：${it.message}") }
+    }
 
     /**
      * 递归删除，**不跟随符号链接**。
