@@ -709,3 +709,42 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
 | 一直不出工具卡 | 设置里开关是否真的开 | 开关没落地（重进这一页看状态） |
 | 出现"拒绝执行：native_shell（no_workspace）" | 日志 `Tools 工作区已绑定` | 工作区没绑上（目录建不出来） |
 | 命令输出是空的但退出码 0 | 命令本身 | 命令把输出写到文件了，不是工具问题 |
+
+### V11 隔离环境安装 + 自检（D165）
+
+**这一版会碰什么**：只在 `filesDir/envir/` 里写东西；唯一一次联网是点「安装」时的 33.4 MB 下载
+（`cdimage.ubuntu.com`）。不动库、不动工作区、不动别的目录。删除只删 `filesDir/envir/`。
+
+1. 设置 → 工具与工作区 → 最下面「隔离环境」那一行：写「未安装 · 33.4 MB 下载，装在 App 私有目录里」。
+   点进去：「状态」是"还没装"，三个运行时的字节数都是"还没复制"。
+2. 点「安装」。**判据**：先闪一下"复制运行时…"，然后进度条 + "下载 rootfs x.x MB / 33.4 MB（nn%）"
+   （速度取决于网络，1–3 分钟）→ "解包中… 已处理 N 条"（N 一直涨，是真在干活）→ "收尾…" → "装好了"。
+3. 装完的状态卡上要有：`Ubuntu Base 26.04.1 LTS`、`/data/user/…/files/envir/ubuntu`、
+   `下载 33.4 MB · 解包 5407 文件 / 755 目录 · 链接 287+115`、安装时间、`sha256 5a1906794ced63a7…`、
+   `没有跳过任何条目`，以及三个运行时各自的名字 / 版本 / 字节数（`proot` 259784、`libtalloc.so.2` 33592、
+   `libandroid-shmem.so` 14432）。
+4. 点「proot --version」。**判据**：退出码 0，框里那行以 `proot 5.1.107.101` 开头。
+   失败对照：`CANNOT LINK EXECUTABLE` / `library "libtalloc.so.2" not found` →
+   `LD_LIBRARY_PATH` 没生效（`filesDir` 挂 noexec 或复制不全，日志 `logcat -s Envir`）。
+5. 点「进容器」。**判据**：退出码 0，框里三行：`PRETTY_NAME="Ubuntu 26.04.1 LTS"`、`---`、
+   **手机的内核版本**（这就是"容器里没有内核"，不是 bug）、`---`、一个数字（`/usr/bin` 里的条目数）。
+   失败对照：`proot warning: can't chdir to "/root"` → 解包没跑到 `-w /root` 之后，
+   看第 3 条的文件数是不是 5407；`ptrace: Operation not permitted` → SELinux 拦了（`PROOT_NO_SECCOMP=1`
+   已经设了，还不通就是 ROM 限制，把日志里那行发我）。
+6. 杀掉 App 重进 → 设置 → 工具与工作区：索引页那一行写「环境已装 · 原生命令」，
+   环境卡片仍然是"已装"（`installed()` 会同时看 state 和磁盘）。
+7. 点「删除隔离环境」→ 红色确认卡写清"会删掉 rootfs（约 110 MB）和运行时（约 300 KB）" →
+   确认。**判据**：状态回到"还没装"三个字节数变"还没复制"；
+   `filesDir/envir` 整个消失（日志 `隔离环境已删除（含运行时）`）。
+8. **检验没跟错目录**（这一条可选，但值得看）：删除前在容器里建一个文件
+   （`进容器` 那条命令临时改成 `touch /root/keep`），删完之后工作区 `filesDir/workspace` 里的东西**没少**。
+
+失败对照：
+
+| 现象 | 先看 | 多半是 |
+|---|---|---|
+| 下载到 100% 后立刻"没装成：校验不符" | 提示里期望/实际的前 16 位 | 镜像换了版本（CD 上是滚动更新的），要改 `EnvirRepository.UbuntuBase.sha256` |
+| "没装成：HTTP 403/404" | 那串 URL | 官方源改路径了；或者自定义地址填错 |
+| 解包很久之后"没装成：解包失败" | `logcat -s Envir` | 存储空间不够（要 ~200 MB 余量），或 `/data` 满了 |
+| 装完状态卡没有数字，只有"还没装" | `filesDir/envir/state.json` 在不在 | 解包成功但写状态失败（极少见，报我） |
+| 「进容器」退出码 0 但只有 `---` | 命令本身 | rootfs 解到了别的目录（看状态卡里的 rootfs 路径） |

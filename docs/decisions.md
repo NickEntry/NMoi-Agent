@@ -3529,3 +3529,44 @@ Android 10+ 还有 seccomp 过滤，这也是 termux 维护自己 fork 的原因
 代价与义务：我们从"取用者"变成"再分发者"，所以 GPLv2 §3 的义务要自己履行——
 `LICENSES/GPL-2.0.txt` 进包、notice 里写明版本（proot 5.1.107.101）、上游仓库、
 我们未修改，以及可获取源码的位置。这件事下一轮随二进制一起提交。
+
+### D165 隔离环境的安装（运行时进 assets + rootfs 运行时下载）
+
+D164 定了"三件二进制进 assets"，这一条定**装的时候具体做什么、坏了怎么收场、
+界面上能看见什么**。代码在 `ui/EnvirRepository.kt`（数据）与 `ui/EnvirScreen.kt`（界面），
+入口是「设置 → 工具与工作区 → 隔离环境」。
+
+**布局**（全在 App 私有目录，proot 以本 App 的 uid 跑）：
+
+```
+filesDir/envir/bin/{proot, libtalloc.so.2, libandroid-shmem.so}   ← 从 assets 复制 + chmod +x
+filesDir/envir/ubuntu/                                            ← 解包后的 rootfs
+filesDir/envir/state.json                                         ← 版本 / 来源 / 校验和 / 解包计数
+filesDir/envir/tmp/                                               ← PROOT_TMP_DIR
+```
+
+**流程**：复制运行时 → 下载到 `ubuntu-base.tar.gz.part`（边下边算 SHA-256）→ 校验 →
+解包（`TarGz`，`allowAbsoluteLinks = true`）→ 写 `state.json` → 删掉归档。
+**任何一步失败都把半成品删干净**：半截 rootfs 会被 `installed()` 判成"已装"，
+然后每条命令都在一个缺文件的系统里跑，比"没装"难查十倍。
+
+**`installed()` 同时看 state 和磁盘**：`state.json` 存在、`rootfs/bin/sh`（或 `usr/bin/env`）在、
+`bin/proot` 在，三条都成立才算已装。少了任何一条就当没装——界面上的"已装"必须能跑。
+
+**官方源钉死校验和**：`sha256 = 5a1906794ced63a71a8119c3f211ef5f0bbe0a243001b4bbd41fdf80c5b219fd`，
+35,092,106 字节（2026-10-27 实测下载后算的）。自定义 URL **不校验**，界面上明说
+"没做校验和核对"——解包器会拒越界链接，但没人保证那个 tar 里是什么。
+
+**自检按钮**（这一版就给了，不等工具接通）：起一次 `proot --version`，再起一次
+`proot -0 -r <rootfs> -b /dev -b /proc -b /sys -w /root /bin/sh -c 'head -2 /etc/os-release; uname -r'`，
+把 stdout / stderr / 退出码 / 耗时原样摆在界面上。两个环境变量必须给：
+`LD_LIBRARY_PATH=filesDir/envir/bin`（proot 的 RUNPATH 指向 termux 的路径，我们包里没有那个目录）、
+`PROOT_TMP_DIR=filesDir/envir/tmp`。另外设 `PROOT_NO_SECCOMP=1`——SELinux 拦 ptrace 时的老办法，
+设了不亏。
+
+**删除 = 全清**（rootfs + 运行时 + state），红色实心确认，写清会没掉约 110 MB。
+递归删除用 `Files.walkFileTree`（**不跟随符号链接**），不用 `File.deleteRecursively()`：
+后者会跟着 `var/run -> /run` 这种绝对链接往外走。
+
+**这一条没做的事**：`WorkSpace-EnvirShell` 工具还没接（§PLAN 0.14o），所以界面上仍然没有它的开关。
+只有"装了什么"和"能不能跑"，没有"拨了不生效"的东西。

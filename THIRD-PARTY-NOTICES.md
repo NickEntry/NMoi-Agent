@@ -120,6 +120,42 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
 `zeroize` 在 `Cargo.toml` 里被钉在 `=1.8.1`：1.9 起用了 **edition2024**，
 而工作区 MSRV 是 1.75（D10），老 Cargo 连它的 manifest 都解析不了。
 
+## 3.y 隔离环境运行时（D164 / D165，进包）
+
+三件 Android/arm64 二进制，**打进 APK 的 `assets/envir/`**，安装隔离环境时复制到
+`filesDir/envir/bin/` 并 `chmod +x`。取用自 Termux 官方仓库（`packages.termux.dev`），
+**我们未做任何修改**（未 patch、未 strip、未重编）。
+
+| 文件（assets 名） | 版本 | 许可 | 来源 | 字节数 / sha256 前 16 |
+|---|---|---|---|---|
+| `proot` | 5.1.107.101 | **GPL-2.0-or-later** | 包 `proot_5.1.107.101_aarch64.deb`；上游 <https://github.com/termux/proot>（tag `v5.1.107.101`） | 259,784 / `bc3e541674827637` |
+| `libtalloc.so.2` | 2.5.0 | **LGPL-3.0** | 包 `libtalloc_2.5.0_aarch64.deb`；上游 <https://www.samba.org/ftp/talloc/> | 33,592 / `742b438c4d09e276` |
+| `libandroid-shmem.so` | 0.7 | **BSD-3-Clause** | 包 `libandroid-shmem_0.7_aarch64.deb`；上游 <https://github.com/termux/libandroid-shmem> | 14,432 / `84475798e07c8174` |
+
+全文：`LICENSES/GPL-2.0.txt`（proot 的 `COPYING`）、`LICENSES/LGPL-3.0.txt`（`talloc-2.5.0/LICENSE`）、
+`LICENSES/BSD-3-Clause-libandroid-shmem.txt`（deb 里的 `copyright` 逐字副本）。
+
+**为什么从"取用者"变成"再分发者"**：`.deb` 里的 `data.tar.xz` 需要 XZ 解码器，JVM 没有自带实现
+（`.deb` 那条路就是这么断的，见 D164 修正）。把三个文件放进 assets，代价是 GPL 的再分发义务要自己履行：
+
+- **源码可获取**：proot 的对应源码是上面那个 tag 的压缩包
+  （`https://github.com/termux/proot/archive/v5.1.107.101.zip`，sha256
+  `a66743f50c7b0bac1913b83bf55e139d679c80a0ca2808eec76432a65640017f`），构建脚本是
+  `termux-packages/packages/proot/build.sh`（`PROOT_WITH_LIBANDROID_SHMEM=true`、
+  `PROOT_UNBUNDLE_LOADER`、`-DARG_MAX=131072`）。libtalloc 与 libandroid-shmem 同理来自
+  `termux-packages/packages/{libtalloc,libandroid-shmem}/build.sh`。
+- **许可链**：proot 是 GPL-2.0-**or-later**（`COPYING` 是 v2 全文，源码头写 "either version 2 … or
+  (at your option) any later version"），本项目按 **GPL-3.0** 使用它。它链接的 libtalloc 是 LGPL-3.0
+  ——GPL-2.0-only 与 LGPL-3.0 不能组合，**GPL-3.0 可以**，所以"or later"这一条必须保留在声明里。
+  （Termux 自己的 `TERMUX_PKG_LICENSE` 把 libtalloc 记成 `GPL-3.0`，而上游 2.5.0 的 `LICENSE`
+  是 LGPL-3.0 全文；两种记法在本项目下都兼容，这里按上游那份记。）
+- **只跑本机架构**：deb 里另有 `libexec/proot/loader` / `loader32`（QEMU 跑外来架构二进制时才用），
+  **没有进包**——我们只跑 arm64 rootfs，不给跨架构执行留口子。**推断**：不装它不影响原生 arm64 运行，
+  真机上如果报 `the loader was not found or doesn't work`，那是有人拿它跑了别的架构，不是装坏了。
+
+**rootfs 不在这个包里**：Ubuntu Base 26.04.1 LTS arm64（33.4 MB）由用户在安装页触发下载，
+许可随镜像里各个软件包自己的 `copyright` 走，装好之后在容器内 `/usr/share/doc/*/copyright` 可读。
+
 ## 6. 更新这份文件
 
 新增任何外部图形/字体/代码时，同一次提交里改这一处：加一行来源与许可、把全文放进

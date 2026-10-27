@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 internal fun SettingsIndexScreen(
     iconSummary: String,
     logSummary: String,
+    toolsSummary: String,
     onOpen: (SettingsGroup) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -49,7 +50,7 @@ internal fun SettingsIndexScreen(
                 SettingsGroup.entries.forEach { group ->
                     GroupRow(
                         group = group,
-                        summary = summaryFor(group, iconSummary, logSummary),
+                        summary = summaryFor(group, iconSummary, logSummary, toolsSummary),
                         onClick = { onOpen(group) },
                     )
                 }
@@ -64,12 +65,17 @@ internal fun SettingsIndexScreen(
     }
 }
 
-private fun summaryFor(group: SettingsGroup, iconSummary: String, logSummary: String): String =
+private fun summaryFor(
+    group: SettingsGroup,
+    iconSummary: String,
+    logSummary: String,
+    toolsSummary: String,
+): String =
     when (group) {
         SettingsGroup.Appearance -> iconSummary
         SettingsGroup.Context -> "75% / 92% · 未接"
         SettingsGroup.Models -> "七条提示词 · 只读"
-        SettingsGroup.Tools -> "未接"
+        SettingsGroup.Tools -> toolsSummary
         SettingsGroup.Debug -> logSummary
         SettingsGroup.About -> "GPL-3.0-only · 0.0.1-dev"
     }

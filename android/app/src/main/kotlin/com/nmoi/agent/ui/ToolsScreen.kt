@@ -42,15 +42,19 @@ import androidx.compose.ui.unit.sp
  *   `System-Shell` 也有起点。路径照用户要求落在 `/data/user/<uid>/…`，不走 `/sdcard`。
  * - `System-Shell`：默认**关**。打开要过一次确认——它跑在 App 自己的身份下，
  *   能碰的就是这个 App 能碰的文件。
- * - 隔离环境（`WorkSpace-EnvirShell`）：这一版**还没有**（proot 运行时没打进包），
- *   所以这里是一行灰的说明，不是一个能拨的开关。
+ * - 隔离环境：**装在你自己的私有目录里**（proot + Ubuntu rootfs，D165）。这一行是入口，
+ *   点进去装/看/删/自检；没装时它写清"未安装"和体积，不写成灰字糊过去。
+ * - `WorkSpace-EnvirShell`：工具这一版**还没接**，所以这里仍是一行灰的说明，
+ *   不是一个能拨的开关——但文案跟着"环境装没装"变，否则用户装完了还看到"没打进包"。
  */
 @Composable
-internal fun ToolsScreen(onBack: () -> Unit) {
+internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var nativeShell by remember { mutableStateOf(ToolingRepository.nativeShell(context)) }
     var confirmShell by remember { mutableStateOf(false) }
     val root = remember { ToolingRepository.workspaceRoot(context).absolutePath }
+    // 从安装页回来时这个 composable 会重新组合，所以每次读到的都是当下的状态。
+    val envir = remember { EnvirRepository.installed(context) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -129,11 +133,52 @@ internal fun ToolsScreen(onBack: () -> Unit) {
                             )
                         }
                         Text(
-                            text = "隔离环境（proot + Ubuntu rootfs）。运行时还没打进包，所以现在不给开关——" +
-                                "拨了也不会生效的那种开关比没有更糟。",
+                            text = if (envir == null) {
+                                "隔离环境里的命令。先把下面那个环境装上，这一项才有东西可跑——" +
+                                    "拨了也不会生效的那种开关比没有更糟，所以现在不给开关。"
+                            } else {
+                                "环境已经装好（${envir.label}），但工具这一层还没接：现在还没有开关，" +
+                                    "模型也不会自己进去跑命令。"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+
+                SectionLabel("隔离环境")
+                GroupCard {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenEnvir)
+                            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "proot + Ubuntu rootfs",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = if (envir == null) {
+                                    "未安装 · 33.4 MB 下载，装在 App 私有目录里"
+                                } else {
+                                    "${envir.label} · ${envir.files} 个文件 · 已装"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp),
                         )
                     }
                 }

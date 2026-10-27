@@ -32,6 +32,8 @@ import com.nmoi.agent.ui.ProviderListScreen
 import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
+import com.nmoi.agent.ui.EnvirRepository
+import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.ToolsScreen
 import com.nmoi.agent.ui.theme.NMoiTheme
 import com.nmoi.agent.ui.theme.SystemBarsForTheme
@@ -59,6 +61,9 @@ private sealed interface Route {
 
     /** 设置的分组子页（外观 / 调试 各自有自己的实现，其余走 GroupScreen）。 */
     data class SettingsGroupRoute(val group: SettingsGroup) : Route
+
+    /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
+    data object Envir : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
     /** 供应商列表（D157）。编辑页、模型表都从这一页 push 进去。 */
@@ -115,6 +120,10 @@ class MainActivity : ComponentActivity() {
                 var iconWarning by remember { mutableStateOf<String?>(null) }
                 // 日志摘要给设置索引页那一行用；三种通道各自的开关在「日志 → 齿轮」里。
                 val logSummary = "3 通道 · 调试" + if (NLog.isEnabled(LogKind.Debug)) "开" else "关"
+                // 隔离环境装没装：设置索引页那一行要写实话，所以每次换页现读一次 state.json。
+                val envirInstalled by produceState(initialValue = false, route) {
+                    value = withContext(Dispatchers.IO) { EnvirRepository.installed(context) != null }
+                }
                 // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
                 var drawerOpen by remember { mutableStateOf(false) }
 
@@ -233,9 +242,15 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Envir -> EnvirScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         Route.Settings -> SettingsIndexScreen(
                             iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                             logSummary = logSummary,
+                            // 这一行要能回答"环境装没装"，不能为了知道点进去；route 变了就重读一次。
+                            toolsSummary = if (envirInstalled) "环境已装 · 原生命令" else "工作区 · 原生命令",
                             onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
                             onBack = { backStack = backStack.dropLast(1) },
                         )
@@ -264,6 +279,7 @@ class MainActivity : ComponentActivity() {
 
                             SettingsGroup.Tools -> ToolsScreen(
                                 onBack = { backStack = backStack.dropLast(1) },
+                                onOpenEnvir = { backStack = backStack + Route.Envir },
                             )
 
                             SettingsGroup.Debug -> DebugScreen(
