@@ -3737,3 +3737,46 @@ proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/pr
 
 **没做的**：容器里的网络（`apt update` 需要 DNS 与 `/etc/resolv.conf`，proot 默认不带），
 以及"容器里能不能访问宿主的网络"这个问题还没定；工作区挂载是只读写工作区，别的一概不绑。
+
+### D173 容器允许联网（用户 2026-10-27 明确允许）
+
+proot **不建 netns**：容器里的进程和宿主是同一套网络栈、同一个 uid 的权限。所以"能不能联网"
+其实只剩一个问题——**DNS 有没有**。Ubuntu Base 里 `/etc/resolv.conf` 是空的/指向不存在的
+systemd-resolved，于是 `apt update` 会卡在解析域名。
+
+做法（计划，0.14q，未实现）：把宿主当前的 DNS 列表写进 `filesDir/envir/resolv.conf`，
+启动时 `-b <resolv>:/etc/resolv.conf`（顺带可绑 `/etc/hosts`）；`EnvirSpec` 加一个可选
+`resolv`，没有就不绑——离线也照跑。DNS 从 `ConnectivityManager.getLinkProperties().dnsServers`
+取（不要 `getprop net.dns1`，那是老接口，在双栈/Wi-Fi+蜂窝切换时常常是空的）。
+
+**风险先记着**：Android 的 DNS 常走 netd 的私有通道，直接 UDP 53 有时被拦。所以验收判据
+只写"容器里 `getent hosts archive.ubuntu.com` 出 IP"，`apt update` 通了才算真的通。
+
+### D174 多助手：会话按助手归属，可移动
+
+用户口径（2026-10-27）：**每个助手有自己的会话列表，会话可以移动到其他助手**。
+
+- 存储：schema **v9**，`conversations` 加 `assistant_id TEXT NOT NULL DEFAULT 'default'`；
+  迁移把现有会话全归 `default`（现在的唯一那份助手就是 `settings(assistant,"default")`）。
+- 列表：抽屉里的会话按**当前助手**过滤；顶部显示当前助手并可直接切。
+- 移动：会话「更多」里加「移动到其他助手」→ 选目标 → **改归属，不复制**（一句话一条记录，
+  复制会立刻出现两份"同一个会话"，之后改哪份都说不清）。
+- 删助手：**有会话就不许直接删**。要么先把 N 个会话移走，要么在这张卡上选"一起移到 default"。
+  静默把会话挪走和静默删掉都属于"数据没了"。
+- 助手本身：一页列表（现在是单个 `settings(assistant,"default")`），支持新建与"从现有复制配置"
+  （复制的是模型/参数/思考档位，**不含会话**）。
+
+### D175 Shizuku：先做"检测 + 开关"，不做执行
+
+用户口径（2026-10-27）：**授权肯定是他自己点，但我们要能验证是不是已授权**。
+
+- 依赖：`dev.rikka.shizuku:api` + `:provider`（Apache-2.0，要进 notices；这是本项目
+  **又一个外部依赖**，按规矩先记来源与版本）。
+- 状态三态，界面必须分清（这三件事对用户来说是完全不同的下一步）：
+  1. **没装**：`Shizuku.pingBinder()` 为 false 且 `moe.shizuku.privileged.api` 不在已装列表 →
+     给"去装 Shizuku"的说明（不跳应用商店，本项目不分发它）；
+  2. **装了没授权**：binder 在、`Shizuku.checkSelfPermission()` 不是 `GRANTED` → 给"去 Shizuku 里授权"；
+  3. **已授权**：这时开关才**能拨**（默认仍是关）。
+- 用 `Shizuku.addBinderReceivedListener` / `addBinderDeadListener` 跟着服务起落更新，不靠轮询。
+- **执行（`Shizuku.newProcess`）不在这一版**：那条路要写 AIDL 包装 + 真机反复验，
+  而"授权到了没有"这件事本身就得先在界面上说清楚。开关拨开之后先只记本机（不进库、不进导出）。
