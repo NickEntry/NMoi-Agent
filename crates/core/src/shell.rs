@@ -331,6 +331,33 @@ mod tests {
             .enable_native_shell(true)
     }
 
+    /// 测试用的命令：两个平台的壳不一样，**命令也必须分开写**——
+    /// 用 POSIX 语法去测 PowerShell，测到的是"语法错误"而不是"工具能不能跑"。
+    #[cfg(unix)]
+    fn command_two_streams() -> &'static str {
+        "echo out; echo err 1>&2; exit 3"
+    }
+    #[cfg(windows)]
+    fn command_two_streams() -> &'static str {
+        "Write-Output 'out'; [Console]::Error.WriteLine('err'); exit 3"
+    }
+    #[cfg(unix)]
+    fn command_cat_marker() -> &'static str {
+        "cat marker.txt"
+    }
+    #[cfg(windows)]
+    fn command_cat_marker() -> &'static str {
+        "Get-Content marker.txt"
+    }
+    #[cfg(unix)]
+    fn command_sleep() -> &'static str {
+        "sleep 30"
+    }
+    #[cfg(windows)]
+    fn command_sleep() -> &'static str {
+        "Start-Sleep -Seconds 30"
+    }
+
     #[test]
     fn the_capability_gate_is_checked_before_anything_else() {
         let dir = tempfile::tempdir().unwrap();
@@ -369,7 +396,7 @@ mod tests {
         let workspace = Workspace::open(dir.path()).unwrap();
         let policy = policy();
         let outcome = SystemShellTool.invoke(
-            &json!({"command": "echo out; echo err 1>&2; exit 3"}),
+            &json!({"command": command_two_streams()}),
             &context(&policy, &workspace),
         );
         let text = outcome.text();
@@ -387,7 +414,7 @@ mod tests {
         let workspace = Workspace::open(dir.path()).unwrap();
         let policy = policy();
         let outcome = SystemShellTool.invoke(
-            &json!({"command": "cat marker.txt"}),
+            &json!({"command": command_cat_marker()}),
             &context(&policy, &workspace),
         );
         let text = outcome.text();
@@ -401,7 +428,7 @@ mod tests {
         let workspace = Workspace::open(dir.path()).unwrap();
         let policy = policy();
         let outcome = SystemShellTool.invoke(
-            &json!({"command": "sleep 30", "timeout_ms": 1000}),
+            &json!({"command": command_sleep(), "timeout_ms": 1000}),
             &context(&policy, &workspace),
         );
         let value: Value = serde_json::from_str(&outcome.text()).unwrap();
