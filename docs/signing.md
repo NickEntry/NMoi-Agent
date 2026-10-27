@@ -162,8 +162,11 @@ steps:
 - **文件在哪**：本机 `/workspace/keystore/nmoi-release.jks`（口令在同目录 `release.env`，
   600 权限，**不在仓库里**，仓库外）。**请自己再离线存两份**——手机上的这一份不算备份。
 - **两边的 secret 都灌好了**：GitHub 仓库级 4 个、Codeberg 仓库级 4 个（同名）。
-- **签名流程：待这一轮 CI 验证**（`解出签名材料` → `打包` → `验签` 三步）。
-  绿了之后把 run id 记在这里；没绿之前别当它已经成立。
+- **签名流程：已实测**（run `40513941179`，2026-10-27）。
+  `解出签名材料` 打出"已就位：…（4292 字节）"→ `打包` → `验签` 打出
+  `签名指纹：1a29737e…f80daaa4` 与 `固定签名 ✓`；本机再用 `apksigner verify --print-certs`
+  复核过同一个 APK：`CN=NMoi Agent, O=NickEntry, C=CN`，摘要一致。
+  那个包的 sha256 前 32 = `77e3f9d03dfaa7db27e19055cfa4801b`（16,522,374 字节）。
 - **Codeberg 只有 secret，没有 Android 构建**：那儿是 Forgejo Actions（仓库已开），
   但托管 runner 没有 Android SDK / NDK，装一套要几个 GB，不适合跑在共享 runner 上。
   要比包的话，把 secret 用上就行（同一个 job 定义搬过去），或者来自托管 runner。
