@@ -3472,3 +3472,46 @@ D38 原本写"TLS 由平台侧传输实现"。那样要 Rust 往 JVM 回调（`A
 - 正文走 `toolEditVersion`（会写 `edited_by_tool`，所以红蓝、`n/n` 都是现成的）；
   改的是**现读的 `shown`**，不是面板点开时的副本（铁律 ①）。
 - 空思考块 = 不改（不是清空）：让"没提到"和"要清空"分开，避免模型一句漏写就把思考删了。
+
+## D164 隔离环境（proot + Ubuntu）：版本、依赖、许可、安装口径
+
+**rootfs**：Ubuntu Base **26.04.1 LTS (Resolute Raccoon)**，
+`ubuntu-base-26.04.1-base-arm64.tar.gz`，**33 MB**（2026-08-26 构建）。
+运行时下载，**不进 APK**。用户点「安装」才下，下载源两项：Ubuntu（上面这个地址）与自定义 URL。
+
+**内核**：**没有**。proot 是 ptrace 实现的用户态 chroot，容器里 `uname -r` 看到的是
+**手机的 Android 内核**。所以界面上必须提前写清：`systemd` / `docker` / `iptables` /
+内核模块都用不了（要 PID 1、cgroups、netns），apt / 编译 / 脚本 / Python / Node 正常。
+Android 10+ 还有 seccomp 过滤，这也是 termux 维护自己 fork 的原因。
+
+**proot 二进制**（2026-10-27 实测）：`packages.termux.dev` 上的
+`proot_5.1.107.101_aarch64.deb`（101 KB），解出来 256 KB，
+`ELF 64-bit LSB shared object, ARM aarch64, dynamically linked, interpreter /system/bin/linker64`。
+
+- 依赖（`Depends:` 与 `readelf -d` 都确认了）：`libtalloc.so.2` + `libandroid-shmem.so`，
+  另外 `RUNPATH=/data/data/com.termux/files/usr/lib`——**那个路径在我们的包里不存在**，
+  所以运行时必须给 `LD_LIBRARY_PATH`（RUNPATH 的优先级低于它）。
+- 即"只扔一个 proot 进去"跑不起来，至少三件东西要一起就位。
+
+**许可**：proot 是 **GPL-2.0-or-later**（`COPYING` 是 v2 全文，源码头写
+"either version 2 … or (at your option) any later version"）。GPL-3.0-only 的项目
+可以按 v3 使用它——**兼容**。
+
+**口径选择：运行时下载 `.deb`，不把二进制打进 APK。**
+
+- 好处：我们不成为 proot 的再分发者，GPLv2 §3 的"提供对应源码"义务不落到本项目头上；
+  同时 APK 不背三个 .so 的体积，也不用处理 RUNPATH。
+- 代价：首次安装要联网（本来就要下 rootfs），并且要认 termux 的仓库可用性。
+- 仍然要做的**署名**：应用内「开源许可」列 PRoot 5.1.107.101（来源 termux/proot，
+  未修改，GPL-2.0-or-later），`THIRD-PARTY-NOTICES.md` 同一条。
+  许可全文用仓库里已有的 `LICENSES/` 机制补一份 GPL-2.0。
+
+**安装布局**（App 私有）：
+`filesDir/envir/bin/{proot,libtalloc.so.2,libandroid-shmem.so}`、
+`filesDir/envir/ubuntu/`（解包后的 rootfs）、`filesDir/envir/state.json`（版本、来源 URL、
+安装时间、字节数——界面上要能指出来）。
+
+**下一步**：安装页（源选择 / 进度 / 已装版本 / 删除）→ 下载 + 解包（`.tar.gz`，
+`java.util.zip.GZIPInputStream` + 一个最小 tar 读取器，不引依赖）→
+`WorkSpace-EnvirShell` 工具（`proot -0 -r <rootfs> -b /dev -b /proc -b /sys -w /root /bin/sh -c <cmd>`，
+超时/输出上限跟 `System-Shell` 共用同一份实现）。
