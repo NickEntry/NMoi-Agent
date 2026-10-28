@@ -3837,3 +3837,19 @@ DNS 从 `ConnectivityManager.getLinkProperties().dnsServers` 取（不要 `getpr
 - 用 `Shizuku.addBinderReceivedListener` / `addBinderDeadListener` 跟着服务起落更新，不靠轮询。
 - **执行（`Shizuku.newProcess`）不在这一版**：那条路要写 AIDL 包装 + 真机反复验，
   而"授权到了没有"这件事本身就得先在界面上说清楚。开关拨开之后先只记本机（不进库、不进导出）。
+
+## 待定（还没定的事，不构成决定）
+
+**一次多个工具调用，落成几个单元？**
+
+- **代码现状**（`crates/core/src/session.rs`，2026-10-28 用
+  `session::tests::three_tool_calls_in_one_message_yield_three_paired_results` 钉住的）：
+  模型一次报三个调用 → 库里落**三个单元**，每个是 `assistant(tool_calls[1]) + tool_result`；
+  三个调用 = 三个单元 + 一条最后的正文。
+- **文档里的说法**：原子单元是 `assistant(tool_calls[n]) + 全部 tool_result[n]`
+  （README / 术语表 / D159 那一套）。
+- 两者在界面上不是同一件事：三个单元 = **三张工具卡**；一个合并单元 = **一张卡三个页签**。
+  块级编辑的编号口径也跟着变（`tool:0..2` 是"这张卡里的第几个"还是"这一轮的第几个"）。
+- **为什么现在不改**：它牵着 UI 卡片形状、块级编辑编号、版本单元边界三处，
+  挑一边改都要连着验证；而现在的行为是自洽的（每单元闭合、按 id 配对、顺序不乱）。
+  所以两边都保持原样，只在测试里写清"现状是三个单元"，等下一次动工具卡时一起定。

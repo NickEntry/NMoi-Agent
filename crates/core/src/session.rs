@@ -962,6 +962,90 @@ mod tests {
         assert!(pair.messages[1].content.contains("hello"));
     }
 
+    /// 一次要**三个**工具：三条结果一条不少、一条不多，且按 `call_id` 对上。
+    ///
+    /// 这条是补证据的（PLAN 0.14 里记着的那个缺口）。此前的用例都是"一次一个"，
+    /// 而真实模型很爱一次报三四个——少一条结果上游会 400（"tool_calls 没有配对"），
+    /// 多一条下游又会 400（"没有对应请求的结果"）。
+    ///
+    /// **实测出来的形状，和文档里那个"原子单元"不一样**：这里落的是
+    /// **一次调用一个单元**（`assistant(tool_calls[1]) + tool_result`），
+    /// 不是 `assistant(tool_calls[3]) + 3 条结果` 的合并单元。所以三个调用 = 三个单元。
+    /// 差异没有偷偷改文档：记在 `docs/decisions.md` 的"待定"那一节，
+    /// 等"工具卡按单元画还是按调用画"定下来再收口。
+    #[test]
+    fn three_tool_calls_in_one_message_yield_three_paired_results() {
+        let (_dir, workspace, policy) = setup();
+        // 同一个工具调两次也要两条结果：按 id 配对，不按名字。
+        let transport = Scripted::new(vec![
+            calls_body(&[
+                ("c1", "read_file", r#"{"path":"a.txt"}"#),
+                ("c2", "list_dir", r#"{}"#),
+                ("c3", "list_dir", r#"{}"#),
+            ]),
+            text_body("三件事都做完了"),
+        ]);
+        let client = ChatClient::new(transport);
+        let registry = ToolRegistry::workspace_defaults();
+        let mut store = MemStore::default();
+        let session = SessionId::new();
+
+        let turn = run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "读 a.txt，再列两次目录",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &SessionConfig::default(),
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(turn.report.tool_calls.len(), 3, "三条都要真的执行过");
+        let asked: Vec<String> = turn
+            .report
+            .tool_calls
+            .iter()
+            .map(|record| record.call_id.clone())
+            .collect();
+        assert_eq!(asked, vec!["c1", "c2", "c3"], "顺序按模型给的顺序");
+
+        let units = store.load_units(session).unwrap();
+        assert_eq!(units.len(), 5, "用户 + 三个工具单元 + 最后的正文");
+        for (index, call_id) in asked.iter().enumerate() {
+            let unit = &units[index + 1];
+            assert!(
+                unit.is_closed(),
+                "第 {index} 个单元必须闭合（有请求有结果）"
+            );
+            assert_eq!(unit.messages.len(), 2, "一条 assistant + 一条 tool 结果");
+            assert_eq!(
+                unit.messages[0].tool_calls.len(),
+                1,
+                "现状是一次调用一个单元：{:#?}",
+                unit.messages[0]
+            );
+            assert_eq!(
+                &unit.messages[0].tool_calls[0].id, call_id,
+                "请求按原顺序落库"
+            );
+            assert_eq!(
+                unit.messages[1].tool_call_id.as_deref(),
+                Some(call_id.as_str()),
+                "结果指向的正是这一条请求"
+            );
+        }
+        assert!(
+            units[1].messages[1].content.contains("hello"),
+            "第一个结果是 a.txt 的内容：{}",
+            units[1].messages[1].content
+        );
+        assert_eq!(units[4].messages.len(), 1, "最后一条是纯正文的助手单元");
+    }
+
     /// 带正文的工具调用（模型经常一边说话一边调工具）。
     fn calls_with_text(call_id: &str, name: &str, arguments: &str, text: &str) -> String {
         format!(

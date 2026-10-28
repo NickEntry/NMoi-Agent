@@ -1299,3 +1299,13 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 助手页（`ui/AssistantScreen.kt`，入口＝抽屉铅笔 + 设置「模型与提示词 → 助手」）：
 列表 / 新建（复制配置）/ 改名 / 删除（`default` 不可删；有会话时「一起移到默认助手 / 取消」；
 会话数读不出来就不许删）。**没做**：头像（现在取名字首字）、助手的提示词与技能绑定。
+
+**补证据的进度（2026-10-28）**：工具批次那条缺口已补
+（`crates/core/src/session.rs` 的 `three_tool_calls_in_one_message_yield_three_paired_results`：
+三个调用 → 三个闭合单元、顺序与 id 一一对应，顺带把"一次调用一个单元"这个**与文档不一致**的现状钉住了，
+差异记在 `docs/decisions.md` 的「待定」一节）。
+**`parseFences` 那条还没补**，卡在工具上而不是代码上：它在 Kotlin 侧（`ui/EditRepository.kt`），
+而 `android/app/src/test` 还不存在、build 里也没有 junit 与 CI 的单测步骤。
+两条路选一条：① 加 junit + `testDebugUnitTest` 进 CI（一次性的脚手架）；
+② 把围栏解析搬进 core（`crates/core/src/fence.rs`），用 Rust 测——顺带给 ffi 一个共用实现。
+倾向 ②：解析规则属于协议，不该只活在客户端里。
