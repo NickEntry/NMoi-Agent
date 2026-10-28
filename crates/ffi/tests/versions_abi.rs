@@ -38,9 +38,11 @@ fn version_verbs_roundtrip_through_c_abi() {
 
     // 建会话
     let title = c("版本 ABI 测试");
+    let assistant = c("default");
     let created = take(nmoi_ffi::storage::nmoi_storage_create_conversation_json(
         handle,
         title.as_ptr(),
+        assistant.as_ptr(),
     ));
     assert_eq!(created["ok"], Value::Bool(true), "建会话失败：{created}");
     let session = created["session"].as_str().unwrap().to_string();

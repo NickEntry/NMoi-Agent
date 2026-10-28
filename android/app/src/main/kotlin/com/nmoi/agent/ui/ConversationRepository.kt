@@ -32,7 +32,14 @@ internal object ConversationRepository {
      * 为什么必须有这个：全新安装的库里一条会话都没有，列表是空的、聊天页进不去，
      * 消息区就永远验不了（2026-10-23 用户指出：不能要求先跑桌面 CLI 造库）。
      */
-    suspend fun create(databasePath: String, title: String): Result<String> {
+    suspend fun create(
+        databasePath: String,
+        title: String,
+        assistantId: String,
+    ): Result<String> {
+        if (assistantId.isBlank()) {
+            return Result.failure(NmoiFfiException("bad_argument", "没有当前助手，建不了会话"))
+        }
         if (!NativeBridge.loaded) {
             return Result.failure(NmoiFfiException("not_loaded", "原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）"))
         }
@@ -47,7 +54,7 @@ internal object ConversationRepository {
         }
         val handle = opened.optLong("handle", 0L)
         return try {
-            NmoiFfi.createConversation(handle, title).mapCatching { envelope ->
+            NmoiFfi.createConversation(handle, title, assistantId).mapCatching { envelope ->
                 val session = envelope.optString("session", "")
                 if (session.isEmpty()) error("原生层没给会话 id")
                 session
@@ -57,13 +64,26 @@ internal object ConversationRepository {
         }
     }
 
-    fun load(databasePath: String, limit: Long = 50): ConversationSnapshot = try {
-        loadInner(databasePath, limit)
+    /**
+     * 列表（D174）：**按助手过滤**。`assistantId` 必填——抽屉里看到的是当前助手的会话，
+     * 传空串会拿到空列表（不是全部），因为"没有助手"这件事本身该被看见，而不是被兜底掩盖。
+     */
+    fun load(
+        databasePath: String,
+        assistantId: String,
+        limit: Long = 50,
+    ): ConversationSnapshot = try {
+        loadInner(databasePath, assistantId, limit)
     } catch (failure: Throwable) {
         placeholder("读列表时出错：${failure.javaClass.simpleName}: ${failure.message}")
     }
 
-    private fun loadInner(databasePath: String, limit: Long): ConversationSnapshot {
+    private fun loadInner(
+        databasePath: String,
+        assistantId: String,
+        limit: Long,
+    ): ConversationSnapshot {
+        if (assistantId.isBlank()) return placeholder("没有当前助手，列表是空的")
         if (!NativeBridge.loaded) {
             val reason = NativeBridge.failureMessage ?: "未知原因"
             return placeholder("原生层没加载（$reason），数据是占位实现")
@@ -91,7 +111,7 @@ internal object ConversationRepository {
         // 后者是不依赖 adb 的那条路（ROM 会吞 I 级）。`SettingsRepository` 接手后删掉这一行。
         NmoiFfi.probeSettings(handle)
         return try {
-            val page = JSONObject(NativeBridge.listConversationsJson(handle, limit, 0))
+            val page = JSONObject(NativeBridge.listConversationsJson(handle, limit, 0, assistantId))
             if (!page.ok()) return placeholder("列会话失败：${page.errorText()}")
             val rows = readRows(page.optJSONArray("items") ?: JSONArray())
             val note = when {
@@ -112,6 +132,26 @@ internal object ConversationRepository {
             runCatching { NativeBridge.closeStorageJson(handle) }
         }
     }
+
+    /**
+     * 把会话移到另一个助手（D174）。**改归属，不复制**：id 不变、消息一条不搬。
+     *
+     * 移动之后两个列表都要重读（源里消失、目标里出现），调用方负责刷新。
+     */
+    suspend fun move(databasePath: String, sessionId: String, assistantId: String): Result<Unit> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.moveConversation(handle, sessionId, assistantId)
+                .onSuccess { NLog.i("Storage", "会话 $sessionId 移到助手 $assistantId") }
+                .onFailure { NLog.w("Storage", "移动会话失败：${it.message}") }
+                .map { }
+        }
+
+    /** 这个助手底下有几个会话（D174）：删助手之前先问它。读不出来返回 -1（界面据此不给删）。 */
+    suspend fun countOf(databasePath: String, assistantId: String): Long =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.countConversationsOf(handle, assistantId)
+                .map { envelope -> envelope.optLong("count", -1L) }
+        }.getOrDefault(-1L)
 
     private fun readRows(items: JSONArray): List<ConversationRow> = buildList {
         for (index in 0 until items.length()) {

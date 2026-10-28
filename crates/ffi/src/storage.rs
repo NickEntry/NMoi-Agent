@@ -152,20 +152,32 @@ pub extern "C" fn nmoi_storage_reconcile_json(handle: u64) -> *mut c_char {
     })
 }
 
-/// 新建会话，返回 `{"session":"<uuidv7>"}`。
+/// 新建会话，返回 `{"session":"<uuidv7>","assistant":"<id>"}`。
+///
+/// `assistant`（D174）是**必填**的：会话落在哪个助手的列表里由它决定，
+/// 没有"默认那个助手"这种隐式回退——界面上看到的是哪个助手，建出来的就该归哪个，
+/// 否则用户会在切换助手之后发现自己的新会话不见了。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_create_conversation_json(
     handle: u64,
     title: *const c_char,
+    assistant: *const c_char,
 ) -> *mut c_char {
     run_json(|| {
         let title = read_str(title, "title")?;
+        let assistant = read_str(assistant, "assistant")?;
+        if assistant.trim().is_empty() {
+            return Err(FfiError::new(
+                "bad_argument",
+                "`assistant` 不能是空串：会话必须归到某个助手",
+            ));
+        }
         with_storage(handle, |storage| {
             let device = storage.device_id().to_string();
             let session = storage
-                .create_conversation(title, &device)
+                .create_conversation(title, &device, assistant)
                 .map_err(storage_error)?;
-            Ok(json!({ "session": session.to_string() }))
+            Ok(json!({ "session": session.to_string(), "assistant": assistant }))
         })
     })
 }
@@ -201,8 +213,58 @@ pub extern "C" fn nmoi_storage_set_conversation_model_json(
     })
 }
 
-/// 追加一条纯文本消息（单元 B）。
+/// 把会话移到另一个助手（D174）：**改归属，不复制**。
 ///
+/// 为什么必须是"改"而不是"复制"：复制会立刻出现两份"同一个会话"，之后用户改哪份
+/// 都说不清哪份才算数；消息、版本、摘要全要跟着搬，搬漏一条就是"不可见消息"（铁律 ②）。
+///
+/// 返回 `{"ok":true,"session":"…","assistant":"…"}`。会话不存在、目标 id 是空串都是
+/// `bad_argument` / 数据不一致，不静默成功。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_move_conversation_json(
+    handle: u64,
+    session: *const c_char,
+    assistant: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let assistant = read_str(assistant, "assistant")?;
+        if assistant.trim().is_empty() {
+            return Err(FfiError::new(
+                "bad_argument",
+                "`assistant` 不能是空串：移过去也要有个归属",
+            ));
+        }
+        with_storage(handle, |storage| {
+            storage
+                .move_conversation(session_id, assistant)
+                .map_err(storage_error)?;
+            Ok(json!({ "session": session_id.to_string(), "assistant": assistant }))
+        })
+    })
+}
+
+/// 某个助手底下有几个会话（D174）：删助手之前那道闸要靠它。
+///
+/// 界面要说的是"还有 3 个会话，先决定移到哪儿"，所以给的是**数**，不是"不止一个"。
+/// 返回 `{"assistant":"…","count":3}`。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_count_conversations_of_json(
+    handle: u64,
+    assistant: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let assistant = read_str(assistant, "assistant")?;
+        with_storage(handle, |storage| {
+            let count = storage
+                .count_conversations_of(assistant)
+                .map_err(storage_error)?;
+            Ok(json!({ "assistant": assistant, "count": count }))
+        })
+    })
+}
+
+/// 追加一条纯文本消息（单元 B）。
 /// 这条路给"用户自己写一条 / 导入一段历史 / C 侧测试往返"用，**不经过模型**。
 /// 模型跑一轮要走 F2 的 `nmoi_turn_run`——那边会按原子单元成对落库。
 ///
@@ -583,11 +645,15 @@ pub extern "C" fn nmoi_storage_load_units_json(
 ///
 /// `limit` 传 <= 0 用默认 50，硬上限 200；`offset` 传负数当 0。
 /// 给 `has_more` 而不是总数——UI 只需要知道"还能不能往下翻"（D61）。
+///
+/// `assistant`（D174）：**空指针 = 不过滤**（导出/核对用）；给了就只看那个助手的会话。
+/// 界面上永远传具体值——传 null 会拿到全部会话，那是给维护工具留的口子，不是给列表页的。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_list_conversations_json(
     handle: u64,
     limit: i64,
     offset: i64,
+    assistant: *const c_char,
 ) -> *mut c_char {
     run_json(|| {
         // 上限不是洁癖：UI 传个 1e9 不该把手机拖死。
@@ -597,9 +663,10 @@ pub extern "C" fn nmoi_storage_list_conversations_json(
             (limit as usize).min(200)
         };
         let offset = offset.max(0) as usize;
+        let assistant = read_opt_str(assistant, "assistant")?;
         with_storage(handle, |storage| {
             let page = storage
-                .list_conversations(limit, offset)
+                .list_conversations(assistant, limit, offset)
                 .map_err(storage_error)?;
             let items: Vec<Value> = page
                 .items
@@ -618,6 +685,7 @@ pub extern "C" fn nmoi_storage_list_conversations_json(
                         "last_text": conversation.last_text,
                         "last_text_truncated": conversation.last_text_truncated,
                         "model": conversation.model,
+                        "assistant_id": conversation.assistant_id,
                     })
                 })
                 .collect();

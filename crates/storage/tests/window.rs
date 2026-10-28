@@ -34,7 +34,9 @@ fn unit(session: SessionId, seq: u64, role: Role, text: &str) -> AtomicUnit {
 
 /// 四条历史：u1 / a2 / u3 / a4。
 fn seed(storage: &mut Storage) -> SessionId {
-    let session = storage.create_conversation("窗口", "device-a").unwrap();
+    let session = storage
+        .create_conversation("窗口", "device-a", "default")
+        .unwrap();
     for (seq, role, text) in [
         (1, Role::User, "第一句"),
         (2, Role::Assistant, "第一答"),

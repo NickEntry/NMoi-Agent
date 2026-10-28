@@ -68,6 +68,8 @@ pub struct ConversationSummary {
     pub last_text_truncated: bool,
     /// 最近一次用的模型（D101）。`None` = 这个会话还没跑过，不是"空模型名"。
     pub model: Option<String>,
+    /// 归属的助手（D174）。列表按它过滤，界面上也要能说出来"这句是谁的会话"。
+    pub assistant_id: String,
 }
 
 /// 一页会话。`has_more` 比总数便宜，也正好是 UI 唯一用得上的东西。
@@ -94,23 +96,29 @@ fn preview_of(text: Option<String>) -> (Option<String>, bool) {
 }
 
 impl Storage {
-    /// 新建会话。`device` 写进 `device_origin`，同步时用来判断来源设备。
+    /// 新建会话。`device` 写进 `device_origin`，同步时用来判断来源设备；
+    /// `assistant` 写进 `assistant_id`（D174）——列表按它过滤，所以不能省。
+    ///
+    /// 参数顺序是\"会话是什么 → 属于谁\"：`title`、`device` 是描述会话本身的，
+    /// `assistant` 是归属。调用方几乎总是先有标题再想起归属，反着放容易传反。
     pub fn create_conversation(
         &mut self,
         title: &str,
         device: &str,
+        assistant: &str,
     ) -> Result<SessionId, StorageError> {
         let session = SessionId::new();
         let now = crate::validate::now_ms();
         self.conn.execute(
-            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin, assistant_id)
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
             params![
                 session.to_string(),
                 title,
                 now,
                 crate::migrate::SCHEMA_VERSION,
-                device
+                device,
+                assistant
             ],
         )?;
         Ok(session)
@@ -158,8 +166,14 @@ impl Storage {
     /// （确定 ≠ 等于创建顺序：UUIDv7 的毫秒内部分是随机的）。
     /// 分页给 `has_more` 而不是总数：多取一行就够判断"还能不能翻"，不用为列表跑一次
     /// 全表 `COUNT(*)`。
+    ///
+    /// `assistant`（D174）：`Some(id)` = 只看这个助手的会话；`None` = 全都要
+    /// （导出、备份、迁移核对这类"不属于某一个助手"的读取用）。
+    /// **不给默认值、不偷偷返回全部**：界面忘了传就会当场看见所有会话，
+    /// 而不是安静地只显示一半。
     pub fn list_conversations(
         &self,
+        assistant: Option<&str>,
         limit: usize,
         offset: usize,
     ) -> Result<ConversationPage, StorageError> {
@@ -172,26 +186,32 @@ impl Storage {
                     (SELECT seq FROM messages WHERE conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last_seq,
                     (SELECT role FROM messages WHERE conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last_role,
                     (SELECT content FROM messages WHERE conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last_text,
-                    c.model
+                    c.model,
+                    c.assistant_id
              FROM conversations c
+             WHERE (?3 IS NULL OR c.assistant_id = ?3)
              ORDER BY c.updated_at DESC, c.id DESC
              LIMIT ?1 OFFSET ?2",
         )?;
-        let rows = stmt.query_map(params![(want + 1) as i64, offset as i64], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, Option<i64>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<String>>(10)?,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            params![(want + 1) as i64, offset as i64, assistant],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            },
+        )?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -207,6 +227,7 @@ impl Storage {
                 last_role,
                 last_text,
                 model,
+                assistant_id,
             ) = row?;
             let session = id.parse::<SessionId>().map_err(|error| {
                 StorageError::Inconsistent(format!("会话 {id} id 非法：{error}"))
@@ -225,12 +246,65 @@ impl Storage {
                 last_text: preview,
                 last_text_truncated: truncated,
                 model,
+                assistant_id,
             });
         }
 
         let has_more = items.len() > want;
         items.truncate(want);
         Ok(ConversationPage { items, has_more })
+    }
+
+    /// 移动会话到另一个助手（D174）：**改归属，不复制**。
+    ///
+    /// 复制会立刻出现两份"同一个会话"，之后用户改哪一份都说不清哪份才算数；
+    /// 而且消息、版本、摘要全要跟着搬，搬漏一条就是"不可见消息"。
+    ///
+    /// **不动 `updated_at`**：那是"最近说过话"的时间，挪个文件夹不该让它跳到现在。
+    /// 代价是到了新助手那边它按原来的时间排在列表里——这正是想要的效果
+    /// （用户找的是那条会话，不是"刚挪过来的那条"）。
+    pub fn move_conversation(
+        &mut self,
+        session: SessionId,
+        assistant: &str,
+    ) -> Result<(), StorageError> {
+        if assistant.trim().is_empty() {
+            return Err(StorageError::Inconsistent("目标助手的 id 是空的".into()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE conversations SET assistant_id = ?1 WHERE id = ?2",
+            params![assistant, session.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::Inconsistent(format!("会话 {session} 不存在")));
+        }
+        Ok(())
+    }
+
+    /// 这个会话属于哪个助手（D174）。会话不在就报错，不返回 `"default"`——
+    /// "查不到"和"归在 default"是两件事，混起来会让移动/删除的判断悄悄走错一边。
+    pub fn conversation_assistant(&self, session: SessionId) -> Result<String, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT assistant_id FROM conversations WHERE id = ?1",
+                [session.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| StorageError::Inconsistent(format!("会话 {session} 不存在")))
+    }
+
+    /// 某个助手底下有多少个会话（D174：删助手前的闸）。
+    ///
+    /// 用 `COUNT(*)` 而不是 `list_conversations(Some(id), 1, 0).has_more`：
+    /// 界面上要说的是"还有 3 个会话"，不是"不止一个"。
+    pub fn count_conversations_of(&self, assistant: &str) -> Result<u64, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM conversations WHERE assistant_id = ?1",
+            [assistant],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
     }
 
     pub fn conversation_exists(&self, session: SessionId) -> Result<bool, StorageError> {

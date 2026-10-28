@@ -135,7 +135,11 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_closeStorageJson<'loc
     to_jstring(&mut env, text)
 }
 
-/// `Native.listConversationsJson(handle, limit, offset)`：UI 第一屏的数据源（P6.2 / D61）。
+/// `Native.listConversationsJson(handle, limit, offset, assistant)`：UI 第一屏的数据源（P6.2 / D61）。
+///
+/// `assistant`（D174）**必填**：列表永远属于某一个助手。C 那一层留了"传 NULL = 不过滤"
+/// 的口子给导出/核对用，JNI 这边不接——界面传 null 就意味着"看全部"，
+/// 那正是切换助手之后最不该发生的事。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listConversationsJson<'local>(
     mut env: JNIEnv<'local>,
@@ -143,13 +147,25 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listConversationsJson
     handle: jlong,
     limit: jlong,
     offset: jlong,
+    assistant: JString<'local>,
 ) -> jstring {
-    let text = guarded(move || {
-        take_json(crate::storage::nmoi_storage_list_conversations_json(
-            handle as u64,
-            limit,
-            offset,
-        ))
+    let assistant = read_string(&mut env, &assistant);
+    let text = guarded(move || match assistant {
+        Some(assistant) => {
+            let Ok(c_assistant) = CString::new(assistant) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `assistant` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_list_conversations_json(
+                handle as u64,
+                limit,
+                offset,
+                c_assistant.as_ptr(),
+            ))
+        }
+        None => bad_string(),
     });
     to_jstring(&mut env, text)
 }
@@ -390,8 +406,10 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_createConversationJso
     _this: JObject<'local>,
     handle: jlong,
     title: JString<'local>,
+    assistant: JString<'local>,
 ) -> jstring {
     let title = read_string(&mut env, &title);
+    let assistant = read_string(&mut env, &assistant);
     let text = guarded(move || match title {
         Some(title) => {
             let Ok(c_title) = CString::new(title) else {
@@ -400,9 +418,84 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_createConversationJso
                     "参数 `title` 含 NUL 字节",
                 ));
             };
+            let Some(assistant) = assistant else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `assistant` 不是合法字符串",
+                ));
+            };
+            let Ok(c_assistant) = CString::new(assistant) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `assistant` 含 NUL 字节",
+                ));
+            };
             take_json(crate::storage::nmoi_storage_create_conversation_json(
                 handle as u64,
                 c_title.as_ptr(),
+                c_assistant.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.moveConversationJson(handle, session, assistant)`：把会话移到另一个助手（D174）。
+///
+/// 只改归属：消息、版本、摘要一个字节都不搬（搬就会有两份"同一个会话"）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_moveConversationJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    assistant: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let assistant = read_string(&mut env, &assistant);
+    let text = guarded(move || {
+        let (Some(session_id), Some(assistant)) = (session_id, assistant) else {
+            return bad_string();
+        };
+        let (Ok(c_session), Ok(c_assistant)) = (CString::new(session_id), CString::new(assistant))
+        else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session / assistant）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_move_conversation_json(
+            handle as u64,
+            c_session.as_ptr(),
+            c_assistant.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.countConversationsOfJson(handle, assistant)`：这个助手底下有几个会话（D174）。
+///
+/// 删助手之前必须先问这一句：有会话就不许直接删（要么先移走，要么明确选"一起移到 default"）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_countConversationsOfJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    assistant: JString<'local>,
+) -> jstring {
+    let assistant = read_string(&mut env, &assistant);
+    let text = guarded(move || match assistant {
+        Some(assistant) => {
+            let Ok(c_assistant) = CString::new(assistant) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `assistant` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_count_conversations_of_json(
+                handle as u64,
+                c_assistant.as_ptr(),
             ))
         }
         None => bad_string(),

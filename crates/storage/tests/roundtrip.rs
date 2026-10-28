@@ -39,7 +39,9 @@ fn conversation_and_units_roundtrip() {
     let path = dir.path().join("app.db");
     let mut storage = ready(&path);
 
-    let session = storage.create_conversation("测试会话", "device-a").unwrap();
+    let session = storage
+        .create_conversation("测试会话", "device-a", "default")
+        .unwrap();
     storage
         .append_unit(session, &user_unit(session, 1, "你好"))
         .unwrap();
@@ -64,7 +66,9 @@ fn incomplete_turns_keep_their_flag_across_a_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.db");
     let mut storage = ready(&path);
-    let session = storage.create_conversation("断流", "device-a").unwrap();
+    let session = storage
+        .create_conversation("断流", "device-a", "default")
+        .unwrap();
 
     let id = MessageId::new(session, 1);
     let message = Message::text(
@@ -93,7 +97,9 @@ fn incomplete_turns_keep_their_flag_across_a_roundtrip() {
 fn tool_pair_with_results_roundtrips() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("app.db"));
-    let session = storage.create_conversation("工具", "device-a").unwrap();
+    let session = storage
+        .create_conversation("工具", "device-a", "default")
+        .unwrap();
 
     let head = Message::tool_call_message(
         MessageId::new(session, 1),
@@ -127,7 +133,9 @@ fn tool_pair_with_results_roundtrips() {
 fn archive_is_idempotent_and_deterministic() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("app.db"));
-    let session = storage.create_conversation("归档", "device-a").unwrap();
+    let session = storage
+        .create_conversation("归档", "device-a", "default")
+        .unwrap();
     let message = MessageId::new(session, 1);
 
     let (entry, redaction) = ArchiveEntry::capture(
@@ -159,7 +167,9 @@ fn archive_is_idempotent_and_deterministic() {
 fn dividers_can_be_inserted_listed_and_deleted() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("app.db"));
-    let session = storage.create_conversation("分界线", "device-a").unwrap();
+    let session = storage
+        .create_conversation("分界线", "device-a", "default")
+        .unwrap();
     storage
         .append_unit(session, &user_unit(session, 1, "a"))
         .unwrap();
@@ -195,7 +205,9 @@ fn dividers_can_be_inserted_listed_and_deleted() {
 fn edits_are_persisted_with_audit() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("app.db"));
-    let session = storage.create_conversation("编辑", "device-a").unwrap();
+    let session = storage
+        .create_conversation("编辑", "device-a", "default")
+        .unwrap();
     let mut unit = user_unit(session, 1, "原文");
     storage.append_unit(session, &unit).unwrap();
 
@@ -213,7 +225,9 @@ fn edits_are_persisted_with_audit() {
 fn locked_flag_survives_and_blocks_editing() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("app.db"));
-    let session = storage.create_conversation("锁定", "device-a").unwrap();
+    let session = storage
+        .create_conversation("锁定", "device-a", "default")
+        .unwrap();
     let mut unit = user_unit(session, 1, "别动我");
     storage.append_unit(session, &unit).unwrap();
 
@@ -233,7 +247,9 @@ fn backup_is_verified_and_openable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.db");
     let mut storage = ready(&path);
-    let session = storage.create_conversation("备份", "device-a").unwrap();
+    let session = storage
+        .create_conversation("备份", "device-a", "default")
+        .unwrap();
     storage
         .append_unit(session, &user_unit(session, 1, "data"))
         .unwrap();
@@ -257,7 +273,9 @@ fn compression_commits_archive_and_divider_together() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("compress.db");
     let mut storage = ready(&path);
-    let session = storage.create_conversation("压缩", "device").unwrap();
+    let session = storage
+        .create_conversation("压缩", "device", "default")
+        .unwrap();
 
     let units = vec![
         user_unit(session, 1, "改 crates/core/src/runtime.rs 的重试"),
@@ -311,7 +329,9 @@ fn compression_commit_rolls_back_archive_when_divider_fails() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rollback.db");
     let mut storage = ready(&path);
-    let session = storage.create_conversation("回滚", "device").unwrap();
+    let session = storage
+        .create_conversation("回滚", "device", "default")
+        .unwrap();
     let units = vec![
         user_unit(session, 1, "改 crates/core/src/runtime.rs"),
         user_unit(session, 2, "好"),
@@ -346,7 +366,9 @@ fn backup_replaces_old_file_and_clears_sidecars() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.db");
     let mut storage = ready(&path);
-    let session = storage.create_conversation("备份", "device").unwrap();
+    let session = storage
+        .create_conversation("备份", "device", "default")
+        .unwrap();
     storage
         .append_unit(session, &user_unit(session, 1, "一条消息"))
         .unwrap();
@@ -395,18 +417,22 @@ fn conversation_list_orders_by_recent_activity_and_pages_with_has_more() {
     // 两次写之间留一点真实的毫秒：`updated_at` 来自墙上时钟，同一毫秒内的先后
     // 只能靠 id 兜底（UUIDv7 的毫秒内部分**是随机的**，不保证等于创建顺序）。
     // 想验"最近动过排最前"，就得让时间真的走过去——Windows 的 CI 抓到过这条。
-    let older = storage.create_conversation("旧的", "device").unwrap();
+    let older = storage
+        .create_conversation("旧的", "device", "default")
+        .unwrap();
     storage
         .append_unit(older, &user_unit(older, 1, "先聊一句"))
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
-    let newer = storage.create_conversation("新的", "device").unwrap();
+    let newer = storage
+        .create_conversation("新的", "device", "default")
+        .unwrap();
     let long = "长".repeat(300);
     storage
         .append_unit(newer, &user_unit(newer, 1, &long))
         .unwrap();
 
-    let page = storage.list_conversations(10, 0).unwrap();
+    let page = storage.list_conversations(None, 10, 0).unwrap();
     assert_eq!(page.items.len(), 2);
     assert!(!page.has_more, "两条都在第一页，没有更多");
     assert_eq!(page.items[0].id, newer, "最近动过的排最前");
@@ -419,10 +445,10 @@ fn conversation_list_orders_by_recent_activity_and_pages_with_has_more() {
     assert_eq!(page.items[1].title, "旧的");
     assert!(!page.items[1].last_text_truncated);
 
-    let first = storage.list_conversations(1, 0).unwrap();
+    let first = storage.list_conversations(None, 1, 0).unwrap();
     assert_eq!(first.items.len(), 1);
     assert!(first.has_more, "还有一页");
-    let second = storage.list_conversations(1, 1).unwrap();
+    let second = storage.list_conversations(None, 1, 1).unwrap();
     assert_eq!(second.items.len(), 1);
     assert!(!second.has_more);
     assert_eq!(second.items[0].id, older);
@@ -436,7 +462,9 @@ fn storage_implements_the_history_store_trait() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.db");
     let mut storage = ready(&path);
-    let session = storage.create_conversation("编排", "device").unwrap();
+    let session = storage
+        .create_conversation("编排", "device", "default")
+        .unwrap();
 
     let unit = user_unit(session, 1, "在吗");
     HistoryStore::append_unit(&mut storage, session, &unit).unwrap();
@@ -454,7 +482,9 @@ fn two_connections_see_each_others_writes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.db");
     let mut main = ready(&path);
-    let session = main.create_conversation("并发", "device-a").unwrap();
+    let session = main
+        .create_conversation("并发", "device-a", "default")
+        .unwrap();
     main.append_unit(session, &user_unit(session, 1, "一"))
         .unwrap();
 
@@ -494,7 +524,7 @@ fn conversation_model_is_null_until_set_and_survives_reopen() {
     let session = {
         let mut storage = ready(&path);
         let session = storage
-            .create_conversation("模型的会话", "device-a")
+            .create_conversation("模型的会话", "device-a", "default")
             .unwrap();
         assert_eq!(storage.conversation_model(session).unwrap(), None);
 
@@ -506,7 +536,7 @@ fn conversation_model_is_null_until_set_and_survives_reopen() {
             Some("vendor/model-a")
         );
 
-        let page = storage.list_conversations(10, 0).unwrap();
+        let page = storage.list_conversations(None, 10, 0).unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(
             page.items[0].model.as_deref(),
@@ -533,4 +563,77 @@ fn setting_a_model_on_a_missing_conversation_is_an_error() {
     let missing = nmoi_core::ids::SessionId::new();
     assert!(storage.set_conversation_model(missing, "m").is_err());
     assert!(storage.conversation_model(missing).is_err());
+}
+
+/// 会话按助手归属（D174）：列表按助手过滤、移动是**改归属不复制**。
+///
+/// 判据就是用户口径那三条：两个助手各有自己的列表；A 的会话移到 B 之后，
+/// A 的列表里没了、B 的列表里有了、**还是同一条会话**（id 不变，消息一条不少）。
+#[test]
+fn conversations_belong_to_an_assistant_and_can_be_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("assistants.db");
+    let mut storage = ready(&path);
+
+    let a = storage
+        .create_conversation("A 的会话", "device", "assistant-a")
+        .unwrap();
+    storage
+        .append_unit(a, &user_unit(a, 1, "A 说过一句"))
+        .unwrap();
+    let b = storage
+        .create_conversation("B 的会话", "device", "assistant-b")
+        .unwrap();
+
+    assert_eq!(storage.conversation_assistant(a).unwrap(), "assistant-a");
+    assert_eq!(storage.count_conversations_of("assistant-a").unwrap(), 1);
+    assert_eq!(storage.count_conversations_of("assistant-b").unwrap(), 1);
+
+    let only_a = storage
+        .list_conversations(Some("assistant-a"), 10, 0)
+        .unwrap();
+    assert_eq!(only_a.items.len(), 1, "A 的列表里只有 A 的会话");
+    assert_eq!(only_a.items[0].id, a);
+    assert_eq!(only_a.items[0].assistant_id, "assistant-a");
+
+    let empty = storage
+        .list_conversations(Some("assistant-c"), 10, 0)
+        .unwrap();
+    assert!(empty.items.is_empty(), "没会话的助手拿到空列表，不是全部");
+
+    let updated_before = only_a.items[0].updated_at;
+    storage.move_conversation(a, "assistant-b").unwrap();
+
+    // 同一条会话：id 不变、消息还在、时间戳没被"挪一下"顶到现在
+    assert_eq!(storage.conversation_assistant(a).unwrap(), "assistant-b");
+    let now_a = storage
+        .list_conversations(Some("assistant-a"), 10, 0)
+        .unwrap();
+    assert!(now_a.items.is_empty(), "A 的列表里它应当消失");
+    let now_b = storage
+        .list_conversations(Some("assistant-b"), 10, 0)
+        .unwrap();
+    assert_eq!(now_b.items.len(), 2, "B 的列表里多出这一条");
+    let moved = now_b.items.iter().find(|item| item.id == a).unwrap();
+    assert_eq!(moved.messages, 1, "移动不该动消息");
+    assert_eq!(
+        moved.updated_at, updated_before,
+        "移动不是\"说话\"，时间戳不动"
+    );
+    assert_eq!(moved.assistant_id, "assistant-b");
+
+    // 全部（不过滤）仍然只有这两条，没有因为移动多出一份
+    let all = storage.list_conversations(None, 10, 0).unwrap();
+    assert_eq!(all.items.len(), 2, "改归属不复制");
+
+    assert_eq!(storage.count_conversations_of("assistant-a").unwrap(), 0);
+    assert_eq!(storage.count_conversations_of("assistant-b").unwrap(), 2);
+
+    // 挪回去也行；不存在的会话 / 空的目标 id 都要报错，不静默
+    storage.move_conversation(a, "assistant-a").unwrap();
+    assert!(storage.move_conversation(a, "  ").is_err());
+    let missing = nmoi_core::ids::SessionId::new();
+    assert!(storage.move_conversation(missing, "assistant-b").is_err());
+    assert!(storage.conversation_assistant(missing).is_err());
+    let _ = b;
 }

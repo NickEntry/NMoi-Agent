@@ -3783,6 +3783,26 @@ DNS 从 `ConnectivityManager.getLinkProperties().dnsServers` 取（不要 `getpr
 - 助手本身：一页列表（现在是单个 `settings(assistant,"default")`），支持新建与"从现有复制配置"
   （复制的是模型/参数/思考档位，**不含会话**）。
 
+**已实现的形状**（2026-10-28，schema **v9**；界面的"切助手 / 移动到其他助手"还在做）：
+
+- `conversations.assistant_id TEXT NOT NULL DEFAULT 'default'` + 索引
+  `conversations_by_assistant(assistant_id, updated_at DESC)`（列表那条 ORDER BY 与索引一致）。
+  `DEFAULT` 不只是给迁移用：以后某条写入路径忘了给值，会话落进 `default`，
+  而不是落进一个界面上哪儿都看不见的空归属（铁律 ②）。
+- storage：`create_conversation(title, device, assistant)`、
+  `list_conversations(assistant: Option<&str>, limit, offset)`（`None` = 不过滤，给导出/核对用）、
+  `move_conversation(session, assistant)`、`conversation_assistant(session)`、
+  `count_conversations_of(assistant)`；`ConversationSummary` 多带一个 `assistant_id`。
+  **`move` 不动 `updated_at`**：挪个文件夹不该让它在列表里跳到最前，用户找的是那条会话。
+- ffi：`create_conversation_json` 多一个**必填**的 `assistant`；
+  `list_conversations_json` 多一个 `assistant`（**空指针 = 不过滤**，JNI 层不接这个口子）；
+  新增 `move_conversation_json` / `count_conversations_of_json`。
+- Kotlin："当前助手"存 `settings(assistant, "active")`（`{"id": …}`），与供应商
+  `settings(provider, "active")` 同形——它是数据的一部分（决定新会话归谁），不是本机开关。
+  列助手时跳过 `active` 这个 key（它是指针文档，不是助手）。`default` 不许改名、不许删。
+- **删助手的闸**在 storage 这边只提供数（`count_conversations_of`），要不要"一起移到 default"
+  由界面问用户——静默挪走和静默删掉都属于"数据没了"。
+
 ### D175 Shizuku：先做"检测 + 开关"，不做执行
 
 用户口径（2026-10-27）：**授权肯定是他自己点，但我们要能验证是不是已授权**。

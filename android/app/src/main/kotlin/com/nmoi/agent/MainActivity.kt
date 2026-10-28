@@ -11,6 +11,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppIconSwitcher
+import com.nmoi.agent.ui.AssistantList
+import com.nmoi.agent.ui.AssistantRepository
 import com.nmoi.agent.ui.AppearanceScreen
 import com.nmoi.agent.ui.ChatScreen
 import com.nmoi.agent.ui.ConversationDrawer
@@ -131,10 +133,22 @@ class MainActivity : ComponentActivity() {
                 val databasePath = remember { File(filesDir, "nmoi.db").absolutePath }
                 // 建了会话之后要让抽屉重读：produceState 只有 key 变了才会重跑。
                 var listReload by remember { mutableStateOf(0) }
-                // 开库和列表读盘都碰磁盘，不许在主线程上做。
-                val snapshot by produceState<ConversationSnapshot?>(initialValue = null, listReload) {
+                // 当前助手（D174）：抽屉里的列表和"新建会话归谁"都看它。
+                // 它跟着 `listReload` 重读——切了助手就是一次列表刷新。
+                val assistantList by produceState<AssistantList?>(initialValue = null, listReload) {
                     value = withContext(Dispatchers.IO) {
-                        ConversationRepository.load(databasePath)
+                        AssistantRepository.list(databasePath).getOrNull()
+                    }
+                }
+                val activeAssistantId = assistantList?.activeId ?: AssistantRepository.DEFAULT_ID
+                // 开库和列表读盘都碰磁盘，不许在主线程上做。
+                val snapshot by produceState<ConversationSnapshot?>(
+                    initialValue = null,
+                    listReload,
+                    activeAssistantId,
+                ) {
+                    value = withContext(Dispatchers.IO) {
+                        ConversationRepository.load(databasePath, activeAssistantId)
                     }
                 }
 
@@ -150,7 +164,13 @@ class MainActivity : ComponentActivity() {
                 // 返回 null = 建不出来，调用方负责把原因写在界面上，不静默丢字。
                 val ensureSession: suspend () -> String? = {
                     val created = withContext(Dispatchers.IO) {
-                        ConversationRepository.create(databasePath, NEW_CHAT_TITLE)
+                        // 会话归**当前助手**：界面上看到的是哪个，建出来的就归哪个（D174）。
+                        ConversationRepository.create(
+                            databasePath,
+                            NEW_CHAT_TITLE,
+                            AssistantRepository.active(databasePath).getOrNull()?.id
+                                ?: AssistantRepository.DEFAULT_ID,
+                        )
                     }
                     created.fold(
                         onSuccess = { id ->

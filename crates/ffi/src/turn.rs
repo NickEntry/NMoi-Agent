@@ -956,9 +956,11 @@ mod tests {
         let handle = opened["handle"].as_u64().expect("storage handle");
 
         let title = CString::new("cancel").unwrap();
+        let assistant = CString::new("default").unwrap();
         let created = read_json(crate::storage::nmoi_storage_create_conversation_json(
             handle,
             title.as_ptr(),
+            assistant.as_ptr(),
         ));
         let session = created["session"].as_str().expect("session").to_string();
 

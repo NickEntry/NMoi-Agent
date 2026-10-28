@@ -58,13 +58,23 @@ internal object NativeBridge {
     /** 工具编辑（临时探针）：会置 `edited_by_tool`，数字变蓝/红（D148）。 */
     external fun toolEditVersionJson(handle: Long, message: String, versionNo: Long, text: String): String
 
-    external fun listConversationsJson(handle: Long, limit: Long, offset: Long): String
+    /**
+     * 会话列表（D174）。`assistant` **必填**：列表永远属于某一个助手，
+     * 界面上看到的是哪个助手，列出来的就该是哪个的会话。
+     */
+    external fun listConversationsJson(handle: Long, limit: Long, offset: Long, assistant: String): String
 
     /** 读会话的原子单元（消息区）。limit ≤ 0 = 全给。 */
     external fun loadUnitsJson(handle: Long, session: String, limit: Long): String
 
-    /** 新建会话，回 `{"session":"<id>"}`。 */
-    external fun createConversationJson(handle: Long, title: String): String
+    /** 新建会话，回 `{"session":"<id>","assistant":"<id>"}`。会话归 `assistant`。 */
+    external fun createConversationJson(handle: Long, title: String, assistant: String): String
+
+    /** 把会话移到另一个助手（D174）：改归属，不复制。回 `{"session","assistant"}`。 */
+    external fun moveConversationJson(handle: Long, session: String, assistant: String): String
+
+    /** 某个助手底下有几个会话（D174）：删助手之前那道闸靠它。回 `{"assistant","count"}`。 */
+    external fun countConversationsOfJson(handle: Long, assistant: String): String
 
     /** 存一句话为消息（不发模型）。这是接入 `turn_run` 之前唯一的写入口。 */
     external fun appendTextJson(handle: Long, session: String, role: String, text: String, nowMs: Long): String

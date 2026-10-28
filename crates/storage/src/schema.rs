@@ -252,3 +252,18 @@ pub const SCHEMA_V8: &str = r#"
 ALTER TABLE message_versions RENAME COLUMN raw_text TO origin_message;
 ALTER TABLE message_versions RENAME COLUMN edited_text TO tooledit_message;
 "#;
+
+/// v9：会话按**助手**归属（D174）。
+///
+/// `assistant_id` 指向 `settings(assistant, <id>)` 那一份配置，默认 `'default'`——
+/// 迁移时所有老会话都归 `'default'`，因为在此之前界面上只有一个助手。
+/// `NOT NULL DEFAULT 'default'` 不只是给迁移用：以后新增的写入路径忘了给这个值时，
+/// 会话会落进 `default`，而不是落进一个"界面上哪儿都看不见"的空归属
+/// （铁律 ②：库里每样东西都要能在界面上指出来）。
+///
+/// 索引带上 `updated_at DESC`：列表页的查询就是"某个助手的会话按最近动过排"，
+/// 索引与那条 ORDER BY 一致时才不用额外排序。
+pub const SCHEMA_V9: &str = r#"
+ALTER TABLE conversations ADD COLUMN assistant_id TEXT NOT NULL DEFAULT 'default';
+CREATE INDEX conversations_by_assistant ON conversations(assistant_id, updated_at DESC);
+"#;

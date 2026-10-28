@@ -49,9 +49,17 @@ internal object NmoiFfi {
     suspend fun loadUnits(handle: Long, session: String, limit: Long = 80L): Result<JSONObject> =
         call("load_units") { NativeBridge.loadUnitsJson(handle, session, limit) }
 
-    /** 新建会话。返回的信封里 `session` 是会话 id。 */
-    suspend fun createConversation(handle: Long, title: String): Result<JSONObject> =
-        call("create_conversation") { NativeBridge.createConversationJson(handle, title) }
+    /** 新建会话。返回的信封里 `session` 是会话 id，`assistant` 是它归到哪个助手（D174）。 */
+    suspend fun createConversation(handle: Long, title: String, assistant: String): Result<JSONObject> =
+        call("create_conversation") { NativeBridge.createConversationJson(handle, title, assistant) }
+
+    /** 把会话移到另一个助手（D174）。改归属，不复制：id 不变、消息一条不搬。 */
+    suspend fun moveConversation(handle: Long, session: String, assistant: String): Result<JSONObject> =
+        call("move_conversation") { NativeBridge.moveConversationJson(handle, session, assistant) }
+
+    /** 这个助手底下有几个会话（D174）。删助手之前必须先问这一句。 */
+    suspend fun countConversationsOf(handle: Long, assistant: String): Result<JSONObject> =
+        call("count_conversations_of") { NativeBridge.countConversationsOfJson(handle, assistant) }
 
     /**
      * 把一段文本存成一条消息。`role` 只收 `user` / `assistant` / `system`。

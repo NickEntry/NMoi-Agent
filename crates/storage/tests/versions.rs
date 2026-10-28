@@ -35,7 +35,9 @@ fn assistant_unit(session: SessionId, seq: u64, text: &str) -> AtomicUnit {
 /// 建一个会话、放一条助手消息，返回 (storage, session, 消息 id)。
 fn fixture(dir: &std::path::Path) -> (Storage, SessionId, MessageId) {
     let mut storage = ready(&dir.join("app.db"));
-    let session = storage.create_conversation("版本测试", "device-a").unwrap();
+    let session = storage
+        .create_conversation("版本测试", "device-a", "default")
+        .unwrap();
     storage
         .append_unit(session, &assistant_unit(session, 1, "原始回复"))
         .unwrap();
@@ -315,7 +317,9 @@ fn reopens_with_versions_intact() {
     let message;
     {
         let mut storage = ready(&path);
-        session = storage.create_conversation("重启测试", "device-a").unwrap();
+        session = storage
+            .create_conversation("重启测试", "device-a", "default")
+            .unwrap();
         storage
             .append_unit(session, &assistant_unit(session, 1, "原文"))
             .unwrap();
@@ -523,7 +527,9 @@ fn deleting_a_tool_message_takes_the_whole_unit() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("app.db"));
-    let session = storage.create_conversation("工具删", "device-a").unwrap();
+    let session = storage
+        .create_conversation("工具删", "device-a", "default")
+        .unwrap();
 
     let head = Message::tool_call_message(
         MessageId::new(session, 1),

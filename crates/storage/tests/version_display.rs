@@ -26,7 +26,9 @@ fn ready(path: &std::path::Path) -> Storage {
 
 /// 一条助手消息 + 它的第 1 版（原文）。真机上的顺序：先落消息，再记版本。
 fn seed_assistant(storage: &mut Storage, raw: &str) -> (SessionId, MessageId) {
-    let session = storage.create_conversation("版本", "device-a").unwrap();
+    let session = storage
+        .create_conversation("版本", "device-a", "default")
+        .unwrap();
     let message = Message::text(
         MessageId::new(session, 1),
         Role::Assistant,

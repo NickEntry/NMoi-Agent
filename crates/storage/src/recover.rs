@@ -236,7 +236,9 @@ mod tests {
     #[test]
     fn clean_store_reports_nothing() {
         let mut store = storage();
-        let session = store.create_conversation("干净会话", "device").unwrap();
+        let session = store
+            .create_conversation("干净会话", "device", "default")
+            .unwrap();
         store
             .append_unit(session, &turn(session, 1, Role::User, "在吗"))
             .unwrap();
@@ -255,7 +257,7 @@ mod tests {
     fn conversation_ending_with_user_message_is_reported() {
         let mut store = storage();
         let session = store
-            .create_conversation("被杀在流式中间", "device")
+            .create_conversation("被杀在流式中间", "device", "default")
             .unwrap();
         store
             .append_unit(session, &turn(session, 1, Role::User, "在吗"))
@@ -280,7 +282,9 @@ mod tests {
     #[test]
     fn open_tool_unit_is_reported_with_pending_calls() {
         let mut store = storage();
-        let session = store.create_conversation("工具单元", "device").unwrap();
+        let session = store
+            .create_conversation("工具单元", "device", "default")
+            .unwrap();
         store
             .append_unit(session, &turn(session, 1, Role::User, "读一下文件"))
             .unwrap();
@@ -310,7 +314,9 @@ mod tests {
     #[test]
     fn abandoning_open_unit_makes_the_report_clean() {
         let mut store = storage();
-        let session = store.create_conversation("丢弃半截单元", "device").unwrap();
+        let session = store
+            .create_conversation("丢弃半截单元", "device", "default")
+            .unwrap();
         store
             .append_unit(session, &turn(session, 1, Role::User, "读一下"))
             .unwrap();
@@ -336,7 +342,9 @@ mod tests {
     #[test]
     fn abandoning_a_closed_unit_is_refused() {
         let mut store = storage();
-        let session = store.create_conversation("已闭合", "device").unwrap();
+        let session = store
+            .create_conversation("已闭合", "device", "default")
+            .unwrap();
         let unit = turn(session, 1, Role::User, "在吗");
         let unit_id = unit.id.clone();
         store.append_unit(session, &unit).unwrap();
@@ -376,7 +384,9 @@ mod tests {
                 crate::OpenOutcome::Ready(store) => store,
                 crate::OpenOutcome::Blocked(blocked) => panic!("不该被拦：{blocked:?}"),
             };
-            session = store.create_conversation("被杀", "device").unwrap();
+            session = store
+                .create_conversation("被杀", "device", "default")
+                .unwrap();
             store
                 .append_unit(session, &turn(session, 1, Role::User, "已提交的一条"))
                 .unwrap();

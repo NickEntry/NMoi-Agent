@@ -23,7 +23,9 @@ fn ready(path: &std::path::Path) -> Storage {
 
 /// 一条带思考块的助手消息。
 fn seed_thinking(storage: &mut Storage, body: &str, thinking: &str) -> (SessionId, MessageId) {
-    let session = storage.create_conversation("块编辑", "device-a").unwrap();
+    let session = storage
+        .create_conversation("块编辑", "device-a", "default")
+        .unwrap();
     let message = Message::text(
         MessageId::new(session, 1),
         Role::Assistant,
@@ -42,7 +44,9 @@ fn seed_thinking(storage: &mut Storage, body: &str, thinking: &str) -> (SessionI
 
 /// 一个工具往返单元：`assistant(tool_calls) + tool_result`。
 fn seed_tool_pair(storage: &mut Storage) -> (SessionId, MessageId) {
-    let session = storage.create_conversation("工具块", "device-a").unwrap();
+    let session = storage
+        .create_conversation("工具块", "device-a", "default")
+        .unwrap();
     let head = Message::tool_call_message(
         MessageId::new(session, 1),
         vec![OutgoingToolCall::new(

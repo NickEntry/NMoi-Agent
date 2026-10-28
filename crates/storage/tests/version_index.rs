@@ -34,7 +34,9 @@ fn version_index_keys_match_load_units_ids() {
     // 建会话 + 一条消息（跟真机一样：先 append，再存版本）
     let session = {
         let mut storage = ready(&path);
-        let session = storage.create_conversation("索引探针", "device-a").unwrap();
+        let session = storage
+            .create_conversation("索引探针", "device-a", "default")
+            .unwrap();
         let message = Message::text(
             MessageId::new(session, 1),
             Role::Assistant,

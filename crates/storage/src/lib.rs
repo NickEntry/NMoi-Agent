@@ -481,7 +481,9 @@ mod tests {
     }
 
     fn seed(storage: &mut Storage) -> (nmoi_core::ids::SessionId, AtomicUnit) {
-        let session = storage.create_conversation("体检", "device-a").unwrap();
+        let session = storage
+            .create_conversation("体检", "device-a", "default")
+            .unwrap();
         let id = MessageId::new(session, 1);
         let message = Message::text(
             id,
