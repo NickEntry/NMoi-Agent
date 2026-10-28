@@ -278,7 +278,7 @@ int main(void) {
         nmoi_string_free(opened);
 
         char *created =
-            take(nmoi_storage_create_conversation_json(storage_handle, "C smoke"),
+            take(nmoi_storage_create_conversation_json(storage_handle, "C smoke", "default"),
                  "create_conversation");
         check(extract_string(created, "\"session\":\"", session, sizeof(session)),
               "返回 session id", created);
@@ -376,7 +376,8 @@ int main(void) {
         /* 会话列表（P6.2）：UI 第一屏要的东西必须从这一层拿得到。 */
         {
             char *list =
-                take(nmoi_storage_list_conversations_json(storage_handle, 0, 0), "list(默认)");
+                take(nmoi_storage_list_conversations_json(storage_handle, 0, 0, "default"),
+                     "list(默认)");
             check(contains(list, "\"has_more\":false"), "只有一个会话，没有下一页", list);
             check(contains(list, "\"messages\":3"), "条数对得上（三条消息）", NULL);
             check(contains(list, "third line"), "预览是最后一条消息", NULL);
@@ -387,11 +388,51 @@ int main(void) {
             nmoi_string_free(list);
 
             /* limit 被夹到合法区间，offset 负数当 0：UI 传错不该把手机拖死。 */
-            char *tiny = take(nmoi_storage_list_conversations_json(storage_handle, -5, -3),
+            char *tiny = take(nmoi_storage_list_conversations_json(storage_handle, -5, -3, NULL),
                               "list(limit=-5, offset=-3)");
             check(contains(tiny, "\"limit\":50"), "limit <= 0 用默认 50", tiny);
             check(contains(tiny, "\"offset\":0"), "offset 负数当 0", NULL);
             nmoi_string_free(tiny);
+        }
+
+        /* 会话按助手归属（D174）：移动是**改归属，不复制**——同一个 session id 换一边出现。 */
+        {
+            char *moved =
+                take(nmoi_storage_move_conversation_json(storage_handle, session, "assistant-b"),
+                     "move_conversation(b)");
+            check(contains(moved, "\"assistant\":\"assistant-b\""), "移动回显新归属", moved);
+            nmoi_string_free(moved);
+
+            char *in_b =
+                take(nmoi_storage_list_conversations_json(storage_handle, 0, 0, "assistant-b"),
+                     "list(assistant-b)");
+            check(contains(in_b, session), "移到 b 之后 b 的列表里有它", NULL);
+            check(contains(in_b, "\"returned\":1"), "b 只有这一条", in_b);
+            nmoi_string_free(in_b);
+
+            char *in_a =
+                take(nmoi_storage_list_conversations_json(storage_handle, 0, 0, "default"),
+                     "list(default)");
+            check(contains(in_a, "\"returned\":0"), "default 的列表里没了", in_a);
+            nmoi_string_free(in_a);
+
+            char *counted = take(
+                nmoi_storage_count_conversations_of_json(storage_handle, "assistant-b"),
+                "count(assistant-b)");
+            check(contains(counted, "\"count\":1"), "b 底下 1 个会话", counted);
+            nmoi_string_free(counted);
+
+            /* 挪回去：后面的用例还按 default 找这条会话。挪回去也不许动 updated_at。 */
+            char *back = take(
+                nmoi_storage_move_conversation_json(storage_handle, session, "default"),
+                "move(回 default)");
+            nmoi_string_free(back);
+
+            char *blank = take_error(
+                nmoi_storage_move_conversation_json(storage_handle, session, "  "),
+                "move(空 id)");
+            check(is_error(blank), "移到空 id 是错误，不静默成功", blank);
+            nmoi_string_free(blank);
         }
 
         /* 上下文窗口面板的分段用量（P6.4）：八行恒在，0 行也给——
@@ -654,7 +695,8 @@ int main(void) {
 
         char turn_session[64] = {0};
         char *created =
-            take(nmoi_storage_create_conversation_json(sh, "turn smoke"), "create(turn)");
+            take(nmoi_storage_create_conversation_json(sh, "turn smoke", "default"),
+                 "create(turn)");
         check(extract_string(created, "\"session\":\"", turn_session, sizeof(turn_session)),
               "turn 用的会话建好了", created);
         nmoi_string_free(created);

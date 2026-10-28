@@ -84,8 +84,15 @@ char *nmoi_storage_health_json(uint64_t handle);
 /* 启动收口：只报告，不猜。pending_turns / open_units / incomplete_messages。 */
 char *nmoi_storage_reconcile_json(uint64_t handle);
 
-/* 新建会话，返回 {"ok":true,"session":"<uuid>"} */
-char *nmoi_storage_create_conversation_json(uint64_t handle, const char *title);
+/*
+ * 新建会话，返回 {"ok":true,"session":"<uuid>","assistant":"<id>"}。
+ *
+ * `assistant`（D174）**必填**：会话归哪个助手由它决定，没有"默认那个"这种隐式回退——
+ * 界面上看到的是哪个助手，建出来的就该归哪个。空串按 bad_argument 拒绝。
+ */
+char *nmoi_storage_create_conversation_json(uint64_t handle,
+                                            const char *title,
+                                            const char *assistant);
 
 /*
  * 记下"这个会话现在用哪个模型"（D101）。返回 {"ok":true,"session":"…","model":"…"}。
@@ -121,10 +128,30 @@ char *nmoi_storage_load_units_json(uint64_t handle, const char *session, int64_t
  * 分页给 has_more，**不给总数**：UI 只需要知道"还能不能往下翻"。
  * limit <= 0 用默认 50，硬上限 200；offset < 0 当 0。
  *
+ * `assistant`（D174）：给了就只看那个助手的会话；**传 NULL = 不过滤**（导出/核对用）。
+ * 列表页永远传具体值——传 NULL 拿到全部，是维护口子，不是给界面用的。
+ *
  * 每条的 last_text 是最后一条消息的预览，**截断到 200 字符**；
  * last_text_truncated 说明它不完整——别把半句话当全文显示。
  */
-char *nmoi_storage_list_conversations_json(uint64_t handle, int64_t limit, int64_t offset);
+char *nmoi_storage_list_conversations_json(uint64_t handle,
+                                          int64_t limit,
+                                          int64_t offset,
+                                          const char *assistant);
+
+/*
+ * 把会话移到另一个助手（D174）：**改归属，不复制**。
+ *
+ * 复制会立刻出现两份"同一个会话"，之后改哪一份都说不清哪份才算数。
+ * 不动 updated_at：挪个文件夹不该让它跳到列表最前。
+ * 返回 {"ok":true,"session":"…","assistant":"…"}。
+ */
+char *nmoi_storage_move_conversation_json(uint64_t handle,
+                                          const char *session,
+                                          const char *assistant);
+
+/* 某个助手底下有几个会话（D174）：删助手之前那道闸靠它。返回 {"assistant","count"}。 */
+char *nmoi_storage_count_conversations_of_json(uint64_t handle, const char *assistant);
 
 /*
  * 上下文窗口面板的八行用量（P6.4）。行数与顺序固定，0 行也给。
