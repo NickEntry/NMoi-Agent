@@ -82,6 +82,79 @@ impl VarTable {
     }
 }
 
+/// 一条名单里的问题。**每条都要能点名**：界面上的红字必须说清是哪一条、哪里不对。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Problem {
+    /// 调用 ID 的形状不对（只允许小写字母、数字、下划线；1–32 个字符）。
+    BadId(String),
+    /// 两个助手填了同一个调用 ID。`first` 是它的 id，`second` 是撞上它的那个。
+    Duplicate {
+        id: String,
+        first: String,
+        second: String,
+    },
+    /// 描述是空的。模型要靠这句话决定"什么时候用它"，空描述等于没登记。
+    EmptyDescription(String),
+}
+
+impl Problem {
+    /// 给界面那句人话。
+    pub fn describe(&self) -> String {
+        match self {
+            Problem::BadId(id) => {
+                format!("调用 ID「{id}」不合法：只能用小写字母、数字和下划线，1–32 个字符")
+            }
+            Problem::Duplicate { id, first, second } => {
+                format!("调用 ID「{id}」重复了：助手 {first} 与 {second} 都用了它")
+            }
+            Problem::EmptyDescription(id) => {
+                format!("子助手「{id}」还没写描述：主 AGENT 靠它决定什么时候调用")
+            }
+        }
+    }
+}
+
+/// 校验一份名单。**空 = 全部合格**。
+///
+/// 为什么查重放在这里而不是各端各写一遍：`id` 是主 AGENT 手里唯一的钥匙，
+/// 重名就意味着"调用随机一个"。客户端漏一次，故障表现是"它有时叫错人"，最难查的那一类。
+///
+/// `owners` 与 `entries` 一一对应（助手自己的 id），用来把"和谁撞了"说出来。
+pub fn validate(entries: &[(String, SubAgentEntry)]) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for (owner, entry) in entries {
+        if !is_valid_id(&entry.id) {
+            problems.push(Problem::BadId(entry.id.clone()));
+        }
+        if let Some(first) = seen.get(entry.id.as_str()) {
+            problems.push(Problem::Duplicate {
+                id: entry.id.clone(),
+                first: (*first).to_string(),
+                second: owner.clone(),
+            });
+        } else {
+            seen.insert(entry.id.as_str(), owner.as_str());
+        }
+        if entry.description.trim().is_empty() {
+            problems.push(Problem::EmptyDescription(entry.id.clone()));
+        }
+    }
+    problems
+}
+
+/// 调用 ID 的形状：小写字母 / 数字 / 下划线，1–32 个字符。
+///
+/// 只收小写：模型抄写 ID 的频率不低，`Test_Agent` 与 `test_agent` 在它眼里是同一个东西，
+/// 允许大写就等于允许"看起来一样、其实不是一条"的故障。
+pub fn is_valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 32
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// 把 `text` 里所有 `<var><名字></var>` 换成对应的值。
 ///
 /// 规则只有三条，都好测：
@@ -212,5 +285,72 @@ mod tests {
         let table = VarTable::new(vec![entry("a", "A")]);
         let text = "就是一段普通提示词，没有任何标记。";
         assert_eq!(replace(text, &table), text);
+    }
+
+    fn owned(owner: &str, id: &str, description: &str) -> (String, SubAgentEntry) {
+        (owner.to_string(), entry(id, description))
+    }
+
+    #[test]
+    fn a_clean_list_has_no_problems() {
+        let list = vec![
+            owned("a1", "test_agent", "test"),
+            owned("a2", "test_agent2", "test"),
+        ];
+        assert!(validate(&list).is_empty());
+    }
+
+    /// 撞名要**说清和谁撞了**：只说"id 重复"的话，用户得自己一个个翻。
+    #[test]
+    fn a_duplicate_names_both_owners() {
+        let list = vec![
+            owned("assistant-a", "writer", "改文案"),
+            owned("assistant-b", "writer", "也是改文案"),
+        ];
+        let problems = validate(&list);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        let text = problems[0].describe();
+        assert!(text.contains("writer"), "{text}");
+        assert!(
+            text.contains("assistant-a") && text.contains("assistant-b"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn bad_shapes_and_empty_descriptions_are_named() {
+        let list = vec![
+            owned("a1", "Test_Agent", "大写不行"),
+            owned("a2", "带空格 的", "不行"),
+            owned("a3", "", "空的 id 不行"),
+            owned("a4", &"x".repeat(33), "太长"),
+            owned("a5", "ok_id", "   "),
+        ];
+        let problems = validate(&list);
+        // 四个形状问题 + 一条空描述
+        assert_eq!(problems.len(), 5, "{problems:?}");
+        assert!(problems.iter().any(|p| p.describe().contains("还没写描述")));
+    }
+
+    /// 校验与渲染是两件事：不合法的照样能被渲染（界面要能"先展示、再报错"），
+    /// 但校验必须拦住它。这条测试是为了防止以后有人把校验塞进渲染里。
+    #[test]
+    fn validation_does_not_change_rendering() {
+        let table = VarTable::new(vec![entry("BAD ID", "x")]);
+        assert!(table.sub_agent_info().contains("id:BAD ID"));
+        let problems = validate(&[owned("a", "BAD ID", "x")]);
+        assert!(!problems.is_empty());
+    }
+
+    #[test]
+    fn id_pattern_edges() {
+        assert!(is_valid_id("a"));
+        assert!(is_valid_id("test_agent_2"));
+        assert!(is_valid_id(&"y".repeat(32)));
+        assert!(!is_valid_id(&"y".repeat(33)));
+        assert!(!is_valid_id("Agent"));
+        assert!(!is_valid_id("a-b"));
+        assert!(!is_valid_id("a b"));
+        assert!(!is_valid_id(""));
     }
 }

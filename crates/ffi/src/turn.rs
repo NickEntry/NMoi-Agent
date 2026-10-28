@@ -41,6 +41,7 @@ use nmoi_core::session::{run_session_turn, SessionConfig, SessionError, SessionT
 use nmoi_core::shell::EnvirSpec;
 use nmoi_core::tools::ToolRegistry;
 use nmoi_core::transport::HttpsTransport;
+use nmoi_core::vars::SubAgentEntry;
 use nmoi_core::workspace::Workspace;
 use nmoi_storage::Storage;
 use serde_json::{json, Value};
@@ -141,6 +142,11 @@ struct TurnInput {
     /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
     /// 五个路径全是**宿主机**上的绝对路径，由调用方（Kotlin）现取现传。
     envir: Option<EnvirSpec>,
+    /// 这一轮的系统提示词。**已经在库里存过的那种不算**——这条是刚组装出来的，
+    /// 所以占位符替换在这里做（D176）。
+    system: Option<String>,
+    /// 可被调用的子助手名单（D176）。空 = 没有，占位符替换成一句人话。
+    sub_agents: Vec<SubAgentEntry>,
 }
 
 /// 解析 `envir`（D172）。**五个字段缺一不可**：少一个就是一条拼不起来的命令行，
@@ -315,6 +321,11 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         }
     };
 
+    // 系统提示词与子助手名单（D176）。**占位符替换放在这里解析完就做**：
+    // 组装请求时只剩下"拿去用"，不再有一处能改它的地方。
+    let system = optional_str(&root, "system")?.filter(|text| !text.trim().is_empty());
+    let sub_agents = parse_sub_agents(&root)?;
+
     Ok(TurnInput {
         storage,
         session,
@@ -335,7 +346,49 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
+        system,
+        sub_agents,
     })
+}
+
+/// 解析 `sub_agents`（D176）：`[{"id":"test_agent","description":"test"}, …]`。
+///
+/// 这里只做"这一轮能不能安全地用"这一档检查：形状对、不重名。**"和谁撞了"那种
+/// 面向人的报错在保存时做**（`vars::validate` 带 owner），因为那一刻才知道是哪个助手。
+/// 这一层没有 owner，只能点名 id 本身。
+fn parse_sub_agents(root: &Value) -> FfiResult<Vec<SubAgentEntry>> {
+    let Some(value) = field(root, "sub_agents") else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(bad("sub_agents", "必须是数组"));
+    };
+    let mut out: Vec<SubAgentEntry> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if !item.is_object() {
+            return Err(bad(&format!("sub_agents[{index}]"), "必须是对象"));
+        }
+        let id = required_str(item, "id")?;
+        if !nmoi_core::vars::is_valid_id(&id) {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!(
+                    "sub_agents[{index}].id「{id}」不合法：只能用小写字母、数字和下划线，1–32 个字符"
+                ),
+            ));
+        }
+        if out.iter().any(|entry| entry.id == id) {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!("sub_agents 里 id「{id}」重复了：主 AGENT 拿到重名会随机调一个"),
+            ));
+        }
+        out.push(SubAgentEntry {
+            id,
+            description: required_str(item, "description")?,
+        });
+    }
+    Ok(out)
 }
 
 /// 思考强度（D162）。`auto` = **不注任何字段**，让模型自己决定。
@@ -501,7 +554,20 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
 
         let provider =
             ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
-        let mut request = ChatRequest::new(provider, &input.model);
+        // 系统提示词里的占位符在这里替换（D176）：名单是**这一轮**的，
+        // 所以不能在建会话时替换一次了事。
+        let system = input.system.as_deref().map(|text| {
+            nmoi_core::vars::replace(
+                text,
+                &nmoi_core::vars::VarTable::new(input.sub_agents.clone()),
+            )
+        });
+        let mut request = match system.as_deref() {
+            Some(system) => {
+                ChatRequest::from_turns(provider, &input.model, &[(Role::System, system)])
+            }
+            None => ChatRequest::new(provider, &input.model),
+        };
         if let Some(key) = input.api_key.as_deref() {
             if !key.trim().is_empty() {
                 request = request.api_key(key);
@@ -758,6 +824,50 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    /// 系统提示词里的名单占位符（D176）：解析完就该能替出来，而且不需要联网。
+    #[test]
+    fn sub_agents_fill_the_placeholder_in_the_system_prompt() {
+        let mut config: Value = serde_json::from_str(&minimal()).unwrap();
+        config["system"] = json!("你可以调用这些子助手：\n<var><sub_agent_info></var>");
+        config["sub_agents"] = json!([
+            {"id": "test_agent", "description": "test"},
+            {"id": "test_agent2", "description": "test"}
+        ]);
+        let input = parse(&config.to_string()).expect("应当解析出来");
+        assert_eq!(input.sub_agents.len(), 2);
+        let table = nmoi_core::vars::VarTable::new(input.sub_agents.clone());
+        let text = nmoi_core::vars::replace(input.system.as_deref().expect("system 在"), &table);
+        assert!(
+            text.starts_with("你可以调用这些子助手：\n{\n---\nid:test_agent"),
+            "{text}"
+        );
+        assert!(text.contains("id:test_agent2"), "{text}");
+        // 没有登记过占位符的文本原样保留（这是绝大多数情况）。
+        assert_eq!(nmoi_core::vars::replace("普通一句", &table), "普通一句");
+    }
+
+    /// 名单本身的两类错要在解析时就拦：形状不对、重名（重名 = 主 AGENT 会随机调一个）。
+    #[test]
+    fn bad_sub_agent_entries_are_rejected_at_parse_time() {
+        let mut bad_shape: Value = serde_json::from_str(&minimal()).unwrap();
+        bad_shape["sub_agents"] = json!([{"id": "Test_Agent", "description": "x"}]);
+        let error = parse(&bad_shape.to_string()).expect_err("大写 id 不行");
+        assert!(error.message.contains("Test_Agent"), "{}", error.message);
+
+        let mut duplicated: Value = serde_json::from_str(&minimal()).unwrap();
+        duplicated["sub_agents"] = json!([
+            {"id": "writer", "description": "a"},
+            {"id": "writer", "description": "b"}
+        ]);
+        let error = parse(&duplicated.to_string()).expect_err("重名要报错");
+        assert!(error.message.contains("重复"), "{}", error.message);
+
+        let mut not_array: Value = serde_json::from_str(&minimal()).unwrap();
+        not_array["sub_agents"] = json!("writer");
+        let error = parse(&not_array.to_string()).expect_err("必须是数组");
+        assert!(error.message.contains("数组"), "{}", error.message);
     }
 
     fn minimal() -> String {

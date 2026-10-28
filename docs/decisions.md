@@ -3944,5 +3944,16 @@ sub_agent(id, instruction, session?, injections?, inherit?)
 3. **子会话归属它的助手**：`conversations.assistant_id = 子助手 id`（v9 已经有这张表），
    所以子会话天然出现在那个助手的列表里，不需要第二条"这是谁说的"字段。
 
+**已实现的形状**（2026-10-28）：
+
+- `crates/core/src/vars.rs`：`VarTable` / `SubAgentEntry` / `replace(text, &table)` / `is_valid_id` /
+  `validate(&[(owner, entry)])`。渲染照用户给的形状抄；空表给「（没有可调用的子助手）」；
+  认不出的占位符原样留着；`validate` 的每条问题都能点名（形状不对 / 和谁重名 / 描述是空的）。
+- FFI：`turn_run` 认两个新字段——`system`（这一轮的系统提示词，**替换在这里做**，
+  因为名单是"这一轮"的）与 `sub_agents: [{id, description}]`（形状不对或重名直接 `bad_argument`）。
+  这一层没有 owner，所以只能点名 id；"和谁撞了"那种话留给保存时（那时才知道是哪个助手）。
+- **还没接的**：界面上的那三项（开关 / ID / 描述 + 会话策略）与保存时的查重调用（要走一条新的 FFI）。
+  另外 `system` 现在没有调用方——预设与世界书接线之后它才有内容，所以这一轮行为不变。
+
 **没定的**：子 AGENT 的输出要不要也参与主轮的压缩统计（倾向前者计入、后者不计——它不在主会话的历史里）；
 以及"同一轮里调用两次同一个子 AGENT"是否串行（倾向串行，省得两次都写同一条复用会话）。
