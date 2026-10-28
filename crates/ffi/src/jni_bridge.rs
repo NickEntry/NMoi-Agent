@@ -441,6 +441,31 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_createConversationJso
     to_jstring(&mut env, text)
 }
 
+/// `Native.validateVarsJson(list)`：校验子助手名单（D176）。
+///
+/// 不需要句柄：它读的是调用方刚填的那几个字段，和库无关。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_validateVarsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    list: JString<'local>,
+) -> jstring {
+    let list = read_string(&mut env, &list);
+    let text = guarded(move || match list {
+        Some(list) => {
+            let Ok(c_list) = CString::new(list) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `list` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::turn::nmoi_vars_validate_json(c_list.as_ptr()))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.moveConversationJson(handle, session, assistant)`：把会话移到另一个助手（D174）。
 ///
 /// 只改归属：消息、版本、摘要一个字节都不搬（搬就会有两份"同一个会话"）。

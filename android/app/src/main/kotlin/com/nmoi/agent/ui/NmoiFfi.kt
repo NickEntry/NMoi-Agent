@@ -57,6 +57,13 @@ internal object NmoiFfi {
     suspend fun moveConversation(handle: Long, session: String, assistant: String): Result<JSONObject> =
         call("move_conversation") { NativeBridge.moveConversationJson(handle, session, assistant) }
 
+    /**
+     * 校验子助手名单（D176）。**不需要存储句柄**：它是一条纯检查，
+     * 保存助手配置之前调它，撞名当场红字，而不是等发请求时才 400。
+     */
+    suspend fun validateVars(listJson: String): Result<JSONObject> =
+        call("vars_validate") { NativeBridge.validateVarsJson(listJson) }
+
     /** 这个助手底下有几个会话（D174）。删助手之前必须先问这一句。 */
     suspend fun countConversationsOf(handle: Long, assistant: String): Result<JSONObject> =
         call("count_conversations_of") { NativeBridge.countConversationsOfJson(handle, assistant) }

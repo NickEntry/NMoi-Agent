@@ -293,6 +293,12 @@ private fun AssistantEditSheet(
     var busy by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var conversations by remember { mutableStateOf<Long?>(null) }
+    // 子 AGENT（D176）：开关打开之后才露出后面三项。
+    var subEnabled by remember(entry.id) { mutableStateOf(entry.subAgent.enabled) }
+    var subId by remember(entry.id) { mutableStateOf(entry.subAgent.callId) }
+    var subDescription by remember(entry.id) { mutableStateOf(entry.subAgent.description) }
+    var subSession by remember(entry.id) { mutableStateOf(entry.subAgent.session) }
+    var subProblem by remember(entry.id) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(entry.id) {
         conversations = withContext(Dispatchers.IO) {
@@ -340,17 +346,132 @@ private fun AssistantEditSheet(
             Row(modifier = Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 SheetChip(label = "保存", primary = true, enabled = !busy) {
                     busy = true
+                    subProblem = null
                     scope.launch {
-                        withContext(Dispatchers.IO) {
-                            AssistantRepository.save(databasePath, entry.copy(name = name.trim()))
-                        }.fold(
+                        // 先把这份配置写进"候选"，再让 core 查一遍重名：
+                        // 不查就存，故障会推迟到"主 AGENT 有时叫错人"那一刻才出现。
+                        val next = entry.copy(
+                            name = name.trim(),
+                            subAgent = SubAgentSpec(
+                                enabled = subEnabled,
+                                callId = subId.trim(),
+                                description = subDescription.trim(),
+                                session = subSession,
+                            ),
+                        )
+                        // **先校验，再落库**：不合法的配置不进库。
+                        // 反过来（先存再查）会让库里躺着一条"主 AGENT 会叫错人"的配置，
+                        // 而用户以为没保存成功。
+                        val problems = withContext(Dispatchers.IO) {
+                            AssistantRepository.validateSubAgents(databasePath, next)
+                        }.getOrElse { error ->
+                            busy = false
+                            onError("校验失败：${error.message}")
+                            return@launch
+                        }
+                        if (problems.isNotEmpty()) {
+                            // 名字改回去了吗？没有——留着让人看见自己填了什么，
+                            // 只是把问题写在下面，改完还能再按保存。
+                            busy = false
+                            subProblem = problems.joinToString("\n")
+                            return@launch
+                        }
+                        val saved = withContext(Dispatchers.IO) {
+                            AssistantRepository.save(databasePath, next)
+                        }
+                        saved.fold(
                             onSuccess = { onRenamed() },
-                            onFailure = { busy = false; onError("保存失败：${it.message}") },
+                            onFailure = {
+                                busy = false
+                                onError("保存失败：${it.message}")
+                            },
                         )
                     }
                 }
                 Spacer(Modifier.width(8.dp))
                 SheetChip(label = "取消", enabled = !busy) { onDismiss() }
+            }
+
+            // —— 子 AGENT（D176）：开关 → 调用 ID → 描述 → 会话策略 ——
+            // 顺序是"先决定要不要，再填细节"：关着的时候后面三项根本不出现，
+            // 免得用户以为那几个框是必填的。
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "可作为子 AGENT 被调用",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = if (subEnabled) {
+                            "主 AGENT 会在它的提示词里看到这个 ID 与描述"
+                        } else {
+                            "关着：主 AGENT 的名单里没有它，也调不到"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                SheetChip(
+                    label = if (subEnabled) "开" else "关",
+                    primary = subEnabled,
+                    enabled = !busy,
+                ) { subEnabled = !subEnabled }
+            }
+
+            if (subEnabled) {
+                Field(
+                    label = "调用 ID",
+                    value = subId,
+                    hint = "小写字母 / 数字 / 下划线，例如 test_agent",
+                    onChange = { subId = it.take(32) },
+                )
+                Field(
+                    label = "描述",
+                    value = subDescription,
+                    hint = "写什么时候该用它，例如：改文案时交给它",
+                    onChange = { subDescription = it.take(200) },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "会话",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(56.dp),
+                    )
+                    SheetChip(
+                        label = "每次新建",
+                        primary = subSession == "new",
+                        enabled = !busy,
+                    ) { subSession = "new" }
+                    Spacer(Modifier.width(6.dp))
+                    SheetChip(
+                        label = "复用最近",
+                        primary = subSession == "reuse",
+                        enabled = !busy,
+                    ) { subSession = "reuse" }
+                }
+                Text(
+                    text = "复用 = 两次调用互相看得见；怀疑串味就选「每次新建」。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            subProblem?.let { text ->
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
             }
 
             Row(modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) {
@@ -484,6 +605,52 @@ private suspend fun moveAllThenDelete(
     // 会话都移完了，才轮到删助手；删之前把当前指回 default。
     AssistantRepository.setActive(databasePath, AssistantRepository.DEFAULT_ID)
     AssistantRepository.delete(databasePath, assistantId)
+}
+
+/** 一行"标签 + 输入框"。标签固定 56dp，三行对齐才不会各说各话。 */
+@Composable
+private fun Field(
+    label: String,
+    value: String,
+    hint: String,
+    onChange: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(56.dp),
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.weight(1f),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (value.isBlank()) {
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

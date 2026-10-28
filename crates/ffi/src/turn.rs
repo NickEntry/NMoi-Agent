@@ -745,6 +745,54 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
     })
 }
 
+/// 校验一份子助手名单（D176）：`[{owner, id, description}, …]` → `{ok, problems:[{kind, message}]}`。
+///
+/// 为什么单独给一条而不是塞进 `turn_run` 的解析里：**保存时就要拦住重名**，
+/// 而保存那一刻没有请求、也没有工作区，只需要一条纯检查。
+/// `owner` 是填了这个 ID 的助手 id，用来把"和谁撞了"说出来——
+/// 只说"id 重复"的话，用户得自己一条条翻。
+#[no_mangle]
+pub extern "C" fn nmoi_vars_validate_json(list: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(list, "list")?;
+        let value: Value = serde_json::from_str(text).map_err(|error| {
+            FfiError::new("bad_argument", format!("名单不是合法 JSON：{error}"))
+        })?;
+        let Some(items) = value.as_array() else {
+            return Err(FfiError::new("bad_argument", "名单必须是数组"));
+        };
+        let mut entries: Vec<(String, nmoi_core::vars::SubAgentEntry)> =
+            Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            if !item.is_object() {
+                return Err(bad(&format!("list[{index}]"), "必须是对象"));
+            }
+            entries.push((
+                required_str(item, "owner")?,
+                nmoi_core::vars::SubAgentEntry {
+                    id: required_str(item, "id")?,
+                    description: required_str(item, "description")?,
+                },
+            ));
+        }
+        let problems = nmoi_core::vars::validate(&entries);
+        Ok(json!({
+            "ok": problems.is_empty(),
+            "problems": problems
+                .iter()
+                .map(|problem| json!({
+                    "kind": match problem {
+                        nmoi_core::vars::Problem::BadId(_) => "bad_id",
+                        nmoi_core::vars::Problem::Duplicate { .. } => "duplicate",
+                        nmoi_core::vars::Problem::EmptyDescription(_) => "empty_description",
+                    },
+                    "message": problem.describe(),
+                }))
+                .collect::<Vec<Value>>(),
+        }))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,5 +1189,48 @@ mod tests {
         let pointer: *mut c_char = nmoi_turn_cancel_json(text.as_ptr());
         unsafe { crate::nmoi_string_free(pointer) };
         assert!(cancel.is_cancelled());
+    }
+
+    /// 保存时的查重（D176）：撞名要说出是哪两个助手，不用联网。
+    #[test]
+    fn validate_reports_duplicates_with_owners() {
+        let list = CString::new(
+            json!([
+                {"owner": "assistant-a", "id": "writer", "description": "改文案"},
+                {"owner": "assistant-b", "id": "writer", "description": "也是改文案"},
+                {"owner": "assistant-c", "id": "Bad Id", "description": "  "}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let out = read_json(nmoi_vars_validate_json(list.as_ptr()));
+        assert_eq!(out["ok"], Value::Bool(false), "{out}");
+        let problems = out["problems"].as_array().unwrap();
+        // 重名一条 + 形状一条 + 空描述一条
+        assert_eq!(problems.len(), 3, "{out}");
+        let kinds: Vec<&str> = problems
+            .iter()
+            .map(|p| p["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"duplicate"), "{kinds:?}");
+        assert!(kinds.contains(&"bad_id"), "{kinds:?}");
+        assert!(kinds.contains(&"empty_description"), "{kinds:?}");
+        let duplicate = problems.iter().find(|p| p["kind"] == "duplicate").unwrap();
+        let text = duplicate["message"].as_str().unwrap();
+        assert!(
+            text.contains("assistant-a") && text.contains("assistant-b"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn validate_passes_a_clean_list() {
+        let list = CString::new(
+            json!([{"owner": "a", "id": "writer", "description": "改文案"}]).to_string(),
+        )
+        .unwrap();
+        let out = read_json(nmoi_vars_validate_json(list.as_ptr()));
+        assert_eq!(out["ok"], Value::Bool(true), "{out}");
+        assert_eq!(out["problems"].as_array().unwrap().len(), 0);
     }
 }

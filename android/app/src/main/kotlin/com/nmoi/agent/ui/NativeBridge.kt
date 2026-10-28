@@ -73,6 +73,9 @@ internal object NativeBridge {
     /** 把会话移到另一个助手（D174）：改归属，不复制。回 `{"session","assistant"}`。 */
     external fun moveConversationJson(handle: Long, session: String, assistant: String): String
 
+    /** 校验子助手名单（D176）：`[{owner,id,description}]` → `{ok, problems:[{kind,message}]}`。 */
+    external fun validateVarsJson(list: String): String
+
     /** 某个助手底下有几个会话（D174）：删助手之前那道闸靠它。回 `{"assistant","count"}`。 */
     external fun countConversationsOfJson(handle: Long, assistant: String): String
 

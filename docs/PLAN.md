@@ -1317,6 +1317,6 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 
 如果以后要把解析搬进 core（协议只该有一份实现），这道测试正好当回归基线。
 
-| 0.14u | **子 AGENT：声明与占位符替换**（D176，**core + ffi 已实现，界面与保存查重未做**） | `settings(assistant,<id>).sub_agent`{enabled,id,description,session}；`id` 跨助手唯一（保存时查重、撞了点名）；核心一条纯函数 `vars::replace(text, &VarTable)`，把 `<var><sub_agent_info></var>` 换成名单（格式见 D176，空表换成一句人话）；名单来源＝`enabled` 的助手文档。**判据**：两条子 AGENT → 一次替换出两段；没有 → 一句"没有可调用的子助手"；未知占位符原样留着不动 |
+| 0.14u | **子 AGENT：声明与占位符替换**（D176，**已实现，待真机验证**） | `settings(assistant,<id>).sub_agent`{enabled,id,description,session}；`id` 跨助手唯一（保存时查重、撞了点名）；核心一条纯函数 `vars::replace(text, &VarTable)`，把 `<var><sub_agent_info></var>` 换成名单（格式见 D176，空表换成一句人话）；名单来源＝`enabled` 的助手文档。**判据**：两条子 AGENT → 一次替换出两段；没有 → 一句"没有可调用的子助手"；未知占位符原样留着不动 |
 | 0.14v | **子 AGENT：工具与会话**（D176，**未实现**） | `sub_agent(id, instruction, session?, injections?, inherit?)`；`session` 三态 new/reuse/conversation:<id>；`injections` 复用 `lorebook::Position` 与深度；`inherit.rounds` 默认 0、`include_tool_results` 默认 false；回主 AGENT 的只有 `{reply, conversation_id, rounds, tokens, truncated}`，全文在子会话里；**深度只到 1**、工具面只给只读文件工具 |
-| 0.14w | **子 AGENT：界面**（D176，**未实现**） | 助手页那块卡片：「可作为子 AGENT 被调用」开关 + 调用 ID + 描述 + 会话策略（新建/复用/钉死一条）；打开开关才露出后面三项；ID 撞了当场红字说撞了谁；工具卡上能点进子会话（铁律 ②） |
+| 0.14w | **子 AGENT：界面**（D176，**已实现，待真机验证**） | 助手页那块卡片：「可作为子 AGENT 被调用」开关 + 调用 ID + 描述 + 会话策略（新建/复用/钉死一条）；打开开关才露出后面三项；ID 撞了当场红字说撞了谁；工具卡上能点进子会话（铁律 ②） |

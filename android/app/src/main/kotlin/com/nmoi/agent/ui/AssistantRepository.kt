@@ -20,8 +20,25 @@ internal data class AssistantEntry(
     val maxTokens: Int? = null,
     /** 思考强度（D162）：`auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。 */
     val thinking: String = "auto",
+    /** 子 AGENT（D176）。默认关着——"能被别人调用"这件事得用户主动打开。 */
+    val subAgent: SubAgentSpec = SubAgentSpec(),
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
+}
+
+/**
+ * 这个助手能不能被主 AGENT 当子 AGENT 调用（D176）。
+ *
+ * `callId` 是主 AGENT 手里唯一的钥匙（跨助手唯一），`description` 是"什么时候该用它"。
+ * `session`：`new`（每次新建）/ `reuse`（沿用该助手最近一条会话）/ `conversation:<id>`（钉死一条）。
+ */
+internal data class SubAgentSpec(
+    val enabled: Boolean = false,
+    val callId: String = "",
+    val description: String = "",
+    val session: String = "new",
+) {
+    val isUsable: Boolean get() = enabled && callId.isNotBlank() && description.isNotBlank()
 }
 
 /** 当前助手 + 全部助手（D174）。当前那个排最前，其余按名字。 */
@@ -130,6 +147,14 @@ internal object AssistantRepository {
                 .put("provider_id", entry.providerId)
                 .put("model_id", entry.modelId)
                 .put("thinking", entry.thinking)
+                .put(
+                    "sub_agent",
+                    JSONObject()
+                        .put("enabled", entry.subAgent.enabled)
+                        .put("id", entry.subAgent.callId.trim())
+                        .put("description", entry.subAgent.description.trim())
+                        .put("session", entry.subAgent.session),
+                )
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
@@ -163,6 +188,50 @@ internal object AssistantRepository {
                 .map { }
         }
     }
+
+    /**
+     * 保存前的查重（D176）：把所有**打开了开关**的助手交给 core 的 `vars::validate`。
+     *
+     * 为什么让 core 判而不是在 Kotlin 里写一遍正则：`id` 的唯一性是主 AGENT 调用的前提，
+     * 而这条规则在"发请求时"也要用（`turn_run` 的解析）。两处各写一遍，迟早给出两个答案。
+     *
+     * 返回的是人话（每条已经点名了 id 与撞上的助手），界面直接显示。
+     */
+    suspend fun validateSubAgents(
+        databasePath: String,
+        /** 还没落库的那一份：用它替换库里同 id 的那条（新建时就是追加）。 */
+        candidate: AssistantEntry? = null,
+    ): Result<List<String>> =
+        list(databasePath).mapCatching { page ->
+            val rows = if (candidate == null) {
+                page.rows
+            } else if (page.rows.any { it.id == candidate.id }) {
+                page.rows.map { if (it.id == candidate.id) candidate else it }
+            } else {
+                page.rows + candidate
+            }
+            val pending = rows.filter { it.subAgent.enabled }
+            if (pending.isEmpty()) return@mapCatching emptyList()
+            val doc = org.json.JSONArray().apply {
+                pending.forEach { entry ->
+                    put(
+                        JSONObject()
+                            .put("owner", entry.id)
+                            .put("id", entry.subAgent.callId)
+                            .put("description", entry.subAgent.description),
+                    )
+                }
+            }
+            NmoiFfi.validateVars(doc.toString()).getOrThrow().let { envelope ->
+                val problems = envelope.optJSONArray("problems") ?: org.json.JSONArray()
+                buildList {
+                    for (index in 0 until problems.length()) {
+                        val item = problems.optJSONObject(index) ?: continue
+                        add(item.optString("message", "名单有问题"))
+                    }
+                }
+            }
+        }
 
     /** 聊天页那个选择器要的：所有 (供应商, 模型) 组合。 */
     suspend fun choices(databasePath: String): Result<List<Pair<ProviderEntry, ProviderModel>>> =
@@ -216,6 +285,20 @@ internal object AssistantRepository {
             },
             maxTokens = safe.optInt("max_tokens", 0).takeIf { it > 0 },
             thinking = safe.optString("thinking", "auto").ifBlank { "auto" },
+            subAgent = parseSubAgent(safe.optJSONObject("sub_agent")),
+        )
+    }
+
+    private fun parseSubAgent(doc: JSONObject?): SubAgentSpec {
+        val safe = doc ?: return SubAgentSpec()
+        val mode = safe.optString("session", "new").ifBlank { "new" }
+        return SubAgentSpec(
+            enabled = safe.optBoolean("enabled", false),
+            callId = safe.optString("id", "").trim(),
+            description = safe.optString("description", "").trim(),
+            // 认不出的会话策略按 `new` 处理：那是唯一"不会意外复用别人历史"的一种。
+            session = mode.takeIf { it == "new" || it == "reuse" || it.startsWith("conversation:") }
+                ?: "new",
         )
     }
 }
