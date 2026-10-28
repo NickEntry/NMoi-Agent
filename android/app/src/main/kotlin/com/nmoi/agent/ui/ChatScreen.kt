@@ -102,6 +102,14 @@ internal fun ChatScreen(
     onOpenDrawer: () -> Unit,
     onCreateSession: suspend () -> String?,
     onNewChat: () -> Unit,
+    /**
+     * 助手换了就变（D174）：用户切了助手之后，这一页顶部的模型条必须跟着换。
+     *
+     * 为什么不能只靠 `sessionId`：切换助手时如果本来就停在一个空白会话上，
+     * `sessionId` 一直是 null，那个 `LaunchedEffect` 不会重跑——于是顶部还写着上一个助手的模型，
+     * 而下一句话已经发给新的那个。这就是"看到的和发出去的不是同一个"。
+     */
+    assistantKey: Int = 0,
 ) {
     var draft by remember { mutableStateOf("") }
     val context = LocalContext.current
@@ -164,7 +172,7 @@ internal fun ChatScreen(
     // 增强编辑：待改的那条 + 正在跑（跑的时候不让点第二次）
     var enhanceFor by remember { mutableStateOf<ChatMessage?>(null) }
     var enhanceBusy by remember { mutableStateOf(false) }
-    LaunchedEffect(sessionId, reloadKey) {
+    LaunchedEffect(sessionId, reloadKey, assistantKey) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
             AssistantRepository.choices(databasePath).onSuccess { choices = it }

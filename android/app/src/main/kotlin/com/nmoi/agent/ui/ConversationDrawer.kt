@@ -8,7 +8,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -75,9 +77,18 @@ internal fun ConversationDrawer(
     open: Boolean,
     rows: List<ConversationRow>,
     currentId: String? = null,
+    /** 全部助手（D174）。底部那一行显示当前那个，点它弹出切换面板。 */
+    assistants: List<AssistantEntry> = emptyList(),
+    activeAssistantId: String = AssistantRepository.DEFAULT_ID,
     onOpen: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
     onNewConversation: () -> Unit,
+    /** 切到某个助手：只改"当前是哪个"，会话与配置一个都不搬。 */
+    onSwitchAssistant: (String) -> Unit = {},
+    onNewAssistant: () -> Unit = {},
+    onEditAssistant: (AssistantEntry) -> Unit = {},
+    /** 把某条会话移到某个助手（D174）：改归属，不复制。 */
+    onMoveConversation: (ConversationRow, String) -> Unit = { _, _ -> },
     onOpenSettings: () -> Unit,
     onClose: () -> Unit,
     content: @Composable () -> Unit,
@@ -102,6 +113,8 @@ internal fun ConversationDrawer(
     // 提示行与助手面板的状态放在最外层：面板要盖住整屏，不能缩在 300dp 的抽屉里。
     var hint by remember { mutableStateOf<String?>(null) }
     var assistantMenu by remember { mutableStateOf(false) }
+    // 当前助手：面板与底部那一行都读它。找不到就退回一份默认（老库没有 assistant 文档）。
+    val activeAssistant = assistants.firstOrNull { it.id == activeAssistantId } ?: AssistantEntry(id = activeAssistantId)
     var dragPx by remember { mutableStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
     val inertia = remember { Animatable(0f) }
@@ -233,9 +246,12 @@ internal fun ConversationDrawer(
                     currentId = currentId,
                     hint = hint,
                     onHint = { hint = it },
+                    activeAssistant = activeAssistant,
                     onOpenAssistantMenu = { assistantMenu = true },
                     onOpenConversation = onOpenConversation,
                     onNewConversation = onNewConversation,
+                    onMoveConversation = onMoveConversation,
+                    assistants = assistants,
                     onOpenSettings = onOpenSettings,
                 )
             }
@@ -268,9 +284,12 @@ internal fun ConversationDrawer(
                         currentId = currentId,
                         hint = hint,
                         onHint = { hint = it },
+                        activeAssistant = activeAssistant,
                         onOpenAssistantMenu = { assistantMenu = true },
                         onOpenConversation = onOpenConversation,
                         onNewConversation = onNewConversation,
+                        onMoveConversation = onMoveConversation,
+                        assistants = assistants,
                         onOpenSettings = onOpenSettings,
                     )
                 }
@@ -278,23 +297,34 @@ internal fun ConversationDrawer(
         }
 
         // 助手列表：自己画的底部面板（头像 + 名称 + 铅笔），不是下拉菜单。
+        // D174：真数据。**当前那个写「（当前）」**——不写的话，两个助手名字相像时
+        // 用户不知道点下去有没有变化。
         if (assistantMenu) {
+            val items = assistants.map { entry ->
+                val current = entry.id == activeAssistantId
+                SheetItem(
+                    label = entry.name + if (current) "（当前）" else "",
+                    avatar = entry.name.take(1).ifBlank { "助" },
+                    trailing = ActionIcons.Pencil,
+                    onTrailing = { onEditAssistant(entry) },
+                    onClick = {
+                        assistantMenu = false
+                        if (!current) onSwitchAssistant(entry.id)
+                    },
+                )
+            } + listOf(
+                SheetItem(
+                    label = "新建助手",
+                    icon = ActionIcons.Plus,
+                    onClick = {
+                        assistantMenu = false
+                        onNewAssistant()
+                    },
+                ),
+            )
             MenuSheet(
                 title = "切换助手",
-                items = listOf(
-                    SheetItem(
-                        label = ASSISTANT_NAME,
-                        avatar = "助",
-                        trailing = ActionIcons.Pencil,
-                        onTrailing = { hint = "编辑助手待接：助手页（P3.6），名字/头像都是装饰性字段" },
-                        onClick = { hint = "切换助手待接：助手表还没建（P3.6）" },
-                    ),
-                    SheetItem(
-                        label = "新建助手",
-                        icon = ActionIcons.Plus,
-                        hint = "新建助手待接：助手页（P3.6）",
-                    ),
-                ),
+                items = items,
                 onHint = { hint = it },
                 onDismiss = { assistantMenu = false },
             )
@@ -304,9 +334,6 @@ internal fun ConversationDrawer(
 
 /** 用户名字：装饰性字段，编辑是下一层的事。 */
 private const val USER_NAME = "我"
-
-/** 助手名字：还没有助手实体，先占位。 */
-private const val ASSISTANT_NAME = "助手"
 
 /** 问候语按系统时间选，**文案一字不改**（用户 2026-10-24 指定）。 */
 private fun greeting(): String = when (LocalTime.now().hour) {
@@ -318,18 +345,25 @@ private fun greeting(): String = when (LocalTime.now().hour) {
 }
 
 /** 抽屉里那一列。拖动与动画两条路径共用同一份，免得两处慢慢长歪。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DrawerPanel(
     rows: List<ConversationRow>,
     currentId: String?,
     hint: String?,
     onHint: (String) -> Unit,
+    activeAssistant: AssistantEntry,
+    assistants: List<AssistantEntry>,
     onOpenAssistantMenu: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
     onNewConversation: () -> Unit,
+    onMoveConversation: (ConversationRow, String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var searchAll by remember { mutableStateOf(false) }
+    // 长按某一行弹出的"移动到其他助手"（D174）。存这一行本身，不存索引——
+    // 沙盒页面刷新之后索引会指到别的会话上去。
+    var moveTarget by remember { mutableStateOf<ConversationRow?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
@@ -416,7 +450,12 @@ private fun DrawerPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 10.dp, vertical = 1.dp)
-                        .clickable { onOpenConversation(row) },
+                        // 点 = 打开；长按 = 这一条会话的更多动作（现在是"移动到其他助手"）。
+                        // 长按比每行挂一个"更多"图标省地方，也和消息区的长按选择同一个手势语言。
+                        .combinedClickable(
+                            onClick = { onOpenConversation(row) },
+                            onLongClick = { moveTarget = row },
+                        ),
                 ) {
                     Text(
                         text = row.title,
@@ -432,6 +471,34 @@ private fun DrawerPanel(
                     )
                 }
             }
+        }
+
+        // —— 长按一条会话：移动到其他助手（D174）——
+        // 只列**别的**助手：列当前那个，点下去等于什么都没发生。
+        moveTarget?.let { target ->
+            val others = assistants.filter { it.id != activeAssistant.id }
+            // 只有一个助手时给一句实话，而不是一个空面板：这条动作现在做不了，
+            // 缺的是"另一个助手"，不是这个功能坏了。
+            val items = if (others.isEmpty()) {
+                listOf(SheetItem(label = "还没有别的助手：先用「新建助手」建一个"))
+            } else {
+                others.map { entry ->
+                    SheetItem(
+                        label = entry.name,
+                        avatar = entry.name.take(1).ifBlank { "助" },
+                        onClick = {
+                            moveTarget = null
+                            onMoveConversation(target, entry.id)
+                        },
+                    )
+                }
+            }
+            MenuSheet(
+                title = "把「${target.title}」移到",
+                items = items,
+                onHint = onHint,
+                onDismiss = { moveTarget = null },
+            )
         }
 
         // —— 提示行（点搜索/助手头像这类"还没接"的地方，原因写在这里）——
@@ -459,13 +526,17 @@ private fun DrawerPanel(
             ) {
                     Box(
                         modifier = Modifier.clickable {
-                            onHint("助手设置待接：助手页（P3.6），头像与名字都是装饰性字段")
+                            onHint("改助手的名字要等助手页（P3.6）；现在能在聊天页顶部换模型")
                         },
                     ) {
-                        DrawerAvatar(label = "助", size = 30.dp, mine = false)
+                        DrawerAvatar(
+                            label = activeAssistant.name.take(1).ifBlank { "助" },
+                            size = 30.dp,
+                            mine = false,
+                        )
                     }
                     Text(
-                        text = ASSISTANT_NAME,
+                        text = activeAssistant.name,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,

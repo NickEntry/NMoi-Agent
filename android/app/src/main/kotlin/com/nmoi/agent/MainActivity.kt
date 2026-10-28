@@ -8,9 +8,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppIconSwitcher
+import com.nmoi.agent.ui.AssistantEntry
 import com.nmoi.agent.ui.AssistantList
 import com.nmoi.agent.ui.AssistantRepository
 import com.nmoi.agent.ui.AppearanceScreen
@@ -40,6 +42,7 @@ import com.nmoi.agent.ui.ToolsScreen
 import com.nmoi.agent.ui.theme.NMoiTheme
 import com.nmoi.agent.ui.theme.SystemBarsForTheme
 import com.nmoi.agent.ui.theme.ThemeStore
+import kotlinx.coroutines.launch
 import com.nmoi.agent.ui.theme.applySystemBars
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -185,10 +188,73 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                // 切助手 / 新建助手 / 移动会话（D174）：三个动作都要落库，然后让抽屉重读。
+                val scope = rememberCoroutineScope()
                 ConversationDrawer(
                     open = drawerOpen,
                     rows = snapshot?.rows.orEmpty(),
                     currentId = (route as? Route.Chat)?.sessionId,
+                    assistants = assistantList?.rows.orEmpty(),
+                    activeAssistantId = activeAssistantId,
+                    onSwitchAssistant = { id ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) { AssistantRepository.setActive(databasePath, id) }
+                                .onFailure { NLog.w("Storage", "切助手失败：${it.message}") }
+                            listReload += 1
+                            // 换了助手就回一个空白会话：留在上一个助手的会话里，
+                            // 输入框里的下一句会发给"看着不像它"的那个助手。
+                            backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
+                        }
+                    },
+                    onNewAssistant = {
+                        scope.launch {
+                            val created = withContext(Dispatchers.IO) {
+                                // 复制当前助手的那套配置（模型/参数/思考档位），不复制会话。
+                                val base = AssistantRepository.active(databasePath).getOrNull()
+                                    ?: AssistantEntry()
+                                val all = AssistantRepository.list(databasePath).getOrNull()
+                                val name = "助手 ${(all?.rows?.size ?: 1) + 1}"
+                                val entry = base.copy(
+                                    id = AssistantRepository.newId(),
+                                    name = name,
+                                )
+                                AssistantRepository.save(databasePath, entry)
+                                    .map { entry.id }
+                            }
+                            created.fold(
+                                onSuccess = { id ->
+                                    withContext(Dispatchers.IO) {
+                                        AssistantRepository.setActive(databasePath, id)
+                                    }
+                                    listReload += 1
+                                    backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
+                                },
+                                onFailure = { NLog.w("Storage", "新建助手失败：${it.message}") },
+                            )
+                        }
+                    },
+                    onEditAssistant = { entry ->
+                        // 改名字/头像要等助手页；换模型现在在聊天页顶部，改的就是"当前助手"。
+                        NLog.i("Storage", "编辑助手 ${entry.id}：助手页还没做（P3.6）")
+                    },
+                    onMoveConversation = { row, targetAssistant ->
+                        scope.launch {
+                            val moved = withContext(Dispatchers.IO) {
+                                ConversationRepository.move(databasePath, row.id, targetAssistant)
+                            }
+                            moved.fold(
+                                onSuccess = {
+                                    listReload += 1
+                                    // 挪走的那条如果正开着，回到空白会话：
+                                    // 继续留在里面的话，下一句会写进"别的助手的会话"。
+                                    if ((route as? Route.Chat)?.sessionId == row.id) {
+                                        backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
+                                    }
+                                },
+                                onFailure = { NLog.w("Storage", "移动会话失败：${it.message}") },
+                            )
+                        }
+                    },
                     onOpen = { drawerOpen = true },
                     onOpenConversation = { picked ->
                         drawerOpen = false
@@ -212,6 +278,8 @@ class MainActivity : ComponentActivity() {
                             drawerOpen = drawerOpen,
                             onOpenDrawer = { drawerOpen = true },
                             onCreateSession = ensureSession,
+                            // 切了助手要让聊天页顶部跟着换模型（D174）。
+                            assistantKey = listReload,
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
                                 if (route.sessionId != null) {
