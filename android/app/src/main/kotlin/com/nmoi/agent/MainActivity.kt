@@ -15,6 +15,7 @@ import com.nmoi.agent.ui.AppIconSwitcher
 import com.nmoi.agent.ui.AssistantEntry
 import com.nmoi.agent.ui.AssistantList
 import com.nmoi.agent.ui.AssistantRepository
+import com.nmoi.agent.ui.AssistantScreen
 import com.nmoi.agent.ui.AppearanceScreen
 import com.nmoi.agent.ui.ChatScreen
 import com.nmoi.agent.ui.ConversationDrawer
@@ -69,6 +70,9 @@ private sealed interface Route {
 
     /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
     data object Envir : Route
+
+    /** 助手页（D174）：列表 / 改名 / 删除。入口在抽屉的铅笔与「模型与提示词 → 助手」。 */
+    data object Assistant : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
     /** 供应商列表（D157）。编辑页、模型表都从这一页 push 进去。 */
@@ -234,8 +238,9 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onEditAssistant = { entry ->
-                        // 改名字/头像要等助手页；换模型现在在聊天页顶部，改的就是"当前助手"。
-                        NLog.i("Storage", "编辑助手 ${entry.id}：助手页还没做（P3.6）")
+                        // 铅笔 → 助手页（D174）：改名与删除都在那儿，模型仍在聊天页顶部换。
+                        NLog.i("Storage", "打开助手页（来自 ${entry.id}）")
+                        backStack = backStack + Route.Assistant
                     },
                     onMoveConversation = { row, targetAssistant ->
                         scope.launch {
@@ -334,6 +339,13 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Assistant -> AssistantScreen(
+                            databasePath = databasePath,
+                            onBack = { backStack = backStack.dropLast(1) },
+                            // 助手动了（切/名/删）：抽屉与聊天页都要重读。
+                            onChanged = { listReload += 1 },
+                        )
+
                         Route.Settings -> SettingsIndexScreen(
                             iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                             logSummary = logSummary,
@@ -381,6 +393,7 @@ class MainActivity : ComponentActivity() {
                                 group = group,
                                 onOpenPrompts = { backStack = backStack + Route.Prompts },
                                 onOpenProvider = { backStack = backStack + Route.Provider },
+                                onOpenAssistants = { backStack = backStack + Route.Assistant },
                                 onOpenLicenses = { backStack = backStack + Route.Licenses },
                                 onBack = { backStack = backStack.dropLast(1) },
                             )

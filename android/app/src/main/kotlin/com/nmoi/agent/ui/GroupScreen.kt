@@ -29,6 +29,7 @@ internal fun GroupScreen(
     group: SettingsGroup,
     onOpenPrompts: () -> Unit,
     onOpenProvider: () -> Unit,
+    onOpenAssistants: () -> Unit,
     onOpenLicenses: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -57,6 +58,11 @@ internal fun GroupScreen(
 
                 // 真正能进的入口：目前两处。接了新的就从 pendingRows 里删一行、在这里加一个 NavRow。
                 if (group == SettingsGroup.Models) {
+                    NavRow(
+                        title = "助手",
+                        subtitle = "每个助手一套模型配置、一份会话列表；可以改名、删除（有会话时先选去处）",
+                        onClick = onOpenAssistants,
+                    )
                     NavRow(
                         title = "供应商",
                         subtitle = "多套端点 / 密钥 / 模型；「当前」那一套用于发请求（密钥单独加密存，不进库）",

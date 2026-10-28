@@ -74,7 +74,7 @@ private fun summaryFor(
     when (group) {
         SettingsGroup.Appearance -> iconSummary
         SettingsGroup.Context -> "75% / 92% · 未接"
-        SettingsGroup.Models -> "七条提示词 · 只读"
+        SettingsGroup.Models -> "供应商 · 助手 · 七条提示词"
         SettingsGroup.Tools -> toolsSummary
         SettingsGroup.Debug -> logSummary
         SettingsGroup.About -> "GPL-3.0-only · 0.0.1-dev"

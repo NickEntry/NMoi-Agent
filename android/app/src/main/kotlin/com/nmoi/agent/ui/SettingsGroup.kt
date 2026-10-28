@@ -10,7 +10,7 @@ package com.nmoi.agent.ui
 internal enum class SettingsGroup(val title: String, val hint: String) {
     Appearance("外观", "启动器图标：4 设计 × 黑/白底"),
     Context("会话与上下文", "压缩两条线、视觉覆盖、上下文窗口默认值"),
-    Models("模型与提示词", "模型与供应商、七条压缩提示词"),
+    Models("模型与提示词", "供应商、助手、七条压缩提示词"),
     Tools("工具与工作区", "工作区根目录、技能、MCP、世界书"),
     Debug("调试", "日志（三种通道）、原生层状态、版本"),
     About("关于", "许可、第三方声明、构建号"),
