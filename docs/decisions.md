@@ -3869,3 +3869,80 @@ DNS 从 `ConnectivityManager.getLinkProperties().dnsServers` 取（不要 `getpr
 4. 两个 `output` 块时**用后面那个**（模型常常先写一版再修正），但要在笔记里说出来。
 
 这四条都不改协议，只是让"解析不出东西"变成"解析不出东西**并且说清为什么**"。
+
+### D176 子 AGENT：助手兼职"可被调用"，靠占位符把名单喂给主 AGENT（计划，未实现）
+
+用户口径（2026-10-28）：
+
+> 子 AGENT 必须绑定助手才能被调用；助手里面弄一个"可作为子 AGENT 被调用"，
+> 打开之后要填调用 ID 和描述，ID 与描述会作为工具信息在主 AGENT 每次请求之前替换到指定位置
+> （像世界书那样，指定位置放一段特殊字符串，比如 `<var><sub_agent_info></var>`）。
+> 另外调用子 AGENT **可以复用子 AGENT 的会话**，不是每次新建；主 AGENT 还能自定义子 AGENT 的
+> 上下文历史，甚至只插几组消息、各自在什么位置——就像世界书的注入。
+
+**为什么挂在助手上而不是新开一张表**：子 AGENT 需要的就是"一套端点 + 一个模型 + 参数 + 思考档位"，
+那正好是助手（D161）已经在存的东西。多一张表等于把同一份配置抄两遍，之后必然漂移。
+
+**助手文档加一块**（`settings(assistant, <id>)` 的 `doc.sub_agent`）：
+
+```json
+{ "enabled": true,
+  "id": "test_agent",
+  "description": "test",
+  "session": "new" }
+```
+
+- `id`：`[a-z0-9_]{1,32}`，**跨助手唯一**（它是主 AGENT 手里唯一的钥匙，重名就等于调用随机一个）。
+  保存时撞了要拒绝并说清撞了谁，不静默覆盖。
+- `description`：给主 AGENT 看的一句话，写"什么时候该用它"，不是写实现。
+- `session`：`new`（每次新会话）/ `reuse`（沿用这个助手最近一条会话）/ `conversation:<id>`（钉死一条）。
+  默认 `new`——复用是省心，但"两次调用互相看见对方"这件事得用户主动要。
+
+**名单怎么进主 AGENT 的上下文**：`<var><sub_agent_info></var>` 这个占位符可以出现在
+**任何会被注入的文本**里（世界书条目、预设里的内部工具用法那段、系统提示词）。
+每次组装请求前跑一遍替换，把 `enabled` 的子 AGENT 拼成：
+
+```
+{
+---
+id:test_agent
+description:test
+---
+id:test_agent2
+description:test
+---
+}
+```
+
+一条都没有时替换成 `（没有可调用的子助手）`——**不留一个空壳 `{ --- }`**：模型看到空壳会去猜格式。
+
+**工具形状**（主 AGENT 看到的）：
+
+```
+sub_agent(id, instruction, session?, injections?, inherit?)
+```
+
+- `session.mode` / `session.conversation_id`：覆盖助手文档里的默认值（这次想复用就写 `reuse`）。
+- `injections[]`：`{position, role, depth?, content}`，位置与角色**直接用世界书那套**
+  （`BEFORE_SYSTEM_PROMPT` / `AFTER_SYSTEM_PROMPT` / `TOP_OF_CHAT` / `AT_DEPTH` / `BOTTOM_OF_CHAT`），
+  这样"只插几组消息在指定位置"不需要第二套语汇。
+- `inherit.rounds`：从子会话历史里带上最近 N 轮（默认 0 = 不带）。`include_tool_results` 默认 false——
+  工具结果是给主 AGENT 看的中间产物，塞给子 AGENT 既费 token 又容易误导。
+  与 `session: new` 同时用时，`inherit` 指的是"从主会话里截一段"（这就是"自定义子 AGENT 的上下文"）。
+
+**回给主 AGENT 的是什么**：`{id, conversation_id, reply, rounds, tokens, truncated}`。
+`reply` 封顶（与工具结果同一个上限），超了就 `truncated: true`；
+**全文在子会话里**，界面上从工具卡点得进去（铁律 ②：库里那份必须能在界面上指出来）。
+
+**三条硬约束**：
+
+1. **深度只到 1**：子 AGENT 的工具面里不声明 `sub_agent`。套娃会同时烧钱和烧时间，
+   而且"是谁在回答"这件事会立刻说不清。
+2. **子 AGENT 的工具面收窄**：只读文件工具（`read_file` / `list_dir` / `glob` / `grep`），
+   命令类（`System-Shell` / `WorkSpace-EnvirShell`）**不继承**主 AGENT 的开关。
+   理由：主 AGENT 的开关是用户给"我看着它干活"的那一轮打的，不是给一个后台子进程打的。
+3. **子会话归属它的助手**：`conversations.assistant_id = 子助手 id`（v9 已经有这张表），
+   所以子会话天然出现在那个助手的列表里，不需要第二条"这是谁说的"字段。
+
+**没定的**：子 AGENT 的输出要不要也参与主轮的压缩统计（倾向前者计入、后者不计——它不在主会话的历史里）；
+以及"同一轮里调用两次同一个子 AGENT"是否串行（倾向串行，省得两次都写同一条复用会话）。
