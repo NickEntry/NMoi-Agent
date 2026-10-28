@@ -307,7 +307,7 @@ mod tests {
         .collect();
         let unique: std::collections::BTreeSet<&str> = labels.iter().copied().collect();
         assert_eq!(unique.len(), 4, "{labels:?}");
-        assert!(PresetState::Follow.needs_attention() == false);
+        assert!(!PresetState::Follow.needs_attention());
         assert!(labels.iter().all(|label| !label.is_empty()));
     }
 }

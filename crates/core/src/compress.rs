@@ -1398,7 +1398,7 @@ mod tests {
             "被压掉的条目要说出来，不能假装都列了"
         );
         assert!(
-            outcome.summary.contains("共"),
+            outcome.summary.contains('共'),
             "总数要在，否则看不出漏了多少"
         );
     }

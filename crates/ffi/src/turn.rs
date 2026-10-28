@@ -712,8 +712,8 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
         turns.push((Role::User, prompt.as_str()));
 
         let mut request = ChatRequest::from_turns(
-            ProviderConfig::new(&provider_id, kind, &base_url),
-            &model,
+            ProviderConfig::new(provider_id, kind, base_url),
+            model,
             &turns,
         )
         .without_stream();
