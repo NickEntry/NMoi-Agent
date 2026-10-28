@@ -143,6 +143,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // 纯逻辑的单测（JVM，不需要设备）。第一条用它的是 `EditRepository.parseFences`：
+    // 围栏解析的边界（空块 / 没闭合 / 超 200 KB / 围栏外有字）以前只能靠真机撞，
+    // 而它的错法很隐蔽——把三个反引号连内容一起写进消息里。
+    testImplementation("junit:junit:4.13.2")
+
     // 注意：这一版还没有 JNI。会话列表来自写死的占位数据（见 ui/PlaceholderData.kt），
     // 接 Rust 核心走 crates/jni + cargo-ndk，是下一步的事。
 }

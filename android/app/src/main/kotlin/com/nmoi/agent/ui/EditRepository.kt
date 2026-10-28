@@ -166,6 +166,11 @@ internal object EditRepository {
         val tools = mutableMapOf<Int, String>()
         val notes = mutableListOf<String>()
         var sawFence = false
+        // **只要出现过围栏，就不许再走"整段当正文"的兜底**。
+        // 这两个标记不同：`sawFence` 是"有值得写回去的块"，`sawAnyFence` 是"模型确实按围栏格式回了"。
+        // 混用会出事——一个空的 ```output、或者一个没闭合的围栏，会让整段（连那三个反引号）
+        // 被当成正文写进库里。2026-10-28 用真输出跑出来过。
+        var sawAnyFence = false
         var index = 0
         while (index < lines.size) {
             val line = lines[index]
@@ -175,7 +180,10 @@ internal object EditRepository {
                 continue
             }
             val lang = trimmed.removePrefix("```").trim().lowercase()
-            val body = StringBuilder()
+            // 按行收集再 `joinToString`：以前是边读边补 `\n`，判断用的却是"是不是文件最后一行"，
+            // 于是**每块末尾都多一个换行**（思考块写回 `messages.reasoning` 时带着它）。
+            // 换行怎么来这件事只该有一处决定：行与行之间一个 `\n`，末尾不多。
+            val body = mutableListOf<String>()
             var cursor = index + 1
             var closed = false
             while (cursor < lines.size) {
@@ -183,53 +191,84 @@ internal object EditRepository {
                     closed = true
                     break
                 }
-                body.append(lines[cursor])
-                if (cursor != lines.size - 1) body.append('\n')
+                body += lines[cursor]
                 cursor += 1
             }
             if (!closed) {
+                // 没闭合同样是"模型试过按围栏回"：不许退化成"整段当正文"，
+                // 否则那半截 ```output 会被原样写进消息里。
+                sawAnyFence = true
                 notes += "有一个围栏没闭合，后面没解析"
                 break
             }
-            val content = body.toString()
+            val content = body.joinToString("\n")
             if (content.length > MAX_BLOCK) {
+                sawAnyFence = true
                 notes += "有一块超过 200 KB，跳过"
                 index = cursor + 1
                 continue
             }
             when {
-                lang == "output" && content.isNotBlank() -> {
-                    output = content.trimEnd()
-                    sawFence = true
+                lang == "output" -> {
+                    sawAnyFence = true
+                    if (content.isBlank()) {
+                        notes += "output 块是空的，跳过"
+                    } else {
+                        // 出现第二个 output 时**用后面那个**（模型常常先写一版再修正），
+                        // 但要留一条笔记：不说明的话，用户看到的正文与他以为的不一样。
+                        if (output != null) notes += "有两个 output 块，用了后面那个"
+                        output = content.trimEnd()
+                        sawFence = true
+                    }
                 }
-                lang == "thinking" && content.isNotBlank() -> {
-                    thinking = content
-                    sawFence = true
+                lang == "thinking" -> {
+                    sawAnyFence = true
+                    if (content.isBlank()) {
+                        notes += "thinking 块是空的，跳过"
+                    } else {
+                        thinking = content
+                        sawFence = true
+                    }
                 }
                 lang.startsWith("tool:") -> {
+                    sawAnyFence = true
                     val number = lang.removePrefix("tool:").toIntOrNull()
                     if (number == null || number < 0 || number > 63) {
                         notes += "工具块编号看不懂：$lang"
-                    } else if (content.isNotBlank()) {
+                    } else if (content.isBlank()) {
+                        notes += "tool:$number 块是空的，跳过"
+                    } else {
                         tools[number] = content.trim()
+                        sawFence = true
                     }
-                    sawFence = true
                 }
                 lang.isEmpty() || lang == "text" || lang == "markdown" -> {
+                    sawAnyFence = true
                     notes += "忽略了一个没有标签的围栏"
                 }
-                else -> notes += "忽略了不认识的围栏「$lang」"
+                else -> {
+                    sawAnyFence = true
+                    notes += "忽略了不认识的围栏「$lang」"
+                }
             }
             index = cursor + 1
         }
-        // 一个围栏都没有 = 模型没按格式来：整段当正文（总比什么都不改强）。
-        if (!sawFence) {
+        // **一个围栏都没有**才走兜底：模型没按格式来，整段当正文（总比什么都不改强）。
+        // 有围栏但没解析出内容（空的 / 没闭合 / 太大）时不兜底——那种"整段"里带着反引号，
+        // 写进去就是脏数据，笔记里已经说清为什么没改。
+        if (!sawAnyFence) {
             val all = raw.trim()
             return Plan(
                 output = all.takeIf { it.isNotEmpty() && it.length <= MAX_BLOCK },
                 thinking = null,
                 tools = emptyMap(),
-                notes = if (all.isEmpty()) listOf("模型回了空") else emptyList(),
+                notes = if (all.isEmpty()) {
+                    listOf("模型回了空")
+                } else if (all.length > MAX_BLOCK) {
+                    listOf("模型回了一整段超过 200 KB 的文字，没写进去")
+                } else {
+                    emptyList()
+                },
             )
         }
         return Plan(output = output, thinking = thinking, tools = tools, notes = notes)

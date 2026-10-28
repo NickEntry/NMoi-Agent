@@ -1304,8 +1304,15 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 （`crates/core/src/session.rs` 的 `three_tool_calls_in_one_message_yield_three_paired_results`：
 三个调用 → 三个闭合单元、顺序与 id 一一对应，顺带把"一次调用一个单元"这个**与文档不一致**的现状钉住了，
 差异记在 `docs/decisions.md` 的「待定」一节）。
-**`parseFences` 那条还没补**，卡在工具上而不是代码上：它在 Kotlin 侧（`ui/EditRepository.kt`），
-而 `android/app/src/test` 还不存在、build 里也没有 junit 与 CI 的单测步骤。
-两条路选一条：① 加 junit + `testDebugUnitTest` 进 CI（一次性的脚手架）；
-② 把围栏解析搬进 core（`crates/core/src/fence.rs`），用 Rust 测——顺带给 ffi 一个共用实现。
-倾向 ②：解析规则属于协议，不该只活在客户端里。
+**`parseFences` 那条已补**（2026-10-28，走的是"加脚手架"那条路而不是搬进 core）：
+`android/app/src/test/kotlin/com/nmoi/agent/ui/EditFencesTest.kt` 八条边界，
+`build.gradle.kts` 加 `testImplementation("junit:junit:4.13.2")`，CI 的 android job 加
+`gradle -p android :app:testDebugUnitTest`。
+
+补这条时它当场抓出四个真错（都是"错起来不显眼"的那种）：
+① 空的 ` ```output ` → 整段（连三个反引号）被当成正文写回；② 围栏没闭合 → 同样把半截围栏当正文；
+③ 超 200 KB 的块被跳过，但**笔记也跟着丢了**，界面上只说"模型没给出可用的改动"；
+④ 每块末尾多一个换行（思考块写进 `messages.reasoning` 时带着），根因是补 `\n` 时判断的是"文件最后一行"
+而不是"围栏最后一行"。四条都改了，判据在测试里。
+
+如果以后要把解析搬进 core（协议只该有一份实现），这道测试正好当回归基线。

@@ -153,6 +153,11 @@ jobs:
           # 只报"就位了"，不打印任何内容（口令由 Actions 自己打码，但别把机会留给它）。
           echo "签名材料已就位：$out（$(stat -c%s "$out") 字节）"
 
+      # Kotlin 侧纯逻辑单测（JVM，不需要设备）。第一批用例是围栏解析的边界——
+      # 它错起来不显眼：把 ```output 连内容一起写进消息正文，界面上看着"改了"。
+      - name: Kotlin 单测
+        run: gradle -p android :app:testDebugUnitTest --no-daemon --stacktrace
+
       - name: 打包 debug APK
         run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
 
