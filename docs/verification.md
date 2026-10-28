@@ -796,3 +796,34 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
 | `proot error: ... /bin/sh: No such file` | `logcat -s Envir` 的"自检路径" | `envir` 五件套里某个路径不对（升级 APK 后 `nativeLibraryDir` 变了，重启 App 即可） |
 | 命令全 `not found`、退出码 127 | stdout 里 `echo $PATH` | guest 的 PATH 没给（回归） |
 | `proot: can't chdir to ...` | 命令里的 `cwd` | 模型给了个容器里不存在的相对目录 |
+
+### V14 容器联网（D173）
+
+**这一版会碰什么**：容器与手机**同一个网络栈、同一个 uid 的权限**（proot 不建 netns），
+所以容器能访问的就是这个 App 能访问的。新增的只有一件：容器里的 `/etc/resolv.conf`
+不再是空的，而是每次起容器前按设备当前的 DNS 现写一份绑进去。
+
+1. 设置 → 工具与工作区 → 隔离环境（环境已装）→ 自检那一节现在有**三个** chip：
+   `proot --version` / `进容器` / `容器联网`。
+   **判据**：第三个 chip 右边写的是「文件 resolv.conf，启动前现写」；若它写的是
+   「设备当前没有 DNS」，先确认手机本身能上网（这一条这时只会证明"解析不了"）。
+2. 点「容器联网」。**判据**：退出码 0；输出前半段是三四行 `nameserver <ip>`
+   （与你路由器/运营商给的地址一致），中间一行 `---`，下面是
+   `archive.ubuntu.com` 对应的一个 IPv4/IPv6 地址，最后一行 `getent=0`。
+3. 回聊天页，开着 `WorkSpace-EnvirShell`，发一句
+   `在隔离环境里跑 apt-get update，把最后三行给我`。
+   **判据**：工具卡里能看到 `Get:`/`Hit:` 行，最后 `Reading package lists... Done`，退出码 0。
+   （Ubuntu Base 里 `apt-get` 在，`apt` 也在；两者都走同一套 DNS。）
+4. 断网对照（飞行模式，或关掉 Wi-Fi 与蜂窝）再点一次「容器联网」。
+   **判据**：`getent` 那个值不是 0，报 `Name or service not known` 之类；
+   界面上第三个 chip 右边变成「设备当前没有 DNS」。**恢复网络后重开一次 App，
+   它应当自动变回来**（这份文件每次起容器前重写，不缓存）。
+
+失败对照：
+
+| 现象 | 先看 | 多半是 |
+|---|---|---|
+| 容器里 `resolv.conf` 是空的 | 自检输出第一行 | `ACCESS_NETWORK_STATE` 没生效（重装 APK）；或设备真没 DNS |
+| `getent` 一直是 `getent=2`（`Name or service not known`） | 容器里那几行 `nameserver` | 手机连的网络走的是"仅私有 DNS"/VPN，UDP 53 被拦；换 Wi-Fi 再试一次 |
+| `getent=127` | 输出里有没有 `getent: not found` | rootfs 被换成了不带 libc-bin 的镜像（自定义来源） |
+| 域名能解析但 `apt-get update` 卡在 `Connecting` | 目标站点的 443 是否被本地网络拦 | 不是 DNS 的问题，容器与 App 用的是同一条网络 |

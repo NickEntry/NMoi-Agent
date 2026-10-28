@@ -3735,8 +3735,8 @@ proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/pr
 - **测试**：拿一个**假 proot**（把 `-c` 后面那段当真命令跑）验我们这一侧——命令拼得对、
   `PATH` 是 guest 的、超时会杀、没坐标会明说、门控挡得住。proot 本身是别人的活，真机验。
 
-**没做的**：容器里的网络（`apt update` 需要 DNS 与 `/etc/resolv.conf`，proot 默认不带），
-以及"容器里能不能访问宿主的网络"这个问题还没定；工作区挂载是只读写工作区，别的一概不绑。
+**没做的**：容器里的网络原本完全不通（`apt update` 需要 DNS 与 `/etc/resolv.conf`，
+proot 默认不带）——这一条由 **D173** 补上；工作区挂载是只读写工作区，别的一概不绑。
 
 ### D173 容器允许联网（用户 2026-10-27 明确允许）
 
@@ -3744,10 +3744,27 @@ proot **不建 netns**：容器里的进程和宿主是同一套网络栈、同�
 其实只剩一个问题——**DNS 有没有**。Ubuntu Base 里 `/etc/resolv.conf` 是空的/指向不存在的
 systemd-resolved，于是 `apt update` 会卡在解析域名。
 
-做法（计划，0.14q，未实现）：把宿主当前的 DNS 列表写进 `filesDir/envir/resolv.conf`，
-启动时 `-b <resolv>:/etc/resolv.conf`（顺带可绑 `/etc/hosts`）；`EnvirSpec` 加一个可选
-`resolv`，没有就不绑——离线也照跑。DNS 从 `ConnectivityManager.getLinkProperties().dnsServers`
-取（不要 `getprop net.dns1`，那是老接口，在双栈/Wi-Fi+蜂窝切换时常常是空的）。
+做法（0.14q，**已实现，待真机验证**）：把宿主当前的 DNS 列表写进 `filesDir/envir/resolv.conf`，
+启动时 `-b <resolv>:/etc/resolv.conf`；`EnvirSpec` 加一个可选 `resolv`，没有就不绑——离线也照跑。
+DNS 从 `ConnectivityManager.getLinkProperties().dnsServers` 取（不要 `getprop net.dns1`，那是老接口，
+在双栈/Wi-Fi+蜂窝切换时常常是空的）。
+
+实现时定下的几条：
+
+- **每次起容器前重写**，不是安装时写一次。换 Wi-Fi、Wi-Fi↔蜂窝、开热点，DNS 都会变；
+  写在安装那一刻等于让用户某天突然"容器里解析不了域名"，而界面上什么都不显示。
+- 取 DNS 遍历 `allNetworks` 而不是只看 `activeNetwork`：active 那张可能正好没有 DNS
+  （刚连上的 Wi-Fi、回环式 VPN），旁边那张有。`fe80::` 链路本地地址**丢掉**——
+  resolv.conf 里写它要带 scope id，而容器里网卡名与宿主不同名，写了只会让每次查询先等一轮超时。
+- **没有 DNS 就不建文件、也不绑**：绑一个空文件会把 rootfs 里那份（同样空的）盖掉，
+  真出问题时少一条能看的线索。core 侧同理：`EnvirSpec::resolv` 是 `Option<PathBuf>`。
+- `ACCESS_NETWORK_STATE` 是普通权限，不需要用户授权，但少了它 `ConnectivityManager`
+  直接抛 `SecurityException`——那种失败会装成"DNS 是空的"。
+
+**解包核过的事实**（2026-10-28，`tar -tzvf` 官方 tar.gz）：Ubuntu Base 26.04.1 里
+`etc/resolv.conf` 是**一个 0 字节的普通文件**（不是指向 systemd-resolved 的符号链接），
+`etc/hosts` 也是 0 字节；`usr/bin/getent`、`usr/bin/cat` 都在。所以一条 `-b` 就够，
+不用连带绑 `/run/systemd/resolve/*`，也不用改 rootfs 里的东西。
 
 **风险先记着**：Android 的 DNS 常走 netd 的私有通道，直接 UDP 53 有时被拦。所以验收判据
 只写"容器里 `getent hosts archive.ubuntu.com` 出 IP"，`apt update` 通了才算真的通。

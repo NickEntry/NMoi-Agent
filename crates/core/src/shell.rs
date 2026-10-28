@@ -165,6 +165,14 @@ pub struct EnvirSpec {
     pub rootfs: PathBuf,
     /// proot 自己的临时目录（要可写；默认往 `/tmp` 走，Android 上不可写）。
     pub tmp: PathBuf,
+    /// 绑到容器 `/etc/resolv.conf` 的**宿主机**文件（D173）。
+    ///
+    /// proot 不建 netns：容器里的进程和宿主同一套网络栈、同一个 uid 的权限，所以"能不能联网"
+    /// 其实只剩"DNS 有没有"。Ubuntu Base 里的 `/etc/resolv.conf` 是空的/指向不存在的
+    /// systemd-resolved，没有这一条 `apt update` 会卡在解析域名上。
+    ///
+    /// 可选：没有（离线、或设备当前没有 DNS）就不绑——容器照跑，只是解析不出域名。
+    pub resolv: Option<PathBuf>,
 }
 
 impl EnvirSpec {
@@ -172,7 +180,8 @@ impl EnvirSpec {
     ///
     /// 参数按真机验证过的那一套写（D169 / D171）：
     /// `-0` 假装 root、`-r rootfs`、绑 `/dev` `/proc` `/sys`、把工作区绑到 [GUEST_WORKSPACE]、
-    /// `-w` 到同一个位置，最后 `/bin/sh -c <command>`。
+    /// 有 [EnvirSpec::resolv] 就一起绑到 `/etc/resolv.conf`、`-w` 到工作区，
+    /// 最后 `/bin/sh -c <command>`。
     pub fn command(&self, workspace: &Path, guest_cwd: Option<&str>, command: &str) -> Command {
         let mut cmd = Command::new(&self.proot);
         cmd.arg("-0")
@@ -186,6 +195,13 @@ impl EnvirSpec {
             .arg("/sys")
             .arg("-b")
             .arg(format!("{}:{}", workspace.display(), GUEST_WORKSPACE));
+        // DNS（D173）：只在拿到一份真的写了 `nameserver` 的文件时才绑。
+        // 绑一个空文件比不绑更糟——它会把 rootfs 里那份原样的 `resolv.conf` 盖掉，
+        // 之后再排查就少了一条线索。
+        if let Some(resolv) = &self.resolv {
+            cmd.arg("-b")
+                .arg(format!("{}:/etc/resolv.conf", resolv.display()));
+        }
         // 工作目录：`-w` 只认一个，模型给的相对目录就接在后面（已经过词法校验，不含 `..`）。
         let cwd = match guest_cwd {
             Some(relative) if !relative.is_empty() => format!("{GUEST_WORKSPACE}/{relative}"),
@@ -685,7 +701,52 @@ mod tests {
             lib_dir: dir.join("lib"),
             rootfs: dir.join("rootfs"),
             tmp: dir.join("tmp"),
+            resolv: None,
         }
+    }
+
+    /// `resolv` 是**可选**的，而且只在有时才绑（D173）。
+    ///
+    /// 这条测的是拼命令行这一侧：`-b <file>:/etc/resolv.conf` 出现在工作区那条之后、
+    /// `-w` 之前。顺序不重要，**"有没有"很重要**——绑一个空文件会把 rootfs 里那份原样的
+    /// `resolv.conf` 盖掉，排障时少一条线索，所以没有 DNS 时必须完全不绑。
+    #[test]
+    fn envir_binds_resolv_only_when_it_is_given() {
+        let dir = Path::new("/tmp/nmoi-envir-spec");
+        let workspace = Path::new("/tmp/nmoi-envir-ws");
+        let base = EnvirSpec {
+            proot: dir.join("proot"),
+            loader: dir.join("loader"),
+            lib_dir: dir.join("lib"),
+            rootfs: dir.join("rootfs"),
+            tmp: dir.join("tmp"),
+            resolv: None,
+        };
+
+        let plain: Vec<String> = base
+            .command(workspace, None, "true")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !plain.iter().any(|arg| arg.contains("resolv.conf")),
+            "没给 DNS 时不该出现 resolv.conf：{plain:?}"
+        );
+
+        let resolv = dir.join("resolv.conf");
+        let mut with_dns = base.clone();
+        with_dns.resolv = Some(resolv.clone());
+        let bound: Vec<String> = with_dns
+            .command(workspace, None, "true")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let expected = format!("{}:/etc/resolv.conf", resolv.display());
+        let at = bound
+            .iter()
+            .position(|arg| arg == &expected)
+            .unwrap_or_else(|| panic!("应当绑 resolv.conf：{bound:?}"));
+        assert_eq!(bound[at - 1], "-b", "{bound:?}");
     }
 
     /// **不加 `#[cfg(unix)]`**：`envir_shell_without_a_runtime_spec…` 与门控那条在 Windows 上也跑，

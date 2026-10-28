@@ -159,12 +159,20 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
     for name in ["proot", "loader", "lib_dir", "rootfs", "tmp"] {
         paths.push(PathBuf::from(envir_path(value, name)?));
     }
+    // `resolv` 是**可选**的（D173）：设备当前没有 DNS 时调用方就不给，
+    // 这时容器照跑，只是解析不出域名。给了就得是个非空字符串——空串会让 proot
+    // 收到 `-b :/etc/resolv.conf`，报错信息里看不出是谁的问题。
+    let resolv = match value.get("resolv") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(PathBuf::from(envir_path(value, "resolv")?)),
+    };
     Ok(Some(EnvirSpec {
         proot: paths[0].clone(),
         loader: paths[1].clone(),
         lib_dir: paths[2].clone(),
         rootfs: paths[3].clone(),
         tmp: paths[4].clone(),
+        resolv,
     }))
 }
 
@@ -715,6 +723,41 @@ mod tests {
             "报错要点名缺的是哪个：{}",
             error.message
         );
+        assert!(spec.resolv.is_none(), "没写 resolv 就是没有（D173）");
+    }
+
+    /// `resolv` 可选，但给了就不能是空串或非字符串（D173）：
+    /// 空串会让 proot 收到 `-b :/etc/resolv.conf`，那条报错里看不出是谁的问题。
+    #[test]
+    fn resolv_is_optional_but_not_garbage() {
+        let base = json!({
+            "proot": "/a/proot", "loader": "/a/loader", "lib_dir": "/a/lib",
+            "rootfs": "/a/rootfs", "tmp": "/a/tmp",
+            "resolv": "/a/envir/resolv.conf"
+        });
+        let spec = parse_envir(&json!({ "envir": base }))
+            .expect("给了就解析")
+            .expect("Some");
+        assert_eq!(
+            spec.resolv
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            Some("/a/envir/resolv.conf".to_string())
+        );
+
+        for broken in [json!(""), json!(42)] {
+            let mut value = json!({
+                "proot": "/a/proot", "loader": "/a/loader", "lib_dir": "/a/lib",
+                "rootfs": "/a/rootfs", "tmp": "/a/tmp"
+            });
+            value["resolv"] = broken.clone();
+            let error = parse_envir(&json!({ "envir": value })).expect_err("要报错");
+            assert!(
+                error.message.contains("envir.resolv"),
+                "报错要点名 envir.resolv：{}",
+                error.message
+            );
+        }
     }
 
     fn minimal() -> String {

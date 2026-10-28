@@ -153,6 +153,11 @@ internal object TurnRepository {
         .put("lib_dir", EnvirRepository.ensureLibLinks(context).getOrThrow().absolutePath)
         .put("rootfs", installed.rootfs)
         .put("tmp", File(EnvirRepository.envirDir(context), "tmp").apply { mkdirs() }.absolutePath)
+        .also { row ->
+            // DNS（D173）：**现取现写**，写在容器起来之前。没有 DNS 就干脆不给这个字段，
+            // core 那边（`parse_envir`）把它当可选——离线也能跑，只是解析不出域名。
+            EnvirRepository.writeResolvConf(context)?.let { file -> row.put("resolv", file.absolutePath) }
+        }
 
     /** 点"停止"。没在跑不算失败：`cancelled:false` 只说明它已经收尾了。 */
     suspend fun cancel(sessionId: String): Result<Boolean> =

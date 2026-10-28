@@ -202,7 +202,8 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                 "装完再自检。`proot --version` 只证明三件套能被链接器拉起来；" +
                                     "进容器那句才会告诉你 rootfs 到底能不能跑。"
                             } else {
-                                "两份证据：① `proot --version`；② 进容器读 `os-release` + `uname -r`。"
+                                "三份证据：① `proot --version`；② 进容器读 `os-release` + `uname -r`；" +
+                                    "③ 容器里的 DNS 与一次真的域名解析（`getent hosts archive.ubuntu.com`）。"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -256,6 +257,47 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                     probing = false
                                 }
                             }
+                        }
+                        // 第三份证据单独一行：三个 chip 挤在一行，窄屏上第三个会被截掉半截字。
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            DialogChip(
+                                label = "容器联网",
+                                enabled = current != null && !probing,
+                            ) {
+                                probing = true
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        EnvirRepository.probe(
+                                            context,
+                                            EnvirRepository.networkCommand(context, current!!.rootfs),
+                                        )
+                                    }
+                                    probe = result.getOrElse {
+                                        EnvirRepository.Probe(
+                                            command = "proot -r <rootfs> getent hosts",
+                                            exitCode = null,
+                                            stdout = "",
+                                            stderr = it.message ?: "起不来",
+                                            durationMs = 0,
+                                            timedOut = false,
+                                        )
+                                    }
+                                    probing = false
+                                }
+                            }
+                            Text(
+                                text = if (EnvirRepository.dnsServers(context).isEmpty()) {
+                                    "设备当前没有 DNS：这一条只会证明「解析不了」"
+                                } else {
+                                    "文件 ${EnvirRepository.resolvFile(context).name}，启动前现写"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .align(Alignment.CenterVertically)
+                                    .padding(start = 10.dp)
+                                    .weight(1f),
+                            )
                         }
                         probe?.let { result ->
                             Text(

@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import android.content.Context
+import android.net.ConnectivityManager
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -118,6 +119,14 @@ internal object EnvirRepository {
     fun archiveFile(context: Context): File = File(envirDir(context), "ubuntu-base.tar.gz")
 
     fun stateFile(context: Context): File = File(envirDir(context), "state.json")
+
+    /**
+     * 交给容器的 `/etc/resolv.conf`（D173）。**每次启动容器前重写**，不是安装时写一次。
+     *
+     * 换了 Wi-Fi、从 Wi-Fi 切到蜂窝、开了一次性热点，DNS 都会变；写在安装那一刻等于
+     * 让用户在某天早上突然"容器里解析不了域名"，而界面上什么都不显示。
+     */
+    fun resolvFile(context: Context): File = File(envirDir(context), "resolv.conf")
 
     fun prootPath(context: Context): File = File(runtimeDir(context), "libnmoi_proot.so")
 
@@ -386,6 +395,60 @@ internal object EnvirRepository {
         }
     }
 
+    // ------------------------------------------------------------------ DNS（D173）
+
+    /**
+     * 设备当前的 DNS。
+     *
+     * 从 `ConnectivityManager.getLinkProperties().dnsServers` 取，**不读 `getprop net.dns1`**：
+     * 那是老接口，在双栈、Wi-Fi 与蜂窝来回切的机器上经常是空的，而 DNS 明明配好了。
+     *
+     * 为什么要遍历 `allNetworks` 而不是只看 `activeNetwork`：active 的那一张可能正好是
+     * 一个没有 DNS 的（本地回环式 VPN、刚连上还没配全的 Wi-Fi），而旁边那张有。
+     * 我们只是给容器一份"能解析就行"的名单，多列两条不影响正确性。
+     *
+     * `fe80::` 开头的链路本地地址**丢掉**：resolv.conf 里写它必须带 scope id，
+     * 而容器里那个网卡名和宿主不是同一个，写了也解析不了，只会让每次查询先等一轮超时。
+     */
+    fun dnsServers(context: Context): List<String> = runCatching {
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return emptyList()
+        val raw = manager.allNetworks
+            .flatMap { network -> manager.getLinkProperties(network)?.dnsServers.orEmpty() }
+            .mapNotNull { address -> address.hostAddress?.trim() }
+            .filter { it.isNotEmpty() }
+            .filterNot { it.startsWith("fe80:", ignoreCase = true) }
+        // 去重后把 IPv4 排前面：多数镜像里的解析器先问第一条，而 IPv6 在不支持它的网络里
+        // 每次都要白等一遍。
+        raw.distinct().sortedBy { it.contains(':') }
+    }.getOrDefault(emptyList())
+
+    /**
+     * 写 `/etc/resolv.conf` 的内容，返回文件；**没有 DNS 就返回 null 且不建文件**。
+     *
+     * 不建空文件是有意的：core 只在拿到路径时才 `-b`，而绑一个空文件会把 rootfs 里那份
+     * （同样空的，但至少是"原样"）盖掉，真出问题时少一条能看的线索。
+     */
+    fun writeResolvConf(context: Context): File? = runCatching {
+        val file = resolvFile(context)
+        val servers = dnsServers(context)
+        if (servers.isEmpty()) {
+            file.delete()
+            NLog.w("Envir", "当前没有可用的 DNS（没有网络，或系统还没报上来）：容器里解析不了域名")
+            return null
+        }
+        val text = buildString {
+            appendLine("# 由 N-Moi 启动容器前写入（D173）：设备当前的 DNS。")
+            appendLine("# 来源：ConnectivityManager.getLinkProperties().dnsServers")
+            for (server in servers) appendLine("nameserver $server")
+            appendLine("options timeout:2 attempts:2")
+        }
+        file.parentFile?.mkdirs()
+        file.writeText(text)
+        NLog.i("Envir", "DNS ${servers.size} 条：${servers.joinToString(" ")}")
+        file
+    }.getOrNull()
+
     // ------------------------------------------------------------------ 自检
 
     /**
@@ -461,24 +524,58 @@ internal object EnvirRepository {
     /** `proot --version`：只证明"三件套能被链接器加载起来"。 */
     fun versionCommand(context: Context): List<String> = listOf(prootPath(context).absolutePath, "--version")
 
-    /** 进容器跑一句话：`os-release` 头两行 + 内核版本（**会是手机的内核**，这正是要让人看见的）。 */
-    fun rootfsCommand(context: Context, rootfs: String): List<String> {
-        val libs = libDir(context)
-        return listOf(
+    /**
+     * 进容器那一长串 proot 参数。三处自检共用一份，免得"进容器能跑、跑命令不能跑"这种分叉。
+     *
+     * DNS（D173）：`-b <resolv>:/etc/resolv.conf` 只在真拿到一份 DNS 文件时才加。
+     * Ubuntu Base 26.04.1 里 `etc/resolv.conf` 是**一个 0 字节的普通文件**（不是符号链接，
+     * 2026-10-28 解包核对过），所以一条绑定就够，不用连带绑 systemd-resolved 那几条路径。
+     */
+    private fun prootArgs(context: Context, rootfs: String, guestCwd: String, script: String): List<String> {
+        val args = mutableListOf(
             prootPath(context).absolutePath,
             "-0",
             "-r", rootfs,
             "-b", "/dev",
             "-b", "/proc",
             "-b", "/sys",
-            "-w", "/root",
-            "/bin/sh",
-            "-c",
-            // 用绝对路径：这条命令存在的意义就是"别的都坏了也能跑"，不能依赖 PATH。
-            "/usr/bin/head -2 /etc/os-release; echo ---; /usr/bin/uname -r; " +
-                "echo ---; /usr/bin/ls /usr/bin | /usr/bin/wc -l",
-        ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}（LD_LIBRARY_PATH=${libs.absolutePath}）") }
+        )
+        writeResolvConf(context)?.let { resolv ->
+            args += listOf("-b", "${resolv.absolutePath}:/etc/resolv.conf")
+        }
+        args += listOf("-w", guestCwd, "/bin/sh", "-c", script)
+        return args
     }
+
+    /** 进容器跑一句话：`os-release` 头两行 + 内核版本（**会是手机的内核**，这正是要让人看见的）。 */
+    fun rootfsCommand(context: Context, rootfs: String): List<String> =
+        // 用绝对路径：这条命令存在的意义就是"别的都坏了也能跑"，不能依赖 PATH。
+        prootArgs(
+            context = context,
+            rootfs = rootfs,
+            guestCwd = "/root",
+            script = "/usr/bin/head -2 /etc/os-release; echo ---; /usr/bin/uname -r; " +
+                "echo ---; /usr/bin/ls /usr/bin | /usr/bin/wc -l",
+        ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}") }
+
+    /**
+     * 容器联网（D173）：先看容器里那份 `resolv.conf` 长什么样，再真的解析一次域名。
+     *
+     * 为什么两条都要：
+     * - 只打印 `resolv.conf` 说明我们写对了，不代表容器真能用它；
+     * - 只跑 `getent` 失败时看不出是"没绑 DNS"还是"域名解析被拦了"。
+     *
+     * 用 `getent` 而不是 `ping`：Ubuntu Base 里没有 `ping`（那是 iputils 的），
+     * `getent` 在 libc-bin 里，`getent hosts <名>` 就是 libc 自己走一遍 nsswitch。
+     */
+    fun networkCommand(context: Context, rootfs: String): List<String> =
+        prootArgs(
+            context = context,
+            rootfs = rootfs,
+            guestCwd = "/root",
+            script = "/usr/bin/head -5 /etc/resolv.conf; echo ---; " +
+                "/usr/bin/getent hosts archive.ubuntu.com; echo \"getent=\$?\"",
+        ).also { NLog.i("Envir", "联网自检：${it.joinToString(" ")}") }
 
     // ------------------------------------------------------------------ 删除
 

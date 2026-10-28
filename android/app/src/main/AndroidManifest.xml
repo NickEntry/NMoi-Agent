@@ -5,6 +5,10 @@
          "连接失败 127.0.0.1:8790: Operation not permitted"） -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- 读设备当前的 DNS（D173：容器要一份 /etc/resolv.conf）。这是普通权限，不需要用户授权，
+         但少了它 ConnectivityManager 直接抛 SecurityException——容器里就永远解析不出域名。 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_appicon_c4_dark"
