@@ -96,6 +96,13 @@ pub struct ToolRecord {
 pub struct TurnReport {
     /// 模型最后输出的正文（可能为空：它可能只想调工具）。
     pub text: String,
+    /// 最后一轮**非空**的思考内容。空串 = 这一次没有思考。
+    ///
+    /// 为什么要单独带出来：`Completion.reasoning` 以前在 `run_turn` 里被丢掉了，
+    /// 结果是"供应商后台看得到思考、客户端库里一条都没有"，界面上自然也就没有思考卡。
+    /// 取"最后一轮非空"而不是"最后一轮"：收尾那一轮常常只回一句话、没有思考，
+    /// 而用户想看的正是最后那次推理。
+    pub reasoning: String,
     /// 工具往返轮数。
     pub rounds: u32,
     pub tool_calls: Vec<ToolRecord>,
@@ -192,6 +199,9 @@ pub fn run_turn<T: Transport>(
         report.rounds += 1;
         report.finish = Some(completion.finish);
         report.text = completion.text.clone();
+        if !completion.reasoning.trim().is_empty() {
+            report.reasoning = completion.reasoning.clone();
+        }
         report.usage = completion.usage;
 
         // 绝对线（D90）：生成中只按**字符增量**累加，不重新估算整份上下文。

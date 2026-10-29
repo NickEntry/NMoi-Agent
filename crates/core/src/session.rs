@@ -375,8 +375,14 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
             estimate_tokens(&report.text),
             now,
             LogicalClock::new(seq),
-        )
-        .mark_incomplete(!report.finished);
+        );
+        // 思考跟着这一条落库（D175 的"思考块"那一列）。以前这里没接，所以库里永远没有思考。
+        let message = if report.reasoning.trim().is_empty() {
+            message
+        } else {
+            message.with_reasoning(&report.reasoning)
+        };
+        let message = message.mark_incomplete(!report.finished);
         let unit = AtomicUnit::turn(message.clone())
             .map_err(|error| SessionError::Save(error.to_string()))?;
         store

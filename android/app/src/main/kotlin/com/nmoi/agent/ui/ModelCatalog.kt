@@ -84,11 +84,42 @@ internal object ModelCatalog {
                 Fetched(parse(body, kind), status, duration, null)
             }
         } catch (error: IOException) {
-            NLog.w("Provider", "拉模型失败：${safeUrl(base)}：${error.message}")
-            Fetched(emptyList(), 0, System.currentTimeMillis() - started, error.message ?: "连接失败")
+            // `status = 0` 的那一类失败必须翻成人话：Android 给的原始 message
+            // 要么是英文异常名（`Cleartext HTTP traffic … not permitted`），
+            // 要么干脆是 null（用户看到的就是"拉模型失败（HTTP 0）"，等于没说）。
+            val reason = explain(error)
+            NLog.w("Provider", "拉模型失败：${safeUrl(base)}：${error.javaClass.simpleName} ${error.message}")
+            Fetched(emptyList(), 0, System.currentTimeMillis() - started, reason)
         } finally {
             connection.disconnect()
         }
+    }
+
+    /**
+     * 连不上时的几种原因，各给一句话。
+     *
+     * **别把异常名当文案**：`Cleartext HTTP traffic … not permitted` 这种话，
+     * 除了我没人看得懂；而 `status=0` 又丢掉了全部信息（用户只会看到"HTTP 0"）。
+     */
+    private fun explain(error: IOException): String {
+        val message = error.message.orEmpty()
+        // 明文被系统拦下（0.15a 之后正常配置不会走到这儿，留着兜底：老安装包/系统策略）
+        if (message.contains("Cleartext", ignoreCase = true)) {
+            return "系统拦了明文 HTTP：这个地址是 http://，换成 https:// 或者用本机/内网允许明文的端点"
+        }
+        if (error is java.net.UnknownHostException) {
+            return "域名解析不了：检查地址拼写（或者这台设备现在没网）"
+        }
+        if (error is java.net.SocketTimeoutException) {
+            return "超时：15 秒没连上、或者 20 秒没回数据（端点卡住，或者地址不通）"
+        }
+        if (error is javax.net.ssl.SSLException) {
+            return "TLS 握手失败：证书不对、或者这个端口不是 https"
+        }
+        if (error is java.net.ConnectException) {
+            return "连不上：端口没开、或者服务没起（地址里的 port 对不对？）"
+        }
+        return message.ifBlank { "连接失败（没有更具体的原因）" }
     }
 
     /** 三家（OpenAI 系 / Anthropic / Gemini）的清单形状不同，但都只有一层。 */

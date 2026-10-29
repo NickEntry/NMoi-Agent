@@ -293,8 +293,10 @@ internal fun ProviderEditScreen(
             }
             fetching = false
             if (!fetched.ok) {
-                fetchNote = "失败：${fetched.error ?: "HTTP ${fetched.status}"}"
-                notice = "拉模型失败（HTTP ${fetched.status}）"
+                // **只报一句**：以前红字写"失败：…"、灰字又写"拉模型失败（HTTP 0）"，
+                // 两句说的是同一件事，而"HTTP 0"本身就是没信息。
+                fetchNote = "拉模型失败：" + (fetched.error ?: "HTTP ${fetched.status}")
+                notice = null
                 return@launch
             }
             if (!merge) {

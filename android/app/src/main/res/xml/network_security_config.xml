@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  明文 HTTP 放行（2026-10-29，0.15a）。
+
+  为什么必须放开：Android 9+ 默认禁止明文，而本地/内网端点（127.0.0.1、192.168.x、
+  自己搭的网关）绝大多数只有 http。不放开的后果是"从端点拉取模型"直接
+  `Cleartext HTTP traffic to 127.0.0.1 not permitted`——地址是用户自己填的，
+  禁掉等于让他永远配不上本地端点。
+
+  风险的口径：HTTPS 仍然照常可用，且这里的地址从来都是用户自己填的；
+  我们**不**在代码里偷偷降级（没有任何一处把 https 改写成 http）。
+  真要收紧，改这一个文件即可，不用碰代码。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

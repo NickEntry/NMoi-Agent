@@ -1227,8 +1227,11 @@ private fun PendingAssistantRow() {
         animationSpec = infiniteRepeatable(tween(durationMillis = 900), RepeatMode.Reverse),
         label = "pending-alpha",
     )
-    Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Spacer(Modifier.width(42.dp))
+    // 居中（用户 2026-10-29）：以前前面垫了 42dp 去对齐头像列，看起来像"贴在左边"。
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
         Text(
             text = "正在生成…",
             style = MaterialTheme.typography.labelSmall,
