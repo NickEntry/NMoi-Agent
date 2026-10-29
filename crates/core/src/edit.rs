@@ -19,6 +19,13 @@ use crate::ids::{MessageId, UnitId};
 use crate::message::{AtomicUnit, Message, UnitError};
 use crate::tokens::estimate_tokens;
 
+/// 一块内容的上限。**这是防呆，不是防攻击**：真被塞进 200 KB 的思考块，
+/// 下一次请求的预算会被它吃掉一大半，而用户在界面上根本翻不到底。
+///
+/// 放在 core 而不是 FFI：手动编辑（`nmoi_storage_apply_block_edit_json`）与模型改消息
+/// （`edit_message`）都受这一条约束，两处各写一个数字迟早对不上。
+pub const MAX_BLOCK_BYTES: usize = 200_000;
+
 /// 可选中的块。长按 UI 上的哪个区域，就落到哪个选择器。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockSelector {
@@ -31,6 +38,34 @@ pub enum BlockSelector {
 }
 
 impl BlockSelector {
+    /// 一条消息最多能有几个工具调用块（与 FFI 手动编辑那套 `tool:<index>` 同一上限）。
+    pub const MAX_TOOL_INDEX: usize = 64;
+
+    /// 从 `output` / `thinking` / `tool:<index>` 解析。
+    ///
+    /// **不猜**：猜错就是把内容写到另一列上，而"点思考卡、结果正文变了"这种故障
+    /// 在界面上看着像灵异事件。手动编辑的 FFI 入口与模型的 `edit_message` 都走这一份。
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "output" => Ok(BlockSelector::Output),
+            "thinking" => Ok(BlockSelector::Thinking),
+            other => match other.strip_prefix("tool:") {
+                Some(index) => match index.parse::<usize>() {
+                    Ok(index) if index < Self::MAX_TOOL_INDEX => {
+                        Ok(BlockSelector::ToolCall { index })
+                    }
+                    _ => Err(format!(
+                        "`tool:<index>` 的 index 必须是 0–{} 的整数，收到 `{other}`",
+                        Self::MAX_TOOL_INDEX - 1
+                    )),
+                },
+                None => Err(format!(
+                    "块只能是 output / thinking / tool:<index>，收到 `{other}`"
+                )),
+            },
+        }
+    }
+
     pub fn as_str(self) -> String {
         match self {
             BlockSelector::Output => "output".into(),
@@ -308,5 +343,40 @@ mod tests {
         let mut unit = turn();
         let request = EditRequest::new(unit.id.clone(), BlockSelector::Output, "hello");
         assert_eq!(apply_edit(&mut unit, &request), Err(EditError::NoChange));
+    }
+
+    /// `output` / `thinking` / `tool:<index>` 这一套词只有一处解析（手动编辑与模型改消息共用）。
+    #[test]
+    fn block_selector_parses_the_three_kinds_and_nothing_else() {
+        assert_eq!(BlockSelector::parse("output"), Ok(BlockSelector::Output));
+        assert_eq!(
+            BlockSelector::parse("thinking"),
+            Ok(BlockSelector::Thinking)
+        );
+        assert_eq!(
+            BlockSelector::parse("tool:0"),
+            Ok(BlockSelector::ToolCall { index: 0 })
+        );
+        assert_eq!(
+            BlockSelector::parse("tool:63"),
+            Ok(BlockSelector::ToolCall { index: 63 })
+        );
+
+        // 顺序反了、越界、负数、不带序号——一律点名，不猜。
+        for bad in [
+            "tool:64",
+            "tool:",
+            "tool:-1",
+            "tool",
+            "reasoning",
+            "Output",
+            "",
+        ] {
+            let error = BlockSelector::parse(bad).unwrap_err();
+            assert!(
+                error.contains("output") || error.contains("0–63"),
+                "`{bad}` 的报错要指出合法值：{error}"
+            );
+        }
     }
 }

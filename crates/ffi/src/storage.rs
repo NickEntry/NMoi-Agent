@@ -850,31 +850,17 @@ pub extern "C" fn nmoi_storage_diagnose_json(path: *const c_char) -> *mut c_char
 // 块级编辑（D158）：增强编辑落地的最后一段
 // ---------------------------------------------------------------------------
 
-/// 一块内容的上限。**这是防呆，不是防攻击**：真被塞进 200 KB 的思考块，
-/// 下一次请求的预算会被它吃掉一大半，而用户在界面上根本翻不到底。
-const MAX_BLOCK_BYTES: usize = 200_000;
+/// 一块内容的上限。真源在 core（`edit::MAX_BLOCK_BYTES`）：模型改消息那条路也受同一条约束，
+/// 两处各写一个数字迟早对不上。
+const MAX_BLOCK_BYTES: usize = nmoi_core::edit::MAX_BLOCK_BYTES;
 
 /// `block` 只认三种串。**不猜**：猜错就是把内容写到另一列上，
 /// 而"点思考卡结果正文变了"这种故障在界面上看着像灵异事件。
+///
+/// 解析本身在 core（`BlockSelector::parse`）：模型的 `edit_message` 用的是同一份。
 fn parse_block(text: &str) -> FfiResult<nmoi_core::edit::BlockSelector> {
-    use nmoi_core::edit::BlockSelector;
-    match text {
-        "output" => Ok(BlockSelector::Output),
-        "thinking" => Ok(BlockSelector::Thinking),
-        other => match other.strip_prefix("tool:") {
-            Some(index) => match index.parse::<usize>() {
-                Ok(index) if index < 64 => Ok(BlockSelector::ToolCall { index }),
-                _ => Err(FfiError::new(
-                    "bad_argument",
-                    format!("block `tool:<index>` 的 index 必须是 0–63 的整数，收到 `{other}`"),
-                )),
-            },
-            None => Err(FfiError::new(
-                "bad_argument",
-                format!("block 只能是 output / thinking / tool:<index>，收到 `{other}`"),
-            )),
-        },
-    }
+    nmoi_core::edit::BlockSelector::parse(text)
+        .map_err(|message| FfiError::new("bad_argument", message))
 }
 
 /// 改一条消息的某一块。

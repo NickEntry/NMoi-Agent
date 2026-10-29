@@ -108,7 +108,7 @@ pub use runtime::{
     ReasoningReplay, ReconnectPolicy, ToolSpec,
 };
 pub use session::{
-    conversation_of, run_session_turn, CompressionSignal, HistoryStore, SessionConfig,
+    conversation_of, run_session_turn, CompressionSignal, EditReport, HistoryStore, SessionConfig,
     SessionError, SessionTurn,
 };
 pub use settings::{

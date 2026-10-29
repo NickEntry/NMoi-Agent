@@ -24,6 +24,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use crate::edit::{BlockSelector, MAX_BLOCK_BYTES};
+use crate::ids::MessageId;
+use crate::message::{Message, Role};
 use crate::policy::{AssistantPolicy, Capability, DenyReason};
 use crate::runtime::ToolSpec;
 use crate::workspace::{ListOptions, ReadOptions, SearchOptions, Workspace, WorkspaceError};
@@ -113,6 +116,12 @@ pub struct ToolContext<'a> {
     /// 容器运行时的坐标（D172）。`None` = 隔离环境没就绪，
     /// `WorkSpace-EnvirShell` 就算被声明了也只会回一句"没就绪"。
     pub envir: Option<&'a crate::shell::EnvirSpec>,
+    /// 这一轮的会话历史（含这一轮用户说的话）。`edit_message` 靠它找目标消息：
+    /// 模型看得见内容、看不见 id，`last_assistant` 这种写法只能在这里解析。
+    ///
+    /// 与铁律①不冲突：这里的"现读"发生在**这一轮开始时**（`load_window` 一次），
+    /// 而且真正落库时还会再读一次库——快照只用来解析目标与提前拦住明显的错。
+    pub history: Option<&'a [Message]>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -122,7 +131,14 @@ impl<'a> ToolContext<'a> {
             workspace,
             declared: None,
             envir: None,
+            history: None,
         }
+    }
+
+    /// 这一轮的会话历史（`edit_message` 解析目标消息用）。
+    pub fn with_history(mut self, history: &'a [Message]) -> Self {
+        self.history = Some(history);
+        self
     }
 
     /// 这一轮有容器可用。
@@ -186,6 +202,8 @@ impl ToolRegistry {
         registry.register(Box::new(crate::shell::SystemShellTool));
         // 容器里的命令（D172）：由 `Capability::ContainerExec` 门控，同样默认不出现。
         registry.register(Box::new(crate::shell::EnvirShellTool));
+        // 模型改消息（D177 / 0.14y）：与 `edit_file` 同档能力，但改的是会话不是磁盘。
+        registry.register(Box::new(EditMessageTool));
         registry
     }
 
@@ -695,6 +713,281 @@ impl Tool for SearchTool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// edit_message：模型改历史消息（D177 / 0.14y）
+// ---------------------------------------------------------------------------
+
+/// 一次调用最多改几块。多了模型自己也绕不清，而八块已经够长。
+pub const MAX_EDITS_PER_CALL: usize = 8;
+
+/// 解析好但**还没落到具体消息上**的一次 `edit_message` 调用。
+///
+/// 工具（说"已排队"）与收尾落库（真写进去）共用这一份解析结果：
+/// 两处各解析一遍，迟早会出现"工具说改了三块、库里只写了两块"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditCall {
+    /// `last` / `last_assistant` / `last_user` / `<session>:<seq>`。
+    pub target: String,
+    pub edits: Vec<(BlockSelector, String)>,
+}
+
+/// 块的中文名。给模型看的那句话、给用户看的报告都用它，别一处一个说法。
+pub fn block_label(block: BlockSelector) -> String {
+    match block {
+        BlockSelector::Output => "正文".into(),
+        BlockSelector::Thinking => "思考块".into(),
+        BlockSelector::ToolCall { index } => format!("工具参数 #{index}"),
+    }
+}
+
+/// 模型给的参数 → 一组块级改动。形状不对就点名，**不猜**。
+///
+/// 这一层只管"参数本身站不站得住"（块名、必填项、JSON、重复），
+/// 目标消息存不存在、有没有被锁定，要等拿到历史才说得清（[`resolve_edit_target`]）。
+pub fn parse_edit_message(args: &Value) -> Result<EditCall, String> {
+    let target = args
+        .get("message_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .ok_or_else(|| {
+            "缺少字符串参数 `message_id`（具体 id，或 last_assistant / last_user / last）"
+                .to_string()
+        })?
+        .to_string();
+
+    let items = args
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "缺少数组参数 `blocks`（每一项 {kind, index?, content}）".to_string())?;
+    if items.is_empty() {
+        return Err("`blocks` 是空的：要改就指明改哪一块".into());
+    }
+    if items.len() > MAX_EDITS_PER_CALL {
+        return Err(format!(
+            "一次最多改 {MAX_EDITS_PER_CALL} 块，这次给了 {} 块",
+            items.len()
+        ));
+    }
+
+    let mut edits: Vec<(BlockSelector, String)> = Vec::with_capacity(items.len());
+    for (position, item) in items.iter().enumerate() {
+        let which = position + 1;
+        let kind = item
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("第 {which} 块缺少字符串 `kind`（output / thinking / tool）"))?;
+        let block = match kind {
+            "output" => BlockSelector::Output,
+            "thinking" => BlockSelector::Thinking,
+            "tool" => {
+                let index = item
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| format!("第 {which} 块是工具参数，必须给 `index`（0 起）"))?
+                    as usize;
+                if index >= BlockSelector::MAX_TOOL_INDEX {
+                    return Err(format!(
+                        "第 {which} 块的 `index` 必须是 0–{} 的整数，收到 {index}",
+                        BlockSelector::MAX_TOOL_INDEX - 1
+                    ));
+                }
+                BlockSelector::ToolCall { index }
+            }
+            other => {
+                return Err(format!(
+                    "第 {which} 块的 kind `{other}` 不认识：只能是 output / thinking / tool"
+                ))
+            }
+        };
+
+        let content = item
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("第 {which} 块缺少字符串 `content`"))?;
+        if content.len() > MAX_BLOCK_BYTES {
+            return Err(format!(
+                "第 {which} 块太长（{} 字节，上限 {MAX_BLOCK_BYTES}）",
+                content.len()
+            ));
+        }
+        match block {
+            // 正文是一轮回复的本体，清空它等于把那条消息变成空壳（`Message::validate` 也拒）。
+            BlockSelector::Output if content.trim().is_empty() => {
+                return Err(format!("第 {which} 块是正文，不能改成空的"));
+            }
+            // 工具参数决定下一次调用怎么发出去，坏 JSON 会被上游 400（D158）。
+            BlockSelector::ToolCall { index } => {
+                let parsed = serde_json::from_str::<Value>(content).ok();
+                if !parsed.is_some_and(|value| value.is_object()) {
+                    return Err(format!(
+                        "第 {which} 块（工具参数 #{index}）不是 JSON 对象：参数会原样发给上游，坏了下一次请求直接 400"
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        if edits.iter().any(|(existing, _)| *existing == block) {
+            return Err(format!(
+                "同一次调用里把「{}」写了两遍：落库按顺序来，后一次会把前一次盖掉",
+                block_label(block)
+            ));
+        }
+        edits.push((block, content.to_string()));
+    }
+
+    Ok(EditCall { target, edits })
+}
+
+/// `message_id` → 具体一条消息。
+///
+/// `last*` 不是偷懒：模型看得见消息内容，看不见 id（id 不随请求发出去），
+/// 只给"每条都必须是 `<session>:<seq>`"等于让模型去猜一串 uuid。
+pub fn resolve_edit_target(target: &str, history: &[Message]) -> Result<MessageId, String> {
+    let last_with = |role: Role| {
+        history
+            .iter()
+            .rev()
+            .find(|message| message.role == role)
+            .map(|message| message.id.clone())
+    };
+    match target {
+        "last" | "last_assistant" => {
+            last_with(Role::Assistant).ok_or_else(|| "会话里还没有助手消息可改".to_string())
+        }
+        "last_user" => last_with(Role::User).ok_or_else(|| "会话里还没有用户消息可改".to_string()),
+        other => {
+            let wanted: MessageId = other.parse().map_err(|_| {
+                format!(
+                    "message_id `{other}` 不是一条消息的 id（形如 <session>:<seq>），\
+                     也不是 last / last_assistant / last_user"
+                )
+            })?;
+            if history.iter().any(|message| message.id == wanted) {
+                Ok(wanted)
+            } else {
+                Err(format!(
+                    "这次会话里没有消息 {wanted}（只能改已经存在的消息）"
+                ))
+            }
+        }
+    }
+}
+
+/// 模型改消息。**只排队，不落库**——core 不碰存储，
+/// 真正写进去发生在这一轮收尾（`session::run_session_turn` 第 3.5 步）。
+///
+/// 也就是说，那句话里必须写"这一轮结束时落库"，而不是"已修改"：
+/// 模型看到"改好了"就会对用户复述改好了，而用户此时还没看到任何变化。
+pub struct EditMessageTool;
+
+impl Tool for EditMessageTool {
+    fn name(&self) -> &str {
+        "edit_message"
+    }
+
+    fn description(&self) -> &str {
+        "改一条已经存在的消息里的块（正文 / 思考 / 工具参数），这一轮结束时生效。\
+         改哪条用 message_id：给具体 id，或 last_assistant（最近一条助手消息）、\
+         last_user（最近一条用户消息）。工具参数只能改、不能新增。"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "要改的消息：具体 id，或 last_assistant / last_user / last"
+                },
+                "blocks": {
+                    "type": "array",
+                    "description": "改哪几块（一次最多 8 块）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["output", "thinking", "tool"],
+                                "description": "output=正文，thinking=思考块，tool=某个工具调用的参数"
+                            },
+                            "index": {
+                                "type": "integer",
+                                "description": "kind=tool 时必填，第几个工具调用（0 起）"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "新内容；thinking 给空串表示删掉这一块"
+                            }
+                        },
+                        "required": ["kind", "content"]
+                    }
+                }
+            },
+            "required": ["message_id", "blocks"]
+        })
+    }
+
+    /// 与 `edit_file` 同档（D177）：改内容这件事归"写"那一类，不新增开关。
+    /// 注意**不要求工作区**：这里改的是会话里的消息，不是磁盘。
+    fn capability(&self) -> Capability {
+        Capability::WorkspaceWrite
+    }
+
+    fn invoke(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutcome {
+        if let Err(reason) = ctx.policy.check(self.capability()) {
+            return ToolOutcome::denied(self.capability(), reason);
+        }
+        let call = match parse_edit_message(args) {
+            Ok(call) => call,
+            Err(message) => return ToolOutcome::failed(message),
+        };
+        let Some(history) = ctx.history else {
+            return ToolOutcome::failed("这一轮没拿到会话历史，改不了消息");
+        };
+        let message_id = match resolve_edit_target(&call.target, history) {
+            Ok(id) => id,
+            Err(message) => return ToolOutcome::failed(message),
+        };
+        let Some(message) = history.iter().find(|message| message.id == message_id) else {
+            return ToolOutcome::failed(format!("这次会话里没有消息 {message_id}"));
+        };
+        if message.locked {
+            return ToolOutcome::failed(format!(
+                "消息 {message_id} 被用户锁定，内容不能改（压缩不受影响）"
+            ));
+        }
+        // 工具块的边界（D177）：一条调用必须与一条结果按 call_id 配对，
+        // 凭空加一块会造出孤儿调用，下一次请求直接 400。
+        let call_count = message.tool_calls.len();
+        for (block, _) in &call.edits {
+            if let BlockSelector::ToolCall { index } = block {
+                if *index >= call_count {
+                    return ToolOutcome::failed(format!(
+                        "消息 {message_id} 只有 {call_count} 个工具调用（0 起），没有第 {index} 个；\
+                         工具块不能新增"
+                    ));
+                }
+            }
+        }
+
+        let mut text = format!(
+            "已排队 {} 处改动，这一轮结束时落库（消息 {message_id}）：\n",
+            call.edits.len()
+        );
+        for (block, content) in &call.edits {
+            let what = if block == &BlockSelector::Thinking && content.trim().is_empty() {
+                "删掉这一块".to_string()
+            } else {
+                format!("{} 字", content.chars().count())
+            };
+            text.push_str(&format!("- {}：{}\n", block_label(*block), what));
+        }
+        ToolOutcome::ok(text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,10 +1025,11 @@ mod tests {
     fn registry_declares_the_workspace_tools_and_both_shells() {
         let registry = ToolRegistry::workspace_defaults();
         let names = registry.names();
-        // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）。
+        // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）
+        // + 模型改消息（`edit_message` D177）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
-        assert_eq!(names.len(), 8, "{names:?}");
-        for name in ["System-Shell", "WorkSpace-EnvirShell"] {
+        assert_eq!(names.len(), 9, "{names:?}");
+        for name in ["System-Shell", "WorkSpace-EnvirShell", "edit_message"] {
             assert!(names.contains(&name), "缺少 {name}");
         }
         for name in [
@@ -749,7 +1043,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 8);
+        assert_eq!(specs.len(), 9);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }
@@ -934,5 +1228,159 @@ mod tests {
             "{}",
             searched.text()
         );
+    }
+
+    /// 一轮会话的样子：一条助手消息带一个工具调用 + 那条结果，再加一条用户消息。
+    fn history() -> Vec<Message> {
+        use crate::clock::LogicalClock;
+        use crate::ids::SessionId;
+        use crate::message::OutgoingToolCall;
+        use crate::source::SourceTag;
+
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![OutgoingToolCall::new("call_1", "read_file", "{}")],
+            4,
+            1_000,
+            LogicalClock::new(1),
+        );
+        let mut result = Message::tool_result(
+            MessageId::new(session, 2),
+            "call_1",
+            "ok",
+            1,
+            1_000,
+            LogicalClock::new(2),
+        );
+        result.unit_id = head.unit_id.clone();
+        let mut user = Message::text(
+            MessageId::new(session, 3),
+            Role::User,
+            SourceTag::History,
+            "把上一条改一下",
+            6,
+            1_000,
+            LogicalClock::new(3),
+        );
+        user.unit_id = MessageId::new(session, 3).unit();
+        vec![head, result, user]
+    }
+
+    fn edit_outcome(history: &[Message], args: &str) -> ToolOutcome {
+        let (_dir, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_history(history);
+        registry.invoke("edit_message", args, &ctx)
+    }
+
+    #[test]
+    fn edit_message_queues_the_blocks_it_will_write() {
+        let history = history();
+        let outcome = edit_outcome(
+            &history,
+            r#"{"message_id":"last_assistant","blocks":[
+                {"kind":"output","content":"改过的正文"},
+                {"kind":"thinking","content":""},
+                {"kind":"tool","index":0,"content":"{\"path\":\"b.txt\"}"}]}"#,
+        );
+        let text = outcome.text();
+        assert!(outcome.is_ok(), "{text}");
+        // 说"排队"而不是"改好了"：落库在这一轮收尾，用户此刻还没看到变化。
+        assert!(text.contains("已排队 3 处"), "{text}");
+        assert!(text.contains("这一轮结束"), "{text}");
+        assert!(text.contains("正文"), "{text}");
+        // 空串思考 = 删掉这一块，这句话得说清楚，不然模型以为写入了一个空块。
+        assert!(text.contains("删掉这一块"), "{text}");
+        assert!(text.contains("工具参数 #0"), "{text}");
+    }
+
+    #[test]
+    fn edit_message_explains_what_is_wrong_instead_of_guessing() {
+        let history = history();
+        let cases = [
+            // 块名不认识：要点名正确的那三种
+            (
+                r#"{"message_id":"last_assistant","blocks":[{"kind":"reasoning","content":"x"}]}"#,
+                "reasoning",
+            ),
+            // tool 少了 index
+            (
+                r#"{"message_id":"last_assistant","blocks":[{"kind":"tool","content":"{}"}]}"#,
+                "index",
+            ),
+            // 工具序号越界：工具块不能新增
+            (
+                r#"{"message_id":"last_assistant","blocks":[{"kind":"tool","index":3,"content":"{}"}]}"#,
+                "不能新增",
+            ),
+            // 工具参数不是 JSON 对象
+            (
+                r#"{"message_id":"last_assistant","blocks":[{"kind":"tool","index":0,"content":"not json"}]}"#,
+                "JSON",
+            ),
+            // 正文不许清空
+            (
+                r#"{"message_id":"last_assistant","blocks":[{"kind":"output","content":"  "}]}"#,
+                "不能改成空的",
+            ),
+            // 同一块写两遍：落库会互相覆盖
+            (
+                r#"{"message_id":"last_assistant","blocks":[
+                    {"kind":"output","content":"a"},{"kind":"output","content":"b"}]}"#,
+                "两遍",
+            ),
+            // 目标不存在：不许凭空造一条
+            (
+                r#"{"message_id":"abcdef00-0000-0000-0000-000000000000:9","blocks":[{"kind":"output","content":"a"}]}"#,
+                "没有消息",
+            ),
+            // 完全不是 id
+            (
+                r#"{"message_id":"第二条","blocks":[{"kind":"output","content":"a"}]}"#,
+                "last_assistant",
+            ),
+        ];
+        for (args, expect) in cases {
+            let outcome = edit_outcome(&history, args);
+            assert!(!outcome.is_ok(), "这条该被拒：{args}");
+            let text = outcome.text();
+            assert!(text.contains(expect), "要说到 `{expect}`：{args} → {text}");
+        }
+    }
+
+    #[test]
+    fn edit_message_refuses_a_locked_message() {
+        let mut history = history();
+        history[0].locked = true;
+        let outcome = edit_outcome(
+            &history,
+            r#"{"message_id":"last_assistant","blocks":[{"kind":"output","content":"改"}]}"#,
+        );
+        assert!(!outcome.is_ok(), "{}", outcome.text());
+        assert!(outcome.text().contains("锁定"), "{}", outcome.text());
+    }
+
+    #[test]
+    fn edit_message_is_not_declared_for_a_read_only_workspace() {
+        let registry = ToolRegistry::workspace_defaults();
+        let readonly =
+            AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_only("ws-1"));
+        let names: Vec<String> = registry
+            .specs_for(&readonly)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(!names.contains(&"edit_message".to_string()), "{names:?}");
+
+        // 读写得开：它出现（与 `edit_file` 同档，D177）。
+        let writable =
+            AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_write("ws-1"));
+        let names: Vec<String> = registry
+            .specs_for(&writable)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(names.contains(&"edit_message".to_string()), "{names:?}");
     }
 }

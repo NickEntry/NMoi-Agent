@@ -506,6 +506,14 @@ fn turn_json(turn: &SessionTurn) -> Value {
             "tokens": message.tokens,
         })),
         "units": turn.units.iter().map(|unit| unit.to_string()).collect::<Vec<_>>(),
+        // 模型改消息（D177 / 0.14y）：已经落库的那几块。界面靠它刷新消息卡、
+        // 并在提示行说一句"改了 N 处"——用户不必等下一轮才看见变化。
+        "edits": turn.edits.iter().map(|edit| json!({
+            "target": edit.target,
+            "block": edit.block,
+            "ok": edit.ok,
+            "message": edit.message,
+        })).collect::<Vec<_>>(),
         "report": {
             "text": turn.report.text,
             "rounds": turn.report.rounds,

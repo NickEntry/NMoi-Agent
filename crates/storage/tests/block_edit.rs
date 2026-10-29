@@ -162,3 +162,29 @@ fn an_edit_that_changes_nothing_is_rejected() {
         .unwrap_err();
     assert!(error.to_string().contains("没有变化"), "{error}");
 }
+
+/// 模型改消息（D177 / 0.14y）走的是**同一条**落库路：`HistoryStore::apply_block_edit`。
+///
+/// 这一条钉的是"编排层能不能真的改到库"：core 不依赖 storage，
+/// 它只认 trait；trait 在 SQLite 这边必须有实现，默认实现是拒绝的。
+#[test]
+fn the_history_store_trait_can_write_a_block() {
+    use nmoi_core::session::HistoryStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let (session, id) = seed_thinking(&mut storage, "正文", "原来的思考");
+
+    let outcome =
+        HistoryStore::apply_block_edit(&mut storage, &id, BlockSelector::Output, "模型改过的正文")
+            .expect("trait 这条路必须能写");
+    assert_eq!(outcome.block, "output");
+    assert_eq!(outcome.revision, 1);
+
+    let message = last_message(&storage, session, &id);
+    assert_eq!(message.content, "模型改过的正文");
+    assert_eq!(message.reasoning.as_deref(), Some("原来的思考"), "只动正文");
+    assert_eq!(storage.edit_count(session).unwrap(), 1, "审计表也要有一行");
+
+    // 界面重读走的是 `load_units`：模型改完那一轮，消息区拿到的必须已经是新正文（铁律①）。
+}

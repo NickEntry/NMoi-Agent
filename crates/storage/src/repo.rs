@@ -1149,4 +1149,16 @@ impl nmoi_core::session::HistoryStore for Storage {
     fn load_window(&self, session: SessionId) -> Result<ContextWindow, String> {
         Storage::load_window(self, session).map_err(|error| error.to_string())
     }
+
+    /// 模型改消息（D177 / 0.14y）。落库走的还是用户手动编辑那条路（`apply_block_edit`）：
+    /// 审计、revision、token 重算、`tooledit_message` 的存在性全在同一处处理。
+    fn apply_block_edit(
+        &mut self,
+        message_id: &MessageId,
+        block: BlockSelector,
+        content: &str,
+    ) -> Result<EditOutcome, String> {
+        Storage::apply_block_edit(self, message_id, block, content)
+            .map_err(|error| error.to_string())
+    }
 }

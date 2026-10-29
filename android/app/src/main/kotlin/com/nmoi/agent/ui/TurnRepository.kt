@@ -14,17 +14,30 @@ internal data class TurnOutcome(
     val cancelled: Boolean,
     val finished: Boolean,
     val compression: String?,
+    /** 这一轮模型真的改了几块消息内容（D177 / 0.14y）。`edits` 已经落库，消息区重读即可。 */
+    val editedBlocks: Int,
+    /** 想改但没写进去的块数（被锁定、内容没变、库拒绝）。有就一定要说。 */
+    val failedEdits: Int,
 ) {
     /** 提示行那一句。用户要能一眼看出"它到底跑完了没有"。 */
     fun describe(): String {
         val length = assistant?.length ?: 0
+        // 改了消息这件事必须出现在提示行：用户看到的是"某条旧消息变了"，
+        // 不给一句话，那变化看着像自己眼花（铁律①的下一半：改完要能看出改掉了）。
+        val edited = when {
+            editedBlocks <= 0 -> ""
+            else -> "，改了 $editedBlocks 处消息内容"
+        }
+        val failed = if (failedEdits > 0) "，$failedEdits 处没写进去（原因在日志）" else ""
         return when {
-            cancelled -> "已停止（这一轮留下的正文长度 $length）"
-            !finished -> "轮数用尽，模型没收尾（已存 $length 字）"
+            cancelled -> "已停止（这一轮留下的正文长度 $length$edited$failed）"
+            !finished -> "轮数用尽，模型没收尾（已存 $length 字$edited$failed）"
             else -> buildString {
                 append("模型回了 $length 字")
                 if (rounds > 1) append("，$rounds 轮")
                 if (toolCalls > 0) append("，${toolCalls} 次工具调用")
+                append(edited)
+                append(failed)
                 compression?.let { append("；$it") }
             }
         }
@@ -185,6 +198,23 @@ internal object TurnRepository {
     private fun parse(envelope: JSONObject): TurnOutcome {
         val report = envelope.optJSONObject("report")
         val assistant = envelope.optJSONObject("assistant")?.optString("content", "")
+        // 模型改消息（D177 / 0.14y）：`edits` 是这一轮收尾时真落库的那几块。
+        // 成功与失败分开数——"模型说改好了"和"库里真的变了"是两件事。
+        val edits = envelope.optJSONArray("edits")
+        val edited = (0 until (edits?.length() ?: 0))
+            .mapNotNull { edits?.optJSONObject(it) }
+            .filter { it.optBoolean("ok", false) }
+        val failed = (0 until (edits?.length() ?: 0))
+            .mapNotNull { edits?.optJSONObject(it) }
+            .filterNot { it.optBoolean("ok", false) }
+        if (edited.isNotEmpty() || failed.isNotEmpty()) {
+            NLog.i(
+                "Turn",
+                "改了消息：${edited.size} 块成功（${edited.joinToString { it.optString("block") }}），" +
+                    "${failed.size} 块没写成",
+            )
+            failed.forEach { NLog.w("Turn", "没写成：${it.optString("block")} —— ${it.optString("message")}") }
+        }
         return TurnOutcome(
             assistant = assistant?.takeIf { it.isNotEmpty() },
             rounds = report?.optInt("rounds", 0) ?: 0,
@@ -199,6 +229,8 @@ internal object TurnRepository {
                     else -> "压缩信号 $trigger（$action）"
                 }
             },
+            editedBlocks = edited.size,
+            failedEdits = failed.size,
         )
     }
 }

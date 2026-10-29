@@ -28,6 +28,7 @@ use crate::budget::{
 };
 use crate::clock::LogicalClock;
 use crate::divider::ContextWindow;
+use crate::edit::{BlockSelector, EditOutcome};
 use crate::ids::{MessageId, SessionId, UnitId};
 use crate::message::{AtomicUnit, Message, OutgoingToolCall, Role};
 use crate::policy::AssistantPolicy;
@@ -50,6 +51,22 @@ pub trait HistoryStore {
     /// 测试里的内存实现也不用跟着改。真正认分界线的实现（SQLite）覆盖它。
     fn load_window(&self, session: SessionId) -> Result<ContextWindow, String> {
         Ok(ContextWindow::of_all(self.load_units(session)?))
+    }
+
+    /// 改一条消息的某一块（D177 / 0.14y）。模型的 `edit_message` 在这一轮收尾时用它落库。
+    ///
+    /// 默认实现**拒绝**而不是静默成功：内存实现没理由假装改了库。
+    /// "悄悄什么都没写"是最难查的一种失败（工具说改好了，界面上没变）。
+    fn apply_block_edit(
+        &mut self,
+        message_id: &MessageId,
+        block: BlockSelector,
+        content: &str,
+    ) -> Result<EditOutcome, String> {
+        let _ = (block, content);
+        Err(format!(
+            "这个历史实现不支持块级编辑，消息 {message_id} 没有改动"
+        ))
     }
 }
 
@@ -86,6 +103,23 @@ pub struct SessionTurn {
     ///
     /// core 不碰存储：写不写、什么时候写，由调用方决定。
     pub calibration: Option<Calibration>,
+    /// 这一轮模型改过的消息块（D177 / 0.14y）。**已经落库**——这里是"改成了什么"的账本，
+    /// 界面靠它刷新消息卡并给一句"改了 N 处"，不用猜模型的话是不是真的。
+    pub edits: Vec<EditReport>,
+}
+
+/// 一次块级改动的结果。失败也在这里：工具那边已经回了"已排队"，
+/// 真落库失败必须有人能说出来，不然模型会替我们向用户宣布"改好了"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditReport {
+    /// 模型给的目标原样（`last_assistant` 或具体 id）。**不填解析出来的 id**：
+    /// 解析失败时那条 report 也得能写出来，而编一个 id 进去就是在账本上撒谎。
+    pub target: String,
+    /// 块的中文名（正文 / 思考块 / 工具参数 #N）；解析不出来时是 `?`。
+    pub block: String,
+    pub ok: bool,
+    /// 成功给"哪条消息、第几版、token 怎么变"，失败给原因。
+    pub message: String,
 }
 
 impl SessionTurn {
@@ -267,7 +301,7 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     // 一轮之内模型冻结（D76）：这一轮的每一次请求都用同一份模型与思考设置，
     // 工具声明也用同一份名单。冻结在**发出去的那一份**上生效，base 由调用方持有。
     let mut frozen_base = base.clone();
-    let mut ctx = ToolContext::new(policy, workspace);
+    let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -352,6 +386,11 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
         Some(message)
     };
 
+    // 3.5 模型改消息（D177 / 0.14y）：工具在那边只说"已排队"，**这里**才真的落库。
+    //     顺序在工具结果落库之后、压缩判据之前：判据要算的是"这一轮之后上下文多大"，
+    //     改过的正文长度已经进库了，算在里面才对得上。
+    let edits = apply_pending_edits(store, &report.tool_calls, &history);
+
     // 4. 压缩判据：不落库，只给结论。
     //    压缩自己那一轮不给结论——刚压完就被告知"去压"是套娃的起点（D90）。
     let compression = if config.suppress_compression {
@@ -407,7 +446,76 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
         report,
         compression,
         calibration,
+        edits,
     })
+}
+
+/// 把这一轮里 `edit_message` 排下的队一条条落库（D177 / 0.14y）。
+///
+/// 为什么不在工具里直接写：core 不依赖 storage（工具只认 `ToolContext`）；
+/// 而"这一轮结束时统一落库"本来就是这条功能的定义，不是绕路。
+///
+/// 参数再解析一遍用的是**同一个** [`crate::tools::parse_edit_message`]：
+/// 工具说的"已排队三块"和这里写下去的三块一定是同一份。
+fn apply_pending_edits<S: HistoryStore>(
+    store: &mut S,
+    calls: &[ToolRecord],
+    history: &[Message],
+) -> Vec<EditReport> {
+    let mut reports = Vec::new();
+    for record in calls {
+        // 工具自己拒掉的（块名不合法、目标被锁定、序号越界）不进落库队列。
+        if record.name != "edit_message" || !record.ok {
+            continue;
+        }
+        let parsed = serde_json::from_str::<serde_json::Value>(&record.arguments)
+            .ok()
+            .and_then(|value| crate::tools::parse_edit_message(&value).ok());
+        let Some(call) = parsed else {
+            reports.push(EditReport {
+                target: record.arguments.clone(),
+                block: "?".into(),
+                ok: false,
+                message: "参数解析不出来，这一条没有落库".into(),
+            });
+            continue;
+        };
+        let message_id = match crate::tools::resolve_edit_target(&call.target, history) {
+            Ok(id) => id,
+            Err(message) => {
+                reports.push(EditReport {
+                    target: call.target.clone(),
+                    block: "?".into(),
+                    ok: false,
+                    message,
+                });
+                continue;
+            }
+        };
+        for (block, content) in call.edits {
+            let label = crate::tools::block_label(block);
+            let report = match store.apply_block_edit(&message_id, block, &content) {
+                Ok(outcome) => EditReport {
+                    target: message_id.to_string(),
+                    block: label,
+                    ok: true,
+                    message: format!(
+                        "第 {} 版，{} → {} token",
+                        outcome.revision, outcome.tokens_before, outcome.tokens_after
+                    ),
+                },
+                // "内容没有变化"不是故障：模型原样重发了一遍。说清楚它没写，别让界面报错。
+                Err(error) => EditReport {
+                    target: message_id.to_string(),
+                    block: label,
+                    ok: false,
+                    message: error,
+                },
+            };
+            reports.push(report);
+        }
+    }
+    reports
 }
 
 /// 一堆单元一共占多少 token。**走估算器**，和面板、和判据同一档（D97 的"同一口径"）。
@@ -473,6 +581,7 @@ pub fn conversation_of(units: &[AtomicUnit]) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::VecDeque;
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
@@ -1565,6 +1674,190 @@ mod tests {
             signal.used_tokens > crate::tokens::estimate_tokens(&long_summary) as u64,
             "摘要没进 used：{} 个 token 不算等于低估",
             signal.used_tokens
+        );
+    }
+
+    /// 只记账、不真改库的存储：这一条测的是"编排层有没有把排队的东西落下去"，
+    /// SQLite 那边真不真写由 `crates/storage` 的测试盯着。
+    #[derive(Default)]
+    struct EditStore {
+        units: Vec<AtomicUnit>,
+        applied: Mutex<Vec<(MessageId, BlockSelector, String)>>,
+    }
+
+    impl HistoryStore for EditStore {
+        fn append_unit(&mut self, _session: SessionId, unit: &AtomicUnit) -> Result<(), String> {
+            self.units.push(unit.clone());
+            Ok(())
+        }
+
+        fn load_units(&self, _session: SessionId) -> Result<Vec<AtomicUnit>, String> {
+            Ok(self.units.clone())
+        }
+
+        fn apply_block_edit(
+            &mut self,
+            message_id: &MessageId,
+            block: BlockSelector,
+            content: &str,
+        ) -> Result<EditOutcome, String> {
+            self.applied
+                .lock()
+                .unwrap()
+                .push((message_id.clone(), block, content.to_string()));
+            Ok(EditOutcome {
+                message_id: message_id.clone(),
+                block: block.as_str(),
+                before_hash: "before".into(),
+                after_hash: "after".into(),
+                tokens_before: 1,
+                tokens_after: 2,
+                revision: 1,
+            })
+        }
+    }
+
+    /// D177 / 0.14y：模型调一次 `edit_message` → **这一轮收尾时**三块都落库。
+    ///
+    /// 顺带钉住两件事：工具回给模型的是"已排队"（不是"已修改"），
+    /// 以及目标可以用 `last_assistant`（消息 id 不随请求发出去，模型看不见它）。
+    #[test]
+    fn edit_message_lands_three_blocks_when_the_turn_ends() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+
+        // 先放一轮"助手调工具 + 结果"进历史：`last_assistant` 指的是那条调用消息，
+        // 它的 tool:0 存在，所以工具块可以被改。
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![OutgoingToolCall::new(
+                "call_a",
+                "read_file",
+                r#"{"path":"a.txt"}"#,
+            )],
+            8,
+            1_000,
+            LogicalClock::new(1),
+        );
+        let mut pair = AtomicUnit::tool_pair(head.clone()).unwrap();
+        pair.add_result(
+            Message::tool_result(
+                MessageId::new(session, 2),
+                "call_a",
+                "hello",
+                2,
+                1_000,
+                LogicalClock::new(2),
+            )
+            .with_unit(pair.id.clone()),
+        )
+        .unwrap();
+
+        let mut store = EditStore {
+            units: vec![pair],
+            ..EditStore::default()
+        };
+
+        let arguments = json!({
+            "message_id": "last_assistant",
+            "blocks": [
+                { "kind": "output", "content": "改过的正文" },
+                { "kind": "thinking", "content": "补一段思考" },
+                { "kind": "tool", "index": 0, "content": r#"{"path":"b.txt"}"# }
+            ]
+        });
+        let transport = Scripted::new(vec![
+            calls_body(&[("call_1", "edit_message", &arguments.to_string())]),
+            text_body("改好了"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+
+        let turn = run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "把刚才那条改一下",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &SessionConfig::default(),
+            2_000,
+        )
+        .unwrap();
+
+        let applied = store.applied.lock().unwrap().clone();
+        assert_eq!(applied.len(), 3, "三块都该落库：{applied:?}");
+        assert_eq!(applied[0].0, head.id, "目标是那条助手消息");
+        assert_eq!(
+            applied
+                .iter()
+                .map(|(_, block, _)| *block)
+                .collect::<Vec<_>>(),
+            vec![
+                BlockSelector::Output,
+                BlockSelector::Thinking,
+                BlockSelector::ToolCall { index: 0 }
+            ]
+        );
+        assert_eq!(applied[2].2, r#"{"path":"b.txt"}"#);
+
+        assert_eq!(turn.edits.len(), 3, "{:?}", turn.edits);
+        assert!(turn.edits.iter().all(|edit| edit.ok), "{:?}", turn.edits);
+        assert_eq!(turn.edits[0].target, head.id.to_string());
+
+        // 工具回给模型的那句话必须说"排队"，不能让模型替我们宣布"已经改好了"。
+        let record = &turn.report.tool_calls[0];
+        assert!(record.ok, "{}", record.outcome);
+        assert!(record.outcome.contains("已排队"), "{}", record.outcome);
+        assert!(record.outcome.contains("这一轮结束"), "{}", record.outcome);
+    }
+
+    /// 非法块名要当场说清楚，而且**一条都不落库**——不能"改了两块、坏了一块"。
+    #[test]
+    fn edit_message_rejects_an_unknown_block_without_writing_anything() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = EditStore::default();
+
+        let arguments = json!({
+            "message_id": "last_assistant",
+            "blocks": [{ "kind": "reasoning", "content": "写错块名了" }]
+        });
+        let transport = Scripted::new(vec![
+            calls_body(&[("call_1", "edit_message", &arguments.to_string())]),
+            text_body("没改成"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+
+        let turn = run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "改一下",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &SessionConfig::default(),
+            1_000,
+        )
+        .unwrap();
+
+        assert!(
+            store.applied.lock().unwrap().is_empty(),
+            "参数不合法时一块都不该写"
+        );
+        assert!(turn.edits.is_empty(), "{:?}", turn.edits);
+        let record = &turn.report.tool_calls[0];
+        assert!(!record.ok);
+        assert!(record.outcome.contains("reasoning"), "{}", record.outcome);
+        assert!(
+            record.outcome.contains("output"),
+            "要点名正确的三种：{}",
+            record.outcome
         );
     }
 }
