@@ -31,6 +31,7 @@ import com.nmoi.agent.ui.LogChannelScreen
 import com.nmoi.agent.ui.LogKind
 import com.nmoi.agent.ui.LogListScreen
 import com.nmoi.agent.ui.LogSettingsScreen
+import com.nmoi.agent.ui.MessageEditScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
 import com.nmoi.agent.ui.ProviderEditScreen
@@ -77,6 +78,9 @@ private sealed interface Route {
 
     /** 单个助手的编辑页（D176）：名字 / 子 AGENT / 删除。**整页**，不是弹窗。 */
     data class AssistantEdit(val id: String) : Route
+
+    /** 一条消息的手动块编辑器（D177）：正文 / 思考 / 工具参数。 */
+    data class MessageEdit(val sessionId: String, val messageId: String) : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
     /** 供应商列表（D157）。编辑页、模型表都从这一页 push 进去。 */
@@ -144,6 +148,8 @@ class MainActivity : ComponentActivity() {
                 val databasePath = remember { File(filesDir, "nmoi.db").absolutePath }
                 // 建了会话之后要让抽屉重读：produceState 只有 key 变了才会重跑。
                 var listReload by remember { mutableStateOf(0) }
+                // "编辑消息"存完之后让消息区重读（铁律 ①：以库里那份为准）。
+                var messageReload by remember { mutableStateOf(0) }
                 // 当前助手（D174）：抽屉里的列表和"新建会话归谁"都看它。
                 // 它跟着 `listReload` 重读——切了助手就是一次列表刷新。
                 val assistantList by produceState<AssistantList?>(initialValue = null, listReload) {
@@ -291,8 +297,17 @@ class MainActivity : ComponentActivity() {
                             drawerOpen = drawerOpen,
                             onOpenDrawer = { drawerOpen = true },
                             onCreateSession = ensureSession,
+                            onEditMessage = { messageId ->
+                                val sessionId = (route as? Route.Chat)?.sessionId
+                                if (sessionId == null) {
+                                    NLog.w("Edit", "还没有会话，编辑消息无处可落")
+                                } else {
+                                    backStack = backStack + Route.MessageEdit(sessionId, messageId)
+                                }
+                            },
                             // 切了助手要让聊天页顶部跟着换模型（D174）。
                             assistantKey = listReload,
+                            externalReload = messageReload,
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
                                 if (route.sessionId != null) {
@@ -354,6 +369,15 @@ class MainActivity : ComponentActivity() {
                             onEdit = { id -> backStack = backStack + Route.AssistantEdit(id) },
                             // 助手动了（切/名/删）：抽屉与聊天页都要重读。
                             onChanged = { listReload += 1 },
+                        )
+
+                        is Route.MessageEdit -> MessageEditScreen(
+                            databasePath = databasePath,
+                            sessionId = route.sessionId,
+                            messageId = route.messageId,
+                            onBack = { backStack = backStack.dropLast(1) },
+                            // 存完只加一次计数：编辑页自己会 `onBack()`，这里再弹一次就多退一级。
+                            onSaved = { messageReload += 1 },
                         )
 
                         is Route.AssistantEdit -> AssistantEditScreen(

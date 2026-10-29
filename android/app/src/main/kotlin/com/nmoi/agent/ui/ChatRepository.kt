@@ -177,6 +177,24 @@ internal object ChatRepository {
     }
 
     /**
+     * 改一条消息的**某一块**（D177 的手动编辑器走这条）。
+     *
+     * `block` 只认三种：`output` / `thinking` / `tool:<index>`（与 FFI 同一套词）。
+     * 落库走 `apply_block_edit` → `save_message_edit`，与 `edits` 审计表在同一个事务里，
+     * 所以不会出现"改了但没记账"的半截状态。
+     */
+    suspend fun applyBlock(
+        databasePath: String,
+        messageId: String,
+        block: String,
+        content: String,
+    ): Result<JSONObject> = withHandle(databasePath) { handle ->
+        NmoiFfi.applyBlockEdit(handle, messageId, block, content)
+            .onSuccess { NLog.i("Edit", "块级编辑 ok: block=$block 长度=${content.length}") }
+            .onFailure { NLog.w("Edit", "块级编辑失败：block=$block ${it.message}") }
+    }
+
+    /**
      * 删掉这条消息本身（连正文带版本，D152）。
      *
      * 跟 [deleteVersion] 分开：那个删的是"一版"，这个删的是"一条消息"。

@@ -110,6 +110,13 @@ internal fun ChatScreen(
      * 而下一句话已经发给新的那个。这就是"看到的和发出去的不是同一个"。
      */
     assistantKey: Int = 0,
+    /** 进"编辑消息"整页（D177）。没给就退回到旧的行为（弹输入框问模型）。 */
+    onEditMessage: ((String) -> Unit)? = null,
+    /**
+     * 外部要求重读（比如"编辑消息"存完了）。**不能只靠内部 `reloadKey`**：
+     * 那个只有本页自己发起的动作才会加一，从别的页面回来时它没变，消息区就不会重画。
+     */
+    externalReload: Int = 0,
 ) {
     var draft by remember { mutableStateOf("") }
     val context = LocalContext.current
@@ -172,7 +179,7 @@ internal fun ChatScreen(
     // 增强编辑：待改的那条 + 正在跑（跑的时候不让点第二次）
     var enhanceFor by remember { mutableStateOf<ChatMessage?>(null) }
     var enhanceBusy by remember { mutableStateOf(false) }
-    LaunchedEffect(sessionId, reloadKey, assistantKey) {
+    LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
             AssistantRepository.choices(databasePath).onSuccess { choices = it }
@@ -213,7 +220,12 @@ internal fun ChatScreen(
     }
 
     // 空白会话（还没落库）不发读请求：没有 id 可读，界面直接给"还没有消息"的静态提示。
-    val snapshot by produceState<ChatSnapshot?>(initialValue = null, sessionId, reloadKey) {
+    val snapshot by produceState<ChatSnapshot?>(
+        initialValue = null,
+        sessionId,
+        reloadKey,
+        externalReload,
+    ) {
         value = if (sessionId == null) {
             null
         } else {
@@ -2320,8 +2332,10 @@ private fun messageSheetItems(
             icon = ActionIcons.Pencil,
             onClick = onEdit,
         ),
+        // D177：增强编辑 = **用户手动改块**（正文 / 思考 / 工具参数），整页编辑、点保存落库。
+        // 模型改消息要走工具调用（`edit_message`，这一轮结束时生效），不在这张表里。
         SheetItem(
-            label = "增强编辑（让模型改这一条）",
+            label = "编辑消息（正文 / 思考 / 工具参数）",
             icon = ActionIcons.Wrench,
             onClick = onEnhance,
         ),

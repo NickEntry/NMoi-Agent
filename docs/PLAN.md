@@ -1321,5 +1321,5 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 | 0.14v | **子 AGENT：工具与会话**（D176，**未实现**） | `sub_agent(id, instruction, session?, injections?, inherit?)`；`session` 三态 new/reuse/conversation:<id>；`injections` 复用 `lorebook::Position` 与深度；`inherit.rounds` 默认 0、`include_tool_results` 默认 false；回主 AGENT 的只有 `{reply, conversation_id, rounds, tokens, truncated}`，全文在子会话里；**深度只到 1**、工具面只给只读文件工具 |
 | 0.14w | **子 AGENT：界面**（D176，**已实现，待真机验证**） | 助手页那块卡片：「可作为子 AGENT 被调用」开关 + 调用 ID + 描述 + 会话策略（新建/复用/钉死一条）；打开开关才露出后面三项；ID 撞了当场红字说撞了谁；工具卡上能点进子会话（铁律 ②） |
 
-| 0.14x | **手动块编辑器**（D177，**未实现**） | 消息「编辑」进整页：块列表（正文 / 思考 / 工具参数 #N），每块可删、可改，底部「＋ 添加块」能建出原本不存在的块（正文与思考各最多一份，工具参数多份按顺序重排）。工具参数的 JSON 保存时校验，非法当场红字、不写库。保存走 `apply_block_edit` / `toolEditVersion`，存完**现读库重画**（铁律 ①）。**判据**：改思考、给没有思考块的消息加一个、改工具参数、删一个块，四种都能在消息卡上立刻看见 |
+| 0.14x | **手动块编辑器**（D177，**已实现，待真机验证**；工具块只改不增删） | 消息「编辑」进整页：块列表（正文 / 思考 / 工具参数 #N），每块可删、可改，底部「＋ 添加块」能建出原本不存在的块（正文与思考各最多一份，工具参数多份按顺序重排）。工具参数的 JSON 保存时校验，非法当场红字、不写库。保存走 `apply_block_edit` / `toolEditVersion`，存完**现读库重画**（铁律 ①）。**判据**：改思考、给没有思考块的消息加一个、改工具参数、删一个块，四种都能在消息卡上立刻看见 |
 | 0.14y | **模型改消息的工具 `edit_message`**（D177，**未实现**） | 参数 `{message_id, blocks:[{kind:"output"\|"thinking"\|"tool", index?, content}]}`；与其它工具一样**这一轮结束时**统一落库（`apply_block_edit` 是现成底座）；门控与 `edit` 同档。落了之后消息卡与工具卡一起重读。**判据**：模型调一次 → 这一轮收尾时那条消息真的变了，不需要下一轮 |
