@@ -176,9 +176,6 @@ internal fun ChatScreen(
     var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
     var modelSheet by remember { mutableStateOf(false) }
     var thinkingSheet by remember { mutableStateOf(false) }
-    // 增强编辑：待改的那条 + 正在跑（跑的时候不让点第二次）
-    var enhanceFor by remember { mutableStateOf<ChatMessage?>(null) }
-    var enhanceBusy by remember { mutableStateOf(false) }
     LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
@@ -642,36 +639,6 @@ internal fun ChatScreen(
             )
         }
 
-        val pendingEnhance = enhanceFor
-        if (pendingEnhance != null) {
-            EnhanceDialog(
-                busy = enhanceBusy,
-                onCancel = { if (!enhanceBusy) enhanceFor = null },
-                onRun = { instruction ->
-                    if (!enhanceBusy) {
-                        enhanceBusy = true
-                        scope.launch {
-                            val result = EditRepository.enhance(
-                                context = context,
-                                databasePath = databasePath,
-                                message = pendingEnhance,
-                                instruction = instruction,
-                            )
-                            enhanceBusy = false
-                            result.fold(
-                                onSuccess = { report ->
-                                    enhanceFor = null
-                                    reloadKey += 1
-                                    notice = report.describe()
-                                },
-                                onFailure = { notice = "增强编辑失败：${it.message}" },
-                            )
-                        }
-                    }
-                },
-            )
-        }
-
         if (thinkingSheet) {
             MenuSheet(
                 title = "思考强度",
@@ -801,9 +768,17 @@ internal fun ChatScreen(
                         editingId = sheetMessage.id
                     },
                     onToolEdit = { toolEditProbe(sheetMessage, sheetActive.toLong()) },
-                    onEnhance = {
+                    onOpenEditor = {
                         moreForId = null
-                        enhanceFor = sheetMessage
+                        // 整页编辑器要的是**消息 id**（它进页再现读库，铁律①）。
+                        // 没传回调说明这一屏不是从 MainActivity 挂上来的（预览/测试），
+                        // 那时候要说清"差什么"，不能点了没反应。
+                        val open = onEditMessage
+                        if (open != null) {
+                            open(sheetMessage.id)
+                        } else {
+                            notice = "编辑页还没接上：这一屏没有传 onEditMessage"
+                        }
                     },
                     // `versionActive` 兜底成 1：万一它是 0（老库/字段没读到），
                     // 传 0 会被 storage 当成"删除所有版本"，那不是用户点"删除此版本"的意思。
@@ -2322,7 +2297,7 @@ private fun messageSheetItems(
     onSaveVersion: () -> Unit,
     onEdit: () -> Unit,
     onToolEdit: () -> Unit,
-    onEnhance: () -> Unit,
+    onOpenEditor: () -> Unit,
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
 ): List<SheetItem> {
@@ -2333,11 +2308,15 @@ private fun messageSheetItems(
             onClick = onEdit,
         ),
         // D177：增强编辑 = **用户手动改块**（正文 / 思考 / 工具参数），整页编辑、点保存落库。
-        // 模型改消息要走工具调用（`edit_message`，这一轮结束时生效），不在这张表里。
+        // 模型改消息走工具调用（`edit_message`，这一轮结束时生效），不在这张表里。
+        //
+        // 入口走 `onEditMessage`（MainActivity 那边 push `Route.MessageEdit`）。
+        // 以前这里接的是旧的"问模型改"弹窗：那个入口在 0.14x 之后就没有意义了，
+        // 而且它让整页编辑器**在真机上一个入口都没有**（2026-10-29 找出来的）。
         SheetItem(
             label = "编辑消息（正文 / 思考 / 工具参数）",
             icon = ActionIcons.Wrench,
-            onClick = onEnhance,
+            onClick = onOpenEditor,
         ),
         // 临时探针：走"工具编辑"那条路，把 `edited_by_tool` 置上，用来验红/蓝（D148）。
         SheetItem(
@@ -2695,83 +2674,6 @@ private fun ReasoningCard(text: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
                 )
-            }
-        }
-    }
-}
-
-/**
- * 增强编辑的输入框（D163）：只问"要改成什么样"。
- *
- * 为什么不做成"把正文摆出来让你改"：那是「编辑」。这一个的输入是**要求**，
- * 输出是模型改写后的结果，落在同一版的红字那一份上。
- */
-@Composable
-private fun EnhanceDialog(busy: Boolean, onCancel: () -> Unit, onRun: (String) -> Unit) {
-    var instruction by remember { mutableStateOf("") }
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onCancel,
-                ),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "增强编辑",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "说说要改成什么样。模型会改正文；如果这条消息有思考块或工具参数，也可以一起改" +
-                            "（改后的正文放进「改后」那一份，原文不动）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                    ) {
-                        androidx.compose.foundation.text.BasicTextField(
-                            value = instruction,
-                            onValueChange = { instruction = it },
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                color = MaterialTheme.colorScheme.onSurface,
-                            ),
-                            cursorBrush = androidx.compose.ui.graphics.SolidColor(
-                                MaterialTheme.colorScheme.primary,
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        DialogChip(label = "取消", onClick = onCancel)
-                        Spacer(Modifier.width(8.dp))
-                        DialogChip(
-                            label = if (busy) "改写中…" else "开始改写",
-                            primary = true,
-                            onClick = { onRun(instruction) },
-                        )
-                    }
-                }
             }
         }
     }

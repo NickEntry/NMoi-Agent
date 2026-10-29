@@ -143,9 +143,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    // 纯逻辑的单测（JVM，不需要设备）。第一条用它的是 `EditRepository.parseFences`：
-    // 围栏解析的边界（空块 / 没闭合 / 超 200 KB / 围栏外有字）以前只能靠真机撞，
-    // 而它的错法很隐蔽——把三个反引号连内容一起写进消息里。
+    // 纯逻辑的单测（JVM，不需要设备）。JUnit 还留着：下一个纯逻辑件（预设四态、
+    // 占位符校验之类）照样只能靠它在本机钉边界——真机撞出来的错法往往不显眼。
     testImplementation("junit:junit:4.13.2")
 
     // 注意：这一版还没有 JNI。会话列表来自写死的占位数据（见 ui/PlaceholderData.kt），

@@ -4039,3 +4039,15 @@ sub_agent(id, instruction, session?, injections?, inherit?)
 共用，以前 FFI 自己那份已删。`MAX_BLOCK_BYTES` 同理搬进 core。
 
 **没做的**：`edits` 不进 UI 的其它地方（消息卡上不额外标"AI 改过"，红蓝那套照旧管这件事）。
+
+**2026-10-29 补记（收尾两条）**
+
+5. **入口那条断线**：`onEditMessage` 从 `MainActivity` 传进了 `ChatScreen`，但页面里没人用它——
+   「更多 → 编辑消息（正文 / 思考 / 工具参数）」点下去走的是旧的「问模型改」弹窗
+   （`EditRepository.enhance`）。也就是说 0.14x 那个整页编辑器**在真机上一个入口都没有**，
+   而编译器不会对"没用的可选参数"说一句话（`kotlinc` 类型检查也过了）。
+   现在那个菜单项直接 push `Route.MessageEdit(sid, messageId)`；回调没传时给一句
+   「编辑页还没接上」，不是点了没反应。**判据还是 V20 第 1 步：点进去必须是整页。**
+6. **`EditRepository` 正式退役**（D163 那条错路线的入口）：文件与 `EditFencesTest` 八条一起删，
+   `build.gradle.kts` 的 junit 依赖留着（下一个纯逻辑件照样要用）。
+   删的理由不是"没人调"，是"它代表的那条路线（模型回围栏、客户端解析）已经被 D177 取代"。
