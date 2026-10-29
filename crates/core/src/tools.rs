@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::edit::{BlockSelector, MAX_BLOCK_BYTES};
+use crate::edit::{BlockOp, BlockSelector, MAX_BLOCK_BYTES};
 use crate::ids::MessageId;
 use crate::message::{Message, Role};
 use crate::policy::{AssistantPolicy, Capability, DenyReason};
@@ -203,7 +203,7 @@ impl ToolRegistry {
         // 容器里的命令（D172）：由 `Capability::ContainerExec` 门控，同样默认不出现。
         registry.register(Box::new(crate::shell::EnvirShellTool));
         // 模型改消息（D177 / 0.14y）：与 `edit_file` 同档能力，但改的是会话不是磁盘。
-        registry.register(Box::new(EditMessageTool));
+        registry.register(Box::new(EditUnitTool));
         registry
     }
 
@@ -731,13 +731,9 @@ pub struct EditCall {
     pub edits: Vec<(BlockSelector, String)>,
 }
 
-/// 块的中文名。给模型看的那句话、给用户看的报告都用它，别一处一个说法。
+/// 块的中文名。**只有一处实现**（`edit::block_label`）：工具说的话和报告里的字必须同源。
 pub fn block_label(block: BlockSelector) -> String {
-    match block {
-        BlockSelector::Output => "正文".into(),
-        BlockSelector::Thinking => "思考块".into(),
-        BlockSelector::ToolCall { index } => format!("工具参数 #{index}"),
-    }
+    crate::edit::block_label(block)
 }
 
 /// 模型给的参数 → 一组块级改动。形状不对就点名，**不猜**。
@@ -840,6 +836,153 @@ pub fn parse_edit_message(args: &Value) -> Result<EditCall, String> {
     Ok(EditCall { target, edits })
 }
 
+/// 一次 `edit_unit` 调用：目标消息 + 一组块级动作（0.15f / D188）。
+///
+/// 与 0.14y 的 [`parse_edit_message`] 的关系：那个是"只改不删"的旧形状，
+/// 这里多一个 `delete`，也多一个 `tool_result`（结果在另一条消息上）。
+/// 旧形状（`blocks`）照样收——模型记着的写法不该在升级当天就失效。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditUnitCall {
+    pub target: String,
+    pub ops: Vec<BlockOp>,
+}
+
+/// 模型给的参数 → 一组块级动作。
+///
+/// **这一层只管"参数本身站不站得住"**（动作名、块名、重复、JSON 形状）；
+/// 目标消息在不在、单元闭没闭合、工具块成不成对，要等拿到单元才说得清（`edit::plan_ops`）。
+pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
+    // 旧形状：没有 `ops` 就按 0.14y 的 `blocks` 读，全部当作 set。
+    if args.get("ops").is_none() {
+        let call = parse_edit_message(args)?;
+        return Ok(EditUnitCall {
+            target: call.target,
+            ops: call
+                .edits
+                .into_iter()
+                .map(|(block, content)| BlockOp::Set { block, content })
+                .collect(),
+        });
+    }
+
+    let target = args
+        .get("message_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .ok_or_else(|| {
+            "缺少字符串参数 `message_id`（具体 id，或 last_assistant / last_user / last）"
+                .to_string()
+        })?
+        .to_string();
+
+    let items = args.get("ops").and_then(Value::as_array).ok_or_else(|| {
+        "缺少数组参数 `ops`（每一项 {action, block, index?, content?}）".to_string()
+    })?;
+    if items.is_empty() {
+        return Err("`ops` 是空的：要改就指明改哪一块".into());
+    }
+    if items.len() > MAX_EDITS_PER_CALL {
+        return Err(format!(
+            "一次最多 {MAX_EDITS_PER_CALL} 项，这次给了 {} 项",
+            items.len()
+        ));
+    }
+
+    let mut ops: Vec<BlockOp> = Vec::with_capacity(items.len());
+    for (position, item) in items.iter().enumerate() {
+        let which = position + 1;
+        let action = item
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("set")
+            .trim();
+        let name = item.get("block").and_then(Value::as_str).ok_or_else(|| {
+            format!("第 {which} 项缺少字符串 `block`（output / thinking / tool / tool_result）")
+        })?;
+        let block = match name {
+            "output" => BlockSelector::Output,
+            "thinking" => BlockSelector::Thinking,
+            "tool" | "tool_call" | "tool_result" => {
+                let index = item
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        format!("第 {which} 项是工具块（{name}），必须给 `index`（0 起）")
+                    })? as usize;
+                if index >= BlockSelector::MAX_TOOL_INDEX {
+                    return Err(format!(
+                        "第 {which} 项的 `index` 必须是 0–{} 的整数，收到 {index}",
+                        BlockSelector::MAX_TOOL_INDEX - 1
+                    ));
+                }
+                if name == "tool_result" {
+                    BlockSelector::ToolResult { index }
+                } else {
+                    BlockSelector::ToolCall { index }
+                }
+            }
+            other => {
+                return Err(format!(
+                    "第 {which} 项的 block `{other}` 不认识：只能是 output / thinking / tool / tool_result"
+                ))
+            }
+        };
+
+        let op = match action {
+            "set" => {
+                let content = item
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("第 {which} 项是 set，缺少字符串 `content`"))?;
+                if content.len() > MAX_BLOCK_BYTES {
+                    return Err(format!(
+                        "第 {which} 项太长（{} 字节，上限 {MAX_BLOCK_BYTES}）",
+                        content.len()
+                    ));
+                }
+                match block {
+                    // 正文是一轮回复的本体，清空它等于把那条消息变成空壳。
+                    BlockSelector::Output if content.trim().is_empty() => {
+                        return Err(format!("第 {which} 项是正文，不能改成空的"));
+                    }
+                    // 工具参数决定下一次调用怎么发出去，坏 JSON 会被上游 400（D158）。
+                    BlockSelector::ToolCall { index } => {
+                        let parsed = serde_json::from_str::<Value>(content).ok();
+                        if !parsed.is_some_and(|value| value.is_object()) {
+                            return Err(format!(
+                                "第 {which} 项（工具参数 #{index}）不是 JSON 对象：参数会原样发给上游，坏了下一次请求直接 400"
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+                BlockOp::Set {
+                    block,
+                    content: content.to_string(),
+                }
+            }
+            "delete" => BlockOp::Delete { block },
+            other => {
+                return Err(format!(
+                    "第 {which} 项的 action `{other}` 不认识：只能是 set / delete"
+                ))
+            }
+        };
+
+        // set 与 delete 同一块也算重复：一个块在一次调用里只能有一个结果。
+        if ops.iter().any(|existing| existing.block() == block) {
+            return Err(format!(
+                "同一次调用里把「{}」写了两遍：落库按顺序来，后一次会把前一次盖掉",
+                crate::edit::block_label(block)
+            ));
+        }
+        ops.push(op);
+    }
+
+    Ok(EditUnitCall { target, ops })
+}
+
 /// `message_id` → 具体一条消息。
 ///
 /// `last*` 不是偷懒：模型看得见消息内容，看不见 id（id 不随请求发出去），
@@ -875,22 +1018,26 @@ pub fn resolve_edit_target(target: &str, history: &[Message]) -> Result<MessageI
     }
 }
 
-/// 模型改消息。**只排队，不落库**——core 不碰存储，
-/// 真正写进去发生在这一轮收尾（`session::run_session_turn` 第 3.5 步）。
+/// 模型改消息（0.15f 起叫 `edit_unit`，0.14y 叫 `edit_message`）。**只排队，不落库**——
+/// core 不碰存储，真正写进去发生在这一轮收尾（`session::run_session_turn` 第 3.5 步）。
 ///
 /// 也就是说，那句话里必须写"这一轮结束时落库"，而不是"已修改"：
 /// 模型看到"改好了"就会对用户复述改好了，而用户此时还没看到任何变化。
-pub struct EditMessageTool;
+pub struct EditUnitTool;
 
-impl Tool for EditMessageTool {
+impl Tool for EditUnitTool {
     fn name(&self) -> &str {
-        "edit_message"
+        "edit_unit"
     }
 
     fn description(&self) -> &str {
-        "改一条已经存在的消息里的块（正文 / 思考 / 工具参数），这一轮结束时生效。\
+        "改一条已经存在的消息里的块（正文 / 思考 / 工具参数 / 工具结果），这一轮结束时生效。\
          改哪条用 message_id：给具体 id，或 last_assistant（最近一条助手消息）、\
-         last_user（最近一条用户消息）。工具参数只能改、不能新增。"
+         last_user（最近一条用户消息）。action=set 写内容（思考块给空串等于删掉它）；\
+         action=delete 删块——只有思考块与工具对能删，而且工具块**必须成对删**\
+         （第 N 个调用与它的结果一起删，单独删一边会让下一轮请求直接 400）。\
+         一次最多 8 项，同一个块不能写两遍；单元还没闭合（有调用没拿到结果）时不许改。\
+         正文改写会留下原文：界面上出现红/蓝两份，蓝的那份是改之前。"
     }
 
     fn schema(&self) -> Value {
@@ -901,31 +1048,36 @@ impl Tool for EditMessageTool {
                     "type": "string",
                     "description": "要改的消息：具体 id，或 last_assistant / last_user / last"
                 },
-                "blocks": {
+                "ops": {
                     "type": "array",
-                    "description": "改哪几块（一次最多 8 块）",
+                    "description": "改哪几块（一次最多 8 项）",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "kind": {
+                            "action": {
                                 "type": "string",
-                                "enum": ["output", "thinking", "tool"],
-                                "description": "output=正文，thinking=思考块，tool=某个工具调用的参数"
+                                "enum": ["set", "delete"],
+                                "description": "set=写内容（默认），delete=删块（只有思考块与工具对能删）"
+                            },
+                            "block": {
+                                "type": "string",
+                                "enum": ["output", "thinking", "tool", "tool_result"],
+                                "description": "output=正文，thinking=思考块，tool=某个工具调用的参数，tool_result=某个工具调用的结果"
                             },
                             "index": {
                                 "type": "integer",
-                                "description": "kind=tool 时必填，第几个工具调用（0 起）"
+                                "description": "block=tool / tool_result 时必填，第几个工具调用（0 起）"
                             },
                             "content": {
                                 "type": "string",
-                                "description": "新内容；thinking 给空串表示删掉这一块"
+                                "description": "action=set 时的新内容；thinking 给空串表示删掉这一块"
                             }
                         },
-                        "required": ["kind", "content"]
+                        "required": ["block"]
                     }
                 }
             },
-            "required": ["message_id", "blocks"]
+            "required": ["message_id", "ops"]
         })
     }
 
@@ -939,7 +1091,7 @@ impl Tool for EditMessageTool {
         if let Err(reason) = ctx.policy.check(self.capability()) {
             return ToolOutcome::denied(self.capability(), reason);
         }
-        let call = match parse_edit_message(args) {
+        let call = match parse_edit_unit(args) {
             Ok(call) => call,
             Err(message) => return ToolOutcome::failed(message),
         };
@@ -958,31 +1110,75 @@ impl Tool for EditMessageTool {
                 "消息 {message_id} 被用户锁定，内容不能改（压缩不受影响）"
             ));
         }
-        // 工具块的边界（D177）：一条调用必须与一条结果按 call_id 配对，
-        // 凭空加一块会造出孤儿调用，下一次请求直接 400。
+
         let call_count = message.tool_calls.len();
-        for (block, _) in &call.edits {
-            if let BlockSelector::ToolCall { index } = block {
-                if *index >= call_count {
+        for op in &call.ops {
+            let block = op.block();
+            // 正文没有"删掉"这一说：删了这条消息就是空壳。
+            if op.is_delete() && block == BlockSelector::Output && message.role != Role::Tool {
+                return ToolOutcome::failed(
+                    "正文不能删（删掉正文等于把这条消息变成空壳）：要换内容就用 action=set",
+                );
+            }
+            let Some(index) = block.tool_index() else {
+                continue;
+            };
+            if index >= call_count {
+                return ToolOutcome::failed(format!(
+                    "消息 {message_id} 只有 {call_count} 个工具调用（0 起），没有第 {index} 个；\
+                     工具块不能新增"
+                ));
+            }
+            // 结果在不在：找不到就是单元还没闭合，改完也发不出去。
+            let call_id = &message.tool_calls[index].id;
+            if !history
+                .iter()
+                .any(|other| other.tool_call_id.as_deref() == Some(call_id.as_str()))
+            {
+                return ToolOutcome::failed(format!(
+                    "第 {index} 个工具调用还没有结果：单元没闭合，改不了（先让那一轮跑完）"
+                ));
+            }
+            // 成对删：另一边也得在这一批里。
+            if op.is_delete() {
+                let partner = match block {
+                    BlockSelector::ToolCall { .. } => BlockSelector::ToolResult { index },
+                    _ => BlockSelector::ToolCall { index },
+                };
+                if !call
+                    .ops
+                    .iter()
+                    .any(|other| other.is_delete() && other.block() == partner)
+                {
                     return ToolOutcome::failed(format!(
-                        "消息 {message_id} 只有 {call_count} 个工具调用（0 起），没有第 {index} 个；\
-                         工具块不能新增"
+                        "工具块是成对的：删第 {index} 个调用时要连它的结果一起删（或者反过来），\
+                         单独删一边会让下一轮请求直接 400"
                     ));
                 }
             }
         }
 
         let mut text = format!(
-            "已排队 {} 处改动，这一轮结束时落库（消息 {message_id}）：\n",
-            call.edits.len()
+            "已排队 {} 项改动，这一轮结束时落库（消息 {message_id}）：\n",
+            call.ops.len()
         );
-        for (block, content) in &call.edits {
-            let what = if block == &BlockSelector::Thinking && content.trim().is_empty() {
-                "删掉这一块".to_string()
-            } else {
-                format!("{} 字", content.chars().count())
+        for op in &call.ops {
+            let block = op.block();
+            let what = match op {
+                BlockOp::Delete { .. } => "删掉这一块".to_string(),
+                BlockOp::Set { content, .. } => {
+                    if block == BlockSelector::Thinking && content.trim().is_empty() {
+                        "删掉这一块".to_string()
+                    } else {
+                        format!("{} 字", content.chars().count())
+                    }
+                }
             };
-            text.push_str(&format!("- {}：{}\n", block_label(*block), what));
+            text.push_str(&format!(
+                "- {}：{}\n",
+                crate::edit::block_label(block),
+                what
+            ));
         }
         ToolOutcome::ok(text)
     }
@@ -1029,7 +1225,7 @@ mod tests {
         // + 模型改消息（`edit_message` D177）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
         assert_eq!(names.len(), 9, "{names:?}");
-        for name in ["System-Shell", "WorkSpace-EnvirShell", "edit_message"] {
+        for name in ["System-Shell", "WorkSpace-EnvirShell", "edit_unit"] {
             assert!(names.contains(&name), "缺少 {name}");
         }
         for name in [
@@ -1271,7 +1467,7 @@ mod tests {
         let (_dir, workspace, policy) = sandbox();
         let registry = ToolRegistry::workspace_defaults();
         let ctx = ToolContext::new(&policy, Some(&workspace)).with_history(history);
-        registry.invoke("edit_message", args, &ctx)
+        registry.invoke("edit_unit", args, &ctx)
     }
 
     #[test]
@@ -1287,7 +1483,7 @@ mod tests {
         let text = outcome.text();
         assert!(outcome.is_ok(), "{text}");
         // 说"排队"而不是"改好了"：落库在这一轮收尾，用户此刻还没看到变化。
-        assert!(text.contains("已排队 3 处"), "{text}");
+        assert!(text.contains("已排队 3 项"), "{text}");
         assert!(text.contains("这一轮结束"), "{text}");
         assert!(text.contains("正文"), "{text}");
         // 空串思考 = 删掉这一块，这句话得说清楚，不然模型以为写入了一个空块。
@@ -1371,7 +1567,7 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect();
-        assert!(!names.contains(&"edit_message".to_string()), "{names:?}");
+        assert!(!names.contains(&"edit_unit".to_string()), "{names:?}");
 
         // 读写得开：它出现（与 `edit_file` 同档，D177）。
         let writable =
@@ -1381,6 +1577,6 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect();
-        assert!(names.contains(&"edit_message".to_string()), "{names:?}");
+        assert!(names.contains(&"edit_unit".to_string()), "{names:?}");
     }
 }

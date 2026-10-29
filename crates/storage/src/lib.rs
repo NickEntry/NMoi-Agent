@@ -13,6 +13,7 @@
 
 pub mod atomic;
 pub mod backup;
+pub mod blockedit;
 pub mod calibrate;
 pub mod heal;
 pub mod migrate;

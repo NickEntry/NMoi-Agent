@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
         <!-- 发请求：没有这条，connect() 在真机上直接 EPERM（2026-10-27 真机日志
-         "连接失败 127.0.0.1:8790: Operation not permitted"） -->
+         "连接失败 127.0.0.1:<端口>: Operation not permitted"） -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- 读设备当前的 DNS（D173：容器要一份 /etc/resolv.conf）。这是普通权限，不需要用户授权，

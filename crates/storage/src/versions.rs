@@ -537,7 +537,10 @@ fn shown_text(raw: &str, edited: Option<&str>, view: VersionView) -> String {
 ///
 /// `origin_message` 取 `messages.content`（**当前显示的那一份**），所以调用方传进来的是"改后"，
 /// 原文也不会被它顶掉。返回是否真的补了一版（测试用）。
-fn seed_first_version(tx: &Transaction<'_>, message_id: &str) -> Result<bool, StorageError> {
+pub(crate) fn seed_first_version(
+    tx: &Transaction<'_>,
+    message_id: &str,
+) -> Result<bool, StorageError> {
     let (count, content): (i64, String) = tx
         .query_row(
             "SELECT version_count, content FROM messages WHERE id = ?1",

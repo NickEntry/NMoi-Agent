@@ -3404,7 +3404,7 @@ Kotlin 侧存 SharedPreferences（`nmoi.local`），**不进库、不进导出**
 
 2026-10-27 真机第一次发请求，三连失败，根因只有两个：
 
-1. `连接失败 127.0.0.1:8790: Operation not permitted (os error 1)` —— **清单里没有
+1. `连接失败 127.0.0.1:<端口>: Operation not permitted (os error 1)` —— **清单里没有
    `android.permission.INTERNET`**。以前从没发生过网络请求，这条权限一直没加；
    Android 上缺它时 `connect()` 回的就是 EPERM，看起来像"被防火墙拦了"。
 2. `传输层不支持: 明文传输只支持 http://，收到 https://` —— core 里只有
@@ -3630,7 +3630,7 @@ Cannot run program "/data/user/0/com.nmoi.agent/files/envir/bin/proot"
 
 ### D168 供应商：从端点读回模型清单
 
-模型 ID 是"少一个字符 404、多一个后缀 400"的东西（`sn-deepseek-v4-1-flash-1017` 这种），
+模型 ID 是"少一个字符 404、多一个后缀 400"的东西（`deepseek-flash` 这种），
 让他手打就是让他反复猜。`GET {base_url}/models` 本来就不要钱，所以：
 
 - **「测试连接」**（配置页，Base URL 下面）：只发一个 GET，回来写
@@ -4340,3 +4340,28 @@ ok
 
 已修：`TurnReport.reasoning`（取最后一轮**非空**的）+ 落库 + `turn_json` 带出来。
 **实时逐字渲染**另立 0.15n（要 SSE + FFI 事件回调），这一条只保证"有的思考看得见"。
+
+## D188 0.15f 落地口径：成对、落红、上限（2026-10-29，实现时定的三处细化）
+
+D184 定了"内容改写是模式 4 的扩展"，实现时有三处必须写死，否则下一个人会按字面把库改坏：
+
+1. **"成对"只对删除成立**。工具块**改**不要求成对（改参数不动 `call_id`，配对不受影响）；
+   **删**必须成对——只删调用是孤儿调用，只删结果是孤儿结果，下一次请求直接 400。
+   D184 那句"调用 + 结果成对改或成对删"，按这一条收紧。
+2. **落红之后要切到红**。写 `tooledit_message` 只完成一半：`mark_version_edited` 原来只在
+   `active_view='edited'` 时才同步 `messages.content`，而绝大多数消息是 'raw'——
+   照搬的话，用户改完在屏幕上**什么也看不见**。`apply_unit_edits` 因此自己写三条：
+   seed 第 1 版（读旧 `content` 当原文）→ 写 `tooledit_message` + `edited_by_tool=1` +
+   `active_view='edited'` → 更新 `messages.content`。顺序反了原文就没了。
+3. **一条消息带多个工具调用时，不许只删其中一个**。删的是整条消息；它带着别的调用就会
+   一起消失。报"要删就整条删，或者别删"，不替用户做那个决定。
+
+接口与账本：
+
+- 纯逻辑 `nmoi_core::edit::{BlockOp, plan_ops, PlannedOp, UnitPlan}`——校验、成对、算 before/after，
+  **不改 unit**；落库 `Storage::apply_unit_edits` 一个事务做完改列 / 落红 / 删行 / 记账。
+- 工具名 **`edit_unit`**（0.14y 的 `edit_message` 不再注册；参数上留了兼容：
+  `ops` 缺席时按旧的 `blocks` 读，旧提示词与旧记录都不作废）。收尾认两个名字。
+- undo 日志 `settings(scope="undo")`，key = `<会话 id>/<uuid v7>`，值是
+  `nmoi_storage::blockedit::UndoRecord`（before/after **原文**，可导出）。**不加表、不加列**。
+- 每会话上限 50 处：数 undo 日志里这个会话的条数（不是数 `edits` 表——那张表也记用户手动编辑）。

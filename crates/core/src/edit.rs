@@ -16,7 +16,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::ids::{MessageId, UnitId};
-use crate::message::{AtomicUnit, Message, UnitError};
+use crate::message::{AtomicUnit, Message, Role, UnitError};
 use crate::tokens::estimate_tokens;
 
 /// 一块内容的上限。**这是防呆，不是防攻击**：真被塞进 200 KB 的思考块，
@@ -35,6 +35,11 @@ pub enum BlockSelector {
     Thinking,
     /// 第 `index` 个工具调用的参数（tool_calls[index].arguments）。
     ToolCall { index: usize },
+    /// 第 `index` 个工具调用的**结果**（`role = Tool` 那条消息的 `content`）。
+    ///
+    /// 与 [`BlockSelector::ToolCall`] 分开命名（0.15f / D188）：结果在**另一条消息**上，
+    /// 把两者混成一个 `output`，模型说"改第 0 个工具的结果"就会落到调用消息的正文上。
+    ToolResult { index: usize },
 }
 
 impl BlockSelector {
@@ -49,20 +54,36 @@ impl BlockSelector {
         match text {
             "output" => Ok(BlockSelector::Output),
             "thinking" => Ok(BlockSelector::Thinking),
-            other => match other.strip_prefix("tool:") {
-                Some(index) => match index.parse::<usize>() {
-                    Ok(index) if index < Self::MAX_TOOL_INDEX => {
-                        Ok(BlockSelector::ToolCall { index })
-                    }
-                    _ => Err(format!(
-                        "`tool:<index>` 的 index 必须是 0–{} 的整数，收到 `{other}`",
+            other => {
+                // `tool:` = 调用参数，`tool_result:` = 结果正文（0.15f）。两者前缀不同，
+                // 不能共用一个 strip：`tool_result:0` 会被 `tool:` 那条抢先认成"参数第 0 个"。
+                let (which, tail) = if let Some(tail) = other.strip_prefix("tool_result:") {
+                    ("工具结果", tail)
+                } else if let Some(tail) = other.strip_prefix("tool:") {
+                    ("工具参数", tail)
+                } else {
+                    return Err(format!(
+                        "块只能是 output / thinking / tool:<index> / tool_result:<index>，收到 `{other}`"
+                    ));
+                };
+                let index = tail.parse::<usize>().map_err(|_| {
+                    format!(
+                        "`{other}` 的 index 必须是 0–{} 的整数",
                         Self::MAX_TOOL_INDEX - 1
-                    )),
-                },
-                None => Err(format!(
-                    "块只能是 output / thinking / tool:<index>，收到 `{other}`"
-                )),
-            },
+                    )
+                })?;
+                if index >= Self::MAX_TOOL_INDEX {
+                    return Err(format!(
+                        "`{other}` 的 index 必须是 0–{} 的整数",
+                        Self::MAX_TOOL_INDEX - 1
+                    ));
+                }
+                if which == "工具结果" {
+                    Ok(BlockSelector::ToolResult { index })
+                } else {
+                    Ok(BlockSelector::ToolCall { index })
+                }
+            }
         }
     }
 
@@ -71,6 +92,15 @@ impl BlockSelector {
             BlockSelector::Output => "output".into(),
             BlockSelector::Thinking => "thinking".into(),
             BlockSelector::ToolCall { index } => format!("tool_call:{index}"),
+            BlockSelector::ToolResult { index } => format!("tool_result:{index}"),
+        }
+    }
+
+    /// 工具调用序号（参数块与结果块共用同一个序号轴）。
+    pub fn tool_index(self) -> Option<usize> {
+        match self {
+            BlockSelector::ToolCall { index } | BlockSelector::ToolResult { index } => Some(index),
+            _ => None,
         }
     }
 }
@@ -127,6 +157,26 @@ pub enum EditError {
     NoChange,
     #[error("编辑后单元结构非法: {0}")]
     Invalid(#[from] UnitError),
+    /// 单消息的 `apply_edit` 到不了工具结果（它在另一条消息上）。
+    #[error("工具结果块要用单元级编辑（edit_unit）：结果在另一条消息里，单块编辑到不了")]
+    NeedsUnit,
+    /// 未闭合的单元不许编辑（D184 的编辑纪律第一条）：改完也没法验证配对。
+    #[error("单元 {0} 还没闭合（有工具调用没拿到结果），不能编辑")]
+    UnitOpen(UnitId),
+    /// 工具块只能成对删。
+    #[error("工具块是成对的（第 {index} 个调用 + 它的结果）：删除要两边一起删，这次只删了{side}")]
+    UnpairedDelete { index: usize, side: &'static str },
+    /// 一条消息带多个调用时，删单个会把它跟结果的关系撕开。
+    #[error("消息 {message} 带了 {count} 个工具调用：不能只删其中一个（要删就整条删，或者别删）")]
+    ManyCalls { message: MessageId, count: usize },
+    #[error("同一次调用里把「{0}」写了两遍：落库按顺序来，后一遍会盖掉前一遍")]
+    Duplicate(String),
+    #[error("正文不能删：删掉正文等于把这条消息变成空壳（要清空就改用 set，别用 delete）")]
+    CannotDeleteOutput,
+    #[error("第 {index} 项是工具结果，但消息 {message} 没有第 {index} 个工具调用")]
+    NoSuchToolResult { message: MessageId, index: usize },
+    #[error("没有给任何改动：要改就指明改哪一块")]
+    NoOps,
 }
 
 /// 应用一次块级编辑。
@@ -180,6 +230,9 @@ pub fn apply_edit(unit: &mut AtomicUnit, request: &EditRequest) -> Result<EditOu
                 call.arguments = request.content.clone();
                 (before, call.arguments.clone())
             }
+            // 工具结果在**另一条消息**上：单消息的 `apply_edit` 到不了那儿。
+            // 报出来而不是悄悄改成调用参数——"点结果卡、参数变了"是最难查的一种。
+            BlockSelector::ToolResult { .. } => return Err(EditError::NeedsUnit),
         };
 
         if before == after {
@@ -221,6 +274,274 @@ pub fn set_locked(
     let previous = message.locked;
     message.locked = locked;
     Ok(previous)
+}
+
+// ---------------------------------------------------------------------------
+// 0.15f / D188：一次调用里改多块（`edit_unit` 的纯逻辑）
+// ---------------------------------------------------------------------------
+
+/// 块的中文名。给模型看的那句话、给用户看的报告都用它，一处一个说法就够了。
+pub fn block_label(block: BlockSelector) -> String {
+    match block {
+        BlockSelector::Output => "正文".into(),
+        BlockSelector::Thinking => "思考块".into(),
+        BlockSelector::ToolCall { index } => format!("工具参数 #{index}"),
+        BlockSelector::ToolResult { index } => format!("工具结果 #{index}"),
+    }
+}
+
+/// 一次调用里的一个动作。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockOp {
+    /// 写入 / 替换一块内容。思考块给空串等于删掉它（沿用 0.14x 的语义）。
+    Set {
+        block: BlockSelector,
+        content: String,
+    },
+    /// 删掉一块（或一对工具块）。只有思考块与工具对允许删。
+    Delete { block: BlockSelector },
+}
+
+impl BlockOp {
+    pub fn block(&self) -> BlockSelector {
+        match self {
+            BlockOp::Set { block, .. } | BlockOp::Delete { block } => *block,
+        }
+    }
+
+    pub fn is_delete(&self) -> bool {
+        matches!(self, BlockOp::Delete { .. })
+    }
+}
+
+/// 计划里的一条：**已经落到具体消息上**，storage 照着写就行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedOp {
+    pub message: MessageId,
+    pub block: BlockSelector,
+    /// 中文名（正文 / 思考块 / 工具参数 #N / 工具结果 #N）。
+    pub label: String,
+    pub before: String,
+    /// `None` = 这一块被删掉。
+    pub after: Option<String>,
+    pub before_hash: String,
+    pub after_hash: String,
+    /// 正文改写要落红（写 `tooledit_message`，原文留蓝）。
+    pub red: bool,
+}
+
+/// 一次单元级编辑的执行计划。
+///
+/// core 只算不写：`(scope, key) → JSON` 的 undo 日志、版本表那两列、删行时的级联，
+/// 都在 storage 那边一个事务里做。这一份是"要写什么"的唯一说法。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitPlan {
+    pub unit: UnitId,
+    pub ops: Vec<PlannedOp>,
+    /// 内容和现状一样、因此没有写进去的块（中文名）。**不是错误**：模型原样重发很常见，
+    /// 但工具必须把它报出来，否则"改了 3 处"和"实际写了 2 处"对不上。
+    pub unchanged: Vec<String>,
+    /// 要整条删掉的消息（成对删工具块）。删的是行，不是列。
+    pub remove_messages: Vec<MessageId>,
+}
+
+/// 把一个块落到具体消息上。
+///
+/// 工具结果**按 `call_id` 配对**，不按"下一条消息"：并行调用时结果的先后不保证，
+/// 按下标去猜就会把第 0 个调用的结果认成第 1 个的。
+fn block_message(
+    unit: &AtomicUnit,
+    anchor: &MessageId,
+    block: BlockSelector,
+) -> Result<MessageId, EditError> {
+    let message = unit
+        .messages
+        .iter()
+        .find(|message| &message.id == anchor)
+        .ok_or_else(|| EditError::MessageNotFound(anchor.clone()))?;
+    let BlockSelector::ToolResult { index } = block else {
+        return Ok(anchor.clone());
+    };
+    // index 说的是"第几个调用"（与 `tool:<index>` 同一根轴），结果只是它的对家。
+    let call = message
+        .tool_calls
+        .get(index)
+        .ok_or_else(|| EditError::NoSuchToolResult {
+            message: anchor.clone(),
+            index,
+        })?;
+    unit.messages
+        .iter()
+        .find(|candidate| candidate.tool_call_id.as_deref() == Some(call.id.as_str()))
+        .map(|candidate| candidate.id.clone())
+        .ok_or_else(|| EditError::NoSuchToolResult {
+            message: anchor.clone(),
+            index,
+        })
+}
+
+/// 校验一组块级动作，并算出一份可执行的计划。**不改 `unit`。**
+///
+/// 校验顺序是有意的：先"这一组动作本身站不站得住"（单元闭合、目标存在、锁定、重复、成对），
+/// 再算内容。任何一条不过就整组不动——半批落库比整批拒绝难查得多。
+pub fn plan_ops(
+    unit: &AtomicUnit,
+    anchor: &MessageId,
+    ops: &[BlockOp],
+) -> Result<UnitPlan, EditError> {
+    if !unit.messages.iter().any(|message| &message.id == anchor) {
+        return Err(EditError::MessageNotFound(anchor.clone()));
+    }
+    if !unit.is_closed() {
+        return Err(EditError::UnitOpen(unit.id.clone()));
+    }
+    if ops.is_empty() {
+        return Err(EditError::NoOps);
+    }
+
+    // 1. 逐个落到具体消息上；重复块与锁定在这里拦。
+    let mut resolved: Vec<(MessageId, BlockSelector, &BlockOp)> = Vec::with_capacity(ops.len());
+    for op in ops {
+        let block = op.block();
+        let target = block_message(unit, anchor, block)?;
+        if resolved
+            .iter()
+            .any(|(message, existing, _)| message == &target && *existing == block)
+        {
+            return Err(EditError::Duplicate(block_label(block)));
+        }
+        let locked = unit
+            .messages
+            .iter()
+            .find(|message| message.id == target)
+            .map(|message| message.locked)
+            .unwrap_or(false);
+        if locked {
+            return Err(EditError::Locked(target));
+        }
+        // 正文没有"删掉"这一说：删了这条消息就是空壳（`Message::validate` 也拒）。
+        if op.is_delete()
+            && matches!(block, BlockSelector::Output)
+            && unit
+                .messages
+                .iter()
+                .find(|message| message.id == target)
+                .map(|message| message.role != Role::Tool)
+                .unwrap_or(false)
+        {
+            return Err(EditError::CannotDeleteOutput);
+        }
+        resolved.push((target, block, op));
+    }
+
+    // 2. 工具块只有"成对删"这一种删除（D184）：单独删一边 = 孤儿调用 / 孤儿结果，
+    //    下一次请求会被上游直接 400。改不要求成对：改参数不影响配对。
+    let anchor_message = unit
+        .messages
+        .iter()
+        .find(|message| &message.id == anchor)
+        .expect("上面已经确认锚点消息存在");
+    for (_, block, op) in &resolved {
+        if !op.is_delete() {
+            continue;
+        }
+        let Some(index) = block.tool_index() else {
+            continue;
+        };
+        // 同一序号上的另一半也必须删。`ToolCall{0}` 与 `ToolResult{0}` 是两个不同的块，
+        // 所以这一步不能用重复检查代替（那一步拦的是同一块写两遍）。
+        let partner_deleted = ops.iter().any(|other| {
+            other.is_delete()
+                && other.block().tool_index() == Some(index)
+                && other.block() != *block
+        });
+        if !partner_deleted {
+            let side = match block {
+                BlockSelector::ToolCall { .. } => "调用",
+                _ => "结果",
+            };
+            return Err(EditError::UnpairedDelete { index, side });
+        }
+        // 删掉的是一条消息；它要是带着别的调用，那些调用会一起消失。
+        if anchor_message.tool_calls.len() > 1 {
+            return Err(EditError::ManyCalls {
+                message: anchor_message.id.clone(),
+                count: anchor_message.tool_calls.len(),
+            });
+        }
+    }
+
+    // 3. 算 before / after。
+    let mut plan = UnitPlan {
+        unit: unit.id.clone(),
+        ops: Vec::with_capacity(resolved.len()),
+        unchanged: Vec::new(),
+        remove_messages: Vec::new(),
+    };
+    for (target, block, op) in resolved {
+        let message = unit
+            .messages
+            .iter()
+            .find(|message| message.id == target)
+            .expect("block_message 已经确认过这条消息存在");
+        let before = match block {
+            BlockSelector::Thinking => message.reasoning.clone().unwrap_or_default(),
+            BlockSelector::ToolCall { index } => message
+                .tool_calls
+                .get(index)
+                .map(|call| call.arguments.clone())
+                .unwrap_or_default(),
+            BlockSelector::Output | BlockSelector::ToolResult { .. } => message.content.clone(),
+        };
+        let after = match op {
+            BlockOp::Set { content, .. } => {
+                // 思考块：空串等于删掉块（与 0.14x 一致）。
+                if block == BlockSelector::Thinking && content.trim().is_empty() {
+                    None
+                } else {
+                    Some(content.clone())
+                }
+            }
+            BlockOp::Delete { .. } => None,
+        };
+        if before == after.clone().unwrap_or_default() {
+            plan.unchanged.push(block_label(block));
+            continue;
+        }
+        // 正文落红：工具结果不是正文（它有自己的卡），所以排除 `role = Tool`。
+        let red = block == BlockSelector::Output && message.role != Role::Tool;
+        plan.ops.push(PlannedOp {
+            message: target,
+            block,
+            label: block_label(block),
+            before_hash: digest(&before),
+            after_hash: digest(after.as_deref().unwrap_or_default()),
+            before,
+            after,
+            red,
+        });
+    }
+
+    // 4. 成对删：调用消息与它的结果消息都要从库里删（storage 删行，连同版本行）。
+    //    `ManyCalls` 已经在上面拦过"多调用消息"，所以这里只会有一次配对。
+    if plan
+        .ops
+        .iter()
+        .any(|op| op.after.is_none() && op.block.tool_index().is_some())
+    {
+        plan.remove_messages.push(anchor_message.id.clone());
+        for call in &anchor_message.tool_calls {
+            if let Some(result) = unit
+                .messages
+                .iter()
+                .find(|message| message.tool_call_id.as_deref() == Some(call.id.as_str()))
+            {
+                plan.remove_messages.push(result.id.clone());
+            }
+        }
+    }
+
+    Ok(plan)
 }
 
 /// 一条消息占用的 token：正文 + 思考 + 全部工具调用参数。
@@ -365,9 +686,11 @@ mod tests {
         // 顺序反了、越界、负数、不带序号——一律点名，不猜。
         for bad in [
             "tool:64",
+            "tool_result:64",
             "tool:",
             "tool:-1",
             "tool",
+            "tool_result",
             "reasoning",
             "Output",
             "",
@@ -378,5 +701,216 @@ mod tests {
                 "`{bad}` 的报错要指出合法值：{error}"
             );
         }
+    }
+
+    // ---- 0.15f / D188：一次调用改多块 ----
+
+    /// 一条调用 + 它的结果（成对，已闭合）。
+    fn pair_with_result() -> AtomicUnit {
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}")],
+            5,
+            0,
+            LogicalClock::new(1),
+        );
+        let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        let unit_id = unit.id.clone();
+        let result = Message::tool_result(
+            MessageId::new(session, 2),
+            "c1",
+            "内容 a",
+            3,
+            0,
+            LogicalClock::new(2),
+        )
+        .with_unit(unit_id);
+        unit.add_result(result).unwrap();
+        unit
+    }
+
+    #[test]
+    fn plan_ops_maps_each_block_onto_the_message_that_holds_it() {
+        let unit = pair_with_result();
+        let anchor = unit.messages[0].id.clone();
+        let plan = plan_ops(
+            &unit,
+            &anchor,
+            &[
+                BlockOp::Set {
+                    block: BlockSelector::ToolCall { index: 0 },
+                    content: "{\"path\":\"b\"}".into(),
+                },
+                BlockOp::Set {
+                    block: BlockSelector::ToolResult { index: 0 },
+                    content: "新的结果".into(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(plan.ops.len(), 2);
+        // 结果块落在**结果消息**上：认错了就会"改结果、参数变了"。
+        assert_eq!(plan.ops[0].message, unit.messages[0].id);
+        assert_eq!(plan.ops[1].message, unit.messages[1].id);
+        assert_eq!(plan.ops[1].before, "内容 a");
+        assert!(plan.ops.iter().all(|op| !op.red), "工具块就地改，不落红");
+    }
+
+    #[test]
+    fn plan_ops_marks_output_rewrites_for_red() {
+        let unit = turn();
+        let anchor = unit.messages[0].id.clone();
+        let plan = plan_ops(
+            &unit,
+            &anchor,
+            &[BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "world".into(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(plan.ops.len(), 1);
+        assert!(plan.ops[0].red, "正文改写要落红（原文留蓝）");
+        assert_eq!(plan.ops[0].after.as_deref(), Some("world"));
+        assert_ne!(plan.ops[0].before_hash, plan.ops[0].after_hash);
+    }
+
+    #[test]
+    fn plan_ops_rejects_a_half_deleted_tool_block() {
+        let unit = pair_with_result();
+        let anchor = unit.messages[0].id.clone();
+        let error = plan_ops(
+            &unit,
+            &anchor,
+            &[BlockOp::Delete {
+                block: BlockSelector::ToolCall { index: 0 },
+            }],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EditError::UnpairedDelete { index: 0, .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn plan_ops_deletes_both_messages_of_a_tool_pair() {
+        let unit = pair_with_result();
+        let anchor = unit.messages[0].id.clone();
+        let plan = plan_ops(
+            &unit,
+            &anchor,
+            &[
+                BlockOp::Delete {
+                    block: BlockSelector::ToolCall { index: 0 },
+                },
+                BlockOp::Delete {
+                    block: BlockSelector::ToolResult { index: 0 },
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(plan.ops.len(), 2);
+        assert!(plan.ops.iter().all(|op| op.after.is_none()));
+        assert_eq!(plan.remove_messages.len(), 2);
+        assert!(plan.remove_messages.contains(&unit.messages[0].id));
+        assert!(plan.remove_messages.contains(&unit.messages[1].id));
+    }
+
+    #[test]
+    fn plan_ops_refuses_duplicate_blocks_before_writing_anything() {
+        let unit = turn();
+        let anchor = unit.messages[0].id.clone();
+        let error = plan_ops(
+            &unit,
+            &anchor,
+            &[
+                BlockOp::Set {
+                    block: BlockSelector::Output,
+                    content: "a".into(),
+                },
+                BlockOp::Set {
+                    block: BlockSelector::Output,
+                    content: "b".into(),
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(error, EditError::Duplicate(_)), "{error}");
+    }
+
+    #[test]
+    fn plan_ops_reports_unchanged_blocks_instead_of_silently_skipping() {
+        let unit = turn();
+        let anchor = unit.messages[0].id.clone();
+        let plan = plan_ops(
+            &unit,
+            &anchor,
+            &[BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "hello".into(),
+            }],
+        )
+        .unwrap();
+
+        assert!(plan.ops.is_empty(), "一样的正文不该写");
+        assert_eq!(plan.unchanged, vec!["正文".to_string()], "但要说出来");
+    }
+
+    #[test]
+    fn plan_ops_refuses_an_open_unit() {
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![OutgoingToolCall::new("c1", "read_file", "{}")],
+            1,
+            0,
+            LogicalClock::new(1),
+        );
+        let unit = AtomicUnit::tool_pair(head).unwrap();
+        let anchor = unit.messages[0].id.clone();
+        let error = plan_ops(
+            &unit,
+            &anchor,
+            &[BlockOp::Set {
+                block: BlockSelector::ToolCall { index: 0 },
+                content: "{\"x\":1}".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(error, EditError::UnitOpen(_)), "{error}");
+    }
+
+    #[test]
+    fn plan_ops_refuses_to_delete_output() {
+        let unit = turn();
+        let anchor = unit.messages[0].id.clone();
+        let error = plan_ops(
+            &unit,
+            &anchor,
+            &[BlockOp::Delete {
+                block: BlockSelector::Output,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(error, EditError::CannotDeleteOutput), "{error}");
+    }
+
+    #[test]
+    fn tool_result_selector_is_parsed_and_never_confused_with_a_call() {
+        assert_eq!(
+            BlockSelector::parse("tool_result:0"),
+            Ok(BlockSelector::ToolResult { index: 0 })
+        );
+        assert_eq!(
+            BlockSelector::parse("tool:0"),
+            Ok(BlockSelector::ToolCall { index: 0 })
+        );
+        assert_eq!(BlockSelector::ToolResult { index: 3 }.tool_index(), Some(3));
+        assert_eq!(BlockSelector::Output.tool_index(), None);
     }
 }

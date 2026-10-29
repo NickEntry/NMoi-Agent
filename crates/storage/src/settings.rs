@@ -52,6 +52,12 @@ pub enum Scope {
     /// 严格说这是派生数据，不是设置；但它和设置一样要跨重启活着，
     /// 而 D86 的 `(scope, key)` 整份读写正好够用——**为它加一张表就得加一次迁移**。
     Calibration,
+    /// 块编辑的 undo 日志（0.15f / D184 的 3A）。key = `<会话 id>/<uuid v7>`，
+    /// 值是 [`crate::blockedit::UndoRecord`]。
+    ///
+    /// **存原文**：用户要的是"能导出改之前是什么"，只有哈希的日志做不到这件事。
+    /// 不加表、不加列——`(scope, key) → JSON` 这套够用，而迁移是单向的。
+    Undo,
 }
 
 impl Scope {
@@ -64,6 +70,7 @@ impl Scope {
             Scope::Provider => "provider",
             Scope::Preset => "preset",
             Scope::Calibration => "calibration",
+            Scope::Undo => "undo",
         }
     }
 
@@ -76,6 +83,7 @@ impl Scope {
             "provider" => Some(Scope::Provider),
             "preset" => Some(Scope::Preset),
             "calibration" => Some(Scope::Calibration),
+            "undo" => Some(Scope::Undo),
             _ => None,
         }
     }

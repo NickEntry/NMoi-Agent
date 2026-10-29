@@ -28,7 +28,7 @@ use crate::budget::{
 };
 use crate::clock::LogicalClock;
 use crate::divider::ContextWindow;
-use crate::edit::{BlockSelector, EditOutcome};
+use crate::edit::{BlockOp, BlockSelector, EditOutcome};
 use crate::ids::{MessageId, SessionId, UnitId};
 use crate::message::{AtomicUnit, Message, OutgoingToolCall, Role};
 use crate::policy::AssistantPolicy;
@@ -68,6 +68,33 @@ pub trait HistoryStore {
             "这个历史实现不支持块级编辑，消息 {message_id} 没有改动"
         ))
     }
+    /// 一次单元级编辑（0.15f / D188）：改块 / 删块 / 落红 / undo 全由实现方负责。
+    ///
+    /// 默认实现**拒绝**（和 `apply_block_edit` 同一个理由）：内存实现没理由假装写了库。
+    fn apply_unit_edits(
+        &mut self,
+        message_id: &MessageId,
+        ops: &[BlockOp],
+    ) -> Result<UnitEditResult, String> {
+        let _ = ops;
+        Err(format!(
+            "这个历史实现不支持单元级编辑，消息 {message_id} 没有改动"
+        ))
+    }
+}
+
+/// 一次单元级编辑写成之后的样子（`HistoryStore::apply_unit_edits` 的返回值）。
+///
+/// **不放在 storage**：core 不认识 storage，而排查"模型说改了三块、库里只写了两块"
+/// 要用的就是这一份账。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UnitEditResult {
+    /// 真的写进去的块名，顺序与计划一致。
+    pub blocks: Vec<String>,
+    /// 内容和现状一样、因此没写的块名。不是错误，但必须报出来。
+    pub unchanged: Vec<String>,
+    /// 删掉的消息行数（工具对 = 2）。
+    pub removed: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -471,12 +498,12 @@ fn apply_pending_edits<S: HistoryStore>(
     let mut reports = Vec::new();
     for record in calls {
         // 工具自己拒掉的（块名不合法、目标被锁定、序号越界）不进落库队列。
-        if record.name != "edit_message" || !record.ok {
+        if (record.name != "edit_unit" && record.name != "edit_message") || !record.ok {
             continue;
         }
         let parsed = serde_json::from_str::<serde_json::Value>(&record.arguments)
             .ok()
-            .and_then(|value| crate::tools::parse_edit_message(&value).ok());
+            .and_then(|value| crate::tools::parse_edit_unit(&value).ok());
         let Some(call) = parsed else {
             reports.push(EditReport {
                 target: record.arguments.clone(),
@@ -498,27 +525,33 @@ fn apply_pending_edits<S: HistoryStore>(
                 continue;
             }
         };
-        for (block, content) in call.edits {
-            let label = crate::tools::block_label(block);
-            let report = match store.apply_block_edit(&message_id, block, &content) {
-                Ok(outcome) => EditReport {
-                    target: message_id.to_string(),
-                    block: label,
-                    ok: true,
-                    message: format!(
-                        "第 {} 版，{} → {} token",
-                        outcome.revision, outcome.tokens_before, outcome.tokens_after
-                    ),
-                },
-                // "内容没有变化"不是故障：模型原样重发了一遍。说清楚它没写，别让界面报错。
-                Err(error) => EditReport {
-                    target: message_id.to_string(),
-                    block: label,
-                    ok: false,
-                    message: error,
-                },
-            };
-            reports.push(report);
+        // 一次调用一组动作：整批一个事务（改 / 删 / 落红 / undo 一起）。
+        // 失败也只有一个 report——把"整批没写"拆成三条没写，界面会以为改了三处里的三处都出事了。
+        match store.apply_unit_edits(&message_id, &call.ops) {
+            Ok(outcome) => {
+                for block in &outcome.blocks {
+                    reports.push(EditReport {
+                        target: message_id.to_string(),
+                        block: block.clone(),
+                        ok: true,
+                        message: format!("已落库（删了 {} 条消息）", outcome.removed),
+                    });
+                }
+                for block in &outcome.unchanged {
+                    reports.push(EditReport {
+                        target: message_id.to_string(),
+                        block: block.clone(),
+                        ok: false,
+                        message: "和现在一样，没有写".into(),
+                    });
+                }
+            }
+            Err(error) => reports.push(EditReport {
+                target: message_id.to_string(),
+                block: "整批".into(),
+                ok: false,
+                message: error,
+            }),
         }
     }
     reports
@@ -1721,6 +1754,35 @@ mod tests {
                 revision: 1,
             })
         }
+
+        /// 0.15f：`edit_unit` 在收尾时走这一条。这里只记账，真落库由 `crates/storage` 的测试盯。
+        fn apply_unit_edits(
+            &mut self,
+            message_id: &MessageId,
+            ops: &[BlockOp],
+        ) -> Result<UnitEditResult, String> {
+            let mut blocks = Vec::new();
+            for op in ops {
+                match op {
+                    BlockOp::Set { block, content } => {
+                        self.applied.lock().unwrap().push((
+                            message_id.clone(),
+                            *block,
+                            content.clone(),
+                        ));
+                        blocks.push(crate::edit::block_label(*block));
+                    }
+                    BlockOp::Delete { block } => {
+                        blocks.push(crate::edit::block_label(*block));
+                    }
+                }
+            }
+            Ok(UnitEditResult {
+                blocks,
+                unchanged: Vec::new(),
+                removed: 0,
+            })
+        }
     }
 
     /// D177 / 0.14y：模型调一次 `edit_message` → **这一轮收尾时**三块都落库。
@@ -1773,7 +1835,7 @@ mod tests {
             ]
         });
         let transport = Scripted::new(vec![
-            calls_body(&[("call_1", "edit_message", &arguments.to_string())]),
+            calls_body(&[("call_1", "edit_unit", &arguments.to_string())]),
             text_body("改好了"),
         ]);
         let client = ChatClient::new(transport.clone());
@@ -1832,7 +1894,7 @@ mod tests {
             "blocks": [{ "kind": "reasoning", "content": "写错块名了" }]
         });
         let transport = Scripted::new(vec![
-            calls_body(&[("call_1", "edit_message", &arguments.to_string())]),
+            calls_body(&[("call_1", "edit_unit", &arguments.to_string())]),
             text_body("没改成"),
         ]);
         let client = ChatClient::new(transport.clone());

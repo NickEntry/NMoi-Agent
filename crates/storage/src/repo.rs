@@ -1161,4 +1161,22 @@ impl nmoi_core::session::HistoryStore for Storage {
         Storage::apply_block_edit(self, message_id, block, content)
             .map_err(|error| error.to_string())
     }
+
+    /// 单元级编辑（0.15f / D188）：落红、成对删、undo 日志都在 `blockedit` 那边。
+    ///
+    /// 与 `apply_block_edit` 的分工：那条是"用户手动改一块"的老路（就地改列），
+    /// 这条是"模型一次改几块"的新路（正文落红 + 全程记账 + 每会话封顶）。
+    fn apply_unit_edits(
+        &mut self,
+        message_id: &MessageId,
+        ops: &[nmoi_core::edit::BlockOp],
+    ) -> Result<nmoi_core::session::UnitEditResult, String> {
+        Storage::apply_unit_edits(self, message_id, ops)
+            .map(|outcome| nmoi_core::session::UnitEditResult {
+                blocks: outcome.blocks,
+                unchanged: outcome.unchanged,
+                removed: outcome.removed,
+            })
+            .map_err(|error| error.to_string())
+    }
 }
