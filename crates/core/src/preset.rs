@@ -584,7 +584,12 @@ mod tests {
             state: PresetState::Conflict,
             ..follow.clone()
         };
-        assert_eq!(preset_state(&[follow.clone()]), PresetState::Follow);
+        // 单元素切片用 `from_ref`，不要 `&[x.clone()]`：CI 的新 clippy 会报
+        // `cloned_ref_to_slice_refs`（本机 1.75 的 clippy 还没有这条）。
+        assert_eq!(
+            preset_state(std::slice::from_ref(&follow)),
+            PresetState::Follow
+        );
         assert_eq!(
             preset_state(&[follow.clone(), edited_view.clone()]),
             PresetState::LocalEdited
