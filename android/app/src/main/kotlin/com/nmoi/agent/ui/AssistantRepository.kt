@@ -70,6 +70,35 @@ internal object AssistantRepository {
     /** `a` + 36 进制时间戳：与供应商的 `p…` 同形，一眼能看出是哪个 scope 的 id。 */
     fun newId(): String = "a" + System.currentTimeMillis().toString(36)
 
+    /**
+     * 保证 `default` 那份配置**在库里**（D176）。
+     *
+     * 用户口径：默认助手是"第一次启动时自带的那一个"，之后启动看当前切到哪个。
+     * 所以它不能只是"列表为空时临时合成的一条"——v9 迁移把老会话都归到 `default`，
+     * 如果 `default` 没有文档、列表里就不出现它，那些会话在界面上就没有家（铁律 ②）。
+     *
+     * **写一次就够**：已经有文档就不动（用户改了名字/模型不能被这次补写冲掉）。
+     */
+    suspend fun ensureDefault(databasePath: String): Unit =
+        withStorageHandle(databasePath) { handle ->
+            val state = NmoiFfi.settingsGet(handle, SettingsScope.Assistant, DEFAULT_ID)
+                .getOrNull()
+                ?.optString("state", "")
+            if (state == "ready") {
+                Result.success(Unit)
+            } else {
+                val doc = JSONObject()
+                    .put("name", "默认助手")
+                    .put("provider_id", "")
+                    .put("model_id", "")
+                    .put("thinking", "auto")
+                NmoiFfi.settingsPut(handle, SettingsScope.Assistant, DEFAULT_ID, doc)
+                    .onSuccess { NLog.i("Assistant", "首次启动：写入默认助手") }
+                    .onFailure { NLog.w("Assistant", "写默认助手失败：${it.message}") }
+                    .map { }
+            }
+        }.let { }
+
     /** 全部助手 + 当前那个（D174）。列表为空时给一份默认助手（老版本没有文档）。 */
     suspend fun list(databasePath: String): Result<AssistantList> =
         withStorageHandle(databasePath) { handle ->

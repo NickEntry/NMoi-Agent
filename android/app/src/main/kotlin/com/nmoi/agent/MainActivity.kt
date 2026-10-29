@@ -12,6 +12,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppIconSwitcher
+import com.nmoi.agent.ui.AssistantEditScreen
 import com.nmoi.agent.ui.AssistantEntry
 import com.nmoi.agent.ui.AssistantList
 import com.nmoi.agent.ui.AssistantRepository
@@ -71,8 +72,11 @@ private sealed interface Route {
     /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
     data object Envir : Route
 
-    /** 助手页（D174）：列表 / 改名 / 删除。入口在抽屉的铅笔与「模型与提示词 → 助手」。 */
+    /** 助手列表页（D174）。点铅笔进编辑页。 */
     data object Assistant : Route
+
+    /** 单个助手的编辑页（D176）：名字 / 子 AGENT / 删除。**整页**，不是弹窗。 */
+    data class AssistantEdit(val id: String) : Route
 
     /** 提示词只读页。以后编辑页同样从设置 push 进来。 */
     /** 供应商列表（D157）。编辑页、模型表都从这一页 push 进去。 */
@@ -144,6 +148,8 @@ class MainActivity : ComponentActivity() {
                 // 它跟着 `listReload` 重读——切了助手就是一次列表刷新。
                 val assistantList by produceState<AssistantList?>(initialValue = null, listReload) {
                     value = withContext(Dispatchers.IO) {
+                        // 默认助手是"第一次启动自带的那一个"：少了它，归在 default 的会话就没有家。
+                        AssistantRepository.ensureDefault(databasePath)
                         AssistantRepository.list(databasePath).getOrNull()
                     }
                 }
@@ -200,6 +206,8 @@ class MainActivity : ComponentActivity() {
                     currentId = (route as? Route.Chat)?.sessionId,
                     assistants = assistantList?.rows.orEmpty(),
                     activeAssistantId = activeAssistantId,
+                    // 只有聊天页能从边缘拖出抽屉；子页面上不认这个手势。
+                    canOpenByDrag = route is Route.Chat,
                     onSwitchAssistant = { id ->
                         scope.launch {
                             withContext(Dispatchers.IO) { AssistantRepository.setActive(databasePath, id) }
@@ -238,9 +246,9 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onEditAssistant = { entry ->
-                        // 铅笔 → 助手页（D174）：改名与删除都在那儿，模型仍在聊天页顶部换。
-                        NLog.i("Storage", "打开助手页（来自 ${entry.id}）")
-                        backStack = backStack + Route.Assistant
+                        // 铅笔 → 这个助手的编辑页（D176）：整页，改名/子 AGENT/删除都在那儿。
+                        NLog.i("Storage", "打开助手编辑页（${entry.id}）")
+                        backStack = backStack + Route.AssistantEdit(entry.id)
                     },
                     onMoveConversation = { row, targetAssistant ->
                         scope.launch {
@@ -342,7 +350,16 @@ class MainActivity : ComponentActivity() {
                         Route.Assistant -> AssistantScreen(
                             databasePath = databasePath,
                             onBack = { backStack = backStack.dropLast(1) },
+                            // 铅笔 / 新建之后都进编辑页：整页，不是弹窗。
+                            onEdit = { id -> backStack = backStack + Route.AssistantEdit(id) },
                             // 助手动了（切/名/删）：抽屉与聊天页都要重读。
+                            onChanged = { listReload += 1 },
+                        )
+
+                        is Route.AssistantEdit -> AssistantEditScreen(
+                            databasePath = databasePath,
+                            assistantId = route.id,
+                            onBack = { backStack = backStack.dropLast(1) },
                             onChanged = { listReload += 1 },
                         )
 

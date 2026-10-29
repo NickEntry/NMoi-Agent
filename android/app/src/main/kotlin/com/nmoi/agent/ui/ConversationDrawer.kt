@@ -83,6 +83,14 @@ internal fun ConversationDrawer(
     onOpen: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
     onNewConversation: () -> Unit,
+    /**
+     * 能不能"从边缘拖出来"。
+     *
+     * 子页面（助手页、设置页…）上不该能拖出抽屉：那会让用户以为自己在另一层里滑，
+     * 也让这些页面的返回手势和抽屉手势打架（2026-10-28 用户报的"这页为什么能划出侧边栏"）。
+     * 抽屉打开状态本身仍由外层控制——聊天页用得上。
+     */
+    canOpenByDrag: Boolean = true,
     /** 切到某个助手：只改"当前是哪个"，会话与配置一个都不搬。 */
     onSwitchAssistant: (String) -> Unit = {},
     onNewAssistant: () -> Unit = {},
@@ -129,7 +137,9 @@ internal fun ConversationDrawer(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(open) {
+            .pointerInput(open, canOpenByDrag) {
+                // 关门的手势永远留着（抽屉开着时总得能收）；**开门**只在允许的页面上认。
+                if (!open && !canOpenByDrag) return@pointerInput
                 // 两个方向两套阈值（D136）：开门 350 dp/s / 25%，关门 160 dp/s / 15%。
                 val openFling = 350.dp.toPx()
                 val closeFling = 160.dp.toPx()
@@ -357,6 +367,14 @@ private fun DrawerPanel(
     onOpenAssistantMenu: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
     onNewConversation: () -> Unit,
+    /**
+     * 能不能"从边缘拖出来"。
+     *
+     * 子页面（助手页、设置页…）上不该能拖出抽屉：那会让用户以为自己在另一层里滑，
+     * 也让这些页面的返回手势和抽屉手势打架（2026-10-28 用户报的"这页为什么能划出侧边栏"）。
+     * 抽屉打开状态本身仍由外层控制——聊天页用得上。
+     */
+    canOpenByDrag: Boolean = true,
     onMoveConversation: (ConversationRow, String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {

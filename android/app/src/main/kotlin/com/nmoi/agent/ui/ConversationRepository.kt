@@ -180,9 +180,15 @@ internal object ConversationRepository {
     private fun formatTime(epochMillis: Long): String =
         if (epochMillis <= 0L) "—" else timeFormat.format(Instant.ofEpochMilli(epochMillis))
 
+    /**
+     * 读不到库时的返回：**空列表 + 一句原因**，不拿占位数据充数。
+     *
+     * 以前这里返回 `PlaceholderData.conversations`（三行写死的样例），结果那三行被画成真会话：
+     * 点不开、删不掉、看起来像"库里有东西"，其实是假的（2026-10-28 用户报的就是这个）。
+     * 界面宁可显示"还没有会话 + 一句为什么"，也不要展示点不动的东西。
+     */
     private fun placeholder(note: String): ConversationSnapshot {
-        // 退回占位数据不是"正常情况"，留一条日志：真机上第一句要问的永远是"为什么是占位数据"。
-        NLog.w("Storage", "退回占位数据：$note")
-        return ConversationSnapshot(PlaceholderData.conversations, RowSource.Placeholder, note)
+        NLog.w("Storage", "列表读不到：$note")
+        return ConversationSnapshot(emptyList(), RowSource.Placeholder, note)
     }
 }
