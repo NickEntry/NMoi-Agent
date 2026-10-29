@@ -2311,7 +2311,7 @@ private fun messageSheetItems(
             onClick = onEdit,
         ),
         // D177：增强编辑 = **用户手动改块**（正文 / 思考 / 工具参数），整页编辑、点保存落库。
-        // 模型改消息走工具调用（`edit_message`，这一轮结束时生效），不在这张表里。
+        // 模型改消息走工具调用（`edit_unit`，0.14y 叫 `edit_message`；这一轮结束时生效），不在这张表里。
         //
         // 入口走 `onEditMessage`（MainActivity 那边 push `Route.MessageEdit`）。
         // 以前这里接的是旧的"问模型改"弹窗：那个入口在 0.14x 之后就没有意义了，
