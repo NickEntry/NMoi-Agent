@@ -18,6 +18,8 @@ internal data class TurnOutcome(
     val editedBlocks: Int,
     /** 想改但没写进去的块数（被锁定、内容没变、库拒绝）。有就一定要说。 */
     val failedEdits: Int,
+    /** 这一轮预设注入了什么（给请求日志，不上界面）。 */
+    val presetsLine: String,
 ) {
     /** 提示行那一句。用户要能一眼看出"它到底跑完了没有"。 */
     fun describe(): String {
@@ -131,6 +133,10 @@ internal object TurnRepository {
                 .put("thinking", assistant.thinking)
                     .also { row -> envir?.let { row.put("envir", envirJson(context, it)) } }
                     .put("user_text", text)
+                    // 预设（0.14t / D178）：原文从包里读，用户改过的那份由 core 从库里读。
+                    // 过滤按"这一轮真的声明了哪些工具"算，**由 core 算**——
+                    // 界面这边只负责把原文递进去。
+                    .put("presets", PresetRepository.assetsText(context))
                     .put("now_ms", System.currentTimeMillis())
                     .also { row ->
                         maxTokens?.let { row.put("max_tokens", it) }
@@ -146,6 +152,9 @@ internal object TurnRepository {
                                 "finished=${outcome.finished} cancelled=${outcome.cancelled} " +
                                 "长度=${outcome.assistant?.length ?: 0}",
                         )
+                        // 预设（0.14t）：注入了哪几条、版本多少——用户要这个位置。
+                        // 一条都没注入也要说（"没注入"与"注入了但没显示"是两件事）。
+                        NLog.i("Preset", outcome.presetsLine)
                     }
                     .onFailure { error ->
                         NLog.w("Turn", "失败：kind=${(error as? NmoiFfiException)?.kind} ${error.message}")
@@ -215,6 +224,26 @@ internal object TurnRepository {
             )
             failed.forEach { NLog.w("Turn", "没写成：${it.optString("block")} —— ${it.optString("message")}") }
         }
+        // 预设注入报告（0.14t）：`{"chars":n,"injected":[{"preset","entry","version"}]}`。
+        val presets = envelope.optJSONObject("presets")
+        val injected = presets?.optJSONArray("injected")
+        val presetsLine = buildString {
+            val count = injected?.length() ?: 0
+            if (count == 0) {
+                append("这一轮没有注入预设（工具都没开到、或者预设全被停用）")
+            } else {
+                append("注入 $count 条预设（${presets?.optInt("chars", 0) ?: 0} 字）：")
+                append(
+                    (0 until count).mapNotNull { injected?.optJSONObject(it) }
+                        .joinToString("，") { row ->
+                            val preset = row.optString("preset", "?")
+                            val entry = row.optString("entry", "?")
+                            val version = row.optInt("version", 0)
+                            "$preset/$entry@v$version"
+                        },
+                )
+            }
+        }
         return TurnOutcome(
             assistant = assistant?.takeIf { it.isNotEmpty() },
             rounds = report?.optInt("rounds", 0) ?: 0,
@@ -231,6 +260,7 @@ internal object TurnRepository {
             },
             editedBlocks = edited.size,
             failedEdits = failed.size,
+            presetsLine = presetsLine,
         )
     }
 }

@@ -25,6 +25,9 @@ internal enum class SettingsScope(val wire: String) {
 
     /** 模型服务（D156）：端点 / 模型名 / 供应商类型。密钥不在这里（见 [Vault]）。 */
     Provider("provider"),
+
+    /** 预设词条（0.14t / D178）：key = `<预设 id>/<词条 id>`，值是 `{base_id,base_version,base_hash,content,disabled}`。 */
+    Preset("preset"),
 }
 
 /**
@@ -203,6 +206,27 @@ internal object NmoiFfi {
         nowMs: Long = System.currentTimeMillis(),
     ): Result<JSONObject> = call("settings_put") {
         NativeBridge.putSettingsJson(handle, scope.wire, key, doc.toString(), nowMs)
+    }
+
+    /**
+     * 预设列表 + 四态（0.14t / D178）。
+     *
+     * `assets` 是平台侧从 APK 读出来拼好的原文（[PresetRepository.assetsText]）；
+     * 用户改过的那一份由核心自己从 `settings(scope=preset)` 读。
+     */
+    suspend fun presets(handle: Long, assets: String): Result<JSONObject> =
+        call("presets") { NativeBridge.presetsJson(handle, assets) }
+
+    /**
+     * 这一轮会注入什么（自检用）。真正跑一轮时 `turn_run` 在里面算同一份，
+     * 所以这里的结果与请求里的那一段不会各说各话。
+     */
+    suspend fun presetsInject(
+        handle: Long,
+        assets: String,
+        declared: String,
+    ): Result<JSONObject> = call("presets_inject") {
+        NativeBridge.presetsInjectJson(handle, assets, declared)
     }
 
     /** 删一份文档。幂等：删不存在的返回 `deleted:false`，不是失败。 */

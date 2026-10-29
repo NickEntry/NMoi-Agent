@@ -121,6 +121,12 @@ internal object NativeBridge {
 
     external fun deleteSettingsJson(handle: Long, scope: String, key: String): String
 
+    /** 预设列表 + 四态（0.14t / D178）。`assets` = 从 APK 读出来的预设原文。 */
+    external fun presetsJson(handle: Long, assets: String): String
+
+    /** 这一轮会注入哪几条预设（自检用）。`declared` 是工具名数组的 JSON 文本。 */
+    external fun presetsInjectJson(handle: Long, assets: String, declared: String): String
+
     /**
      * 原生层的三态，给标题下面那行用。**必须分三态，不能两态**：
      * 「没打进包」和「打进去了但符号名不对」在界面上长得一样的话，

@@ -147,6 +147,9 @@ struct TurnInput {
     system: Option<String>,
     /// 可被调用的子助手名单（D176）。空 = 没有，占位符替换成一句人话。
     sub_agents: Vec<SubAgentEntry>,
+    /// 随包的预设原文（D178 / 0.14t）。平台侧从 APK 的 `assets/presets/` 读出来。
+    /// 空 = 这一轮不注入任何预设（老客户端、或者还没接线）。
+    presets: Vec<nmoi_core::preset::AssetPreset>,
 }
 
 /// 解析 `envir`（D172）。**五个字段缺一不可**：少一个就是一条拼不起来的命令行，
@@ -325,6 +328,11 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
     // 组装请求时只剩下"拿去用"，不再有一处能改它的地方。
     let system = optional_str(&root, "system")?.filter(|text| !text.trim().is_empty());
     let sub_agents = parse_sub_agents(&root)?;
+    // 预设有自己那一份解析（`preset::parse_assets`）：形状不对要能点名是哪一份。
+    let presets = match optional_str(&root, "presets")? {
+        Some(text) if !text.trim().is_empty() => crate::preset::parse_assets(&text)?,
+        _ => Vec::new(),
+    };
 
     Ok(TurnInput {
         storage,
@@ -348,6 +356,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         envir: parse_envir(&root)?,
         system,
         sub_agents,
+        presets,
     })
 }
 
@@ -475,7 +484,7 @@ fn trigger_json(trigger: CompressionTrigger) -> Value {
     }
 }
 
-fn turn_json(turn: &SessionTurn) -> Value {
+fn turn_json(turn: &SessionTurn, presets: &Value) -> Value {
     let tool_calls: Vec<Value> = turn
         .report
         .tool_calls
@@ -531,6 +540,9 @@ fn turn_json(turn: &SessionTurn) -> Value {
             "used_tokens": signal.used_tokens,
             "ratio": signal.ratio,
         })),
+        // 预设（D178）：这一轮真的注入了哪几条。用户要的位置是**请求日志**，
+        // 所以这份数据只为日志而给——它不进消息区，也不进库。
+        "presets": presets,
     })
 }
 
@@ -570,6 +582,30 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
                 &nmoi_core::vars::VarTable::new(input.sub_agents.clone()),
             )
         });
+        // 预设（D178 / 0.14t）：按**这一轮真的声明出去的工具**过滤。
+        // 声明表用 `specs_for(policy)` 现算——与 `run_turn` 里没冻结时的那一条同源，
+        // 所以"预设里提到 read_file、这一轮却没声明它"这件事不可能发生。
+        let declared: Vec<String> = registry
+            .specs_for(&policy)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        let injected = crate::preset::inject_json(&storage, &input.presets, &declared);
+        let preset_text = injected
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // 接在**替换完占位符之后**：预设正文里可能会出现 `<var>` 字样，
+        // 那不该被当成占位符再替换一次（它属于用户自己写的内容）。
+        let system = if preset_text.is_empty() {
+            system
+        } else {
+            Some(match system {
+                Some(base) => format!("{base}\n\n{preset_text}"),
+                None => preset_text,
+            })
+        };
         let mut request = match system.as_deref() {
             Some(system) => {
                 ChatRequest::from_turns(provider, &input.model, &[(Role::System, system)])
@@ -652,7 +688,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
 
         // 连接随作用域结束自动关；句柄一直在表里，不用还。
         drop(storage);
-        Ok(turn_json(&turn))
+        Ok(turn_json(&turn, &injected))
     })
 }
 

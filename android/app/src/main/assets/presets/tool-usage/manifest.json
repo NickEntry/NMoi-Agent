@@ -1,0 +1,7 @@
+{
+  "id": "tool-usage",
+  "version": 1,
+  "title": "工具用法",
+  "summary": "读写工作区文件时的两条底线：先读再改、改完说清改了什么",
+  "applies_to": ["read_file", "write_file", "edit_file"]
+}

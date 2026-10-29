@@ -541,6 +541,71 @@ int main(void) {
             check(contains(bad_scope, "conversation"), "错误里列出合法 scope", NULL);
             nmoi_string_free(bad_scope);
 
+            /* ---- 预设（0.14t / D178）---------------------------------- */
+            {
+                const char *assets =
+                    "{\"presets\":[{\"id\":\"tool-usage\",\"version\":1,"
+                    "\"title\":\"工具用法\",\"summary\":\"\","
+                    "\"applies_to\":[\"read_file\"],"
+                    "\"entries\":[{\"id\":\"read-first\",\"title\":\"先读再改\","
+                    "\"content\":\"改文件前先读一遍\"}]}]}";
+
+                char *list = take(nmoi_presets_json(storage_handle, assets), "presets");
+                check(contains(list, "\"total\":1"), "预设列表有一条", list);
+                check(contains(list, "\"state\":\"follow\""), "没改过是 follow", NULL);
+                check(contains(list, "\"upstream_hash\":"), "给出上游摘要（存档用）", NULL);
+                check(contains(list, "\"summary_line\":"), "带一句汇总", NULL);
+                nmoi_string_free(list);
+
+                /* 用户改过一条，但 `base_hash` 写了个对不上的值。
+                 * 按 D178 的判据（`preset::state`）：base_hash 对不上 → **上游也算变了**，
+                 * 于是一边"本地改过"、一边"上游变了" = 冲突。这不是 bug，是"绝不自动覆盖"那条：
+                 * 记不清自己是从哪一版改的，就只能请人来定。 */
+                char *doc =
+                    "{\"base_id\":\"tool-usage/read-first\",\"base_version\":1,"
+                    "\"base_hash\":\"deadbeef\",\"content\":\"我自己的写法\","
+                    "\"disabled\":false}";
+                char *put = take(nmoi_settings_put_json(storage_handle, "preset",
+                                                        "tool-usage/read-first", doc,
+                                                        1700000003000),
+                                 "settings_put(preset)");
+                check(is_ok(put), "预设文档能写进 settings", put);
+                nmoi_string_free(put);
+
+                char *edited = take(nmoi_presets_json(storage_handle, assets), "presets(改过)");
+                check(contains(edited, "\"state\":\"conflict\""),
+                      "base 对不上 → 冲突（不替用户决定）", edited);
+                check(contains(edited, "我自己的写法"), "生效正文是本地那份", NULL);
+                nmoi_string_free(edited);
+
+                char *inject_declared = take(
+                    nmoi_presets_inject_json(storage_handle, assets, "[\"read_file\"]"),
+                    "presets_inject(声明了 read_file)");
+                check(contains(inject_declared, "\"chars\":"), "注入段给出字数", NULL);
+                check(contains(inject_declared, "我自己的写法"), "注入的是本地那份", NULL);
+                check(contains(inject_declared, "\"preset\":\"tool-usage\""), "报出注入了哪一份",
+                      NULL);
+                nmoi_string_free(inject_declared);
+
+                char *inject_none = take(nmoi_presets_inject_json(storage_handle, assets, "[]"),
+                                         "presets_inject(一个工具都没开)");
+                check(contains(inject_none, "\"chars\":0"), "工具没开就一个字都不注入",
+                      inject_none);
+                nmoi_string_free(inject_none);
+
+                char *bad_assets =
+                    take_error(nmoi_presets_json(storage_handle, "{\"presets\":{}}"),
+                               "presets(assets 形状错)");
+                check(contains(bad_assets, "\"kind\":\"bad_argument\"")
+                          && contains(bad_assets, "presets"),
+                      "assets 形状错给 bad_argument 并点名", bad_assets);
+                nmoi_string_free(bad_assets);
+
+                (void)take(nmoi_settings_delete_json(storage_handle, "preset",
+                                                     "tool-usage/read-first"),
+                           "settings_delete(preset)");
+            }
+
             char *deleted =
                 take(nmoi_settings_delete_json(storage_handle, "assistant", "as_1"),
                      "settings_delete");

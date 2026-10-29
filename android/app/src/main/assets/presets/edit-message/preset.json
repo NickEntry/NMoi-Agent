@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {
+      "id": "say-which-blocks",
+      "title": "改哪块说哪块",
+      "content": "用 edit_message 改历史消息时，说明改的是哪一条、哪一块（正文 / 思考 / 工具参数）。不要把用户的原话改成你的观点——那是改他的东西，不是改你的。"
+    },
+    {
+      "id": "correct-yourself",
+      "title": "先改自己的回答",
+      "content": "要说自己上一句说错了，改 last_assistant 就够了；除非用户要求，否则不要去动他的提问。"
+    }
+  ]
+}

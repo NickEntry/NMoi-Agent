@@ -1,0 +1,7 @@
+{
+  "id": "edit-message",
+  "version": 1,
+  "title": "改消息",
+  "summary": "用 edit_message 改历史消息时的两条规矩",
+  "applies_to": ["edit_message"]
+}

@@ -34,6 +34,8 @@ import com.nmoi.agent.ui.LogSettingsScreen
 import com.nmoi.agent.ui.MessageEditScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
+import com.nmoi.agent.ui.PresetEditScreen
+import com.nmoi.agent.ui.PresetScreen
 import com.nmoi.agent.ui.ProviderEditScreen
 import com.nmoi.agent.ui.ProviderListScreen
 import com.nmoi.agent.ui.PromptsScreen
@@ -90,6 +92,12 @@ private sealed interface Route {
     data class ProviderEdit(val id: String?) : Route
 
     data object Prompts : Route
+
+    /** 预设列表（0.14t / D178）：四态徽标 + 逐条编辑。 */
+    data object Preset : Route
+
+    /** 一份预设的整页编辑：正文可改，`base_version` 只显示不可改。 */
+    data class PresetEdit(val id: String) : Route
 
     /** 日志索引页：三种通道各一行，右上角齿轮进设置。 */
     data object Logs : Route
@@ -333,6 +341,24 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Preset -> PresetScreen(
+                            context = applicationContext,
+                            databasePath = remember { File(filesDir, "nmoi.db").absolutePath },
+                            reloadKey = messageReload,
+                            onOpen = { id -> backStack = backStack + Route.PresetEdit(id) },
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
+                        is Route.PresetEdit -> PresetEditScreen(
+                            context = applicationContext,
+                            databasePath = remember { File(filesDir, "nmoi.db").absolutePath },
+                            presetId = route.id,
+                            reloadKey = messageReload,
+                            onBack = { backStack = backStack.dropLast(1) },
+                            // 存完让列表与请求都重读：四态是算出来的，不重读就还是旧徽标。
+                            onSaved = { messageReload += 1 },
+                        )
+
                         Route.Logs -> LogListScreen(
                             onOpen = { kind -> backStack = backStack + Route.LogChannel(kind) },
                             onOpenSettings = { backStack = backStack + Route.LogSettings },
@@ -435,6 +461,7 @@ class MainActivity : ComponentActivity() {
                                 onOpenPrompts = { backStack = backStack + Route.Prompts },
                                 onOpenProvider = { backStack = backStack + Route.Provider },
                                 onOpenAssistants = { backStack = backStack + Route.Assistant },
+                                onOpenPresets = { backStack = backStack + Route.Preset },
                                 onOpenLicenses = { backStack = backStack + Route.Licenses },
                                 onBack = { backStack = backStack.dropLast(1) },
                             )

@@ -841,6 +841,64 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_applyBlockEditJson<'l
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.presetsJson(handle, assets)`：预设列表 + 四态（D178 / 0.14t）。
+///
+/// `assets` 是平台侧从 APK 的 `assets/presets/` 读出来拼好的 JSON——
+/// core 不认识文件系统，预设原文只能这么进来。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_presetsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    assets: JString<'local>,
+) -> jstring {
+    let assets = read_string(&mut env, &assets);
+    let text = guarded(move || {
+        let Some(assets) = assets else {
+            return bad_string();
+        };
+        let Ok(c_assets) = CString::new(assets) else {
+            return take_json(crate::json::err_json("bad_argument", "assets 含 NUL 字节"));
+        };
+        take_json(crate::preset::nmoi_presets_json(
+            handle as u64,
+            c_assets.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.presetsInjectJson(handle, assets, declared)`：这一轮注入了哪几条。
+///
+/// 只在需要"先看一眼会注入什么"的地方用（界面/自检）；真正跑一轮时 `turn_run`
+/// 自己在里面算同一份，两边不会各算各的。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_presetsInjectJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    assets: JString<'local>,
+    declared: JString<'local>,
+) -> jstring {
+    let assets = read_string(&mut env, &assets);
+    let declared = read_string(&mut env, &declared);
+    let text = guarded(move || match (assets, declared) {
+        (Some(assets), Some(declared)) => {
+            let (Ok(c_assets), Ok(c_declared)) = (CString::new(assets), CString::new(declared))
+            else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::preset::nmoi_presets_inject_json(
+                handle as u64,
+                c_assets.as_ptr(),
+                c_declared.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 // ---------------------------------------------------------------------------
 // 工作区（D159）：`System-Shell` 要有起点，六个文件工具也要先绑一个根
 // ---------------------------------------------------------------------------

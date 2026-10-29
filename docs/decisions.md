@@ -4051,3 +4051,52 @@ sub_agent(id, instruction, session?, injections?, inherit?)
 6. **`EditRepository` 正式退役**（D163 那条错路线的入口）：文件与 `EditFencesTest` 八条一起删，
    `build.gradle.kts` 的 junit 依赖留着（下一个纯逻辑件照样要用）。
    删的理由不是"没人调"，是"它代表的那条路线（模型回围栏、客户端解析）已经被 D177 取代"。
+
+## D178 预设注入 + `base-version`（0.14t，2026-10-29 实现）
+
+D159 定了"只有对应工具开着才注入"和"`base-version` 的口径"，这一版把它做成能用的东西。
+三处当时没写、做的时候必须定的，先记在这儿。
+
+**1. 落库存 `settings`，不动 schema。**
+
+词条的用户改动放 `settings(scope="preset", key="<预设 id>/<词条 id>")`，值是
+`{base_id, base_version, base_hash, content, disabled}`。理由：`(scope, key) → JSON` 这套
+本来就是为"加一类设置"准备的（D86），而加列要一次**单向**迁移——为一个"用户可能一条都不改"
+的功能动 schema 不划算。代价说清楚：这些文档不进列查询，导出/备份跟着 `settings` 表走，
+真要拿来做批量统计得先解 JSON。
+
+**2. 四态按"词条"算，列表页按"预设"取最要紧的那一条。**
+
+一份预设 = 一个 `applies_to` + 若干词条。用户改的是**词条正文**（标题与工具名是 wire 契约，
+不许改）。所以：`Follow < LocalEdited < UpstreamNewer < Conflict`，预设徽标取最要紧的那条
+（`preset::preset_state`）——列表页只有一行位置放徽标，得有"这份现在要不要你管"的答案。
+
+**3. 只有三件事由 core 算：四态、注入哪几条、注入那一段长什么样。**
+
+界面**不自己推四态**（`nmoi_presets_json` 给什么显示什么），`turn_run` 与列表页共用
+`preset::state / entry_view / select / render` 同一份。理由：显示与注入一旦各算一遍，
+就会出现"列表说跟随、请求里注入的是旧正文"这种没人能复盘的错。
+
+**其余形状**
+
+- assets：`android/app/src/main/assets/presets/<id>/{manifest.json,preset.json}`。
+  `manifest` 给元信息（`id`/`version`/`title`/`summary`/`applies_to`），`preset.json` 给词条。
+  **目录名必须等于 `manifest.id`**（否则 `base_id` 会跟着错，四态静默算歪）；缺一个文件就跳过并记日志。
+- 随包三份（我起草，用户可改）：`tool-usage`（v1，需要 read/write/edit_file）、
+  `shell-safety`（v1，需要两把 shell）、`edit-message`（v1，需要 `edit_message`）。
+- 注入位置：system 提示词**替换完占位符之后**接一段 `## 预设（工具相关规则）`。
+  顺序固定（预设 id 升序 → 词条顺序），否则缓存前缀整段作废。
+- 过滤：`declared = registry.specs_for(policy)`——与 `run_turn` 里"没冻结时"的那一条同源。
+- 请求日志：`turn_run` 返回 `presets:{text,chars,injected:[{preset,entry,version}]}`，
+  Kotlin 写一行 `NLog.i("Preset", …)`。**一条没注入也要说**（"没注入"和"注入了但没显示"是两件事）。
+- 「更新 / 用上游」= 删文档（回到跟随）；「保留本地」= **只把 base 前进到上游那一版**，
+  正文不动 → 状态从冲突变"已改"。**绝不自动覆盖**：冲突不点就不动。
+- 空正文不许保存（要停用就点「停用」）；停用的词条不进请求，但还留在列表里（基线条目不可删，只能禁用）。
+- `base_version` 在界面上**没有可以改它的控件**（D159 的双层不可改的第一层）。
+  第二层在保存路径：视图把**用户上次对齐的那一版**（`entry.base`，没改过就是 `null`）带出来，
+  界面保存正文时把它原样写回；只有视图里没有 base（第一次改）才用上游这一刻的版本。
+  只有「保留本地」显式传上游那一版——那是它的定义。这条不做的话，一个"冲突"里改几个字保存
+  就会变成"已改"，等于替用户把上游的新版悄悄盖掉了。
+
+**没做的**：整份"一键更新"（会让某几条本地改动一起消失，属于"绝不自动覆盖"的反面）；
+`applies_to` 认能力位（现在只认工具名，够用且好排查）；预设导出/导入。

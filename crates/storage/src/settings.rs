@@ -42,6 +42,11 @@ pub enum Scope {
     /// （`docs/secrets.md` 的 L1）。这里存的是"能不能发请求"的那几个非敏感字段，
     /// 所以导出/备份带着它走也不会带走凭据。
     Provider,
+    /// 预设词条（0.14t / D178）。key = `<预设 id>/<词条 id>`，值是[`nmoi_core::preset::EntryDoc`]。
+    ///
+    /// **不放 schema 里**：`(scope, key) → JSON` 这套本来就够用，
+    /// 而加列要一次单向迁移——为一个"用户可能一条都不改"的功能动 schema 不划算。
+    Preset,
     /// token 估算的校准（D95）。key = `模型|级别|内容类`。
     ///
     /// 严格说这是派生数据，不是设置；但它和设置一样要跨重启活着，
@@ -57,6 +62,7 @@ impl Scope {
             Scope::Conversation => "conversation",
             Scope::Roles => "roles",
             Scope::Provider => "provider",
+            Scope::Preset => "preset",
             Scope::Calibration => "calibration",
         }
     }
@@ -68,6 +74,7 @@ impl Scope {
             "conversation" => Some(Scope::Conversation),
             "roles" => Some(Scope::Roles),
             "provider" => Some(Scope::Provider),
+            "preset" => Some(Scope::Preset),
             "calibration" => Some(Scope::Calibration),
             _ => None,
         }

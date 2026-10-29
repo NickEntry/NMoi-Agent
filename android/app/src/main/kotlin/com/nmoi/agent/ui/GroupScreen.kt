@@ -30,6 +30,7 @@ internal fun GroupScreen(
     onOpenPrompts: () -> Unit,
     onOpenProvider: () -> Unit,
     onOpenAssistants: () -> Unit,
+    onOpenPresets: () -> Unit,
     onOpenLicenses: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -67,6 +68,12 @@ internal fun GroupScreen(
                         title = "供应商",
                         subtitle = "多套端点 / 密钥 / 模型；「当前」那一套用于发请求（密钥单独加密存，不进库）",
                         onClick = onOpenProvider,
+                    )
+                    NavRow(
+                        title = "预设",
+                        subtitle = "随包的几条工具规矩；只在对应工具真的声明出去的那一轮注入。" +
+                            "四态：跟随 / 已改 / 有新 / 冲突（更新前绝不自动覆盖）",
+                        onClick = onOpenPresets,
                     )
                     NavRow(
                         title = "七条压缩提示词",

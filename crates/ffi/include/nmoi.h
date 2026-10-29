@@ -204,6 +204,19 @@ char *nmoi_settings_get_json(uint64_t handle, const char *scope, const char *key
 char *nmoi_settings_list_json(uint64_t handle, const char *scope, int64_t limit);
 char *nmoi_settings_delete_json(uint64_t handle, const char *scope, const char *key);
 
+/* ---- 预设（0.14t / D178） ------------------------------------------------- */
+
+/* 列表 + 四态。`assets` 是平台侧从 APK 的 assets/presets/ 读出来拼好的 JSON：
+ *   {"presets":[{"id","version","title","summary","applies_to":[…],
+ *                "entries":[{"id","title","content"}]}]}
+ * 用户改过的那一份由核心自己从 settings(scope="preset") 读。
+ * 出参：{"items":[…],"summary":{…},"summary_line":"…","total":n} */
+char *nmoi_presets_json(uint64_t handle, const char *assets);
+
+/* 这一轮会注入哪几条（`declared` 是工具名数组的 JSON 文本）。
+ * 出参：{"text":"…","chars":n,"injected":[{"preset","entry","version"}]} */
+char *nmoi_presets_inject_json(uint64_t handle, const char *assets, const char *declared);
+
 /* 设置被重置的记录。digest 是原值哈希的前 16 位，不是原值（可能夹着密钥）。 */
 char *nmoi_settings_repairs_json(uint64_t handle, int64_t limit);
 char *nmoi_settings_trim_repairs_json(uint64_t handle, int64_t keep);

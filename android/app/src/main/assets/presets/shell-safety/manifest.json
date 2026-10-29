@@ -1,0 +1,7 @@
+{
+  "id": "shell-safety",
+  "version": 1,
+  "title": "命令安全",
+  "summary": "跑命令前先说清要干什么；输出只摘有用的行",
+  "applies_to": ["System-Shell", "WorkSpace-EnvirShell"]
+}
