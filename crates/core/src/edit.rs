@@ -177,6 +177,11 @@ pub enum EditError {
     NoSuchToolResult { message: MessageId, index: usize },
     #[error("没有给任何改动：要改就指明改哪一块")]
     NoOps,
+    /// D184 第 5 条：删除类先过覆盖率，硬事实缺失就拒绝执行。
+    #[error(
+        "删掉「{block}」会丢掉「{fact}」——这段内容的别处没有它。要删就先把那句话写进正文，或者别删"
+    )]
+    WouldLoseFact { fact: String, block: String },
 }
 
 /// 应用一次块级编辑。
@@ -541,6 +546,51 @@ pub fn plan_ops(
         }
     }
 
+    // 5. 删除类先过覆盖率（D184 的 5）：被删块里的**硬事实**（路径 / 命令 / 标识符），
+    //    必须在"这段单元剩下的文本"里还找得到。找不到就是删掉谁都拼不回来的东西——
+    //    宁可让模型先把那句话写进正文，也别让它无声地删走一条路径。
+    //
+    //    判据用"出现次数"而不是"字符串替换后再查"：同一段文字可能在这一条消息里出现两次，
+    //    替换一次就以为别处还有，那正好把该拦的放过。
+    //
+    //    **工具参数不查**：它是机器的输入（`{"path":"a"}`），自带的键名永远只出现在自己里面，
+    //    照查的话每一对工具块都删不掉。参数的风险由"成对删"那条规则管，不留孤儿就够了。
+    let deletes: Vec<&PlannedOp> = plan
+        .ops
+        .iter()
+        .filter(|op| op.after.is_none() && !matches!(op.block, BlockSelector::ToolCall { .. }))
+        .collect();
+    if !deletes.is_empty() {
+        let mut whole = String::new();
+        for message in &unit.messages {
+            whole.push_str(&message.content);
+            whole.push('\n');
+            if let Some(reasoning) = &message.reasoning {
+                whole.push_str(reasoning);
+                whole.push('\n');
+            }
+            for call in &message.tool_calls {
+                whole.push_str(&call.arguments);
+                whole.push('\n');
+            }
+        }
+        for op in &deletes {
+            for fact in crate::facts::extract_text(&op.before, true) {
+                if fact.severity != crate::facts::Severity::Hard {
+                    continue;
+                }
+                let everywhere = whole.matches(&fact.key).count();
+                let in_block = op.before.matches(&fact.key).count();
+                if everywhere <= in_block {
+                    return Err(EditError::WouldLoseFact {
+                        fact: fact.key,
+                        block: op.label.clone(),
+                    });
+                }
+            }
+        }
+    }
+
     Ok(plan)
 }
 
@@ -898,6 +948,90 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, EditError::CannotDeleteOutput), "{error}");
+    }
+
+    /// 删掉唯一一份硬事实（这里是一条路径）要被拦住（D184 第 5 条）。
+    #[test]
+    fn delete_is_blocked_when_the_block_is_the_only_place_with_that_fact() {
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}")],
+            5,
+            0,
+            LogicalClock::new(1),
+        );
+        let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        let unit_id = unit.id.clone();
+        let result = Message::tool_result(
+            MessageId::new(session, 2),
+            "c1",
+            "读到 crates/core/src/runtime.rs 第 12 行",
+            3,
+            0,
+            LogicalClock::new(2),
+        )
+        .with_unit(unit_id);
+        unit.add_result(result).unwrap();
+
+        let anchor = unit.messages[0].id.clone();
+        let error = plan_ops(
+            &unit,
+            &anchor,
+            &[
+                BlockOp::Delete {
+                    block: BlockSelector::ToolCall { index: 0 },
+                },
+                BlockOp::Delete {
+                    block: BlockSelector::ToolResult { index: 0 },
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EditError::WouldLoseFact { .. }),
+            "删掉唯一一份路径要拦住：{error}"
+        );
+        assert!(error.to_string().contains("runtime.rs"), "{error}");
+    }
+
+    /// 同一个事实在别处还有，就不该拦——否则"删掉一条重复的结果"会被误伤。
+    #[test]
+    fn delete_is_allowed_when_the_fact_survives_elsewhere() {
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}")],
+            5,
+            0,
+            LogicalClock::new(1),
+        )
+        .with_reasoning("要看的是 crates/core/src/runtime.rs");
+        let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        let unit_id = unit.id.clone();
+        let result = Message::tool_result(
+            MessageId::new(session, 2),
+            "c1",
+            "读到 crates/core/src/runtime.rs 第 12 行",
+            3,
+            0,
+            LogicalClock::new(2),
+        )
+        .with_unit(unit_id);
+        unit.add_result(result).unwrap();
+
+        let anchor = unit.messages[0].id.clone();
+        // 只删结果那一条：思考块里还留着同一个路径。工具块单边删仍然要拒——
+        // 所以这一条测的是"删思考块"这条路。
+        let plan = plan_ops(
+            &unit,
+            &anchor,
+            &[BlockOp::Delete {
+                block: BlockSelector::Thinking,
+            }],
+        )
+        .unwrap();
+        assert_eq!(plan.ops.len(), 1);
     }
 
     #[test]
