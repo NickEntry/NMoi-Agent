@@ -6,7 +6,7 @@
 
 | 目录 | 内容 | 来源 |
 |---|---|---|
-| `actions/` | 界面动作图标 **35** 个 | [Lucide](https://lucide.dev) `lucide-static@1.61.0`，ISC（其中 11 个源自 Feather，MIT） |
+| `actions/` | 界面动作图标 **36** 个 | [Lucide](https://lucide.dev) `lucide-static@1.61.0`，ISC（其中 11 个源自 Feather，MIT） |
 | `providers/` | **供应商**图标 **21** 个 | [Lobe Icons](https://github.com/lobehub/lobe-icons) `@lobehub/icons-static-svg@1.97.0`，MIT（彩色） |
 | `models/` | **模型**图标 **16** 个 | 同上（彩色） |
 | `thinking-*.svg`（本级） | 思考强度七档 | 自绘（D69），"仪表盘"语法 |
@@ -85,6 +85,7 @@
 | `x` | 关闭 | 面板、对话框 |
 | `check` | 完成/已选 | 多选、设置确认 |
 | `heart` | 收藏（描边=未收藏，实心=已收藏） | 模型选择面板 |
+| `ban` | 清除「指定的模型」 | 助手页（子 AGENT） |
 
 `thinking-*.svg` 的七档见 D69：档位用环数、颜色表示强度、针表示"现在在哪"，
 18px 落在 chip 中心（偏移 0.28em）。它不是线性图标，不参与上面的描边规则。

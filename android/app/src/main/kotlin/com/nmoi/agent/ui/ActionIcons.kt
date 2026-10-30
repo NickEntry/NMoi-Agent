@@ -270,6 +270,18 @@ internal object ActionIcons {
         fill(HEART_PATH)
     }
 
+    /**
+     * Lucide `ban.svg`：清除「被调用时指定的模型」（用户 2026-10-31 要的那个 🚫）。
+     *
+     * 形状就是"圆 + 左上到右下一条对角线，两端落在圆上"：圆心 (12,12)、半径 10，
+     * 对角线端点 (4.929,4.929) → (19.071,19.071)，正好是 12 ∓ 10/√2。
+     */
+    val Ban: ImageVector = buildVector("ban") {
+        // `<circle r="10">` 写成两段半圆弧：PathParser 认 a 命令，跟 settings 那个同心圆一个写法。
+        stroke("M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0")
+        stroke("M4.929 4.929 19.071 19.071")
+    }
+
 }
 
 private fun buildVector(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

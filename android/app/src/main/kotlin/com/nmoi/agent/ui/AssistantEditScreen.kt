@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -31,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -72,6 +75,20 @@ internal fun AssistantEditScreen(
     var noticeIsError by remember(assistantId) { mutableStateOf(false) }
     var busy by remember(assistantId) { mutableStateOf(false) }
     var confirmDelete by remember(assistantId) { mutableStateOf(false) }
+    // 模型选择面板（0.15x 后半）：只在「被调用时」那一格用。
+    // 这个助手**自己**的模型仍然只在聊天页顶部换——同一件事摆两处，迟早给出两个答案。
+    var modelSheet by remember(assistantId) { mutableStateOf(false) }
+
+    // 面板要的 (供应商, 模型) 清单。读失败给空表：面板自己会说"还没有可用的模型"，
+    // 总好过摆一份看着有、点了没反应的列表。
+    val choices by produceState(
+        initialValue = emptyList<Pair<ProviderEntry, ProviderModel>>(),
+        assistantId,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            AssistantRepository.choices(databasePath).getOrElse { emptyList() }
+        }
+    }
 
     LaunchedEffect(assistantId) {
         val (loaded, page, count) = withContext(Dispatchers.IO) {
@@ -155,6 +172,20 @@ internal fun AssistantEditScreen(
                 },
             )
         }
+    }
+
+    // 「被调用时用哪个模型」这一格要显示的东西。三态：没指定 / 指定了且在 / 指定了但已经不在了。
+    // 第三种必须单独写：显示一个"看着正常"的名字，等真调用时才发现对不上，是最难查的一种。
+    val specifiedModel = subProviderId.isNotBlank() && subModelId.isNotBlank()
+    val chosenModel = choices.firstOrNull {
+        it.first.id == subProviderId && it.second.id == subModelId
+    }
+    val modelChoiceLabel = when {
+        !specifiedModel -> "用这个助手自己的模型"
+        chosenModel != null ->
+            "${chosenModel.first.name.ifBlank { chosenModel.first.id }} / ${chosenModel.second.displayName}"
+
+        else -> "$subProviderId / $subModelId"
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -288,6 +319,73 @@ internal fun AssistantEditScreen(
                             text = "复用 = 两次调用互相看得见；怀疑串味就选「每次新建」。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+
+                        // —— 被调用时用哪个模型（0.15x 后半）——
+                        //
+                        // 空 = 跟着这个助手自己的模型走；指定了就**钉死**，
+                        // 免得用户切一下主助手，子 AGENT 的口味跟着变。
+                        Label("被调用时用哪个模型")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable(enabled = !busy) { modelSheet = true },
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = modelChoiceLabel,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (specifiedModel) {
+                                            MaterialTheme.colorScheme.onSurface
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Icon(
+                                        imageVector = ActionIcons.ChevronDown,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .padding(start = 6.dp)
+                                            .size(14.dp),
+                                    )
+                                }
+                            }
+                            // 🚫 只在"已经指定了"时出现：没指定时它是个没有意义的按钮
+                            // （点了也没东西可清），这类"看着能点、点完什么都没发生"正是要避开的。
+                            if (specifiedModel) {
+                                IconActionButton(
+                                    image = ActionIcons.Ban,
+                                    description = "清除指定模型",
+                                    onClick = {
+                                        subProviderId = ""
+                                        subModelId = ""
+                                    },
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (specifiedModel && chosenModel == null) {
+                                "指定的这个模型已经不在供应商列表里了：要么重新选一个，要么清掉。"
+                            } else {
+                                "清掉就跟着这个助手的模型走；指定之后，子 AGENT 那一轮钉在这个模型上。"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (specifiedModel && chosenModel == null) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             modifier = Modifier.padding(top = 6.dp),
                         )
                     }
@@ -426,6 +524,32 @@ internal fun AssistantEditScreen(
                 }
                 Spacer(Modifier.height(24.dp))
             }
+        }
+
+        // 面板挂在 `Surface` 这一层，**不是**塞进上面那个 Column 里。
+        // `Surface` 的内容本身就是一个 Box（M3 的实现），所以这里只写一个 if，
+        // 它就盖在整页之上；塞进 Column 的话 `fillMaxSize` 只能拿到"剩下那点高度"，
+        // 遮罩会变成只盖住下半屏（ui-taste 2026-10-27 那条反复踩过）。
+        if (modelSheet) {
+            ModelPickerSheet(
+                databasePath = databasePath,
+                title = "被调用时用哪个模型",
+                choices = choices.map { (provider, model) -> ModelChoice(provider, model) },
+                selected = if (specifiedModel) ModelFavorites.key(subProviderId, subModelId) else null,
+                emptyHint = "还没有可用的模型：先去 设置 → 模型与提示词 → 模型服务 里填一套端点与模型",
+                onPick = { choice ->
+                    subProviderId = choice.provider.id
+                    subModelId = choice.model.id
+                    modelSheet = false
+                    notice = "已选 ${choice.model.displayName}：点右上「保存」生效"
+                    noticeIsError = false
+                },
+                onNotice = {
+                    notice = it
+                    noticeIsError = false
+                },
+                onDismiss = { modelSheet = false },
+            )
         }
     }
 }
