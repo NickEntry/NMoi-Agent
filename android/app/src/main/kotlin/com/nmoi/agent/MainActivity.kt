@@ -193,13 +193,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 只在栈深 > 1 时接管返回键：根页面（聊天页）按返回应当退出应用，
+                // 返回键优先级（0.15j / D184）：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出。
+                // Compose 里**后注册的优先**，所以抽屉这一条要先注册：
+                // 从抽屉进的设置页按返回，先回聊天页（抽屉还开着），再按一次才收抽屉。
+                BackHandler(enabled = drawerOpen) { drawerOpen = false }
+                // 只在栈深 > 1 时接管：根页面按返回应当退出应用，
                 // 而不是被我们拦下来变成"什么都不发生"。全局只注册这一处，子页面不各自注册。
                 BackHandler(enabled = backStack.size > 1) {
                     backStack = backStack.dropLast(1)
                 }
-                // 后注册者优先：抽屉开着时，返回先关抽屉，而不是直接退页面。
-                BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
                 // D125 的"无感建会话"：路由原地换掉（栈深不变），页面不重建、不闪。
                 // 返回 null = 建不出来，调用方负责把原因写在界面上，不静默丢字。
@@ -298,14 +300,15 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onOpen = { drawerOpen = true },
+                    // 子页面要压在抽屉上面（0.15j ①）：层级 = 聊天页(0) < 抽屉(1) < 子页面(2)。
+                    contentAboveDrawer = route !is Route.Chat,
                     onOpenConversation = { picked ->
                         drawerOpen = false
                         backStack = listOf(Route.Chat(picked.title, picked.id.ifEmpty { null }))
                     },
-                    onOpenSettings = {
-                        drawerOpen = false
-                        backStack = backStack + Route.Settings
-                    },
+                    // 从抽屉进设置页：**不收回抽屉**（0.15j ②）。页面压在抽屉上面，
+                    // 返回聊天页时它还在，再按一次返回（或点遮罩）才收。
+                    onOpenSettings = { backStack = backStack + Route.Settings },
                     onClose = { drawerOpen = false },
                 ) {
                     when (route) {

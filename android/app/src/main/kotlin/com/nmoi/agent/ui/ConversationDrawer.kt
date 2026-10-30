@@ -44,6 +44,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -97,6 +98,14 @@ internal fun ConversationDrawer(
      * 抽屉打开状态本身仍由外层控制——聊天页用得上。
      */
     canOpenByDrag: Boolean = true,
+    /**
+     * 现在画的内容是不是**压在抽屉上面**的一层（0.15j ①）。
+     *
+     * 层级：聊天页(0) < 抽屉(1) < 子页面(2)。抽屉是后绘制的，天生盖住聊天页；
+     * 子页面要盖住抽屉，只能靠这一层把自己抬上去。不给它抬，就会出现
+     * "从抽屉进了设置页，左边还露着半截抽屉"。
+     */
+    contentAboveDrawer: Boolean = false,
     /** 切到某个助手：只改"当前是哪个"，会话与配置一个都不搬。 */
     onSwitchAssistant: (String) -> Unit = {},
     onNewAssistant: () -> Unit = {},
@@ -241,7 +250,13 @@ internal fun ConversationDrawer(
                 }
             },
     ) {
-        content()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(if (contentAboveDrawer) 2f else 0f),
+        ) {
+            content()
+        }
 
         if (manual) {
             val progress = (shownPx / widthPx).coerceIn(0f, 1f)
