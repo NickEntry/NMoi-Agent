@@ -92,6 +92,14 @@ object EditDocSyntax {
     /** `<nmoi:tool index="3">` */
     private val TOOL_OPEN = Regex("""^<nmoi:tool index="(\d+)">$""")
 
+    /** 工具块里的四个子块，顺序即报错时提示的顺序。 */
+    val SUBS = listOf(
+        Triple(NAME_OPEN, NAME_CLOSE, "name"),
+        Triple(INPUT_OPEN, INPUT_CLOSE, "input"),
+        Triple(STDOUT_OPEN, STDOUT_CLOSE, "stdout"),
+        Triple(STDERR_OPEN, STDERR_CLOSE, "stderr"),
+    )
+
     fun toolOpen(index: Int): String = """<nmoi:tool index="$index">"""
 
     /** 这一行是不是工具块开头；是就返回序号，不是返回 null。 */
@@ -191,8 +199,30 @@ fun parseEditDocument(text: String): EditDocument {
             cursor++
             continue
         }
+        val tag = raw.trim()
+        // 单行形：`<nmoi:output>正文</nmoi:output>`。手写短块时很常见（工具名、一行正文），
+        // 要求"结束标签必须单独一行"会把这种写法直接判死，那不是严格，是不好用。
+        val onOneLineOutput =
+            oneLineBlock(tag, EditDocSyntax.OUTPUT_OPEN, EditDocSyntax.OUTPUT_CLOSE)
+        val onOneLineThinking =
+            oneLineBlock(tag, EditDocSyntax.THINKING_OPEN, EditDocSyntax.THINKING_CLOSE)
         when {
-            raw.trim() == EditDocSyntax.OUTPUT_OPEN -> {
+            onOneLineOutput != null -> {
+                if (output != null) {
+                    throw EditDocException(line, "正文块只能有一块（这是第二块）")
+                }
+                output = onOneLineOutput
+                cursor++
+            }
+            onOneLineThinking != null -> {
+                if (thinkingSeen) {
+                    throw EditDocException(line, "思考块只能有一块（这是第二块）")
+                }
+                thinkingSeen = true
+                thinking = onOneLineThinking
+                cursor++
+            }
+            tag == EditDocSyntax.OUTPUT_OPEN -> {
                 if (output != null) {
                     throw EditDocException(line, "正文块只能有一块（这是第二块）")
                 }
@@ -200,7 +230,7 @@ fun parseEditDocument(text: String): EditDocument {
                 output = joinLines(lines, cursor + 1, end)
                 cursor = end + 1
             }
-            raw.trim() == EditDocSyntax.THINKING_OPEN -> {
+            tag == EditDocSyntax.THINKING_OPEN -> {
                 if (thinkingSeen) {
                     throw EditDocException(line, "思考块只能有一块（这是第二块）")
                 }
@@ -209,8 +239,8 @@ fun parseEditDocument(text: String): EditDocument {
                 thinking = joinLines(lines, cursor + 1, end)
                 cursor = end + 1
             }
-            EditDocSyntax.toolIndex(raw) != null -> {
-                val index = EditDocSyntax.toolIndex(raw)!!
+            EditDocSyntax.toolIndex(tag) != null -> {
+                val index = EditDocSyntax.toolIndex(tag)!!
                 if (index != tools.size) {
                     throw EditDocException(
                         line,
@@ -254,31 +284,7 @@ private fun parseToolBlock(
     var stdout: String? = null
     var stderr: String? = null
 
-    var cursor = from
-    while (cursor < end) {
-        val raw = lines[cursor]
-        val line = cursor + 1
-        if (raw.isBlank()) {
-            cursor++
-            continue
-        }
-        val tag = raw.trim()
-        val (open, close, slot) = when (tag) {
-            EditDocSyntax.NAME_OPEN ->
-                Triple(EditDocSyntax.NAME_OPEN, EditDocSyntax.NAME_CLOSE, "name")
-            EditDocSyntax.INPUT_OPEN ->
-                Triple(EditDocSyntax.INPUT_OPEN, EditDocSyntax.INPUT_CLOSE, "input")
-            EditDocSyntax.STDOUT_OPEN ->
-                Triple(EditDocSyntax.STDOUT_OPEN, EditDocSyntax.STDOUT_CLOSE, "stdout")
-            EditDocSyntax.STDERR_OPEN ->
-                Triple(EditDocSyntax.STDERR_OPEN, EditDocSyntax.STDERR_CLOSE, "stderr")
-            else -> throw EditDocException(
-                line,
-                "工具块里不认这一行（只认 name / input / stdout / stderr 四个子块）：$tag",
-            )
-        }
-        val closeAt = indexOf(lines, cursor + 1, end, close, line)
-        val text = joinLines(lines, cursor + 1, closeAt)
+    fun assign(slot: String, text: String, line: Int) {
         when (slot) {
             "name" -> {
                 if (name != null) throw EditDocException(line, "工具名只能有一份")
@@ -297,16 +303,53 @@ private fun parseToolBlock(
                 stderr = text
             }
         }
+    }
+
+    var cursor = from
+    while (cursor < end) {
+        val raw = lines[cursor]
+        val line = cursor + 1
+        if (raw.isBlank()) {
+            cursor++
+            continue
+        }
+        val tag = raw.trim()
+
+        // 单行子块：`<nmoi:name>read_file</nmoi:name>`。手写时几乎都会写成这样。
+        val single = EditDocSyntax.SUBS.firstNotNullOfOrNull { (open, close, slot) ->
+            oneLineBlock(tag, open, close)?.let { Triple(slot, it, line) }
+        }
+        if (single != null) {
+            assign(single.first, single.second, line)
+            cursor++
+            continue
+        }
+
+        val multi = EditDocSyntax.SUBS.firstOrNull { (open, _, _) -> tag == open }
+            ?: throw EditDocException(
+                line,
+                "工具块里不认这一行（只认 name / input / stdout / stderr 四个子块）：$tag",
+            )
+        val closeAt = indexOf(lines, cursor + 1, end, multi.second, line)
+        assign(multi.third, joinLines(lines, cursor + 1, closeAt), line)
         cursor = closeAt + 1
     }
 
-    if (name.isNullOrBlank()) {
-        throw EditDocException(openLine, "工具块 #$index 没有名字（${EditDocSyntax.NAME_OPEN}）")
+    val resolvedName = name
+        ?: throw EditDocException(openLine, "工具块 #$index 没有名字（${EditDocSyntax.NAME_OPEN}）")
+    if (resolvedName.isBlank()) {
+        throw EditDocException(openLine, "工具块 #$index 的名字是空的")
     }
-    if (input == null) {
-        throw EditDocException(openLine, "工具块 #$index 没有参数（${EditDocSyntax.INPUT_OPEN}）")
-    }
-    return EditToolBlock(index, name, input, stdout, stderr)
+    val resolvedInput = input
+        ?: throw EditDocException(openLine, "工具块 #$index 没有参数（${EditDocSyntax.INPUT_OPEN}）")
+    return EditToolBlock(index, resolvedName, resolvedInput, stdout, stderr)
+}
+
+/** 单行形 `<open>内容<close>`；不是这个形状就返回 null（交给多行分支）。 */
+private fun oneLineBlock(line: String, open: String, close: String): String? {
+    if (!line.startsWith(open) || !line.endsWith(close)) return null
+    if (line.length < open.length + close.length) return null
+    return line.substring(open.length, line.length - close.length)
 }
 
 /** 从 [from] 起找第一个恰好等于 [closer] 的行；找不到就报**开头那一行**的行号。 */

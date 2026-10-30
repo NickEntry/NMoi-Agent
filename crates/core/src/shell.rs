@@ -691,6 +691,10 @@ mod tests {
         writeln!(file, "  shift").unwrap();
         writeln!(file, "done").unwrap();
         writeln!(file, "exit 9").unwrap();
+        // 显式关掉写句柄再 chmod：`exec` 一个"还被写打开"的文件会 ETXTBSY（os error 26），
+        // 而 cargo test 是多线程的，别的线程 fork 时正好把这个 fd 带进子进程。
+        // 这一条在 CI 上偶发过一次（`envir_shell_times_out_and_kills_the_group`）。
+        drop(file);
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();

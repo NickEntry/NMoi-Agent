@@ -193,6 +193,29 @@ class MessageEditDocTest {
     }
 
     @Test
+    fun one_line_blocks_are_accepted() {
+        // 手写短块时几乎都会写成一行：`<nmoi:output>正文</nmoi:output>`。
+        // 要求"结束标签必须单独一行"会把这种写法直接判死——那是难用，不是严格。
+        val text = """
+            [□{<nmoi-edit v="1">
+            <nmoi:output>一行正文</nmoi:output>
+            <nmoi:thinking>一行思考</nmoi:thinking>
+            <nmoi:tool index="0">
+            <nmoi:name>read_file</nmoi:name>
+            <nmoi:input>{"path":"a.txt"}</nmoi:input>
+            <nmoi:stdout>结果</nmoi:stdout>
+            </nmoi:tool>
+            </nmoi-edit>}□]
+        """.trimIndent()
+        val parsed = parseEditDocument(text)
+        assertEquals("一行正文", parsed.output)
+        assertEquals("一行思考", parsed.thinking)
+        assertEquals(1, parsed.tools.size)
+        assertEquals("read_file", parsed.tools[0].name)
+        assertEquals("结果", parsed.tools[0].stdout)
+    }
+
+    @Test
     fun header_line_must_come_first() {
         val error = assertThrows(EditDocException::class.java) {
             parseEditDocument("<nmoi:output>\n正文\n</nmoi:output>")
