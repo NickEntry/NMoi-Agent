@@ -197,14 +197,21 @@ internal fun ChatScreen(
     val thinkingLabel = remember(assistant.thinking) {
         THINKING_LEVELS.firstOrNull { it.first == assistant.thinking }?.second ?: assistant.thinking
     }
+    // 顶部这一行是**显示**，不是选择器（用户 2026-10-31）：一轮里用哪个模型由这一页决定，
+    // 而模型条还兼着"当前用的是谁"的说明作用。格式「模型名称 (模型提供商)」——
+    // id 是给端点看的，摆在标题下面只会让用户读到一串内部编号。
     val modelLabel = remember(assistant, choices) {
-        choices.firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
-            ?.label()
-            ?: if (assistant.isRunnable) {
-                "${assistant.providerId} / ${assistant.modelId}"
-            } else {
-                "还没选模型"
+        val pair = choices.firstOrNull {
+            it.first.id == assistant.providerId && it.second.id == assistant.modelId
+        }
+        when {
+            pair != null -> {
+                val providerName = pair.first.name.ifBlank { pair.first.id }
+                "${pair.second.displayName} ($providerName)"
             }
+            assistant.isRunnable -> "${assistant.modelId} (${assistant.providerId})"
+            else -> "还没选模型"
+        }
     }
 
     // 原生 EditText 的引用：抽屉打开时要主动清焦点 + 收输入法。
@@ -245,6 +252,22 @@ internal fun ChatScreen(
     }
 
     val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()
+
+    // 上下文占用：**和压缩判据同一个数字**（`TurnRepository` 把窗口交给 core 算绝对线）。
+    // 窗口没填就不显示——显示一个猜出来的百分比比不显示更糟。
+    //
+    // 放在 `allMessages` 之后：它要用这个列表。写在前面会引用到还没声明的变量。
+    val contextPercent = remember(allMessages, assistant, choices) {
+        val window = choices
+            .firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
+            ?.second?.contextWindow
+        if (window == null || window <= 0) {
+            null
+        } else {
+            val used = allMessages.sumOf { it.tokens }
+            ((used * 100.0) / window).toInt()
+        }
+    }
 
     val selectedMessages = allMessages.filter { it.id in selected }.sortedBy { it.seq }
 
@@ -546,7 +569,7 @@ internal fun ChatScreen(
                     onOpenDrawer = onOpenDrawer,
                     onNewChat = onNewChat,
                 )
-                ModelBar(label = modelLabel, onClick = { modelSheet = true })
+                ModelBar(label = modelLabel, percent = contextPercent, onClick = { modelSheet = true })
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -2634,7 +2657,7 @@ private fun CopyHint(text: String, onCopied: (String) -> Unit) {
 
 /** 聊天页顶部那条"现在用哪个模型"。点开是选择面板（D161）。 */
 @Composable
-private fun ModelBar(label: String, onClick: () -> Unit) {
+private fun ModelBar(label: String, percent: Int?, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2656,6 +2679,20 @@ private fun ModelBar(label: String, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = 4.dp).weight(1f, fill = false),
         )
+        // 占用百分比：数字型信息用文字（ui-taste 的"图标优先、数字场景用文字"）。
+        // 它和压缩判据读的是同一个窗口，所以这两个数字不会各说各话。
+        if (percent != null) {
+            Text(
+                text = "$percent%",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (percent >= 80) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
         Icon(
             imageVector = ActionIcons.ChevronDown,
             contentDescription = null,

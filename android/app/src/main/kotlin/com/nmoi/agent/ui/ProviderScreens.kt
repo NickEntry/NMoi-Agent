@@ -431,6 +431,8 @@ internal fun ProviderEditScreen(
                                         existing = true,
                                         originalId = model.id,
                                         id = model.id,
+                                        name = model.name,
+                                        contextWindow = model.contextWindow?.toString().orEmpty(),
                                         maxTokens = model.maxTokens?.toString().orEmpty(),
                                         temperature = model.temperature?.toString().orEmpty(),
                                     )
@@ -1010,6 +1012,8 @@ private data class ModelDraft(
     val existing: Boolean = false,
     val originalId: String = "",
     val id: String = "",
+    val name: String = "",
+    val contextWindow: String = "",
     val maxTokens: String = "",
     val temperature: String = "",
 )
@@ -1022,6 +1026,8 @@ private fun ModelDialog(
     onDelete: () -> Unit,
 ) {
     var id by remember { mutableStateOf(draft.id) }
+    var name by remember { mutableStateOf(draft.name) }
+    var contextWindow by remember { mutableStateOf(draft.contextWindow) }
     var maxTokens by remember { mutableStateOf(draft.maxTokens) }
     var temperature by remember { mutableStateOf(draft.temperature) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1037,6 +1043,21 @@ private fun ModelDialog(
             value = id,
             onChange = { id = it },
             placeholder = "供应商那边怎么写的就怎么填",
+            modifier = Modifier.padding(vertical = 2.dp),
+        )
+        SectionLabel("模型名称（可空）", modifier = Modifier.padding(top = 10.dp))
+        ProviderField(
+            value = name,
+            onChange = { name = it },
+            placeholder = "聊天页顶部显示它；空 = 用 ID",
+            modifier = Modifier.padding(vertical = 2.dp),
+        )
+        SectionLabel("上下文窗口（可空）", modifier = Modifier.padding(top = 10.dp))
+        ProviderField(
+            value = contextWindow,
+            onChange = { contextWindow = it },
+            placeholder = "例如 128000；填了才显示占用百分比",
+            keyboard = KeyboardType.Number,
             modifier = Modifier.padding(vertical = 2.dp),
         )
         SectionLabel("最大输出（可空）", modifier = Modifier.padding(top = 10.dp))
@@ -1081,8 +1102,12 @@ private fun ModelDialog(
                 val heat = temperature.trim()
                 val parsedTokens = if (tokens.isEmpty()) null else tokens.toIntOrNull()
                 val parsedHeat = if (heat.isEmpty()) null else heat.toDoubleOrNull()
+                val window = contextWindow.trim()
+                val parsedWindow = if (window.isEmpty()) null else window.toIntOrNull()
                 when {
                     cleanId.isEmpty() -> error = "模型 ID 不能是空的"
+                    window.isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) ->
+                        error = "上下文窗口要填正整数"
                     tokens.isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) ->
                         error = "最大输出要填正整数"
                     heat.isNotEmpty() && (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) ->
@@ -1090,6 +1115,8 @@ private fun ModelDialog(
                     else -> onSave(
                         ProviderModel(
                             id = cleanId,
+                            name = name.trim(),
+                            contextWindow = parsedWindow,
                             maxTokens = parsedTokens,
                             temperature = parsedHeat,
                         ),

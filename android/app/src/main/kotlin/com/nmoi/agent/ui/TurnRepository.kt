@@ -142,6 +142,25 @@ internal object TurnRepository {
                         maxTokens?.let { row.put("max_tokens", it) }
                         temperature?.let { row.put("temperature", it) }
                     }
+                    .also { row ->
+                        // 压缩判据（D90）：窗口来自**这个模型**填的 `contextWindow`。
+                        //
+                        // 以前这一条从来没传过——core 那边 `config.budget` 一直是 `None`，
+                        // 于是"压缩判据"一次都没评估过，用户填的窗口也就等于没填。
+                        // 没填 = 不评估：宁可不压，也不要按一个猜出来的数去压。
+                        val window = model.contextWindow
+                        if (window != null && window > 0) {
+                            row.put(
+                                "budget",
+                                JSONObject()
+                                    .put("window", window.toLong())
+                                    .put(
+                                        "reserve_output",
+                                        reserveOutput(maxTokens, window),
+                                    ),
+                            )
+                        }
+                    }
 
                 NmoiFfi.turnRun(config)
                     .map { envelope -> parse(envelope) }
@@ -163,6 +182,17 @@ internal object TurnRepository {
         } finally {
             workspace.getOrNull()?.let { ToolingRepository.close(it) }
         }
+    }
+
+    /**
+     * 给输出留多少位置：优先用模型填的最大输出，没有就按窗口的四分之一，夹在 1024–8192。
+     *
+     * 压太狠（留太多）会让上下文剩不下多少；留太少则模型可能写一半被截断。
+     * 这个区间是"能正常答完一段话"的经验值。
+     */
+    private fun reserveOutput(maxTokens: Int?, window: Int): Long {
+        val base = maxTokens ?: (window / 4)
+        return base.coerceIn(1024, 8192).toLong()
     }
 
     /** 交给 core 的五个宿主机路径。少一个 core 会在解析时点名，不会拼出一条半截命令。 */

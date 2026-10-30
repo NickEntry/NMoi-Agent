@@ -14,13 +14,31 @@ import java.io.File
  */
 internal data class ProviderModel(
     val id: String,
+    /**
+     * 显示名。空 = 用 id。
+     *
+     * 有了它，聊天页顶部才写得出「模型名称 (提供商)」。id 是给端点看的
+     * （`trae-cn/Doubao-Seed-2.1-Turbo` 这种），拿去当标题只是把内部编号摆给用户看。
+     */
+    val name: String = "",
+    /**
+     * 上下文窗口（token）。**真的会用**：聊天页顶部的占用百分比按它算。
+     *
+     * 空 = 不知道，不显示百分比。这一条是"填了必须生效"——以前没有这个字段，
+     * 因为那时没有任何一处代码会读它（存了就是死数据）。
+     */
+    val contextWindow: Int? = null,
     val maxTokens: Int? = null,
     val temperature: Double? = null,
 ) {
+    /** 界面上一律用它：填了名字用名字，没填退回 id。 */
+    val displayName: String get() = name.ifBlank { id }
+
     /** 一行副标题：只写填了的，没填就不提。 */
     val summary: String
         get() {
             val parts = buildList {
+                if (contextWindow != null) add("窗口 $contextWindow")
                 if (maxTokens != null) add("最大输出 $maxTokens")
                 if (temperature != null) add("温度 $temperature")
             }
@@ -158,6 +176,8 @@ internal object ProviderRepository {
                                 JSONObject()
                                     .put("id", model.id.trim())
                                     .also { row ->
+                                        if (model.name.isNotBlank()) row.put("name", model.name.trim())
+                                        model.contextWindow?.let { row.put("context_window", it) }
                                         model.maxTokens?.let { row.put("max_tokens", it) }
                                         model.temperature?.let { row.put("temperature", it) }
                                     },
@@ -256,6 +276,8 @@ internal object ProviderRepository {
                     add(
                         ProviderModel(
                             id = modelId,
+                            name = row.optString("name", ""),
+                            contextWindow = row.optInt("context_window", 0).takeIf { it > 0 },
                             maxTokens = row.optInt("max_tokens", 0).takeIf { it > 0 },
                             temperature = if (row.has("temperature")) {
                                 row.optDouble("temperature", Double.NaN).takeIf { !it.isNaN() }
