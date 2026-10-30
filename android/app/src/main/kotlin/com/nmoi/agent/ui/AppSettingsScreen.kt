@@ -2,6 +2,7 @@ package com.nmoi.agent.ui
 
 import android.content.Context
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -23,7 +25,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.unit.dp
 
 /**
@@ -111,11 +114,10 @@ internal fun AppSettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 2.dp),
                         )
-                        ProviderField(
+                        SettingField(
                             value = windowText,
                             onChange = { windowText = it },
                             placeholder = "128000",
-                            keyboard = KeyboardType.Number,
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
@@ -148,6 +150,46 @@ internal fun AppSettingsScreen(
                     )
                 }
                 Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 这一页自己的输入框。`ProviderField` 是 ProviderScreens 的文件私有件，跨文件用不了。
+ *
+ * 与项目里其它输入框同形：填色小框、没有下划线、空值时显示占位。
+ */
+@Composable
+private fun SettingField(
+    value: String,
+    onChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 14.sp,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (value.isBlank()) {
+                Text(
+                    text = placeholder,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
