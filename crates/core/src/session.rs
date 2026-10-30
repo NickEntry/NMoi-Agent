@@ -68,6 +68,24 @@ pub trait HistoryStore {
             "这个历史实现不支持块级编辑，消息 {message_id} 没有改动"
         ))
     }
+    /// 记一版**新生成的**回复（D185 的重试）：这一版成为当前版，旧版留着。
+    ///
+    /// 默认实现拒绝：内存实现没理由假装记了版本。
+    fn save_generated_version(&mut self, message_id: &MessageId, text: &str) -> Result<(), String> {
+        let _ = text;
+        Err(format!(
+            "这个历史实现不支持记版本，消息 {message_id} 没有改动"
+        ))
+    }
+
+    /// 覆盖当前这一版的正文（D185："允许生成新版本"关着时走这条）。
+    fn overwrite_message_text(&mut self, message_id: &MessageId, text: &str) -> Result<(), String> {
+        let _ = text;
+        Err(format!(
+            "这个历史实现不支持覆盖正文，消息 {message_id} 没有改动"
+        ))
+    }
+
     /// 一次单元级编辑（0.15f / D188）：改块 / 删块 / 落红 / undo 全由实现方负责。
     ///
     /// 默认实现**拒绝**（和 `apply_block_edit` 同一个理由）：内存实现没理由假装写了库。
@@ -110,6 +128,9 @@ pub enum SessionError {
     /// 此时用户消息**还没落库**——重试不会落成两条。
     #[error("上下文已达绝对线（{used}/{usable} token），先压缩再发", used = .used, usable = .usable)]
     CompactionRequired { used: u64, usable: u64 },
+    /// 重试的目标不在当前窗口里：跨段重试不能悄悄退回第一段（D185 的 Q1=a）。
+    #[error("消息 {0} 不在当前这一段里：跨段重试要先把那一段接回来")]
+    NotInWindow(MessageId),
 }
 
 /// 一次会话往返的完整结果。
@@ -189,6 +210,10 @@ pub struct SessionConfig<'a> {
     /// 按**每一次工具往返**各算各的：第 2 轮撞了 503 就重发那一次请求，
     /// 不是整轮重来——整轮重来会把已经执行过的工具再跑一遍。
     pub retry: Option<&'a RetryPolicy>,
+    /// 重试时"结果落成新版本"还是"覆盖当前这一版"（D185 / 0.15m 的开关）。
+    ///
+    /// 默认开：用户要的是"现在这个时间的新答案"，覆盖会悄悄改掉他上一次看到的那份。
+    pub allow_new_version: bool,
     /// 压缩自己那一轮不能再触发压缩（D90）：压缩调用方把它置 `true`，
     /// 否则"压缩时发现上下文太长 → 再压一次"会套娃。
     pub suppress_compression: bool,
@@ -236,11 +261,27 @@ impl Default for SessionConfig<'_> {
             cancel: &NEVER,
             calibrations: &[],
             retry: None,
+            allow_new_version: true,
             suppress_compression: false,
             plan: None,
             envir: None,
         }
     }
+}
+
+/// 压缩过的会话：在摘要那一条上补一句当前任务陈述（§2.3.0）。
+///
+/// 不概括、不改写：内容从这一轮的用户消息里原样取第一行（`anchor::build_task_anchor`）。
+/// 概括会引入偏差，而锚点的全部价值就在于"复述"。
+fn with_task_anchor(summary: Option<Message>, compacted: bool, user_text: &str) -> Option<Message> {
+    if !compacted {
+        return summary;
+    }
+    let mut message = summary?;
+    let anchor = crate::anchor::build_task_anchor(user_text);
+    message.content = format!("{}\n\n{anchor}", message.content);
+    message.tokens = estimate_tokens(&message.content);
+    Some(message)
 }
 
 /// 跑一轮会话：落用户消息 → 工具循环 → 落模型消息 → 算压缩判据。
@@ -263,8 +304,24 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     //    读的是**窗口**不是整条历史（D149）：线上那一段已经被压成摘要，
     //    再把原文整段发出去，等于压缩没发生。
     let window = store.load_window(session).map_err(SessionError::Load)?;
-    let summary = window.summary_message(session, now);
-    let summary_tokens = window.summary_tokens();
+    // 任务锚点（§2.3.0 的强制项，0.15k 的 ⑥）：**压缩过**的上下文才加，加在摘要那一条里。
+    //
+    // 为什么必须有：纯位置路由在 20k 上下文就失效——模型取回正确原文，却去回答历史里的
+    // 旧问题。实测无锚点 3/8，一句话锚点 8/8，而"历史已结清"单独存在时 0/4：
+    // 唯一有效载荷是那句任务陈述。
+    //
+    // 为什么拼进摘要而不是新加一条：一条消息省下一个 id（摘要已经用 seq 0），
+    // 也不会让 `last_user` 指到锚点上——设计稿说角色不重要，但工具解析会认角色。
+    // 隔断线没有摘要，所以隔断段天然不带锚点（D185 的 Q1=a）。
+    let summary = with_task_anchor(
+        window.summary_message(session, now),
+        window.is_compacted(),
+        user_text,
+    );
+    let summary_tokens = match &summary {
+        Some(message) => u64::from(message.tokens),
+        None => window.summary_tokens(),
+    };
     let units_before = window.units;
 
     // 1.4 估算器：模型跟冻结值走（D76）——压缩判据与工具循环不能读两套模型名。
@@ -480,6 +537,159 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
         compression,
         calibration,
         edits,
+    })
+}
+
+/// 一次重试 / 续话的结果（D185）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegenerateOutcome {
+    /// 模型这一轮说的正文（已落库）。
+    pub text: String,
+    pub reasoning: String,
+    pub report: TurnReport,
+    /// 结果落在哪条消息上（`None` = 新落了一条助手消息）。
+    pub target: Option<MessageId>,
+    /// 新落的那条单元 id（`target == None` 时才有）。
+    pub appended: Option<UnitId>,
+}
+
+/// 重试 / 续话：**前缀重发**（D185）。
+///
+/// `up_to` 是发出去的最后一条消息（含）：
+///
+/// | 重试谁 | `up_to` | 结果落在哪 |
+/// |---|---|---|
+/// | 用户消息 U | U 自己 | U 下方那条助手消息的新版本（下面没有就追加一条） |
+/// | 助手消息 A | A **之前**那条 | A 的新版本 |
+/// | 续话 | 段内最后一条 | 最新是助手消息就并进那条 |
+///
+/// `target` 给 `Some(助手消息)` 就落成它的新版本；`config.allow_new_version` 关着时覆盖它。
+/// 给 `None` 就**追加**一条新的助手消息——只有"那条消息下面本来没有助手消息"时才该这么用，
+/// 否则新消息会落到会话末尾，和用户看到的顺序对不上。
+///
+/// 这一轮**不改历史**：不发新用户消息、不动旧消息，只按前缀重跑一次。
+#[allow(clippy::too_many_arguments)]
+pub fn regenerate_turn<T: Transport, S: HistoryStore>(
+    client: &ChatClient<T>,
+    base: &ChatRequest,
+    store: &mut S,
+    session: SessionId,
+    up_to: &MessageId,
+    target: Option<&MessageId>,
+    registry: &ToolRegistry,
+    policy: &AssistantPolicy,
+    workspace: Option<&Workspace>,
+    config: &SessionConfig<'_>,
+    now: i64,
+) -> Result<RegenerateOutcome, SessionError> {
+    let window = store.load_window(session).map_err(SessionError::Load)?;
+    // 先取出摘要与"压过没有"，再把 units 移出来：顺序反了就是"部分移动后还要用"。
+    let compacted = window.is_compacted();
+    let summary_message = window.summary_message(session, now);
+    let units_all = window.units;
+    let cut = units_all
+        .iter()
+        .position(|unit| unit.messages.iter().any(|message| &message.id == up_to))
+        .ok_or_else(|| SessionError::NotInWindow(up_to.clone()))?;
+    let units: Vec<AtomicUnit> = units_all[..=cut].to_vec();
+
+    // 锚点跟着**截断后**的最后一条用户消息走：重试的那一轮在干什么，锚点就该说什么。
+    let last_user = units
+        .iter()
+        .rev()
+        .flat_map(|unit| unit.messages.iter().rev())
+        .find(|message| message.role == Role::User)
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    let summary = with_task_anchor(summary_message, compacted, &last_user);
+
+    let mut history: Vec<Message> = Vec::with_capacity(units.len() + 2);
+    if let Some(summary) = summary {
+        history.push(summary);
+    }
+    history.extend(crate::repair::normalize(&units));
+
+    let mut frozen_base = base.clone();
+    let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
+    if let Some(envir) = config.envir {
+        ctx = ctx.with_envir(envir);
+    }
+    if let Some(plan) = config.plan {
+        plan.apply(&mut frozen_base);
+        ctx = ctx.with_declared(plan.declared_tools());
+    }
+    let mut turn_config = config.turn;
+    if let Some(budget) = config.budget {
+        turn_config.truncate_at = Some(config.trigger.absolute.resolve(budget.usable()));
+    }
+
+    let report = run_turn(
+        client,
+        &frozen_base,
+        &history,
+        registry,
+        &ctx,
+        &turn_config,
+        config.cancel,
+        config.retry,
+    )?;
+
+    if report.text.trim().is_empty() {
+        // 空正文落库会造出一条"什么都没有"的消息，下一轮就是噪声。
+        return Err(SessionError::Save(
+            "这一轮模型没有给出正文，没有可落的东西".into(),
+        ));
+    }
+
+    let appended = match target {
+        Some(target) => {
+            if config.allow_new_version {
+                store
+                    .save_generated_version(target, &report.text)
+                    .map_err(SessionError::Save)?;
+            } else {
+                store
+                    .overwrite_message_text(target, &report.text)
+                    .map_err(SessionError::Save)?;
+            }
+            None
+        }
+        None => {
+            let next_seq = units
+                .iter()
+                .map(|unit| unit.last_message().id.seq())
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let message = Message::text(
+                MessageId::new(session, next_seq),
+                Role::Assistant,
+                SourceTag::History,
+                report.text.clone(),
+                estimate_tokens(&report.text),
+                now,
+                LogicalClock::new(next_seq),
+            );
+            let message = if report.reasoning.trim().is_empty() {
+                message
+            } else {
+                message.with_reasoning(&report.reasoning)
+            };
+            let unit =
+                AtomicUnit::turn(message).map_err(|error| SessionError::Save(error.to_string()))?;
+            store
+                .append_unit(session, &unit)
+                .map_err(SessionError::Save)?;
+            Some(unit.id.clone())
+        }
+    };
+
+    Ok(RegenerateOutcome {
+        text: report.text.clone(),
+        reasoning: report.reasoning.clone(),
+        report,
+        target: target.cloned(),
+        appended,
     })
 }
 
@@ -833,6 +1043,192 @@ mod tests {
         let policy =
             AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_write("ws-1"));
         (dir, workspace, policy)
+    }
+
+    /// D185：重试用户消息 = 前缀重发。发出去的东西里**不能有**它后面那条回答。
+    #[test]
+    fn regenerate_sends_only_the_prefix_and_lands_a_new_version() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = EditStore::default();
+
+        let user = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "把 A 改成 B",
+            3,
+            1,
+            LogicalClock::new(1),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(user.clone()).unwrap())
+            .unwrap();
+        let first_answer = Message::text(
+            MessageId::new(session, 2),
+            Role::Assistant,
+            SourceTag::History,
+            "旧的回答：好的",
+            5,
+            2,
+            LogicalClock::new(2),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(first_answer.clone()).unwrap())
+            .unwrap();
+
+        let reply = r#"{"choices":[{"message":{"content":"新的回答"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+
+        let outcome = regenerate_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            &user.id,
+            Some(&first_answer.id),
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            3_000,
+        )
+        .unwrap();
+
+        // 前缀只到那条用户消息：旧回答不能发给模型，否则"重试"只是换了个说法再问一遍。
+        let body = transport.requests().join("\n");
+        assert!(body.contains("把 A 改成 B"), "{body}");
+        assert!(
+            !body.contains("旧的回答"),
+            "重试不该把旧回答再发一遍：{body}"
+        );
+
+        // 结果落成那条回答的新版本，而不是新开一条。
+        assert_eq!(outcome.target.as_ref(), Some(&first_answer.id));
+        assert_eq!(outcome.text, "新的回答");
+        assert!(outcome.appended.is_none());
+        let landed = store.generated.lock().unwrap().clone();
+        assert_eq!(landed.len(), 1, "{landed:?}");
+        assert_eq!(landed[0].0, first_answer.id);
+        assert_eq!(landed[0].1, "新的回答");
+    }
+
+    /// 目标不在当前窗口里：宁可明说"这一段里没有它"，也不悄悄从第一段开始重发。
+    #[test]
+    fn regenerate_refuses_a_target_outside_the_window() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = WindowStore {
+            all: vec![],
+            window: vec![],
+            summary: Some("上一段".into()),
+        };
+        let reply = r#"{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport);
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+        let stray = MessageId::new(session, 9);
+
+        let error = regenerate_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            &stray,
+            None,
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, SessionError::NotInWindow(_)),
+            "要报 NotInWindow：{error}"
+        );
+    }
+
+    /// §2.3.0 / 0.15k 的 ⑥：压缩过的上下文，头部要有一句"当前任务"。
+    ///
+    /// 没有它，模型会取回正确原文却去回答历史里的旧问题（context distraction）。
+    /// 有效载荷只有那句任务陈述——所以这里同时钉住"历史已结清"和那句原文都在。
+    #[test]
+    fn a_compacted_window_carries_the_task_anchor() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let reply = r#"{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let base = base_request();
+        let mut store = WindowStore::new(vec![], vec![], "上一段：在改文档的结构。");
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+
+        run_session_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            "把 V23 那四条补进 verification.md",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let body = transport.requests().join("\n");
+        assert!(
+            body.contains("历史已结清。当前任务："),
+            "压缩过就该带锚点：{body}"
+        );
+        assert!(
+            body.contains("把 V23 那四条补进 verification.md"),
+            "锚点要原样复述那句话：{body}"
+        );
+    }
+
+    /// 没压缩过的会话不加锚点：那是"每轮都改一句话"，纯属往上下文里塞噪音。
+    #[test]
+    fn a_fresh_session_carries_no_anchor() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let reply = r#"{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let base = base_request();
+        let mut store = WindowStore {
+            all: vec![],
+            window: vec![],
+            summary: None,
+        };
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+
+        run_session_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            "随便说一句",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let body = transport.requests().join("\n");
+        assert!(!body.contains("历史已结清"), "没压缩不该有锚点：{body}");
     }
 
     /// D76：一轮之内模型与工具名单都来自冻结值。
@@ -1722,6 +2118,8 @@ mod tests {
     struct EditStore {
         units: Vec<AtomicUnit>,
         applied: Mutex<Vec<(MessageId, BlockSelector, String)>>,
+        /// `save_generated_version` 的调用记录（0.15h 的重试落库）。
+        generated: Mutex<Vec<(MessageId, String)>>,
     }
 
     impl HistoryStore for EditStore {
@@ -1753,6 +2151,18 @@ mod tests {
                 tokens_after: 2,
                 revision: 1,
             })
+        }
+
+        fn save_generated_version(
+            &mut self,
+            message_id: &MessageId,
+            text: &str,
+        ) -> Result<(), String> {
+            self.generated
+                .lock()
+                .unwrap()
+                .push((message_id.clone(), text.to_string()));
+            Ok(())
         }
 
         /// 0.15f：`edit_unit` 在收尾时走这一条。这里只记账，真落库由 `crates/storage` 的测试盯。

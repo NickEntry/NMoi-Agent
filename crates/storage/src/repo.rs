@@ -1162,6 +1162,20 @@ impl nmoi_core::session::HistoryStore for Storage {
             .map_err(|error| error.to_string())
     }
 
+    /// 重试落成新版本（D185）：这一版成为当前版，旧版留着。
+    fn save_generated_version(&mut self, message_id: &MessageId, text: &str) -> Result<(), String> {
+        // **追加**而不是 save_generated_version：重试时消息里已经有一份旧回答，
+        // 不先把它落成第 1 版就被顶掉了（`<2/2>` 往回切会切到空白）。
+        Storage::append_generated_version(self, message_id, text)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// 重试覆盖当前版（D185："允许生成新版本"关着时）。
+    fn overwrite_message_text(&mut self, message_id: &MessageId, text: &str) -> Result<(), String> {
+        Storage::overwrite_message_text(self, message_id, text).map_err(|error| error.to_string())
+    }
+
     /// 单元级编辑（0.15f / D188）：落红、成对删、undo 日志都在 `blockedit` 那边。
     ///
     /// 与 `apply_block_edit` 的分工：那条是"用户手动改一块"的老路（就地改列），

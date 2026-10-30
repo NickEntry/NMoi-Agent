@@ -645,6 +645,8 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
                 max_tokens: None,
                 truncate_at: None,
             },
+            // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
+            allow_new_version: true,
             budget: input.budget.as_ref(),
             trigger: &trigger(),
             avg_per_turn: input.avg_per_turn,

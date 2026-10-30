@@ -105,45 +105,28 @@ impl Storage {
             )));
         }
 
-        let current: i64 = tx.query_row(
-            "SELECT version_count FROM messages WHERE id = ?1",
-            [&id],
-            |row| row.get(0),
-        )?;
-        let next = current + 1;
-        tx.execute(
-            "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
-                                          edited_by_tool, active_view, created_at)
-             VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4)",
-            params![id, next, origin_message, crate::validate::now_ms()],
-        )?;
-
-        // 超上限：丢最旧的一版（当前这一版刚插入，永远不会是被丢的那个）。
-        let mut count = next;
-        if count > MAX_VERSIONS {
-            tx.execute(
-                "DELETE FROM message_versions
-                 WHERE message_id = ?1 AND version_no = (
-                     SELECT MIN(version_no) FROM message_versions WHERE message_id = ?1
-                 )",
-                [&id],
-            )?;
-            renumber(&tx, &id)?;
-            count = MAX_VERSIONS;
-        }
-
-        // `next` 可能因为重编号变了：新插入的那一版现在在最后。
-        let active: i64 = tx.query_row(
-            "SELECT MAX(version_no) FROM message_versions WHERE message_id = ?1",
-            [&id],
-            |row| row.get(0),
-        )?;
-        tx.execute(
-            "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3 WHERE id = ?4",
-            params![count, active, origin_message, id],
-        )?;
+        let result = push_version(&tx, &id, origin_message)?;
         tx.commit()?;
-        Ok((active, count))
+        Ok(result)
+    }
+
+    /// 重试：把这一轮的正文**追加**成一版，旧的那一版留着（D185）。
+    ///
+    /// 与 [`Storage::save_generated_version`] 的区别只有一处，但很要紧：
+    /// 那条是"第一次生成"（消息里还没有版本行，正文就是这次的结果）；
+    /// 这条是"重试"——消息里**已经有**一份旧回答，不先把旧正文落成第 1 版，
+    /// 它就被新回答顶掉了，用户按 `<2/2>` 往回切会切到一片空白。
+    pub fn append_generated_version(
+        &mut self,
+        message_id: &MessageId,
+        text: &str,
+    ) -> Result<(i64, i64), StorageError> {
+        let tx = self.conn.transaction()?;
+        let id = message_id.to_string();
+        seed_first_version(&tx, &id)?;
+        let result = push_version(&tx, &id, text)?;
+        tx.commit()?;
+        Ok(result)
     }
 
     /// 把某一版标成"被工具编辑过"，并写下编辑后的正文。
@@ -181,6 +164,52 @@ impl Storage {
                    WHERE message_id = ?2 AND version_no = ?3 AND active_view = 'edited'
                )",
             params![tooledit_message, id, version_no],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 覆盖**当前这一版**的正文（D185："允许生成新版本"关着时走这条）。
+    ///
+    /// 不新增版本、不动别的版本：改的是用户眼前这一份。改哪一组跟手动编辑同一套规则——
+    /// 显示原文就改 `origin_message`，显示红字就改 `tooledit_message`。
+    ///
+    /// 为什么不用 `save_generated_version` 顺手做完：那条会 +1 版并把"现在"顶到最前，
+    /// 而开关的语义恰恰是"别留下上一版"。两件事分开写，读代码的人不会搞混。
+    pub fn overwrite_message_text(
+        &mut self,
+        message_id: &MessageId,
+        text: &str,
+    ) -> Result<(), StorageError> {
+        let tx = self.conn.transaction()?;
+        let id = message_id.to_string();
+        seed_first_version(&tx, &id)?;
+        let (active, view): (i64, String) = tx
+            .query_row(
+                "SELECT m.version_active, v.active_view
+                 FROM messages m JOIN message_versions v
+                   ON v.message_id = m.id AND v.version_no = m.version_active
+                 WHERE m.id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 没有当前版")))?;
+        if view == "edited" {
+            tx.execute(
+                "UPDATE message_versions SET tooledit_message = ?1
+                 WHERE message_id = ?2 AND version_no = ?3",
+                params![text, id, active],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE message_versions SET origin_message = ?1
+                 WHERE message_id = ?2 AND version_no = ?3",
+                params![text, id, active],
+            )?;
+        }
+        tx.execute(
+            "UPDATE messages SET content = ?1, tokens = ?2, revision = revision + 1 WHERE id = ?3",
+            params![text, nmoi_core::estimate_tokens(text), id],
         )?;
         tx.commit()?;
         Ok(())
@@ -562,6 +591,52 @@ pub(crate) fn seed_first_version(
         [message_id],
     )?;
     Ok(true)
+}
+
+/// 追加一版并让它成为当前版。调用方负责事务与"要不要先 seed"。
+fn push_version(
+    tx: &Transaction<'_>,
+    id: &str,
+    origin_message: &str,
+) -> Result<(i64, i64), StorageError> {
+    let current: i64 = tx.query_row(
+        "SELECT version_count FROM messages WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    let next = current + 1;
+    tx.execute(
+        "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
+                                      edited_by_tool, active_view, created_at)
+         VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4)",
+        params![id, next, origin_message, crate::validate::now_ms()],
+    )?;
+
+    // 超上限：丢最旧的一版（当前这一版刚插入，永远不会是被丢的那个）。
+    let mut count = next;
+    if count > MAX_VERSIONS {
+        tx.execute(
+            "DELETE FROM message_versions
+             WHERE message_id = ?1 AND version_no = (
+                 SELECT MIN(version_no) FROM message_versions WHERE message_id = ?1
+             )",
+            [id],
+        )?;
+        renumber(tx, id)?;
+        count = MAX_VERSIONS;
+    }
+
+    // `next` 可能因为重编号变了：新插入的那一版现在在最后。
+    let active: i64 = tx.query_row(
+        "SELECT MAX(version_no) FROM message_versions WHERE message_id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3 WHERE id = ?4",
+        params![count, active, origin_message, id],
+    )?;
+    Ok((active, count))
 }
 
 /// 把版本号重新压成 1..=n（删过之后会留空洞，而 UI 的 `n/n` 不该看到空洞）。
