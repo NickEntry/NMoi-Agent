@@ -37,8 +37,19 @@ internal data class SubAgentSpec(
     val callId: String = "",
     val description: String = "",
     val session: String = "new",
+    /**
+     * 被调用时**锁定**用哪个模型（用户 2026-10-31 提）。
+     *
+     * 空 = 用这个助手自己的模型。填了就是"调用时锁定"：子 AGENT 那一轮不允许
+     * 再读当前助手的模型——否则用户切一下主助手，子 AGENT 的口味就跟着变了。
+     */
+    val providerId: String = "",
+    val modelId: String = "",
 ) {
     val isUsable: Boolean get() = enabled && callId.isNotBlank() && description.isNotBlank()
+
+    /** 指定了模型没有。两个都得填才算指定——只填一半按没填处理，别猜。 */
+    val hasOwnModel: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
 
 /** 当前助手 + 全部助手（D174）。当前那个排最前，其余按名字。 */
@@ -182,7 +193,10 @@ internal object AssistantRepository {
                         .put("enabled", entry.subAgent.enabled)
                         .put("id", entry.subAgent.callId.trim())
                         .put("description", entry.subAgent.description.trim())
-                        .put("session", entry.subAgent.session),
+                        .put("session", entry.subAgent.session)
+                        // 指定模型（0.15x）：空串 = 没指定，读的时候按"用助手自己的"处理。
+                        .put("provider_id", entry.subAgent.providerId.trim())
+                        .put("model_id", entry.subAgent.modelId.trim()),
                 )
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
@@ -328,9 +342,24 @@ internal object AssistantRepository {
             // 认不出的会话策略按 `new` 处理：那是唯一"不会意外复用别人历史"的一种。
             session = mode.takeIf { it == "new" || it == "reuse" || it.startsWith("conversation:") }
                 ?: "new",
+            providerId = safe.optString("provider_id", "").trim(),
+            modelId = safe.optString("model_id", "").trim(),
         )
     }
 }
+
+/**
+ * 这个助手**被当作子 AGENT 调用**时该用哪个模型。
+ *
+ * 唯一读取点：`sub_agent` 工具接上之后直接调这里，不要在别处再写一遍
+ * "有指定就用指定、否则用自己"——两处判断早晚会分叉。
+ */
+internal fun AssistantEntry.calledModel(): Pair<String, String> =
+    if (subAgent.hasOwnModel) {
+        subAgent.providerId to subAgent.modelId
+    } else {
+        providerId to modelId
+    }
 
 /** 把 (供应商, 模型) 拼成一行字：`本机中转 / glm-5.2`。 */
 internal fun Pair<ProviderEntry, ProviderModel>.label(): String =

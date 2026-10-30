@@ -64,6 +64,9 @@ internal fun AssistantEditScreen(
     var subId by remember(assistantId) { mutableStateOf("") }
     var subDescription by remember(assistantId) { mutableStateOf("") }
     var subSession by remember(assistantId) { mutableStateOf("new") }
+    // 指定模型（0.15x）：两个都要读写，否则改别的字段再保存就把它清空了。
+    var subProviderId by remember(assistantId) { mutableStateOf("") }
+    var subModelId by remember(assistantId) { mutableStateOf("") }
 
     var notice by remember(assistantId) { mutableStateOf<String?>(null) }
     var noticeIsError by remember(assistantId) { mutableStateOf(false) }
@@ -92,6 +95,8 @@ internal fun AssistantEditScreen(
         subId = loaded.subAgent.callId
         subDescription = loaded.subAgent.description
         subSession = loaded.subAgent.session
+        subProviderId = loaded.subAgent.providerId
+        subModelId = loaded.subAgent.modelId
     }
 
     fun save(then: (AssistantEntry) -> Unit) {
@@ -103,6 +108,17 @@ internal fun AssistantEditScreen(
                 callId = subId.trim(),
                 description = subDescription.trim(),
                 session = subSession,
+                // 只填了一半按没填处理（`hasOwnModel` 也这么判）：别生成一个"指定了但用不上"的状态。
+                providerId = if (subProviderId.isNotBlank() && subModelId.isNotBlank()) {
+                    subProviderId.trim()
+                } else {
+                    ""
+                },
+                modelId = if (subProviderId.isNotBlank() && subModelId.isNotBlank()) {
+                    subModelId.trim()
+                } else {
+                    ""
+                },
             ),
         )
         busy = true
