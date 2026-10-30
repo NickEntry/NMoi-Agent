@@ -841,6 +841,57 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_applyBlockEditJson<'l
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.applyUnitEditsJson(handle, spec)`：一次改几块（0.15f / D188）。
+///
+/// `spec` = `{"message_id":"<具体 id>","ops":[…]}`，与模型的 `edit_unit` 共用一份解析：
+/// 界面上能改的东西和模型能改的东西不该长成两套。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_applyUnitEditsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    spec: JString<'local>,
+) -> jstring {
+    let spec = read_string(&mut env, &spec);
+    let text = guarded(move || {
+        let Some(spec) = spec else {
+            return bad_string();
+        };
+        let Ok(c_spec) = CString::new(spec) else {
+            return take_json(crate::json::err_json("bad_argument", "spec 含 NUL 字节"));
+        };
+        take_json(crate::storage::nmoi_storage_apply_unit_edits_json(
+            handle as u64,
+            c_spec.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.undoLogJson(handle, session)`：一个会话的 undo 日志（原文，可导出）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_undoLogJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || {
+        let Some(session) = session else {
+            return bad_string();
+        };
+        let Ok(c_session) = CString::new(session) else {
+            return take_json(crate::json::err_json("bad_argument", "session 含 NUL 字节"));
+        };
+        take_json(crate::storage::nmoi_storage_undo_log_json(
+            handle as u64,
+            c_session.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `NativeBridge.presetsJson(handle, assets)`：预设列表 + 四态（D178 / 0.14t）。
 ///
 /// `assets` 是平台侧从 APK 的 `assets/presets/` 读出来拼好的 JSON——

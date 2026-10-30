@@ -195,6 +195,23 @@ internal object ChatRepository {
     }
 
     /**
+     * 一次改几块（0.15f）：整批一个事务，所以"改了三块、坏了一块"不会留下半截。
+     *
+     * `ops` 的每一项是 `{"action":"set|delete","block":"output|thinking|tool|tool_result",
+     * "index":N,"content":"…"}`。
+     */
+    suspend fun applyUnitEdits(
+        databasePath: String,
+        messageId: String,
+        ops: org.json.JSONArray,
+    ): Result<JSONObject> = withHandle(databasePath) { handle ->
+        val spec = JSONObject().put("message_id", messageId).put("ops", ops)
+        NmoiFfi.applyUnitEdits(handle, spec)
+            .onSuccess { NLog.i("Edit", "单元编辑 ok：${ops.length()} 项") }
+            .onFailure { NLog.w("Edit", "单元编辑失败：${it.message}") }
+    }
+
+    /**
      * 删掉这条消息本身（连正文带版本，D152）。
      *
      * 跟 [deleteVersion] 分开：那个删的是"一版"，这个删的是"一条消息"。

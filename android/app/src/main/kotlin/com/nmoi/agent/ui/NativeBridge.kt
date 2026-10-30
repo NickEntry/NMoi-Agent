@@ -109,6 +109,12 @@ internal object NativeBridge {
      */
     external fun applyBlockEditJson(handle: Long, message: String, block: String, content: String): String
 
+    /** 单元级编辑（0.15f）：`spec` = `{"message_id":"…","ops":[…]}`，与模型的 edit_unit 同一套解析。 */
+    external fun applyUnitEditsJson(handle: Long, spec: String): String
+
+    /** 一个会话的 undo 日志：before/after 是原文，导出用它。 */
+    external fun undoLogJson(handle: Long, session: String): String
+
     // 设置面（D86）：四个动词、scope 当参数传——core 那边就是这么切的，
     // 客户端不再按 scope 各包一个函数（加第五类时两边必然对不上）。
     // 这一层只负责搬字符串，语义包装在 `NmoiFfi`。

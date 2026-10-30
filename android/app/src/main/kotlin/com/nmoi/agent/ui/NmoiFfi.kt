@@ -161,6 +161,19 @@ internal object NmoiFfi {
         NativeBridge.applyBlockEditJson(handle, message, block, content)
     }
 
+    /**
+     * 一次改几块（0.15f / D188）：正文落红、思考 / 工具块就地改，整批一个事务。
+     *
+     * `spec` = `{"message_id":"<具体 id>","ops":[…]}`——和模型的 `edit_unit` 同一套解析，
+     * 所以界面上写错的 ops 与模型写错的 ops 会得到同一句报错。
+     */
+    suspend fun applyUnitEdits(handle: Long, spec: JSONObject): Result<JSONObject> =
+        call("apply_unit_edits") { NativeBridge.applyUnitEditsJson(handle, spec.toString()) }
+
+    /** 一个会话的 undo 日志（最近的在前）。`before` 是原文，导出直接用它。 */
+    suspend fun undoLog(handle: Long, session: String): Result<JSONObject> =
+        call("undo_log") { NativeBridge.undoLogJson(handle, session) }
+
     /** 删一版（`versionNo` 从 1 起；删整条消息走 [deleteMessage]）。 */
     suspend fun deleteVersion(
         handle: Long,
