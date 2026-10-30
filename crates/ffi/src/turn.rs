@@ -32,12 +32,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use nmoi_core::agent::{Cancellation, TurnConfig};
 use nmoi_core::budget::{Budget, CompressAction, CompressionTrigger, TriggerPolicy};
-use nmoi_core::ids::SessionId;
+use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::Role;
 use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
 use nmoi_core::provider::{ProviderConfig, ProviderKind};
 use nmoi_core::runtime::{ChatClient, ChatRequest};
-use nmoi_core::session::{run_session_turn, SessionConfig, SessionError, SessionTurn};
+use nmoi_core::session::{
+    regenerate_turn, run_session_turn, SessionConfig, SessionError, SessionTurn,
+};
 use nmoi_core::shell::EnvirSpec;
 use nmoi_core::tools::ToolRegistry;
 use nmoi_core::transport::HttpsTransport;
@@ -733,6 +735,160 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
             .map(|flag| flag.load(Ordering::SeqCst))
             .unwrap_or(false);
         Ok(json!({ "session": session, "running": running, "cancelled": cancelled }))
+    })
+}
+
+/// 重试 / 续话：前缀重发（0.15h / D185）。
+///
+/// 配置与 [`nmoi_turn_run_json`] 是**同一份**（同一个 `parse_config`），多三个字段：
+///
+/// - `up_to`（必填）：发出去的最后一条消息 id（含）。用户消息重试就是它自己，
+///   助手消息重试是它**之前**那条，续话是段内最后一条。
+/// - `target`（可选）：结果落成哪条助手消息的新版本。给了就落版本；不给就追加一条新的
+///   （只有"那条消息下面本来没有助手消息"时才该这么用）。
+/// - `allow_new_version`（可选，默认 `true`）：关着时覆盖那一版，不新增。
+///
+/// 出参：`{text, reasoning, target, appended, rounds, tool_calls, finished}`
+///
+/// 准备逻辑与 `nmoi_turn_run_json` 是重复的一段（storage / workspace / policy / 预设 /
+/// 请求构建）。改动这两处时**要一起改**——抽公共函数会把 turn_run 那个已经很长的函数
+/// 再拆一次，风险比这 40 行重复大。
+#[no_mangle]
+pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(config, "config")?;
+        let input = parse_config(text)?;
+        let root: Value = serde_json::from_str(text).map_err(|error| {
+            FfiError::new("bad_argument", format!("配置不是合法 JSON：{error}"))
+        })?;
+        let up_to_text = required_str(&root, "up_to")?;
+        let up_to = up_to_text
+            .parse::<MessageId>()
+            .map_err(|_| FfiError::new("id", format!("up_to `{up_to_text}` 不是消息 id")))?;
+        let target = match optional_str(&root, "target")? {
+            Some(value) if !value.trim().is_empty() => Some(
+                value
+                    .parse::<MessageId>()
+                    .map_err(|_| FfiError::new("id", format!("target `{value}` 不是消息 id")))?,
+            ),
+            _ => None,
+        };
+        let allow_new_version = root
+            .get("allow_new_version")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
+        let (_registration, cancel) = Registration::new(&input.session.to_string())?;
+        let mut storage = Storage::attach(storage_path(input.storage)?)
+            .map_err(|error| FfiError::new("storage", error.to_string()))?;
+        let workspace: Option<Workspace> = match input.workspace {
+            None => None,
+            Some(id) => Some(with_workspace(id, |workspace| Ok(workspace.clone()))?),
+        };
+        let policy = policy_for(&input);
+        let registry = ToolRegistry::workspace_defaults();
+
+        let provider =
+            ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
+        let system = input.system.as_deref().map(|text| {
+            nmoi_core::vars::replace(
+                text,
+                &nmoi_core::vars::VarTable::new(input.sub_agents.clone()),
+            )
+        });
+        let declared: Vec<String> = registry
+            .specs_for(&policy)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        let injected = crate::preset::inject_json(&storage, &input.presets, &declared);
+        let preset_text = injected
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let system = if preset_text.is_empty() {
+            system
+        } else {
+            Some(match system {
+                Some(base) => format!("{base}\n\n{preset_text}"),
+                None => preset_text,
+            })
+        };
+        let mut request = match system.as_deref() {
+            Some(system) => {
+                ChatRequest::from_turns(provider, &input.model, &[(Role::System, system)])
+            }
+            None => ChatRequest::new(provider, &input.model),
+        };
+        if let Some(key) = input.api_key.as_deref() {
+            if !key.trim().is_empty() {
+                request = request.api_key(key);
+            }
+        }
+        if let Some(tokens) = input.max_tokens {
+            request = request.max_tokens(tokens);
+        }
+        if let Some(temperature) = input.temperature {
+            request = request.temperature(temperature);
+        }
+        if let Some(level) = input.thinking.as_deref() {
+            request = apply_thinking(request, input.provider_kind, level)?;
+        }
+
+        let calibrations = storage
+            .calibrations(&input.model, input.now_ms)
+            .map_err(|error| FfiError::new("storage", error.to_string()))?;
+        let session_config = SessionConfig {
+            calibrations: &calibrations,
+            retry: None,
+            allow_new_version,
+            suppress_compression: false,
+            turn: TurnConfig {
+                max_rounds: input.max_rounds,
+                max_tokens: None,
+                truncate_at: None,
+            },
+            budget: input.budget.as_ref(),
+            trigger: &trigger(),
+            avg_per_turn: input.avg_per_turn,
+            cancel: &cancel,
+            plan: None,
+            envir: input.envir.as_ref(),
+        };
+
+        let client = ChatClient::new(HttpsTransport::default());
+        let _ = storage.set_conversation_model(input.session, &input.model);
+        let outcome = regenerate_turn(
+            &client,
+            &request,
+            &mut storage,
+            input.session,
+            &up_to,
+            target.as_ref(),
+            &registry,
+            &policy,
+            workspace.as_ref(),
+            &session_config,
+            input.now_ms,
+        )
+        .map_err(|error| match error {
+            SessionError::CompactionRequired { used, usable } => FfiError::new(
+                "compaction_required",
+                format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
+            ),
+            other => FfiError::new("turn", other.to_string()),
+        })?;
+
+        Ok(json!({
+            "text": outcome.text,
+            "reasoning": outcome.reasoning,
+            "target": outcome.target.map(|id| id.to_string()),
+            "appended": outcome.appended.map(|id| id.to_string()),
+            "rounds": outcome.report.rounds,
+            "tool_calls": outcome.report.tool_calls.len(),
+            "finished": outcome.report.finished,
+        }))
     })
 }
 
