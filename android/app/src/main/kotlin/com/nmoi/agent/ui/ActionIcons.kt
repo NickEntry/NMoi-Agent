@@ -250,6 +250,26 @@ internal object ActionIcons {
         stroke("M4 18 a8 3 0 0 0 16 0")
     }
 
+    /**
+     * Lucide `heart.svg`（`lucide-static@1.61.0`，ISC）：模型选择面板里的"收藏"。
+     *
+     * 上游那条 path 的终点正好回到起点（`c-1.5-1.5-3-3.2-3-5.5` 从 (5,15) 走回 (2,9.5)），
+     * 所以描边态和填充态可以共用同一串路径。
+     */
+    val Heart: ImageVector = buildVector("heart") {
+        stroke(HEART_PATH)
+    }
+
+    /**
+     * 实心桃心 = 同一条 path 改 `fill`。
+     *
+     * Skia 填充开放路径时按"自动闭合"处理，不必再补一个 `Z`；
+     * 补了也没坏处，只是那段路径已经回到起点了，写了是重复。
+     */
+    val HeartFilled: ImageVector = buildVector("heart-filled") {
+        fill(HEART_PATH)
+    }
+
 }
 
 private fun buildVector(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =
@@ -271,3 +291,20 @@ private fun ImageVector.Builder.stroke(path: String) {
         strokeLineJoin = StrokeJoin.Round,
     )
 }
+
+/**
+ * 只在 `actions/` 的填充态图标上用（现在只有实心桃心）。
+ *
+ * 颜色同样写黑：`Icon(tint = …)` 是给整张图套 `ColorFilter`，填充也一起吃这个颜色。
+ */
+private fun ImageVector.Builder.fill(path: String) {
+    addPath(
+        pathData = PathParser().parsePathString(path).toNodes(),
+        fill = SolidColor(Color.Black),
+    )
+}
+
+/** Lucide `heart.svg` 的路径。两个变体共用，改一处就够。 */
+private const val HEART_PATH =
+    "M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5" +
+        "c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"

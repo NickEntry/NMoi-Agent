@@ -28,6 +28,12 @@ internal enum class SettingsScope(val wire: String) {
 
     /** 预设词条（0.14t / D178）：key = `<预设 id>/<词条 id>`，值是 `{base_id,base_version,base_hash,content,disabled}`。 */
     Preset("preset"),
+
+    /**
+     * 模型收藏（0.15x）：key = `<供应商 id>/<模型 id>`，值是 `{}`。
+     * "收藏"只有在或不在，时间由 `settings` 行自己记着——不为它多存一份没人读的字段。
+     */
+    ModelFavorites("model_favorites"),
 }
 
 /**

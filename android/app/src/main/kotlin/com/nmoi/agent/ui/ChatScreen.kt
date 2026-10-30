@@ -628,6 +628,7 @@ internal fun ChatScreen(
                     busy = busy,
                     unsaved = sessionId == null,
                     onHint = { notice = it },
+                    onModel = { modelSheet = true },
                     onThinking = { thinkingSheet = true },
                     thinkingLabel = thinkingLabel,
                     onEditTextReady = { editTextRef.value = it },
@@ -663,39 +664,29 @@ internal fun ChatScreen(
         }
 
         if (modelSheet) {
-            MenuSheet(
+            ModelPickerSheet(
+                databasePath = databasePath,
                 title = "用哪个模型",
-                items = choices.map { (provider, model) ->
-                    SheetItem(
-                        label = "${provider.name.ifBlank { provider.id }} / ${model.id}",
-                        icon = ActionIcons.Cpu,
-                        hint = null,
-                        onClick = {
-                            modelSheet = false
-                            scope.launch {
-                                val next = assistant.copy(
-                                    providerId = provider.id,
-                                    modelId = model.id,
-                                )
-                                AssistantRepository.save(databasePath, next).fold(
-                                    onSuccess = {
-                                        assistant = next
-                                        notice = "这一轮起用 ${model.id}"
-                                    },
-                                    onFailure = { notice = "切换失败：${it.message}" },
-                                )
-                            }
-                        },
-                    )
-                }.ifEmpty {
-                    listOf(
-                        SheetItem(
-                            label = "还没有可用的模型",
-                            hint = "先去 设置 → 模型与提示词 → 供应商 里填一套端点与模型",
-                        ),
-                    )
+                choices = choices.map { (provider, model) -> ModelChoice(provider, model) },
+                selected = ModelFavorites.key(assistant.providerId, assistant.modelId),
+                emptyHint = "还没有可用的模型：先去 设置 → 模型与提示词 → 模型服务 里填一套端点与模型",
+                onPick = { choice ->
+                    modelSheet = false
+                    scope.launch {
+                        val next = assistant.copy(
+                            providerId = choice.provider.id,
+                            modelId = choice.model.id,
+                        )
+                        AssistantRepository.save(databasePath, next).fold(
+                            onSuccess = {
+                                assistant = next
+                                notice = "这一轮起用 ${choice.model.displayName}"
+                            },
+                            onFailure = { notice = "切换失败：${it.message}" },
+                        )
+                    }
                 },
-                onHint = { notice = it },
+                onNotice = { notice = it },
                 onDismiss = { modelSheet = false },
             )
         }
@@ -2171,6 +2162,7 @@ private fun Composer(
     busy: Boolean,
     unsaved: Boolean,
     onHint: (String) -> Unit,
+    onModel: () -> Unit,
     onThinking: () -> Unit,
     thinkingLabel: String,
     onEditTextReady: (EditText) -> Unit,
@@ -2210,12 +2202,13 @@ private fun Composer(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 六个都还没接：点一下把"差什么、等哪个阶段"写进上面那行提示。
+                    // 六个里还剩五个没接：点一下把"差什么、等哪个阶段"写进上面那行提示。
                     // 不给假开关的意思是"点了要有回应"，不是"不许摆"。
+                    // 模型这一颗 0.15x 接上了：和顶部那条模型条开的是同一个面板。
                     IconActionButton(
                         image = ActionIcons.Cpu,
                         description = "模型",
-                        onClick = { onHint("模型选择待接：要先有供应商与密钥页（P3）") },
+                        onClick = onModel,
                         compact = true,
                     )
                     IconActionButton(

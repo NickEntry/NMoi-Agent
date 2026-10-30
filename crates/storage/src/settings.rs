@@ -58,6 +58,13 @@ pub enum Scope {
     /// **存原文**：用户要的是"能导出改之前是什么"，只有哈希的日志做不到这件事。
     /// 不加表、不加列——`(scope, key) → JSON` 这套够用，而迁移是单向的。
     Undo,
+    /// 模型收藏（0.15x）。key = `<供应商 id>/<模型 id>`，值是 `{}`——"收藏"只有在或不在，
+    /// 时间由 `settings` 行自己的 `updated_at` 记着（不再往 payload 里塞一份）。
+    ///
+    /// 为什么放库里而不是 `AppSettings` 那种"这台手机的偏好"：它指向的是
+    /// [`Scope::Provider`] 里那份模型表。两边分家，删掉一个供应商就会留下指向空气的收藏键；
+    /// 放在一起则跟着库一起导出、一起恢复。
+    ModelFavorites,
 }
 
 impl Scope {
@@ -71,6 +78,7 @@ impl Scope {
             Scope::Preset => "preset",
             Scope::Calibration => "calibration",
             Scope::Undo => "undo",
+            Scope::ModelFavorites => "model_favorites",
         }
     }
 
@@ -84,6 +92,7 @@ impl Scope {
             "preset" => Some(Scope::Preset),
             "calibration" => Some(Scope::Calibration),
             "undo" => Some(Scope::Undo),
+            "model_favorites" => Some(Scope::ModelFavorites),
             _ => None,
         }
     }
@@ -359,5 +368,26 @@ mod tests {
             Loaded::Ready(_)
         ));
         assert!(storage.repairs(5).unwrap().is_empty());
+    }
+
+    /// 每个 scope 的 wire 名都必须能被 `parse` 认回来。
+    ///
+    /// 这条看着像废话，但漏一个的后果不是编译错：界面那边会读到"这个 scope 不认识"，
+    /// 表现为**一张永远空的列表**——收藏点了还在、重启就没了，很难查到 scope 名上。
+    #[test]
+    fn every_scope_round_trips_through_its_wire_name() {
+        for scope in [
+            Scope::ModelOverrides,
+            Scope::Assistant,
+            Scope::Conversation,
+            Scope::Roles,
+            Scope::Provider,
+            Scope::Preset,
+            Scope::Calibration,
+            Scope::Undo,
+            Scope::ModelFavorites,
+        ] {
+            assert_eq!(Scope::parse(scope.as_str()), Some(scope), "{scope:?}");
+        }
     }
 }

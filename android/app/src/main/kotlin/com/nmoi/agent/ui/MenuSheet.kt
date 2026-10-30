@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,6 +62,29 @@ internal fun MenuSheet(
     onHint: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    SheetFrame(title = title, onDismiss = onDismiss) {
+        items.forEach { item ->
+            SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
+        }
+    }
+}
+
+/**
+ * 底部浮层的外壳：遮罩 → 底部升起的圆角面 → 抓手 → 标题，里面是调用方给的内容。
+ *
+ * 抽出来是因为「模型选择」那张面板要长在同一个壳里（同一层、同一套圆角与遮罩）。
+ * 复制一份的结局一定是两边慢慢分叉——比如遮罩从 0.32 漂成 0.36，两个面板叠在一起时
+ * 看得很清楚，却没人知道哪个是"对的"。
+ *
+ * `content` 拿到的是 `ColumnScope`，所以面板里可以直接 `Modifier.weight(1f)`
+ * 把可滚的那段顶到中间。高度由内容决定（外壳本身不设固定高度）。
+ */
+@Composable
+internal fun SheetFrame(
+    title: String,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Box(modifier = Modifier.fillMaxSize()) {
         // 遮罩：比抽屉那层淡，面板本身是"临时的一层"，不该看着像换了页面。
         Box(
@@ -98,9 +122,7 @@ internal fun MenuSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 6.dp),
                     )
-                    items.forEach { item ->
-                        SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
-                    }
+                    content()
                 }
             }
         }
