@@ -65,7 +65,7 @@ internal fun AppSettingsScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                GroupCard(modifier = Modifier.padding(top = 8.dp)) {
+                SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -97,7 +97,7 @@ internal fun AppSettingsScreen(
                     }
                 }
 
-                GroupCard(modifier = Modifier.padding(top = 10.dp)) {
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
                             text = "默认上下文窗口",
@@ -150,6 +150,21 @@ internal fun AppSettingsScreen(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+}
+
+/** 这一页自己的分组卡。`GroupCard` 是 ProviderScreens 的文件私有件，跨文件用不了。 */
+@Composable
+private fun SettingsCard(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) { content() }
     }
 }
 
