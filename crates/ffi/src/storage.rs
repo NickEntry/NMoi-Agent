@@ -858,6 +858,75 @@ const MAX_BLOCK_BYTES: usize = nmoi_core::edit::MAX_BLOCK_BYTES;
 /// 而"点思考卡结果正文变了"这种故障在界面上看着像灵异事件。
 ///
 /// 解析本身在 core（`BlockSelector::parse`）：模型的 `edit_message` 用的是同一份。
+/// 单元级编辑（0.15f / D188）：一次改几块，正文落红、思考 / 工具块就地改。
+///
+/// 入参：`handle` / `spec` —— `{"message_id":"<具体 id>","ops":[…]}`。
+/// `ops` 的形状与模型的 `edit_unit` 工具**走同一份解析**（`parse_edit_unit`）：
+/// 界面能做的事和模型能做的事不该长成两种。
+///
+/// 只收具体 id：这一层没有会话历史，`last_assistant` 这类别名解不出目标。
+/// 界面点的是哪一条，它自己知道。
+///
+/// 出参：`{message, written, removed, blocks:[…], unchanged:[…]}`
+#[no_mangle]
+pub extern "C" fn nmoi_storage_apply_unit_edits_json(
+    handle: u64,
+    spec: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let spec_text = read_str(spec, "spec")?;
+        let value: Value = serde_json::from_str(spec_text)
+            .map_err(|error| FfiError::new("bad_argument", format!("spec 不是 JSON：{error}")))?;
+        let call = nmoi_core::tools::parse_edit_unit(&value)
+            .map_err(|message| FfiError::new("bad_argument", message))?;
+        let message_id = parse_message(&call.target)?;
+        with_storage(handle, |storage| {
+            let outcome = storage
+                .apply_unit_edits(&message_id, &call.ops)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "message": message_id.to_string(),
+                "written": outcome.written,
+                "removed": outcome.removed,
+                "blocks": outcome.blocks,
+                "unchanged": outcome.unchanged,
+            }))
+        })
+    })
+}
+
+/// 一个会话的 undo 日志，最近的在前。
+///
+/// 出参：`{count, entries:[{key, at, message, unit, block, before, after, deleted}]}`。
+/// `before` / `after` 是**原文**（D184 的 3A），所以界面上的「导出」拿回来的是被改掉的那段字，
+/// 不是一串哈希。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_undo_log_json(handle: u64, session: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let session_text = read_str(session, "session")?;
+        let session_id = parse_session(session_text)?;
+        with_storage(handle, |storage| {
+            let entries = storage.undo_log(session_id).map_err(storage_error)?;
+            let list: Vec<Value> = entries
+                .into_iter()
+                .map(|(key, record)| {
+                    json!({
+                        "key": key,
+                        "at": record.at,
+                        "message": record.message,
+                        "unit": record.unit,
+                        "block": record.block,
+                        "before": record.before,
+                        "after": record.after,
+                        "deleted": record.deleted,
+                    })
+                })
+                .collect();
+            Ok(json!({ "count": list.len(), "entries": list }))
+        })
+    })
+}
+
 fn parse_block(text: &str) -> FfiResult<nmoi_core::edit::BlockSelector> {
     nmoi_core::edit::BlockSelector::parse(text)
         .map_err(|message| FfiError::new("bad_argument", message))
