@@ -11,6 +11,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.nmoi.agent.ui.AppSettings
+import com.nmoi.agent.ui.AppSettingsScreen
 import com.nmoi.agent.ui.AppIconSwitcher
 import com.nmoi.agent.ui.AssistantEditScreen
 import com.nmoi.agent.ui.AssistantEntry
@@ -432,12 +434,19 @@ class MainActivity : ComponentActivity() {
                             logSummary = logSummary,
                             // 这一行要能回答"环境装没装"，不能为了知道点进去；route 变了就重读一次。
                             toolsSummary = if (envirInstalled) "环境已装 · 原生命令" else "工作区 · 原生命令",
+                            appSummary = AppSettings.summary(context),
                             onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
                         is Route.SettingsGroupRoute -> when (val group = route.group) {
                             // 外观与调试已有真实现，其余组先给"还没接线"的清单。
+                            // 应用设置（0.15m）：默认上下文窗口 + 重试是否留新版本。
+                            SettingsGroup.App -> AppSettingsScreen(
+                                context = context,
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+
                             SettingsGroup.Appearance -> AppearanceScreen(
                                 choice = iconChoice,
                                 warning = iconWarning,

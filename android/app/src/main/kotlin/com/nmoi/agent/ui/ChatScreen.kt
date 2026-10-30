@@ -258,10 +258,12 @@ internal fun ChatScreen(
     //
     // 放在 `allMessages` 之后：它要用这个列表。写在前面会引用到还没声明的变量。
     val contextPercent = remember(allMessages, assistant, choices) {
+        // 和压缩判据同一份分母：模型没填窗口就按应用设置里的默认值算。
         val window = choices
             .firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
             ?.second?.contextWindow
-        if (window == null || window <= 0) {
+            ?: AppSettings.defaultContextWindow(context)
+        if (window <= 0) {
             null
         } else {
             val used = allMessages.sumOf { it.tokens }

@@ -148,18 +148,17 @@ internal object TurnRepository {
                         // 以前这一条从来没传过——core 那边 `config.budget` 一直是 `None`，
                         // 于是"压缩判据"一次都没评估过，用户填的窗口也就等于没填。
                         // 没填 = 不评估：宁可不压，也不要按一个猜出来的数去压。
-                        val window = model.contextWindow
-                        if (window != null && window > 0) {
-                            row.put(
-                                "budget",
-                                JSONObject()
-                                    .put("window", window.toLong())
-                                    .put(
-                                        "reserve_output",
-                                        reserveOutput(maxTokens, window),
-                                    ),
-                            )
-                        }
+                        //
+                        // 模型没填窗口就按「应用设置」里的默认值算（用户 2026-10-31 定的）：
+                        // 不填也得有判据，否则"压缩"这件事在界面上永远不发生。
+                        val window = (model.contextWindow ?: AppSettings.defaultContextWindow(context))
+                            .coerceAtLeast(1)
+                        row.put(
+                            "budget",
+                            JSONObject()
+                                .put("window", window.toLong())
+                                .put("reserve_output", reserveOutput(maxTokens, window)),
+                        )
                     }
 
                 NmoiFfi.turnRun(config)

@@ -9,6 +9,7 @@ package com.nmoi.agent.ui
  */
 internal enum class SettingsGroup(val title: String, val hint: String) {
     Appearance("外观", "启动器图标：4 设计 × 黑/白底"),
+    App("应用设置", "默认上下文窗口、重试是否留新版本"),
     Context("会话与上下文", "压缩两条线、视觉覆盖、上下文窗口默认值"),
     Models("模型与提示词", "供应商、助手、七条压缩提示词"),
     Tools("工具与工作区", "工作区根目录、技能、MCP、世界书"),
@@ -21,6 +22,7 @@ internal data class PendingRow(val title: String, val subtitle: String, val pend
 
 /** 各分组里那些还没接的功能。接了哪一项，就从这里删掉一行，别留在界面上当装饰。 */
 internal fun pendingRows(group: SettingsGroup): List<PendingRow> = when (group) {
+    SettingsGroup.App -> emptyList()
     SettingsGroup.Appearance -> listOf(
         PendingRow("主题", "现在只有深色；浅色要跟图标包的 backing: surface 一起调（D105）", "待接 P6.6"),
     )
@@ -29,7 +31,6 @@ internal fun pendingRows(group: SettingsGroup): List<PendingRow> = when (group) 
         PendingRow("自动压缩建议线", "到 75% 时先压一轮（D90 / D97）", "待接 P4.2"),
         PendingRow("自动压缩绝对线", "到 92% 时先压再发；生成中过线则截断并标 incomplete", "待接 P4.2"),
         PendingRow("视觉覆盖", "开着时主模型一个媒体块都不收，先给视觉模型看（D62）", "待接 P3.3"),
-        PendingRow("上下文窗口默认值", "声明窗口 / 有效窗口 / 预留输出三段（P2.7）", "待接 P3"),
     )
 
     SettingsGroup.Models -> listOf(

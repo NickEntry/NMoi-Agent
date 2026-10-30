@@ -28,6 +28,7 @@ internal fun SettingsIndexScreen(
     iconSummary: String,
     logSummary: String,
     toolsSummary: String,
+    appSummary: String,
     onOpen: (SettingsGroup) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -50,7 +51,7 @@ internal fun SettingsIndexScreen(
                 SettingsGroup.entries.forEach { group ->
                     GroupRow(
                         group = group,
-                        summary = summaryFor(group, iconSummary, logSummary, toolsSummary),
+                        summary = summaryFor(group, iconSummary, logSummary, toolsSummary, appSummary),
                         onClick = { onOpen(group) },
                     )
                 }
@@ -70,9 +71,11 @@ private fun summaryFor(
     iconSummary: String,
     logSummary: String,
     toolsSummary: String,
+    appSummary: String,
 ): String =
     when (group) {
         SettingsGroup.Appearance -> iconSummary
+        SettingsGroup.App -> appSummary
         SettingsGroup.Context -> "75% / 92% · 未接"
         SettingsGroup.Models -> "供应商 · 助手 · 七条提示词"
         SettingsGroup.Tools -> toolsSummary
