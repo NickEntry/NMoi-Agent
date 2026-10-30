@@ -140,6 +140,14 @@ internal object NmoiFfi {
     suspend fun turnRun(config: JSONObject): Result<JSONObject> =
         call("turn_run") { NativeBridge.turnRunJson(config.toString()) }
 
+    /**
+     * 这个会话现在有没有一轮在跑（0.15c）。
+     *
+     * 不需要 storage 句柄：那张表是进程内的，跟着 `Registration` 的 Drop 走。
+     */
+    suspend fun turnBusy(session: String): Result<JSONObject> =
+        call("turn_busy") { NativeBridge.turnBusyJson(session) }
+
     /** 请求取消正在跑的那一轮。没在跑不算失败（`cancelled:false`）。 */
     suspend fun turnCancel(session: String): Result<JSONObject> =
         call("turn_cancel") { NativeBridge.turnCancelJson(session) }

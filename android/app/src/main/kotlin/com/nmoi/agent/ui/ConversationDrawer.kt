@@ -82,7 +82,13 @@ internal fun ConversationDrawer(
     activeAssistantId: String = AssistantRepository.DEFAULT_ID,
     onOpen: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
-    onNewConversation: () -> Unit,
+    /**
+     * 每个会话的草稿（0.15b）：`会话 id → 文字`，非空的那些。
+     *
+     * 抽屉自己不去读 SharedPreferences：那一层读盘要跟着"抽屉打开"刷新，
+     * 让外层一次算好再传进来，这里只负责显示。
+     */
+    drafts: Map<String, String> = emptyMap(),
     /**
      * 能不能"从边缘拖出来"。
      *
@@ -259,7 +265,7 @@ internal fun ConversationDrawer(
                     activeAssistant = activeAssistant,
                     onOpenAssistantMenu = { assistantMenu = true },
                     onOpenConversation = onOpenConversation,
-                    onNewConversation = onNewConversation,
+                    drafts = drafts,
                     onMoveConversation = onMoveConversation,
                     assistants = assistants,
                     onOpenSettings = onOpenSettings,
@@ -297,7 +303,7 @@ internal fun ConversationDrawer(
                         activeAssistant = activeAssistant,
                         onOpenAssistantMenu = { assistantMenu = true },
                         onOpenConversation = onOpenConversation,
-                        onNewConversation = onNewConversation,
+                        drafts = drafts,
                         onMoveConversation = onMoveConversation,
                         assistants = assistants,
                         onOpenSettings = onOpenSettings,
@@ -366,7 +372,7 @@ private fun DrawerPanel(
     assistants: List<AssistantEntry>,
     onOpenAssistantMenu: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
-    onNewConversation: () -> Unit,
+    drafts: Map<String, String> = emptyMap(),
     /**
      * 能不能"从边缘拖出来"。
      *
@@ -416,34 +422,6 @@ private fun DrawerPanel(
 
         // —— 会话列表（新对话在最上面）——
         LazyColumn(modifier = Modifier.weight(1f)) {
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onNewConversation() }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = ActionIcons.Plus,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(end = 10.dp).size(18.dp),
-                    )
-                    Text(
-                        text = "新对话",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = "草稿",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
             if (rows.isEmpty()) {
                 item {
                     Text(
@@ -475,18 +453,38 @@ private fun DrawerPanel(
                             onLongClick = { moveTarget = row },
                         ),
                 ) {
-                    Text(
-                        text = row.title,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (current) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = row.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (current) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // 草稿标记（0.15b）：这一行里还留着没发出去的字。
+                        if (drafts[row.id]?.isNotBlank() == true) {
+                            Text(
+                                text = "草稿",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (current) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                    }
                 }
             }
         }

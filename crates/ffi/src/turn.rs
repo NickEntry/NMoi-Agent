@@ -713,6 +713,27 @@ pub extern "C" fn nmoi_turn_cancel_json(session: *const c_char) -> *mut c_char {
     })
 }
 
+/// 这个会话现在有没有一轮在跑。
+///
+/// 出参：`{"session":"…","running":true,"cancelled":false}`。
+///
+/// 界面上的「正在生成…」不能只活在页面 state 里（0.15c）：切到别的会话再切回来，
+/// 那一轮其实还在跑，而页面已经重组过一次。所以界面记一份、这里问一份，
+/// 两边不一致时**以这里为准**——表是随 `Registration` 的 Drop 一起清掉的。
+#[no_mangle]
+pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let session = read_str(session, "session")?;
+        let table = registry_lock();
+        let running = table.contains_key(session);
+        let cancelled = table
+            .get(session)
+            .map(|flag| flag.load(Ordering::SeqCst))
+            .unwrap_or(false);
+        Ok(json!({ "session": session, "running": running, "cancelled": cancelled }))
+    })
+}
+
 /// 一次性补全（D158）：**不发进会话历史，也不落库**。
 ///
 /// 增强编辑要的是"拿一段文字回来"。用 `turn_run` 做这件事，会在历史里留下
@@ -1039,6 +1060,32 @@ mod tests {
     }
 
     /// 同一会话同时只允许一轮：两个 turn 抢同一个取消标志的话，取消会取消到别人头上。
+    #[test]
+    fn busy_reports_the_registration_table() {
+        let session = CString::new("018f0000-0000-7000-8000-0000000000aa").unwrap();
+
+        // 没跑：running=false。
+        let idle = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        assert_eq!(idle["running"], json!(false), "{idle}");
+
+        let (registration, _flag) =
+            Registration::new("018f0000-0000-7000-8000-0000000000aa").unwrap();
+        let running = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        assert_eq!(running["running"], json!(true), "{running}");
+        assert_eq!(running["cancelled"], json!(false), "{running}");
+
+        // 取消之后仍然是"在跑"，但 cancelled 为真：界面据此把按钮换成"正在停下"。
+        let cancelled = read_json(nmoi_turn_cancel_json(session.as_ptr()));
+        assert_eq!(cancelled["running"], json!(true), "{cancelled}");
+        let stopping = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        assert_eq!(stopping["cancelled"], json!(true), "{stopping}");
+
+        // drop 之后回到 false。
+        drop(registration);
+        let again = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        assert_eq!(again["running"], json!(false), "{again}");
+    }
+
     #[test]
     fn a_second_turn_for_the_same_session_is_busy() {
         let (_first, _flag) = Registration::new("session-a").unwrap();

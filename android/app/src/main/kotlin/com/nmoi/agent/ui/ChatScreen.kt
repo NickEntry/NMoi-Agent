@@ -118,8 +118,13 @@ internal fun ChatScreen(
      */
     externalReload: Int = 0,
 ) {
-    var draft by remember { mutableStateOf("") }
     val context = LocalContext.current
+    // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
+    val draftKey = sessionId ?: DraftStore.NEW_DRAFT_KEY
+    var draft by remember(draftKey) { mutableStateOf(DraftStore.load(context, draftKey)) }
+    // 打一个字存一次（`apply()` 是异步落盘，不卡输入）。空草稿会被 `save` 删键，
+    // 抽屉里那一行"草稿"标记才不会一直亮着。
+    LaunchedEffect(draft, draftKey) { DraftStore.save(context, draftKey, draft) }
     val scope = rememberCoroutineScope()
     // 存完一条要重读：`produceState` 只有 key 变了才会重跑，所以用它当"刷新一下"。
     var reloadKey by remember { mutableStateOf(0) }
@@ -129,10 +134,17 @@ internal fun ChatScreen(
     // 输入框当场清空。这一条不进库、也不算"已存"——库里有没有得等这一轮收尾后现读。
     var pending by remember { mutableStateOf<PendingSend?>(null) }
     // "这一轮正在等模型"——只给消息区那个"正在生成…"占位用（`busy` 还管别的事）。
-    var waiting by remember { mutableStateOf(false) }
+    //
+    // 初值从 `GeneratingTracker` 取（0.15c）：切走再切回来时，那一轮其实还在跑，
+    // 而这里的 state 已经随重组回到初值了。写成 `remember(sessionId)` 才跟着会话换。
+    var waiting by remember(sessionId) {
+        mutableStateOf(sessionId != null && GeneratingTracker.isRunning(sessionId))
+    }
     // 正在跑的那一轮挂在哪个会话上——点"停止"要的就是这个 id。
     // 单独存一份而不是直接读 `sessionId`：跑的过程中用户可能切了会话。
-    var runningSession by remember { mutableStateOf<String?>(null) }
+    var runningSession by remember(sessionId) {
+        mutableStateOf(sessionId?.let { GeneratingTracker.sessionFor(it) })
+    }
     // 选择模式：长按任意一条进入，点别的消息加选，顶部条上复制 / 分享。
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<String>()) }
@@ -425,6 +437,24 @@ internal fun ChatScreen(
         }
     }
 
+    // 进页面时跟原生对一次账（0.15c）：本地缓存可能是上一轮的残留。
+    // 查不到就当他还在跑——宁可多显示一次"正在生成"，也别把真在跑的那一轮当成结束了。
+    LaunchedEffect(sessionId) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (!GeneratingTracker.isRunning(sid)) return@LaunchedEffect
+        val alive = withContext(Dispatchers.IO) {
+            NmoiFfi.turnBusy(sid).getOrNull()?.optBoolean("running") ?: true
+        }
+        if (GeneratingTracker.reconcile(sid, alive)) {
+            waiting = false
+            runningSession = null
+            notice = "上一轮没收尾（原生那边已经没有它了），已接管"
+        } else if (alive) {
+            waiting = true
+            runningSession = sid
+        }
+    }
+
     // 真的发一轮（D157）：用户那句话由 `run_session_turn` 在发之前就落库了，
     // 所以失败也要重读一次界面——[TurnRepository.wasUserTextSaved] 判它到底存没存。
     val sendTurn: () -> Unit = {
@@ -450,8 +480,13 @@ internal fun ChatScreen(
                     busy = false
                 } else {
                     runningSession = sid
+                    // 先记在共用的那份上：切走再切回来才看得见"还在跑"（0.15c）。
+                    GeneratingTracker.mark(sid, true)
+                    // 空白会话的草稿挪到真 id：用户回来时那半句还应该在。
+                    DraftStore.migrateNewTo(context, sid)
                     val result = TurnRepository.send(context, databasePath, sid, text)
                     runningSession = null
+                    GeneratingTracker.mark(sid, false)
                     pending = null
                     waiting = false
                     busy = false
@@ -574,6 +609,7 @@ internal fun ChatScreen(
                     onSend = sendTurn,
                     onStop = {
                         val running = runningSession
+                            ?: sessionId?.takeIf { GeneratingTracker.isRunning(it) }
                         if (running == null) {
                             notice = "这一轮已经收尾了"
                         } else {

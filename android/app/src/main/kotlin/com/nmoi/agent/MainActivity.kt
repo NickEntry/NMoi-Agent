@@ -31,6 +31,7 @@ import com.nmoi.agent.ui.LogChannelScreen
 import com.nmoi.agent.ui.LogKind
 import com.nmoi.agent.ui.LogListScreen
 import com.nmoi.agent.ui.LogSettingsScreen
+import com.nmoi.agent.ui.DraftStore
 import com.nmoi.agent.ui.MessageEditScreen
 import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
@@ -179,6 +180,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // 草稿标记（0.15b）：抽屉打开时读一次就够——关闭期间改的是输入框，
+                // 下次打开会重新读。跟着 `drawerOpen` 刷新，不额外轮询。
+                val drafts by produceState(
+                    initialValue = emptyMap<String, String>(),
+                    drawerOpen,
+                ) {
+                    value = if (drawerOpen) {
+                        withContext(Dispatchers.IO) { DraftStore.all(context) }
+                    } else {
+                        emptyMap()
+                    }
+                }
+
                 // 只在栈深 > 1 时接管返回键：根页面（聊天页）按返回应当退出应用，
                 // 而不是被我们拦下来变成"什么都不发生"。全局只注册这一处，子页面不各自注册。
                 BackHandler(enabled = backStack.size > 1) {
@@ -222,6 +236,7 @@ class MainActivity : ComponentActivity() {
                     activeAssistantId = activeAssistantId,
                     // 只有聊天页能从边缘拖出抽屉；子页面上不认这个手势。
                     canOpenByDrag = route is Route.Chat,
+                    drafts = drafts,
                     onSwitchAssistant = { id ->
                         scope.launch {
                             withContext(Dispatchers.IO) { AssistantRepository.setActive(databasePath, id) }
@@ -286,10 +301,6 @@ class MainActivity : ComponentActivity() {
                     onOpenConversation = { picked ->
                         drawerOpen = false
                         backStack = listOf(Route.Chat(picked.title, picked.id.ifEmpty { null }))
-                    },
-                    onNewConversation = {
-                        drawerOpen = false
-                        backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
                     },
                     onOpenSettings = {
                         drawerOpen = false

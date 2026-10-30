@@ -780,10 +780,30 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnCancelJson<'local
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.turnBusyJson(session)`：这个会话现在有没有一轮在跑（0.15c）。
+///
+/// 界面上的「正在生成…」要能在切走再切回来之后恢复，所以它得有一个**共用的**真相源。
+/// 页面里的 state 只是缓存，这一条才是准的。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnBusyJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => match c_string(session, "session") {
+            Ok(c_session) => take_json(crate::turn::nmoi_turn_busy_json(c_session.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 // ---------------------------------------------------------------------------
 // 增强编辑（D158）：一次性补全 + 块级编辑
 // ---------------------------------------------------------------------------
-
 /// `NativeBridge.completeJson(config)`：一次性补全，**不用 storage 句柄**。
 ///
 /// 没有句柄是有意的：这条路上一个字节都不落库。要落库的（改哪一块、写成哪一份正文）

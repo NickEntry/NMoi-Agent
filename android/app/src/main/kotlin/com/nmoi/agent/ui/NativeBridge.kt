@@ -95,6 +95,9 @@ internal object NativeBridge {
     /** 给正在跑的那一轮置取消标志。没在跑返回 `cancelled:false`，不是错误。 */
     external fun turnCancelJson(session: String): String
 
+    /** 这个会话现在有没有一轮在跑（0.15c）。「正在生成…」靠它复核，不信页面里的缓存。 */
+    external fun turnBusyJson(session: String): String
+
     /**
      * 一次性补全（D158）：**不落库、不进历史**。增强编辑要的是"拿一段文字回来"。
      *
