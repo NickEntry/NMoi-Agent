@@ -43,6 +43,7 @@ Compose 的 `BasicTextField` 自己重实现 IME 协议且镜像出错（横屏�
 cargo check --workspace --all-targets     # 本地必做（语法/类型）
 cargo test -p nmoi-core --lib -- <模块>::  # 本地可跑：短测试，单次 ≤ 60s（D16.1）
 cargo test --workspace                     # 全量留给 CI
+bash scripts/target_usage.sh               # 看 target 多大；--clean 是整目录清（见 docs/build.md）
 ```
 
 CLI：
