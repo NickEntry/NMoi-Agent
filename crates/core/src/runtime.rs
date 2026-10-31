@@ -32,7 +32,7 @@ use crate::message::{Message, Role};
 use crate::provider::{ProviderConfig, ProviderKind, ThinkingSetting};
 use crate::retry::{wait, Attempt, Decision, Entropy, GiveUpReason, RetryPolicy, WaitOutcome};
 use crate::sse::{SseError, SseReader};
-use crate::stream::{Completion, StreamEvent, StreamParseError, StreamParser};
+use crate::stream::{Completion, FinishReason, StreamEvent, StreamParseError, StreamParser};
 use crate::transport::{HttpRequest, HttpResponse, ResponseBody, Transport, TransportError};
 
 /// Anthropic 的 `max_tokens` 是必填字段。没给的时候用它兜底。
@@ -361,6 +361,12 @@ pub enum ChatError {
     /// 请求里出现了这一层还表示不了的东西。**明确报错**，不静默丢。
     #[error("暂不支持: {0}")]
     Unsupported(String),
+    /// 上游在**流内**报的错（HTTP 200，错误在 body 里）。
+    ///
+    /// 和 [`ChatError::Http`] 分开：那条是"一个字节都没开始"，这条是"跑到一半"。
+    /// 两者的重试语义不同——这条**不重发**（重发会把前半段和后半段拼成一条不存在的回复，D40）。
+    #[error("上游在流里报错: {0}")]
+    Provider(String),
 }
 
 impl ChatError {
@@ -681,6 +687,121 @@ impl ChatStream {
                 }
             }
         }
+    }
+}
+
+/// 一条流读干之后的样子（0.15n）。
+pub struct Collected {
+    /// 与 [`ChatClient::complete`] 同形的整段结果。
+    pub completion: Completion,
+    /// 非空 = 没等到终止信号就断了（正文照留，落库按"不完整"处理，D21）。
+    pub interrupted: Option<String>,
+}
+
+impl ChatStream {
+    /// 把这条流读干：正文/思考增量**边到边**交给 `on_delta`，最后拼成与
+    /// [`ChatClient::complete`] 同形的 [`Completion`]。
+    ///
+    /// 三件事只在这一处做，别在别处再拼一遍：
+    /// - **工具调用的参数是分片过来的**（按 `index` 分组），拼装只此一份；
+    /// - `Usage` 是**快照**不是增量，直接覆盖；
+    /// - 没等到终止信号就断 → 正文留着、`interrupted` 里给一句原因，**不当作失败**：
+    ///   已经生成的那一段是用户的，丢掉才是失败。
+    ///
+    /// 流内报错（`ProviderError`）返回 [`ChatError::Provider`]：那一段正文也丢了，
+    /// 因为这一层说不清"上游说到哪儿算数"——上层要留残文就自己接 `on_delta`。
+    pub fn collect_all<F>(&mut self, mut on_delta: F) -> Result<Collected, ChatError>
+    where
+        F: FnMut(&str, &str),
+    {
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        let mut id: Option<String> = None;
+        let mut model: Option<String> = None;
+        let mut usage = Usage::default();
+        let mut finish: Option<FinishReason> = None;
+        let mut interrupted: Option<String> = None;
+        // `index` → (id, name, arguments)。BTreeMap：工具调用的顺序要跟 index 一致。
+        let mut calls: std::collections::BTreeMap<u32, (Option<String>, Option<String>, String)> =
+            std::collections::BTreeMap::new();
+
+        while let Some(event) = self.next_event()? {
+            match event {
+                StreamEvent::Meta {
+                    id: meta_id,
+                    model: meta_model,
+                } => {
+                    if id.is_none() {
+                        id = meta_id;
+                    }
+                    if model.is_none() {
+                        model = meta_model;
+                    }
+                }
+                StreamEvent::Text(delta) => {
+                    text.push_str(&delta);
+                    on_delta(&delta, "");
+                }
+                StreamEvent::Reasoning(delta) => {
+                    reasoning.push_str(&delta);
+                    on_delta("", &delta);
+                }
+                StreamEvent::ToolCallDelta {
+                    index,
+                    id: call_id,
+                    name,
+                    arguments,
+                } => {
+                    let slot = calls.entry(index).or_default();
+                    if call_id.is_some() {
+                        slot.0 = call_id;
+                    }
+                    if name.is_some() {
+                        slot.1 = name;
+                    }
+                    slot.2.push_str(&arguments);
+                }
+                StreamEvent::Usage(snapshot) => usage = snapshot,
+                StreamEvent::Finish(reason) => finish = Some(reason),
+                StreamEvent::Done => {}
+                StreamEvent::Interrupted(reason) => interrupted = Some(reason),
+                StreamEvent::ProviderError { code, message } => {
+                    let code = code.unwrap_or_else(|| "错误".into());
+                    return Err(ChatError::Provider(format!("{code}：{message}")));
+                }
+            }
+        }
+
+        let tool_calls = calls
+            .into_iter()
+            .map(|(index, (id, name, arguments))| crate::stream::ToolCall {
+                index,
+                id,
+                name: name.unwrap_or_default(),
+                arguments,
+            })
+            .collect::<Vec<_>>();
+        // 有工具调用就是 ToolCalls，没等到终止信号就是 Unknown("interrupted")——
+        // 后者和"上游说不认识哪个词"共用一个变体，别假装它是 Stop。
+        let finish = match (finish, interrupted.as_ref(), tool_calls.is_empty()) {
+            (Some(reason), _, _) => reason,
+            (None, Some(_), _) => FinishReason::Unknown("interrupted".into()),
+            (None, None, true) => FinishReason::Stop,
+            (None, None, false) => FinishReason::ToolCalls,
+        };
+
+        Ok(Collected {
+            completion: Completion {
+                text,
+                reasoning,
+                tool_calls,
+                finish,
+                usage,
+                model,
+                id,
+            },
+            interrupted,
+        })
     }
 }
 
@@ -1289,6 +1410,79 @@ mod tests {
     use crate::provider::{BodyOverrides, ProviderCapabilities};
     use std::io::Cursor;
     use std::sync::Mutex;
+
+    /// 流式（0.15n）：增量按顺序交出去，拼出来的 `Completion` 与 `complete()` 同形。
+    #[test]
+    fn collect_folds_a_stream_into_a_completion() {
+        // 用 serde_json 搭帧：手写转义在工具参数那一帧上极容易少一个括号，
+        // 而那种错会伪装成"解析器坏了"。
+        let frames = [
+            json!({"id":"chatcmpl-1","model":"m-1","choices":[{"index":0,"delta":{"content":"你"}}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"好"}}]}),
+            json!({"choices":[{"index":0,"delta":{"reasoning_content":"想一想"}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"a\"}"}}]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}),
+        ];
+        let mut raw = String::new();
+        for frame in &frames {
+            raw.push_str("data: ");
+            raw.push_str(&frame.to_string());
+            raw.push_str("\n\n");
+        }
+        raw.push_str("data: [DONE]\n\n");
+        let mut stream = ChatStream::new(
+            ProviderKind::OpenAiCompatible,
+            Box::new(std::io::Cursor::new(raw.as_bytes().to_vec())),
+        );
+
+        let mut deltas: Vec<String> = Vec::new();
+        let collected = stream
+            .collect_all(|text, thinking| {
+                if !text.is_empty() {
+                    deltas.push(format!("T{text}"));
+                }
+                if !thinking.is_empty() {
+                    deltas.push(format!("R{thinking}"));
+                }
+            })
+            .unwrap();
+
+        // 增量按到达顺序交给调用方（界面就是靠这个逐字画的）。
+        assert_eq!(deltas, vec!["T你", "T好", "R想一想"], "{deltas:?}");
+        assert_eq!(collected.completion.text, "你好");
+        assert_eq!(collected.completion.reasoning, "想一想");
+        assert_eq!(collected.completion.finish, FinishReason::ToolCalls);
+        assert_eq!(collected.completion.usage.prompt_tokens, 10);
+        assert_eq!(collected.completion.usage.completion_tokens, 5);
+        assert_eq!(collected.completion.model.as_deref(), Some("m-1"));
+        assert!(collected.interrupted.is_none());
+        // 工具参数是**分片**来的：拼装只在这条路上做一次。
+        assert_eq!(collected.completion.tool_calls.len(), 1);
+        assert_eq!(collected.completion.tool_calls[0].name, "read_file");
+        assert_eq!(
+            collected.completion.tool_calls[0].arguments,
+            "{\"path\":\"a\"}"
+        );
+    }
+
+    /// 流断了（没等到终止信号）：正文留着，`interrupted` 说明原因——**不当作失败**。
+    #[test]
+    fn collect_keeps_the_text_when_the_stream_breaks_early() {
+        let raw = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"说到一半\"}}]}\n\n";
+        let mut stream = ChatStream::new(
+            ProviderKind::OpenAiCompatible,
+            Box::new(std::io::Cursor::new(raw.as_bytes().to_vec())),
+        );
+        let collected = stream.collect_all(|_, _| {}).unwrap();
+        assert_eq!(collected.completion.text, "说到一半");
+        assert!(collected.interrupted.is_some(), "断流要能看出来");
+        assert_eq!(
+            collected.completion.finish,
+            FinishReason::Unknown("interrupted".into()),
+            "断流不许假装正常结束"
+        );
+    }
 
     fn message(session: SessionId, seq: u64, role: Role, text: &str) -> Message {
         Message::text(

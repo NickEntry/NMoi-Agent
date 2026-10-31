@@ -4480,3 +4480,27 @@ D185 说"续话＝合并进最新助手消息（追加到正文）"。实现时�
 4. **"原文"取的是 `content`**（屏幕上那一份），不是某一版的 origin：用户接的是他看见的那一段。
 5. **界面上只挂在"列表里最后一条可重试的消息"上**：助手 →「续话（接着往下写）」，
    用户 →「续话（让它回一条）」。挂在中间某条上，模型会把后面已经说过的话再写一遍。
+
+## D194 0.15n 第一层：把流收成 `Completion`（2026-10-31）
+
+`ChatStream::next_event` 早就有，但**没有一处代码消费它**——`engine.push_delta` 只有测试在调。
+所以"流式"在代码里一直是个半成品：`run_turn` 里写着 `request.stream = false`，走 `complete()`。
+
+这一层只做一件事：**把一条事件流收成与 `complete()` 同形的 [`Completion`]，并把增量交出去**
+（`ChatStream::collect_all`）。它现在**没有界面效果**，是下一层的地基。
+
+1. `Collected { completion, interrupted }`：断流（没等到终止信号）**不算失败**——
+   正文留着、`interrupted` 给一句原因、`finish` 记 `Unknown("interrupted")`。
+   假装成 `Stop` 会让落库把"被掐断的回答"标成完整（D21 的 incomplete 就没了）。
+2. **工具参数是分片过来的**（Anthropic / OpenAI 都按 `index` 分组）：`BTreeMap<index,…>` 拼，
+   拼装只此一处。顺序按 index，不按到达顺序。
+3. `Usage` 是**快照**不是增量，直接覆盖最后一个。
+4. 新增 `ChatError::Provider`：流内报错（HTTP 200、错误在 body 里）与 `Http`（一个字节都没开始）
+   分开。前者不重试——重发会把前半段和后半段拼成一条不存在的回复（D40）。
+5. 方法叫 `collect_all` 而不是 `collect`：`ChatStream` 实现了 `Iterator`，同名的话
+   读者分不清调的是哪个（第一次编译时编译器也分不清，报的是 `Iterator::collect` 的错）。
+
+**下一层**：`run_turn` 走 `client.chat()` 并把 `on_delta` 接到 FFI 的会话表里（增量缓冲）→
+`nmoi_turn_busy_json` 带出 `text`/`reasoning` → 界面在"正在生成…"期间轮询并逐字画。
+选轮询而不是函数指针回调：JNI 那层本机编不了（jni 是可选 feature），
+回调面只能靠 CI 验；轮询复用现成的 `Registration` 表与 `turn_busy`，每一层都能在本机测。
