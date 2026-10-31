@@ -4504,3 +4504,37 @@ D185 说"续话＝合并进最新助手消息（追加到正文）"。实现时�
 `nmoi_turn_busy_json` 带出 `text`/`reasoning` → 界面在"正在生成…"期间轮询并逐字画。
 选轮询而不是函数指针回调：JNI 那层本机编不了（jni 是可选 feature），
 回调面只能靠 CI 验；轮询复用现成的 `Registration` 表与 `turn_busy`，每一层都能在本机测。
+
+## D195 0.15n 第二层的具体改法（**计划，未实现**，2026-10-31）
+
+第一层（D194）已经能把流收成 `Completion` 并交出增量。第二层要让**这一轮真的走流**，
+并把增量送到界面能读的地方。先把量算清楚，免得下次开工时又摸一遍：
+
+- `run_session_turn` 的调用点 **24 个**（23 个在 `crates/core/src/session.rs` 的测试、1 个在
+  `crates/ffi/src/turn.rs`）；`regenerate_turn` 3 个；`run_turn`（`agent.rs`）4 个。
+- `SessionConfig { … }` 的字面量 **12 处**。
+- 所以"给 `run_session_turn` 加一个 sink 参数"是 24 处机械改动——**能做，但不该在收尾时做**。
+
+三条路，按推荐顺序：
+
+1. **`TurnConfig` 加 `stream: bool`，增量走一个"作用域内的钩子"**。
+   `TurnConfig` 是 `Copy`，加一个 `bool` 不破坏任何字面量；
+   钩子用 core 里一对 `progress::scope(sink, || …)`（线程局部 `RefCell<Option<&dyn Fn>>`），
+   只有 FFI 那一层装它，测试里是空的（`None` = 空操作）。
+   理由：一次调用 = 一个线程（`turn_run` 本来就是阻塞调用），线程局部在这里语义准确；
+   而且不动 24 个调用点。
+2. 给 `run_session_turn` 加 `on_delta: &dyn Fn(&str, &str)`：最显式，但要改 24 处。
+3. 照设计稿做 FFI 函数指针回调：JNI 那层本机编不了（jni 是可选 feature），只能靠 CI 验，
+   一个编译错就要等一轮 CI——最贵的做法，放最后。
+
+第二层要动的三件事（顺序不能反）：
+
+1. `agent::run_turn`：`config.stream` 为真时用 `client.chat()` + `collect_all`，
+   `interrupted` 非空 → `report.finished = false` + `report.truncated = true` 并返回（**留着残文**）。
+2. `crates/ffi/src/turn.rs`：`parse_config` 读 `stream`（默认 `false`）；
+   `nmoi_turn_run_json` 里 `progress::scope(闭包)` 把增量写进 `Registration` 那张表旁边的一个
+   `Partial { text, reasoning, updated_at }`（同一把锁）；
+   `nmoi_turn_busy_json` 多带 `text` / `reasoning` / `text_len`——**只带尾部**（一拍最多 4 KiB），
+   整套正文每 100 ms 拷一遍不划算。
+3. Kotlin：`TurnRepository` 在等的时候每 ~100 ms 调一次 `turnBusy`，
+   把 `text` 交给聊天页那条"正在生成…"的占位（`pending` 那一条）逐字画；一轮结束以落库结果为准。
