@@ -4710,3 +4710,34 @@ FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 +
 **验证**：`ModelFieldsTest` 16 条（新增 2 条：徽标与落盘同规则、`LEVELS` 不含 `none`），
 本机 JVM 16/16 绿；kotlinc 全量类型检查只有 9 条 `unresolved reference 'R'`（允许的那一类）。
 真机路径见 `docs/verification.md` 的 **V33**（11 条）。
+
+### D201 第三片（资源更新页）已落地（2026-10-31）
+
+供应商页右上角多一个库形图标 → 整页浮层「资源更新」：读随包的 `data/models.snapshot.json`，
+把能对上的模型对齐到快照，**只写没被自定义过的字段**，并且把"为什么没写别的"说出来。
+
+- **快照随包走**：gradle 的 `syncModelData` 把 `data/models.snapshot.json` 同步进 assets 的
+  `model-data/`，**不提交副本**（唯一一份在 `data/`，构建期由 `scripts/fetch_models.py` 刷新）。
+  读不到就明说"这一版没带上"，不联网兜底——这一页不能变成一条假路径。
+- **不照搬 core 的四级匹配链**：`core::model::resolve` 是发请求时"猜参数"用的，宁可多猜；
+  这里是"要不要改用户存下来的配置"，宁可少猜。只做两级：归一化 id/别名精确命中 →
+  切掉尾部版本按家族命中，而且**家族必须唯一**，重名就当"快照里没有"。
+  （单测里有一条专门钉这个歧义。）
+- **只写快照真有的**：`null` 的字段不碰（没有数据 ≠ 数据是空）。可更新的是
+  窗口 / 最大输出 / 工具 / 结构化输出 / 推理 / 支持的级别 / 输入模态（只从 `images` 推「图片」一项）/
+  输入价 / 输出价；改价时**连带写 `currency=USD`**（三家数据源都按美元报，不写就是凭空多出单位）。
+- **`推断` 要自报家门**：`ProviderRepository.save(..., inferred)`。值的比对分不清
+  "用户改的"与"快照写的"——两边都让值变了。所以更新这条路径把
+  `模型 → 字段 → 写进去的值` 一起交上去，落库时只认**值还在原位**的那些
+  （`ModelField.markInferred`）；用户更新完又手改了同一格，那一格照旧归他。
+- **一个写者**：这一页不落库。改动回到供应商页的表单与 `sources` 里，
+  由供应商页那一个「保存」写库（与模型编辑页同一条规矩），保存成功后清空 `pendingInferred`。
+- **顺手挪了一颗按钮**：`PrimaryButton` 的实现搬进 `Controls.kt`（`WideButton`），
+  两个页面共用一份。原来 `EnvirScreen` 也有一份同名 private 实现，改用 internal 会撞车——
+  所以是"挪进公共文件 + 供应商页保留一个薄封装"，不是"再复制一份"。
+
+**验证**：`ResourceUpdateTest` 12 条 + `ModelFieldsTest` 16 条 + `MessageEditDocTest` 14 条
+（本机 JVM 全绿，42/42）。快照解析与匹配另外用真的 `org.json` 在本机跑过一遍：
+`data/models.snapshot.json` → **1727 条**、`fetched_at=2026-10-20T13:20:53Z`、解析 **887 ms**（JVM；
+真机更慢，所以页面有 loading 态）、抽查 6 条自带 id 全命中、大小写/分隔符变体命中、乱名不命中。
+kotlinc 全量类型检查只剩 9 条 `unresolved reference 'R'`。真机路径见 `docs/verification.md` **V34**。

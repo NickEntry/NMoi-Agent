@@ -253,12 +253,28 @@ internal object ProviderRepository {
             chosen
         }
 
-    suspend fun save(databasePath: String, entry: ProviderEntry): Result<Unit> =
+    /**
+     * 写一份供应商配置。
+     *
+     * [inferred] 是"这一批字段是**资源更新页**从快照写进来的"（`模型 → 字段 → 写进去的值`）。
+     * 值的比对分不清"用户改的"与"更新器写的"——两边都让值变了，所以那条路必须自报家门。
+     * 只有**值仍然是更新器写的那一份**时才认这条账：用户在更新之后又手改了同一格，
+     * 那一格照旧归他（`自定义`）。
+     */
+    suspend fun save(
+        databasePath: String,
+        entry: ProviderEntry,
+        inferred: Map<String, Map<String, String>> = emptyMap(),
+    ): Result<Unit> =
         withStorageHandle(databasePath) { handle ->
             // 来源标记要在**写之前**算：它比的是"库里的上一份"与"这一份"，
             // 先写再读就成了自己跟自己比（什么都不会被记成用户改的）。
             val previous = loadIn(handle, entry.id).getOrNull()
-            val sources = ModelField.mergeSources(previous, entry.models)
+            val sources = ModelField.markInferred(
+                ModelField.mergeSources(previous, entry.models),
+                entry.models,
+                inferred,
+            )
             val doc = JSONObject()
                 .put("name", entry.name.trim())
                 .put("kind", entry.kind)

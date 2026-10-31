@@ -134,6 +134,30 @@ internal object ModelField {
     }
 
     /**
+     * 把"这一批字段是资源更新页从快照写进来的"记进来源表。
+     *
+     * 值的比对分不清"用户改的"与"更新器写的"——两边都让值变了，所以那条路自报家门。
+     * 但**只认还在原位的那些**：用户更新完又手改了同一格，值就不再等于 `written`，
+     * 那一格照旧归他。这一条是这里唯一的防线，别为了少写一行把它去掉。
+     */
+    fun markInferred(
+        sources: Map<String, Map<String, FieldSource>>,
+        models: List<ProviderModel>,
+        written: Map<String, Map<String, String>>,
+    ): Map<String, Map<String, FieldSource>> {
+        if (written.isEmpty()) return sources
+        val result = sources.mapValues { (_, row) -> LinkedHashMap(row) }.toMutableMap()
+        for ((modelId, fields) in written) {
+            val model = models.firstOrNull { it.id == modelId } ?: continue
+            val row = result[modelId] ?: continue
+            for ((key, value) in fields) {
+                if (valueOf(model, key) == value) row[key] = FieldSource.Inferred
+            }
+        }
+        return result
+    }
+
+    /**
      * 一个模型、一个字段的"现在是谁说的"。
      *
      * 界面拿它在**边打字边显示**徽标，仓库拿它在**保存时**落盘——同一份规则，

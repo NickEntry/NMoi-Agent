@@ -1,8 +1,10 @@
 package com.nmoi.agent.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -25,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -188,5 +191,42 @@ internal fun IconActionButton(
                 )
             }
         }
+    }
+}
+
+/**
+ * 底部主按钮（原 ProviderScreens 里那颗，D201 第三片挪到这里）。
+ *
+ * 挪出来的理由只有一条：**同一个形状不能有两个实现**。资源更新页与供应商页是兄弟页面，
+ * 两边各画一颗的话，圆角、高度、禁用色迟早对不上——而那种不对齐没人会报 bug，
+ * 只会让页面看起来"不是一个人做的"。
+ */
+@Composable
+internal fun WideButton(
+    label: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (enabled) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        modifier = modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp),
+        )
     }
 }

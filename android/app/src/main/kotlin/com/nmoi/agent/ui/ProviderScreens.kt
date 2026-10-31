@@ -191,6 +191,14 @@ internal fun ProviderEditScreen(
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var modelDraft by remember { mutableStateOf<ModelDraft?>(null) }
+    var resourceOpen by remember { mutableStateOf(false) }
+    /**
+     * 资源更新页写进来、**还没保存**的那些字段：`模型 → 字段 → 写进去的值`。
+     *
+     * 它跟着「保存」一起去落库（`ProviderRepository.save` 的 `inferred`）：
+     * 值的比对分不清"用户改的"与"快照写的"，所以这条路必须自报家门。
+     */
+    var pendingInferred by remember { mutableStateOf<Map<String, Map<String, String>>>(emptyMap()) }
     // 从端点读模型清单：只读一次 GET，改配置仍然只由「保存」落库。
     var fetching by remember { mutableStateOf(false) }
     var fetchNote by remember { mutableStateOf<String?>(null) }
@@ -251,7 +259,7 @@ internal fun ProviderEditScreen(
         )
         saving = true
         scope.launch {
-            val stored = ProviderRepository.save(databasePath, entry)
+            val stored = ProviderRepository.save(databasePath, entry, pendingInferred)
             val keyed = if (keyDraft.isBlank()) {
                 Result.success(Unit)
             } else {
@@ -281,6 +289,7 @@ internal fun ProviderEditScreen(
                 keyOnDisk = true
                 keyHint = withContext(Dispatchers.IO) { ProviderRepository.keyHint(context, id) }
             }
+            pendingInferred = emptyMap()
             notice = "已保存"
         }
     }
@@ -340,6 +349,11 @@ internal fun ProviderEditScreen(
                 onBack = onBack,
             ) {
                 if (providerId != null) {
+                    IconActionButton(
+                        image = ActionIcons.Database,
+                        description = "资源更新（用随包快照对齐模型字段）",
+                        onClick = { resourceOpen = true },
+                    )
                     IconActionButton(
                         image = ActionIcons.Close,
                         description = "删除这个供应商",
@@ -496,6 +510,35 @@ internal fun ProviderEditScreen(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    if (resourceOpen) {
+        ModelResourceScreen(
+            models = models,
+            sources = sources,
+            onClose = { resourceOpen = false },
+            onApply = { updated, inferred ->
+                models = updated
+                // 界面上的来源也要跟着变：不然刚更新完，徽标还写着「默认」，
+                // 用户会以为这页什么都没干（真正落库由「保存」那一下完成）。
+                sources = sources.toMutableMap().apply {
+                    inferred.forEach { (modelId, fields) ->
+                        val row = (this[modelId] ?: emptyMap()).toMutableMap()
+                        fields.keys.forEach { key -> row[key] = FieldSource.Inferred }
+                        this[modelId] = row
+                    }
+                }
+                pendingInferred = pendingInferred.toMutableMap().apply {
+                    inferred.forEach { (modelId, fields) ->
+                        val row = (this[modelId] ?: emptyMap()).toMutableMap()
+                        row.putAll(fields)
+                        this[modelId] = row
+                    }
+                }
+                resourceOpen = false
+                notice = "从快照更新了 ${inferred.values.sumOf { it.size }} 处，记得点「保存」"
+            },
+        )
     }
 
     val draft = modelDraft
@@ -929,36 +972,18 @@ private fun AddRow(label: String, onClick: () -> Unit) {
     }
 }
 
-/** 一屏只有一个主按钮（填色）。 */
+/**
+ * 一屏只有一个主按钮（填色）。页面底部那颗主按钮。**实现只有一份**（[WideButton]，在 Controls.kt）：
+ * 资源更新页与供应商页都要用它，两边各画一颗，圆角 / 高度 / 禁用色迟早就对不上
+ * （0.15m 那次"新页面自己画一组控件"就是这么歪的）。
+ */
 @Composable
 private fun PrimaryButton(
     label: String,
     enabled: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = if (enabled) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        modifier = modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (enabled) {
-                MaterialTheme.colorScheme.onPrimary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp),
-        )
-    }
-}
+) = WideButton(label = label, enabled = enabled, modifier = modifier, onClick = onClick)
 
 @Composable
 private fun SecondaryButton(

@@ -15,6 +15,15 @@ val repoRoot = rootProject.projectDir.parentFile
 // 注意层级：`assets.srcDir(X)` 里的 X **就是** assets 根，所以文件必须放在 X/notices/ 下，
 // 进包才是 assets/notices/…。第一版把它放到 X 根上，结果进包成了 assets/THIRD-PARTY-NOTICES.md
 // ——闸当场报了"缺少 assets/notices/…"，这就是那道闸存在的理由。
+// 模型快照随包走（D201 第三片）：资源更新页要读它，读不到就成了一条假路径。
+// **不提交副本**：唯一一份在 `data/models.snapshot.json`（构建期由 scripts/fetch_models.py 刷新），
+// 这里只是把它同步进 assets 的 `model-data/`，跟声明那一套同一个理由——副本迟早漂移。
+val modelDataAssetsRoot = layout.buildDirectory.dir("generated/model-data-assets")
+val syncModelData by tasks.registering(Sync::class) {
+    from(repoRoot.resolve("data/models.snapshot.json")) { into("model-data") }
+    into(modelDataAssetsRoot)
+}
+
 val noticesAssetsRoot = layout.buildDirectory.dir("generated/assets")
 val syncNotices by tasks.registering(Sync::class) {
     from(repoRoot.resolve("THIRD-PARTY-NOTICES.md")) { into("notices") }
@@ -59,6 +68,9 @@ android {
     // 签名只是对最终 zip 盖章，所以"签名前打包"这件事在这里天然成立——
     // 真正要防的是"忘了放"和"放了个旧副本"，前者由这条 srcDir 保证，后者由不提交副本保证。
     sourceSets.getByName("main").assets.srcDir(noticesAssetsRoot)
+    // 快照挂在另一个目录下（`model-data/models.snapshot.json`）：它跟"随包走的声明"
+    // 不是一类东西，混在一个 assets 根里以后会越塞越多。
+    sourceSets.getByName("main").assets.srcDir(modelDataAssetsRoot)
 
     // 隔离环境那三个预编译二进制（D166）。**不能放 `src/main/jniLibs/`**：那个目录被
     // `.gitignore` 忽略了（CI 的 `cargo ndk -o …/jniLibs` 会往里写 libnmoi_ffi.so），
@@ -154,4 +166,5 @@ dependencies {
 // 打包前必须先把声明同步出来：preBuild 是所有 assemble 变体的公共前置。
 tasks.named("preBuild") {
     dependsOn(syncNotices)
+    dependsOn(syncModelData)
 }
