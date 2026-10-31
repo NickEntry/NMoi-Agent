@@ -66,10 +66,13 @@ internal fun SettingsIndexScreen(
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(8.dp))
                 // 一整块面板：七行在里面靠行线分隔，行线从文字起点缩进 16。
+                // 左右各留 24（用户 2026-10-31："每一项的横向长度可以稍微短一点"）：
+                // 这一页每行只有"标题 + 一句说明 + 当前值"，行太长会让字和右边挤在一起，
+                // 也让整块板看着像把屏幕填满了。24 是"短一点"又不至于窄到字换行的位置。
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                 ) {
                     Column {
                         SettingsGroup.entries.forEachIndexed { index, group ->
@@ -94,7 +97,7 @@ internal fun SettingsIndexScreen(
                     text = "灰底分组里还有没接的功能，点进去会写清差什么（不给假开关、不给假表单）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp),
+                    modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 14.dp, bottom = 24.dp),
                 )
             }
         }
