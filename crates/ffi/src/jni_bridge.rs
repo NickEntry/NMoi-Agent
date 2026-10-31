@@ -802,6 +802,34 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnBusyJson<'local>(
 }
 
 // ---------------------------------------------------------------------------
+// 发请求：重试 / 续话（0.15h / D185）
+// ---------------------------------------------------------------------------
+
+/// `NativeBridge.turnRegenJson(config)`：前缀重发（重试 / 续话）。**阻塞**，IO 线程上调。
+///
+/// config 与 `turnRunJson` 是**同一份**（同一个 `parse_config`），多三个字段：
+/// `up_to`（必填，发出去的最后一条消息 id）/ `target`（可选，结果落成哪条助手消息的新版本）/
+/// `allow_new_version`（可选，关着时覆盖那一版）。
+/// 字段的权威解释在 `crate::turn::nmoi_turn_regen_json` 的文档里——这一层只搬字符串，
+/// 不再解释第二遍（解释两遍迟早对不上）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnRegenJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::turn::nmoi_turn_regen_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+// ---------------------------------------------------------------------------
 // 增强编辑（D158）：一次性补全 + 块级编辑
 // ---------------------------------------------------------------------------
 /// `NativeBridge.completeJson(config)`：一次性补全，**不用 storage 句柄**。

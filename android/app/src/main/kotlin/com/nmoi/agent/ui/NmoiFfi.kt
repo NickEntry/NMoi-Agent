@@ -159,6 +159,15 @@ internal object NmoiFfi {
         call("turn_cancel") { NativeBridge.turnCancelJson(session) }
 
     /**
+     * 前缀重发：重试 / 续话（0.15h / D185）。**阻塞**到模型收尾，和 [turnRun] 一样在 IO 上跑。
+     *
+     * `up_to` / `target` 由调用方按"段内第几条"算好再传——这一层不替它算，
+     * 因为"哪条算段首"是界面与 core 都必须一致的规矩（见 `TurnRepository.regen`）。
+     */
+    suspend fun turnRegen(config: JSONObject): Result<JSONObject> =
+        call("turn_regen") { NativeBridge.turnRegenJson(config.toString()) }
+
+    /**
      * 一次性补全（D158）。**空串也是有意义的结果**（模型回了空），
      * 所以只把 `ok:false` 当失败，交给调用方去判断拿到的东西能不能用。
      */

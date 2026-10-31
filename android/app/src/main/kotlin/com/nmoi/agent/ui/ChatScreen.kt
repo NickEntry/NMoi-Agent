@@ -431,6 +431,65 @@ internal fun ChatScreen(
         }
     }
 
+    /**
+     * 重试（0.15h / D185）：**前缀重发**——发出去的是"这一条（含）之前的历史"，不新增用户消息。
+     *
+     * `upTo` = 最后一条发出去的消息，`target` = 结果落成哪条助手消息的新版本。
+     * 助手消息重试 → 重新生成这条回答，旧回答留成上一版；用户消息重试 → 这一句再发一次，
+     * 下面那条助手消息多一版（下面没有就新增一条）。
+     *
+     * **关于"段"**：`upTo` 取的是列表里的上一条。分界线在界面上还画不出来、也插不了，
+     * 所以真会话里目前只有一段；等线能插了，core 会用 `NotInWindow` 把跨段的请求顶回来
+     * （不泄漏别的段），界面上再补"这条是这段的第一条"那种前置判断。
+     */
+    val runRegen: (String, String, String?) -> Unit = { sid, upTo, target ->
+        scope.launch {
+            busy = true
+            waiting = true
+            notice = null
+            runningSession = sid
+            // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
+            GeneratingTracker.mark(sid, true)
+            val result = TurnRepository.regen(
+                context = context,
+                databasePath = databasePath,
+                sessionId = sid,
+                upTo = upTo,
+                target = target,
+                // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
+                allowNewVersion = AppSettings.allowNewVersion(context),
+            )
+            runningSession = null
+            GeneratingTracker.mark(sid, false)
+            waiting = false
+            busy = false
+            reloadKey += 1
+            result.fold(
+                onSuccess = { outcome -> notice = "重试：${outcome.describe()}" },
+                onFailure = { error -> notice = "重试失败：${error.message}" },
+            )
+        }
+    }
+
+    /** 点「重试」：按这一条在列表里的位置算出 `upTo` / `target`，算不出来就说原因。 */
+    val retryTurn: (ChatMessage) -> Unit = { message ->
+        val sid = sessionId
+        val index = allMessages.indexOfFirst { it.id == message.id }
+        when {
+            busy -> notice = "上一轮还没结束（要打断就先点停止）"
+            sid == null -> notice = "这条会话还没落库，没法重发"
+            index < 0 -> notice = "这条消息已经不在列表里了：先刷新再看"
+            message.isUser -> {
+                // 用户消息重试：这一句自己就是最后一条发出去的东西。
+                val reply = allMessages.getOrNull(index + 1)?.takeIf { !it.isUser }
+                runRegen(sid, message.id, reply?.id)
+            }
+
+            index == 0 -> notice = "这条是这段的第一条，前面没有可重发的内容"
+            else -> runRegen(sid, allMessages[index - 1].id, message.id)
+        }
+    }
+
     // 只落库、不请求（长按 ↑ 的那两项，PLAN §3.12）：语义是"先记下来、晚点再发"。
     // 会话不存在就先建——建失败要说原因，不能静默丢掉用户刚打的字。
     val appendOnly: (String) -> Unit = { role ->
@@ -801,6 +860,17 @@ internal fun ChatScreen(
                 title = if (shown.isUser) "这条用户消息" else "这条助手消息",
                 items = messageSheetItems(
                     message = shown,
+                    // 重试（0.15h）：会话都没落库时不给这一项——没有可重发的东西，
+                    // 摆一个点了只能说"不行"的行，比不摆更吵（「空位可以、假开关不行」）。
+                    retryItem = if (sessionId == null || !shown.canRetry) {
+                        null
+                    } else {
+                        SheetItem(
+                            label = if (shown.isUser) "重试这条之后" else "重试这一轮",
+                            icon = ActionIcons.RotateCcw,
+                            onClick = { retryTurn(shown) },
+                        )
+                    },
                     onShare = {
                         selecting = true
                         selected = setOf(sheetMessage.id)
@@ -2349,6 +2419,8 @@ private fun SendStopButton(
  */
 private fun messageSheetItems(
     message: ChatMessage,
+    /** 重试（0.15h）。`null` = 这一条现在没有可重发的东西（比如会话还没落库）。 */
+    retryItem: SheetItem? = null,
     onShare: () -> Unit,
     onSelectOnly: () -> Unit,
     onSaveVersion: () -> Unit,
@@ -2359,6 +2431,8 @@ private fun messageSheetItems(
     onDeleteAll: () -> Unit,
 ): List<SheetItem> {
     val items = mutableListOf(
+        // 重试排在最前：它是对这一条最常见的动作，也是唯一会真的再发一次请求的。
+        *listOfNotNull(retryItem).toTypedArray(),
         SheetItem(
             label = "编辑",
             icon = ActionIcons.Pencil,

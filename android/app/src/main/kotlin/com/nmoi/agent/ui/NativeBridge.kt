@@ -99,6 +99,15 @@ internal object NativeBridge {
     external fun turnBusyJson(session: String): String
 
     /**
+     * 前缀重发：重试 / 续话（0.15h / D185）。
+     *
+     * 参数与 [turnRunJson] 同一份，多三个字段：`up_to`（必填，发出去的最后一条消息 id）/
+     * `target`（可选，结果落成哪条助手消息的新版本）/ `allow_new_version`（可选）。
+     * 出参：`{text, reasoning, target, appended, rounds, tool_calls, finished}`。
+     */
+    external fun turnRegenJson(config: String): String
+
+    /**
      * 一次性补全（D158）：**不落库、不进历史**。增强编辑要的是"拿一段文字回来"。
      *
      * 参数：`{provider{id,kind,base_url,api_key?}, model, prompt, system?, max_tokens?, temperature?}`。

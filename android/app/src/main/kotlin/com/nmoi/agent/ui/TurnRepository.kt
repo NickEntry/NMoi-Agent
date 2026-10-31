@@ -65,6 +65,59 @@ internal object TurnRepository {
         databasePath: String,
         sessionId: String,
         text: String,
+    ): Result<TurnOutcome> = runTurn(
+        context = context,
+        databasePath = databasePath,
+        sessionId = sessionId,
+        decorate = { config -> config.put("user_text", text) },
+        invoke = { config -> NmoiFfi.turnRun(config) },
+        parse = { envelope -> parse(envelope) },
+    )
+
+    /**
+     * 重试 / 续话（0.15h / D185）：**前缀重发**，不新增用户消息。
+     *
+     * `upTo` = 发出去的最后一条消息（含），`target` = 结果落成哪条助手消息的新版本。
+     * 两个都由界面按"段"算好再传（段首 = 最后一个分界线之后）：core 那条路只认 id，
+     * 替它猜的后果是"重试把别的段也发了"或者"新版本落在一条不相干的消息上"。
+     */
+    suspend fun regen(
+        context: Context,
+        databasePath: String,
+        sessionId: String,
+        upTo: String,
+        target: String?,
+        allowNewVersion: Boolean,
+    ): Result<TurnOutcome> = runTurn(
+        context = context,
+        databasePath = databasePath,
+        sessionId = sessionId,
+        decorate = { config ->
+            config.put("up_to", upTo).put("allow_new_version", allowNewVersion)
+            target?.let { config.put("target", it) }
+        },
+        invoke = { config -> NmoiFfi.turnRegen(config) },
+        parse = { envelope -> parseRegen(envelope) },
+    )
+
+    /**
+     * 一轮请求的公共部分：现读助手 / 供应商 / 模型、带钥匙、绑工作区、拼配置、调 FFI、收尾。
+     *
+     * **为什么抽出来**：`turn_run` 与 `turn_regen` 要的是同一份配置（core 那边就是同一个
+     * `parse_config`）。两份各拼一遍，迟早一边加了 `thinking`、另一边忘了——那种错不报错，
+     * 只会让"重试"发出去的东西和"发送"不一样。
+     *
+     * `parse` 由调用方给：两条 FFI 的返回形状不同（`turn_json` 带 `report`/`edits`/`presets`，
+     * `regen` 是平的 `{text, rounds, target, appended}`），在这里统一解释就等于把两份口径揉成一份。
+     */
+    private suspend fun runTurn(
+        context: Context,
+        databasePath: String,
+        sessionId: String,
+        /** 往基础配置上补这一轮特有的字段。 */
+        decorate: (JSONObject) -> Unit,
+        invoke: suspend (JSONObject) -> Result<JSONObject>,
+        parse: (JSONObject) -> TurnOutcome,
     ): Result<TurnOutcome> = withContext(Dispatchers.IO) {
         // 用哪一套由**助手**决定（D161）：供应商页只是目录，不再有"当前"。
         val assistant = AssistantRepository.current(databasePath)
@@ -130,9 +183,8 @@ internal object TurnRepository {
                     // 工作区句柄 0 = 没绑（FFI 那边 `optional_u64(...).filter(|id| *id != 0)` 会忽略它）。
                     .put("workspace", workspace.getOrNull() ?: 0L)
                     .put("native_shell", nativeShell)
-                .put("thinking", assistant.thinking)
+                    .put("thinking", assistant.thinking)
                     .also { row -> envir?.let { row.put("envir", envirJson(context, it)) } }
-                    .put("user_text", text)
                     // 预设（0.14t / D178）：原文从包里读，用户改过的那份由 core 从库里读。
                     // 过滤按"这一轮真的声明了哪些工具"算，**由 core 算**——
                     // 界面这边只负责把原文递进去。
@@ -161,7 +213,10 @@ internal object TurnRepository {
                         )
                     }
 
-                NmoiFfi.turnRun(config)
+                // 这一轮特有的字段（`user_text` / `up_to` + `target`…）在基础配置之后加。
+                decorate(config)
+
+                invoke(config)
                     .map { envelope -> parse(envelope) }
                     .onSuccess { outcome ->
                         NLog.i(
@@ -231,6 +286,33 @@ internal object TurnRepository {
             ?.flatMap { unit -> unit.messages }
             ?.lastOrNull()
         last != null && last.isUser && last.content == text
+    }
+
+    /**
+     * `turn_regen` 的信封是平的：`{text, reasoning, target, appended, rounds, tool_calls, finished}`。
+     *
+     * 和 `turn_json` 的形状不一样（那个包着 `report` / `assistant` / `edits` / `presets`），
+     * 所以不能共用 [parse]——硬套会得到"回了 0 字、0 轮"这种一声不响的错。
+     */
+    private fun parseRegen(envelope: JSONObject): TurnOutcome {
+        val landed = envelope.optString("target", "")
+        val appended = envelope.optString("appended", "")
+        NLog.i(
+            "Turn",
+            "前缀重发完成：rounds=${envelope.optInt("rounds", 0)} " +
+                "落版本=${landed.ifEmpty { "没给 target" }} 新增=${appended.ifEmpty { "无" }}",
+        )
+        return TurnOutcome(
+            assistant = envelope.optString("text", "").takeIf { it.isNotEmpty() },
+            rounds = envelope.optInt("rounds", 0),
+            toolCalls = envelope.optInt("tool_calls", 0),
+            cancelled = false,
+            finished = envelope.optBoolean("finished", true),
+            compression = null,
+            editedBlocks = 0,
+            failedEdits = 0,
+            presetsLine = "",
+        )
     }
 
     private fun parse(envelope: JSONObject): TurnOutcome {

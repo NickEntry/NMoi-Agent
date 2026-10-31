@@ -45,6 +45,16 @@ internal data class ChatMessage(
     val isToolResult: Boolean get() = source == "tool_result"
     val isBrokenBlock: Boolean get() = source == "broken_block"
     val isUser: Boolean get() = role == "user"
+
+    /**
+     * 这一条能不能当「重试」的目标（0.15h）。
+     *
+     * 用户消息可以（重发这一句）；助手那边只有**正文**可以——
+     * 思考块 / 工具调用 / 工具结果都是"一轮里的零件"，单独重试它们没有意义，
+     * 而且会把新版本落到一条不该有版本的记录上。
+     */
+    val canRetry: Boolean
+        get() = isUser || (!isThinking && !isToolCall && !isToolResult && !isBrokenBlock)
 }
 
 /** 一条工具调用（D158）：名字决定怎么解释它，`call_id` 决定它跟哪条结果配对。 */
