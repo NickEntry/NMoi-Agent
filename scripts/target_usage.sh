@@ -44,9 +44,13 @@ if [ ! -d target ]; then
     exit 0
 fi
 
-mb=$(du -sm target 2>/dev/null | cut -f1)
-l2s=$(find target -name '.l2s.*' 2>/dev/null | wc -l)
+# `du` 会因为那种"列得出来、stat 不了"的幽灵条目返回非零，而 set -e 会把它变成静默退出——
+# 恰好在最该看这份报告的时候什么都不打印。所以两处都容错，拿不到就写 0。
+mb=$(du -sm target 2>/dev/null | cut -f1 || true)
+mb=${mb:-0}
+l2s=$(find target -name '.l2s.*' 2>/dev/null | wc -l || true)
 inc=$(du -sm target/debug/incremental 2>/dev/null | cut -f1 || true)
+inc=${inc:-0}
 printf 'target        %6s MB\n' "$mb"
 printf '.l2s 残留     %6s 个\n' "$l2s"
 printf 'incremental   %6s MB\n' "${inc:-0}"
