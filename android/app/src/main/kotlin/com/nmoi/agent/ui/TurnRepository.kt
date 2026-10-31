@@ -195,6 +195,9 @@ internal object TurnRepository {
                     // 预设（0.14t / D178）：原文从包里读，用户改过的那份由 core 从库里读。
                     // 过滤按"这一轮真的声明了哪些工具"算，**由 core 算**——
                     // 界面这边只负责把原文递进去。
+                    // 流式（0.15n）：开着，界面才能"边收边画"。
+                    // FFI 那边不认识这个字段就当没开——二进制与界面版本错开时不会炸。
+                    .put("stream", true)
                     .put("presets", PresetRepository.assetsText(context))
                     .put("now_ms", System.currentTimeMillis())
                     .also { row ->

@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -137,6 +138,9 @@ internal fun ChatScreen(
     //
     // 初值从 `GeneratingTracker` 取（0.15c）：切走再切回来时，那一轮其实还在跑，
     // 而这里的 state 已经随重组回到初值了。写成 `remember(sessionId)` 才跟着会话换。
+    // 这一轮已经收到的正文/思考（0.15n）。**只用于画**：一轮结束以落库结果为准，
+    // 免得"流里画的和库里存的"两套东西对不上（铁律①）。
+    var partialText by remember { mutableStateOf("") }
     var waiting by remember(sessionId) {
         mutableStateOf(sessionId != null && GeneratingTracker.isRunning(sessionId))
     }
@@ -226,6 +230,22 @@ internal fun ChatScreen(
                 )
                 imm?.hideSoftInputFromWindow(field.windowToken, 0)
             }
+        }
+    }
+
+    // 边收边画（0.15n）：等的时候每 ~120 ms 问一次 `turn_busy`，拿尾部增量。
+    // 没在跑就收手；一轮结束（`waiting` 变 false）时清空，让落库结果接管。
+    LaunchedEffect(waiting, sessionId) {
+        if (!waiting || sessionId == null) {
+            partialText = ""
+            return@LaunchedEffect
+        }
+        while (true) {
+            val info = withContext(Dispatchers.IO) { NmoiFfi.turnBusy(sessionId).getOrNull() }
+            if (info == null) break
+            partialText = info.optString("text", "")
+            if (!info.optBoolean("running", false)) break
+            delay(120)
         }
     }
 
@@ -666,6 +686,7 @@ internal fun ChatScreen(
                         snapshot = snapshot,
                         pending = pending,
                         pendingAssistant = waiting,
+                        pendingPartial = partialText,
                         selecting = selecting,
                         selected = selected,
                         onLongPressMessage = { id ->
@@ -1237,6 +1258,8 @@ private fun MessageArea(
     /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
     pending: PendingSend?,
     pendingAssistant: Boolean,
+    /** 这一轮已经收到的正文（0.15n）。空 = 还没收到第一个增量。 */
+    pendingPartial: String = "",
     selecting: Boolean,
     selected: Set<String>,
     onLongPressMessage: (String) -> Unit,
@@ -1369,7 +1392,7 @@ private fun MessageArea(
         }
         if (pendingAssistant) {
             item(key = "pending-assistant") {
-                PendingAssistantRow()
+                PendingAssistantRow(partial = pendingPartial)
             }
         }
     }
@@ -1380,7 +1403,7 @@ private fun MessageArea(
  * 用户要能看出"发出去了、在等"，而不是盯着输入框猜。
  */
 @Composable
-private fun PendingAssistantRow() {
+private fun PendingAssistantRow(partial: String = "") {
     val transition = rememberInfiniteTransition(label = "pending")
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
@@ -1389,15 +1412,25 @@ private fun PendingAssistantRow() {
         label = "pending-alpha",
     )
     // 居中（用户 2026-10-29）：以前前面垫了 42dp 去对齐头像列，看起来像"贴在左边"。
-    Box(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        contentAlignment = Alignment.Center,
+    // 收到增量就把那一段画出来（逐字长出来），"正在生成…"退成上面一行小字；
+    // 还没收到第一个字时保持原来那个居中的呼吸字——那是"发出去了、在等"的信号。
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 8.dp, end = 8.dp),
+        horizontalAlignment = if (partial.isEmpty()) Alignment.CenterHorizontally else Alignment.Start,
     ) {
         Text(
             text = "正在生成…",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
         )
+        if (partial.isNotEmpty()) {
+            Text(
+                text = partial,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
     }
 }
 
