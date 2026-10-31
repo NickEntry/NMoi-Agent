@@ -4650,3 +4650,38 @@ FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 +
    **不加 schema 列**）；`ProviderRepository` 读写；老数据一律按`默认`。
 2. **页面**：三页签 + 来源徽标 + ↺ + 复制按钮；本轮已经把 ＋/✓ 与保存逻辑提成一处。
 3. **资源更新页**：读快照 → 比对 → 只写"用户没自定义过"的字段 → 报"更新 N 个 / 跳过 M 个"。
+
+### D201 第一片（数据层）已落地（2026-10-31）
+
+`ProviderModel` 扩了 18 个字段，来源标记与模型表**存在同一份** `settings(provider,<供应商 id>)`
+文档里（`field_sources`），不加 schema 列、不另开 scope：一次 `settingsPut` 一起落盘，
+不会出现"模型存了、来源没存"的半截状态。
+
+- **wire 名集中在** `android/…/ui/ModelFields.kt` 的 `ModelField`：写入端与读取端引同一串常量。
+  散着打字符串时，"写进去的键和读出来的键差一个字母"在界面上表现为"填了但没存上"，
+  与"根本没实现"长得一模一样。
+- **新增字段**：`input_modalities` / `output_modalities` / `tools` / `reasoning` / `structured_output`
+  / `input_price` / `output_price` / `cache_read_price` / `cache_write_price` / `currency`
+  / `reasoning_dialect` / `efforts` / `allow_disable` / `default_effort`
+  / `headers` / `body` / `remote_image` / `builtin_tools`。
+- **三态**（`tools` / `reasoning` / `structured_output` / `allow_disable` / `builtin_tools`）是
+  `Boolean?`：`null` = 没数据。**不写盘**（只写有值的字段），所以"没数据"与"知道是假"分得开——
+  混成一个，徽标会在"没数据"那一格写成"用户关掉了"。
+- **来源规则只有一条**：`ModelField.mergeSources` 比对"库里上一份"与"这一份"——
+  值变了 = `自定义`，没变 = 沿用上一份（默认 `默认`）。比"界面回报我哪一格被动过"可靠：
+  界面有五个入口会改同一字段（手填 / ↺ / 资源更新 / 拉清单 / 老数据），
+  每个入口记一次"我改了"就是五份规矩。
+  **代价**：改回上一个值仍算自定义；要让字段回到 `推断`，只有资源更新页写得了（它知道出处）。
+- **删掉 / 改了 ID 的模型不留下孤行**：来源按当前模型表重建。老数据没有 `field_sources`：
+  一律按 `默认` 解释（D201 第 1 条）。
+- **请求里还用不上的**（建模型页必须写明，不许做成假开关）：`headers` / `body` /
+  `reasoning_dialect` / `efforts` / `allow_disable` / `default_effort` / `remote_image` /
+  `builtin_tools` / 四个价格 / 两个模态 / 三个能力位。现在真正读的仍然是
+  `kind`（选择器过滤）、`contextWindow`（占用与压缩判据）、`maxTokens` / `temperature`（请求）。
+  接它们的读取点排在页面与资源更新页之后。
+
+**验证**：`ModelFieldsTest`（14 条，本机 JVM 跑过：14/14 绿，先红后绿——
+第一跑红了 3 条，分别是"模态词表"、"改回原值"、"body 只改缩进"，前两条改正了**预期**，
+第三条连注释一起改了口径）。JSON 那一半用真的 `org.json` 跑过一遍往来
+（全字段 / 空模型只写 2 个键 / 老形状两种 / 来源 / 整份文档，全过）；
+`android.jar` 里那个是桩，所以这件事只能在 JVM 上做，本机跑的脚本不进仓库。

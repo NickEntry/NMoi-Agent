@@ -6,11 +6,25 @@ import org.json.JSONObject
 import java.io.File
 
 /**
+ * 自定义 Header 的一行（D201 高级页）。
+ *
+ * 用**有序列表**而不是 `Map`：Header 是允许同名的（各家网关偶尔这么用），
+ * 而 `Map` 会在用户没看见的地方把第二行吃掉。
+ */
+internal data class HeaderRow(val name: String, val value: String)
+
+/**
  * 一个供应商下的一个模型（D157）。
  *
- * 只有**真会被用到**的三样：名字、最大输出、温度。上下文窗口 / 定价 / 能力位
- * 那些看着更"完整"的字段这一版没有——它们现在没有任何一处代码读，
- * 存进去就是"存了但不生效"，正是用户最反感的那种。
+ * 左边这几样（名字 / 类型 / 窗口 / 输出 / 温度）**每一处都有读取点**：
+ * 选择器按 `kind` 过滤、聊天页顶部按 `contextWindow` 算占用、`TurnRepository`
+ * 每次都带 `maxTokens` / `temperature`。
+ *
+ * 右边那一批（模态 / 能力位 / 定价 / 推理 / headers / body）是 D201 一并加进来的：
+ * 它们此前被推迟的理由是"没有读取点"，而现在的答案是**给每个字段标出处**
+ * （[FieldSource]）——界面上一眼能看见"这个数是谁说的"，用户就不会误以为它是自己填的。
+ * 但要注意，其中一部分**请求里还不会用到**（`headers` / `body` / 推理方言这一批，
+ * 要等 `TurnRepository` 与 FFI 那头接上）；建模型页时必须写明，不能做成假开关。
  */
 internal data class ProviderModel(
     val id: String,
@@ -37,6 +51,43 @@ internal data class ProviderModel(
     val contextWindow: Int? = null,
     val maxTokens: Int? = null,
     val temperature: Double? = null,
+
+    // ---- D201 基本页：模态 / 能力 / 定价 -------------------------------------
+    /** 能收什么（`text` / `image` / `audio` / `video` / `pdf`）。空 = 不知道。 */
+    val inputModalities: List<String> = emptyList(),
+    /** 能吐什么（`text` / `image` / `audio`）。空 = 不知道。 */
+    val outputModalities: List<String> = emptyList(),
+    /** 三态：`null` = 没数据，`true/false` = 确定能用/不能用。**别把 `null` 当 `false`**。 */
+    val tools: Boolean? = null,
+    val reasoning: Boolean? = null,
+    val structuredOutput: Boolean? = null,
+    /** 定价一律按**每 100 万 token**记（各家网页上的写法），货币见 [currency]。 */
+    val inputPrice: Double? = null,
+    val outputPrice: Double? = null,
+    val cacheReadPrice: Double? = null,
+    val cacheWritePrice: Double? = null,
+    /** ISO 代码（`USD` / `CNY`）。空 = 没填；有价格没货币的，界面上按数据源的货币显示。 */
+    val currency: String = "",
+
+    // ---- D201 推理页 ---------------------------------------------------------
+    /** 思考注到哪个字段族（见 [ReasoningDialects]）。空 = 按供应商类型自动选。 */
+    val reasoningDialect: String = "",
+    /** 这个模型接受哪几档（[Efforts] 的子集，按低到高排）。空 = 没数据。 */
+    val efforts: List<String> = emptyList(),
+    /** 能不能显式关掉思考。三态，理由同 [tools]。 */
+    val allowDisable: Boolean? = null,
+    /** 默认用哪一档。空 = 不指定（交给助手页那份设置）。 */
+    val defaultEffort: String = "",
+
+    // ---- D201 高级页 ---------------------------------------------------------
+    /** 每次请求附带的 Header（**还没有读取点**，见类注释）。 */
+    val headers: List<HeaderRow> = emptyList(),
+    /** 直接并进请求体的 JSON 片段（原文保存，校验留给保存那一下）。 */
+    val bodyOverride: String = "",
+    /** 远程图片链接（模型的示意图/图标）。 */
+    val remoteImageUrl: String = "",
+    /** 允许模型用供应商侧的**内置工具**（联网搜索那类）。三态，理由同 [tools]。 */
+    val builtinTools: Boolean? = null,
 ) {
     /** 界面上一律用它：填了名字用名字，没填退回 id。 */
     val displayName: String get() = name.ifBlank { id }
@@ -73,6 +124,13 @@ internal data class ProviderEntry(
     val baseUrl: String = "",
     val models: List<ProviderModel> = emptyList(),
     val activeModel: String = "",
+    /**
+     * 每个模型每个字段的来源（D201）：`模型 id → 字段 wire 名 → [FieldSource]`。
+     *
+     * 跟模型表存在**同一份** `settings(provider,<供应商 id>)` 文档里（`field_sources`），
+     * 一次写入一起落盘。老数据没有这一段——那时每个字段都按 [FieldSource.Default] 解释。
+     */
+    val fieldSources: Map<String, Map<String, FieldSource>> = emptyMap(),
 ) {
     /** 当前模型：按 `activeModel` 找，找不到就退回第一个（别让界面显示成"没有模型"）。 */
     val model: ProviderModel?
@@ -197,6 +255,10 @@ internal object ProviderRepository {
 
     suspend fun save(databasePath: String, entry: ProviderEntry): Result<Unit> =
         withStorageHandle(databasePath) { handle ->
+            // 来源标记要在**写之前**算：它比的是"库里的上一份"与"这一份"，
+            // 先写再读就成了自己跟自己比（什么都不会被记成用户改的）。
+            val previous = loadIn(handle, entry.id).getOrNull()
+            val sources = ModelField.mergeSources(previous, entry.models)
             val doc = JSONObject()
                 .put("name", entry.name.trim())
                 .put("kind", entry.kind)
@@ -204,22 +266,11 @@ internal object ProviderRepository {
                 .put(
                     "models",
                     JSONArray().apply {
-                        entry.models.forEach { model ->
-                            put(
-                                JSONObject()
-                                    .put("id", model.id.trim())
-                                    .also { row ->
-                                        if (model.name.isNotBlank()) row.put("name", model.name.trim())
-                                        row.put("kind", model.kind)
-                                        model.contextWindow?.let { row.put("context_window", it) }
-                                        model.maxTokens?.let { row.put("max_tokens", it) }
-                                        model.temperature?.let { row.put("temperature", it) }
-                                    },
-                            )
-                        }
+                        entry.models.forEach { model -> put(encodeModel(model)) }
                     },
                 )
                 .put("active_model", entry.activeModel.trim())
+                .put("field_sources", encodeSources(sources))
             NmoiFfi.settingsPut(handle, SettingsScope.Provider, entry.id, doc)
                 .onSuccess {
                     NLog.i(
@@ -293,11 +344,174 @@ internal object ProviderRepository {
             }
         }
 
+    // ---- 模型行 ↔ JSON（D201 数据层）-----------------------------------------
+    //
+    // 读写两端都引 [ModelField] 的常量：少一个逗号会在这里立刻露出来（读回来是空的），
+    // 不会变成"存了但在界面上找不到"。**只写有值的字段**——空字符串与 null 不落盘，
+    // 老版本读到这一份也不会被一堆空字段淹掉。
+    //
+    // 这几条**不是 private**：本机用一份真的 `org.json` 跑过一遍"编码 → 解码 → 相等"
+    // （android.jar 里那个是桩，JVM 单测跑不了它）。这层最容易出的错就是
+    // "写进去的键和读出来的键差一个字母"，而它在界面上表现为"填了但没存上"。
+
+    fun encodeModel(model: ProviderModel): JSONObject = JSONObject().apply {
+        put(ModelField.ID, model.id.trim())
+        if (model.name.isNotBlank()) put(ModelField.NAME, model.name.trim())
+        put(ModelField.KIND, model.kind)
+
+        if (model.inputModalities.isNotEmpty()) {
+            put(ModelField.INPUT_MODALITIES, JSONArray(model.inputModalities))
+        }
+        if (model.outputModalities.isNotEmpty()) {
+            put(ModelField.OUTPUT_MODALITIES, JSONArray(model.outputModalities))
+        }
+        model.tools?.let { put(ModelField.TOOLS, it) }
+        model.reasoning?.let { put(ModelField.REASONING, it) }
+        model.structuredOutput?.let { put(ModelField.STRUCTURED_OUTPUT, it) }
+        model.contextWindow?.let { put(ModelField.CONTEXT_WINDOW, it) }
+        model.maxTokens?.let { put(ModelField.MAX_TOKENS, it) }
+        model.temperature?.let { put(ModelField.TEMPERATURE, it) }
+
+        model.inputPrice?.let { put(ModelField.INPUT_PRICE, it) }
+        model.outputPrice?.let { put(ModelField.OUTPUT_PRICE, it) }
+        model.cacheReadPrice?.let { put(ModelField.CACHE_READ_PRICE, it) }
+        model.cacheWritePrice?.let { put(ModelField.CACHE_WRITE_PRICE, it) }
+        if (model.currency.isNotBlank()) put(ModelField.CURRENCY, model.currency.trim())
+
+        if (model.reasoningDialect.isNotBlank()) {
+            put(ModelField.REASONING_DIALECT, model.reasoningDialect.trim())
+        }
+        if (model.efforts.isNotEmpty()) put(ModelField.EFFORTS, JSONArray(model.efforts))
+        model.allowDisable?.let { put(ModelField.ALLOW_DISABLE, it) }
+        if (model.defaultEffort.isNotBlank()) {
+            put(ModelField.DEFAULT_EFFORT, model.defaultEffort.trim())
+        }
+
+        val keptHeaders = model.headers.filter { it.name.isNotBlank() }
+        if (keptHeaders.isNotEmpty()) {
+            put(
+                ModelField.HEADERS,
+                JSONArray().apply {
+                    keptHeaders.forEach { header ->
+                        put(
+                            JSONObject()
+                                .put("name", header.name.trim())
+                                .put("value", header.value),
+                        )
+                    }
+                },
+            )
+        }
+        if (model.bodyOverride.isNotBlank()) put(ModelField.BODY, model.bodyOverride)
+        if (model.remoteImageUrl.isNotBlank()) {
+            put(ModelField.REMOTE_IMAGE, model.remoteImageUrl.trim())
+        }
+        model.builtinTools?.let { put(ModelField.BUILTIN_TOOLS, it) }
+    }
+
+    /** 一行模型。`id` 空的行直接跳过——没有 id 的模型是谁也发不出去的。 */
+    fun decodeModel(row: JSONObject): ProviderModel? {
+        val modelId = row.optString(ModelField.ID, "").trim()
+        if (modelId.isEmpty()) return null
+        return ProviderModel(
+            id = modelId,
+            name = row.optString(ModelField.NAME, ""),
+            // 老数据没有 kind：按聊天处理（D191），否则它们会从选择器里消失。
+            kind = ModelKinds.normalize(row.optString(ModelField.KIND, ModelKinds.CHAT)),
+            contextWindow = positiveInt(row, ModelField.CONTEXT_WINDOW),
+            maxTokens = positiveInt(row, ModelField.MAX_TOKENS),
+            temperature = doubleOrNull(row, ModelField.TEMPERATURE),
+            inputModalities = stringList(row.optJSONArray(ModelField.INPUT_MODALITIES)),
+            outputModalities = stringList(row.optJSONArray(ModelField.OUTPUT_MODALITIES)),
+            tools = boolOrNull(row, ModelField.TOOLS),
+            reasoning = boolOrNull(row, ModelField.REASONING),
+            structuredOutput = boolOrNull(row, ModelField.STRUCTURED_OUTPUT),
+            inputPrice = doubleOrNull(row, ModelField.INPUT_PRICE),
+            outputPrice = doubleOrNull(row, ModelField.OUTPUT_PRICE),
+            cacheReadPrice = doubleOrNull(row, ModelField.CACHE_READ_PRICE),
+            cacheWritePrice = doubleOrNull(row, ModelField.CACHE_WRITE_PRICE),
+            currency = row.optString(ModelField.CURRENCY, "").trim(),
+            reasoningDialect = row.optString(ModelField.REASONING_DIALECT, "").trim(),
+            efforts = stringList(row.optJSONArray(ModelField.EFFORTS)),
+            allowDisable = boolOrNull(row, ModelField.ALLOW_DISABLE),
+            defaultEffort = row.optString(ModelField.DEFAULT_EFFORT, "").trim(),
+            headers = headerRows(row.optJSONArray(ModelField.HEADERS)),
+            bodyOverride = row.optString(ModelField.BODY, ""),
+            remoteImageUrl = row.optString(ModelField.REMOTE_IMAGE, "").trim(),
+            builtinTools = boolOrNull(row, ModelField.BUILTIN_TOOLS),
+        )
+    }
+
+    fun encodeSources(sources: Map<String, Map<String, FieldSource>>): JSONObject =
+        JSONObject().apply {
+            sources.forEach { (modelId, row) ->
+                put(
+                    modelId,
+                    JSONObject().apply { row.forEach { (key, source) -> put(key, source.wire) } },
+                )
+            }
+        }
+
+    fun decodeSources(doc: JSONObject?): Map<String, Map<String, FieldSource>> {
+        if (doc == null) return emptyMap()
+        val out = LinkedHashMap<String, Map<String, FieldSource>>()
+        // 用 `keys()` 逐条取：`keySet()` 在 android.jar 那一版签名上会撞成"iterator 歧义"。
+        for (modelId in keysOf(doc)) {
+            val row = doc.optJSONObject(modelId) ?: continue
+            val fields = LinkedHashMap<String, FieldSource>()
+            for (key in keysOf(row)) {
+                fields[key] = FieldSource.of(row.optString(key, ""))
+            }
+            out[modelId] = fields
+        }
+        return out
+    }
+
+    /** `JSONObject` 的键，按**写入顺序**（org.json 自己保序）——落盘顺序稳定，diff 才读得懂。 */
+    private fun keysOf(doc: JSONObject): List<String> {
+        val keys = doc.keys()
+        val out = ArrayList<String>()
+        while (keys.hasNext()) out.add(keys.next())
+        return out
+    }
+
+    /** 三态布尔：**没有这个键**与「键在、值是 false」是两件事，不能合并。 */
+    private fun boolOrNull(row: JSONObject, key: String): Boolean? =
+        if (row.has(key) && !row.isNull(key)) row.optBoolean(key) else null
+
+    private fun doubleOrNull(row: JSONObject, key: String): Double? =
+        if (row.has(key) && !row.isNull(key)) row.optDouble(key, Double.NaN).takeIf { !it.isNaN() } else null
+
+    private fun positiveInt(row: JSONObject, key: String): Int? =
+        doubleOrNull(row, key)?.toInt()?.takeIf { it > 0 }
+
+    private fun stringList(array: JSONArray?): List<String> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val value = array.optString(index, "").trim()
+                if (value.isNotEmpty()) add(value)
+            }
+        }
+    }
+
+    private fun headerRows(array: JSONArray?): List<HeaderRow> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val row = array.optJSONObject(index) ?: continue
+                val headerName = row.optString("name", "").trim()
+                if (headerName.isEmpty()) continue
+                add(HeaderRow(headerName, row.optString("value", "")))
+            }
+        }
+    }
+
     /**
      * 库里的 doc → [ProviderEntry]。**老形状（只有 `model` 一个字符串）在这里被就地解释**，
      * 不做一次性迁移：迁移要写库，写库就可能把没读懂的字段洗掉。
      */
-    private fun parse(id: String, doc: JSONObject?): ProviderEntry {
+    fun parse(id: String, doc: JSONObject?): ProviderEntry {
         if (doc == null) return ProviderEntry(id = id)
         val legacyModel = doc.optString("model", "").trim()
         val rows = doc.optJSONArray("models")
@@ -305,23 +519,7 @@ internal object ProviderRepository {
             if (rows != null) {
                 for (index in 0 until rows.length()) {
                     val row = rows.optJSONObject(index) ?: continue
-                    val modelId = row.optString("id", "").trim()
-                    if (modelId.isEmpty()) continue
-                    add(
-                        ProviderModel(
-                            id = modelId,
-                            name = row.optString("name", ""),
-                            // 老数据没有 kind：按聊天处理（D191），否则它们会从选择器里消失。
-                            kind = ModelKinds.normalize(row.optString("kind", ModelKinds.CHAT)),
-                            contextWindow = row.optInt("context_window", 0).takeIf { it > 0 },
-                            maxTokens = row.optInt("max_tokens", 0).takeIf { it > 0 },
-                            temperature = if (row.has("temperature")) {
-                                row.optDouble("temperature", Double.NaN).takeIf { !it.isNaN() }
-                            } else {
-                                null
-                            },
-                        ),
-                    )
+                    decodeModel(row)?.let { add(it) }
                 }
             }
             if (isEmpty() && legacyModel.isNotEmpty()) add(ProviderModel(legacyModel))
@@ -338,6 +536,7 @@ internal object ProviderRepository {
             activeModel = doc.optString("active_model", "").trim().ifEmpty {
                 models.firstOrNull()?.id.orEmpty()
             },
+            fieldSources = decodeSources(doc.optJSONObject("field_sources")),
         )
     }
 }
