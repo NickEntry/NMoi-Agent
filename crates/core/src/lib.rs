@@ -26,6 +26,7 @@ pub mod message;
 pub mod model;
 pub mod policy;
 pub mod preset;
+pub mod progress;
 pub mod provider;
 pub mod redact;
 pub mod repair;

@@ -1734,8 +1734,7 @@ mod tests {
         let config = SessionConfig {
             turn: TurnConfig {
                 max_rounds: 2,
-                max_tokens: None,
-                truncate_at: None,
+                ..TurnConfig::default()
             },
             ..SessionConfig::default()
         };
@@ -1773,8 +1772,7 @@ mod tests {
         let config = SessionConfig {
             turn: TurnConfig {
                 max_rounds: 2,
-                max_tokens: None,
-                truncate_at: None,
+                ..TurnConfig::default()
             },
             ..SessionConfig::default()
         };

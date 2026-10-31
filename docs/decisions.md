@@ -4538,3 +4538,22 @@ D185 说"续话＝合并进最新助手消息（追加到正文）"。实现时�
    整套正文每 100 ms 拷一遍不划算。
 3. Kotlin：`TurnRepository` 在等的时候每 ~100 ms 调一次 `turnBusy`，
    把 `text` 交给聊天页那条"正在生成…"的占位（`pending` 那一条）逐字画；一轮结束以落库结果为准。
+
+## D196 0.15n 第二层第一步：这一轮真的走流（2026-10-31）
+
+接 D195 的第 1 条路，没有动 `run_session_turn` 那 24 个调用点：
+
+- `TurnConfig` 多一个 `stream: bool`（`Copy` 结构，字面量用 `..Default::default()`，一处没炸）；
+  为真时 `agent::run_turn` 用 `client.chat()` + `collect_all`，请求真的带 `stream: true`
+  （`chat()` 在 `stream == false` 时会直接报错，所以"能走通"本身就是证据）。
+- 增量经 **`crate::progress`**（新模块）交出去：线程局部的作用域钩子
+  `progress::scope(sink, || …)` + `progress::emit(text, reasoning)`。
+  一次阻塞调用 = 一个线程，线程局部在这里语义准确；不装钩子时 `emit` 是空操作，
+  所以测试与还没接流式的地方一行都不用改。
+- **断流**（没等到终止信号）：残文留在 `report.text`，`finished = false` + `truncated = true`
+  ——落库按 incomplete 处理，不假装说完。
+- 三条测试：钩子装上/还原（panic 安全）+ 空钩子是空操作 + 一轮流式真的把增量按序交出去、
+  正文与整段那条路一致。
+
+**还没做的**（下一步）：FFI 装钩子把增量写进会话表、`turn_busy` 带出尾部增量、界面轮询逐字画。
+FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 + `progress::scope` 包住调用）。

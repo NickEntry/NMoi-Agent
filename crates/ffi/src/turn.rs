@@ -644,8 +644,8 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             suppress_compression: false,
             turn: TurnConfig {
                 max_rounds: input.max_rounds,
-                max_tokens: None,
-                truncate_at: None,
+                stream: false,
+                ..TurnConfig::default()
             },
             // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
             allow_new_version: true,
@@ -849,8 +849,8 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             suppress_compression: false,
             turn: TurnConfig {
                 max_rounds: input.max_rounds,
-                max_tokens: None,
-                truncate_at: None,
+                stream: false,
+                ..TurnConfig::default()
             },
             budget: input.budget.as_ref(),
             trigger: &trigger(),

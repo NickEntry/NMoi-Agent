@@ -48,6 +48,10 @@ pub struct TurnConfig {
     ///
     /// `None` = 不设这一道闸。
     pub truncate_at: Option<u64>,
+    /// 走流式（0.15n）：请求带 `stream: true`，增量经 [`crate::progress::emit`] 交出去。
+    ///
+    /// 默认 `false`：没装钩子时走流式只会多一层解析，界面也还是等整段。
+    pub stream: bool,
 }
 
 impl Default for TurnConfig {
@@ -57,6 +61,7 @@ impl Default for TurnConfig {
             max_rounds: 12,
             max_tokens: None,
             truncate_at: None,
+            stream: false,
         }
     }
 }
@@ -177,7 +182,7 @@ pub fn run_turn<T: Transport>(
             return Ok(stopped(report));
         }
         let mut request = base.clone();
-        request.stream = false;
+        request.stream = config.stream;
         request.messages = messages.clone();
         // 冻结过就按冻结的名单，否则按 policy 现算（D76）。
         request.tools = match ctx.declared {
@@ -188,13 +193,27 @@ pub fn run_turn<T: Transport>(
             request.max_tokens = Some(tokens);
         }
 
-        let completion = match retry {
-            Some(policy) => client
-                .complete_retrying(&request, policy, cancel)
-                .map_err(|error| AgentError::Model(error.to_string()))?,
-            None => client
-                .complete(&request)
-                .map_err(|error| AgentError::Model(error.to_string()))?,
+        // 流式（0.15n）：边收边把增量交出去，最终拼成与 `complete()` 同形的结果。
+        // 断流不算失败——残文留着，下面按 `truncated` 收尾（D194）。
+        let mut interrupted = false;
+        let completion = if config.stream {
+            let mut stream = client
+                .chat(&request)
+                .map_err(|error| AgentError::Model(error.to_string()))?;
+            let collected = stream
+                .collect_all(crate::progress::emit)
+                .map_err(|error| AgentError::Model(error.to_string()))?;
+            interrupted = collected.interrupted.is_some();
+            collected.completion
+        } else {
+            match retry {
+                Some(policy) => client
+                    .complete_retrying(&request, policy, cancel)
+                    .map_err(|error| AgentError::Model(error.to_string()))?,
+                None => client
+                    .complete(&request)
+                    .map_err(|error| AgentError::Model(error.to_string()))?,
+            }
         };
         report.rounds += 1;
         report.finish = Some(completion.finish);
@@ -203,6 +222,14 @@ pub fn run_turn<T: Transport>(
             report.reasoning = completion.reasoning.clone();
         }
         report.usage = completion.usage;
+
+        // 流断了（没等到终止信号）：这一轮到此为止，残文已经落在 `report.text` 里，
+        // 落库会按 incomplete 处理——别让它看起来像"说完了"。
+        if interrupted {
+            report.finished = false;
+            report.truncated = true;
+            return Ok(report);
+        }
 
         // 绝对线（D90）：生成中只按**字符增量**累加，不重新估算整份上下文。
         // 越线就地停手——下一轮请求只会更大，发出去就是撞上游的硬上限。
@@ -507,6 +534,66 @@ mod tests {
         // 第二次请求里带着工具结果
         let requests = transport.requests();
         assert!(requests[1].contains("第一行"), "{}", requests[1]);
+    }
+
+    /// 流式（0.15n）：增量**边收边交出去**，最终正文与"整段"那条路一致。
+    #[test]
+    fn streaming_turn_emits_deltas_and_lands_the_same_text() {
+        let (_dir, workspace, policy) = setup();
+        let frames = [
+            serde_json::json!({"choices":[{"index":0,"delta":{"content":"你"}}]}),
+            serde_json::json!({"choices":[{"index":0,"delta":{"content":"好"}}]}),
+            serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+        ];
+        let mut sse = String::new();
+        for frame in &frames {
+            sse.push_str("data: ");
+            sse.push_str(&frame.to_string());
+            sse.push_str("\n\n");
+        }
+        sse.push_str("data: [DONE]\n\n");
+
+        let transport = Scripted::new(vec![sse]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+        let config = TurnConfig {
+            stream: true,
+            ..TurnConfig::default()
+        };
+
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = {
+            let seen = seen.clone();
+            std::rc::Rc::new(move |text: &str, _reasoning: &str| {
+                if !text.is_empty() {
+                    seen.borrow_mut().push(text.to_string());
+                }
+            }) as crate::progress::Sink
+        };
+
+        let report = crate::progress::scope(sink, || {
+            run_turn(
+                &client,
+                &base_request(),
+                &history(),
+                &registry,
+                &ctx,
+                &config,
+                &NeverCancel,
+                None,
+            )
+            .unwrap()
+        });
+
+        assert_eq!(report.text, "你好", "收尾的正文要是拼好的那一段");
+        assert!(report.finished, "正常收尾");
+        assert_eq!(
+            *seen.borrow(),
+            vec!["你".to_string(), "好".to_string()],
+            "增量要按到达顺序交出去（界面靠它逐字画）"
+        );
     }
 
     #[test]
