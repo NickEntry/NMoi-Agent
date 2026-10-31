@@ -276,10 +276,14 @@ internal object AssistantRepository {
             }
         }
 
-    /** 聊天页那个选择器要的：所有 (供应商, 模型) 组合。 */
+    /** 聊天页/助手页那个选择器要的：所有 (供应商, 模型) 组合，**只放聊天型**。 */
     suspend fun choices(databasePath: String): Result<List<Pair<ProviderEntry, ProviderModel>>> =
         ProviderRepository.list(databasePath).map { page ->
-            page.rows.flatMap { provider -> provider.models.map { model -> provider to model } }
+            page.rows.flatMap { provider ->
+                // 嵌入 / 图像模型出现在聊天页的选择器里，点下去只会得到一轮 400（D191）。
+                // 类型在模型页里填，供应商的模型列表上也写着它是什么型。
+                provider.models.filter { it.isChat }.map { model -> provider to model }
+            }
         }
 
     /**
@@ -304,7 +308,7 @@ internal object AssistantRepository {
             ?: page.rows.firstOrNull { it.id == "default" }
             ?: page.rows.singleOrNull()
             ?: return entry
-        val model = provider.model ?: return entry
+        val model = provider.models.firstOrNull { it.isChat } ?: return entry
         return entry.copy(
             providerId = provider.id,
             modelId = model.id,

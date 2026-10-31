@@ -22,6 +22,13 @@ internal data class ProviderModel(
      */
     val name: String = "",
     /**
+     * 这一行是**哪类**模型（0.15x 后半）：`chat` / `embedding` / `image`。
+     *
+     * **有读取点**：`AssistantRepository.choices()` 只把 `chat` 型交给聊天页与助手页的选择器
+     * （见 [isChat]）——不然挑模型时会把一个嵌入模型摆在一堆聊天模型中间，点下去只会得到一轮 400。
+     */
+    val kind: String = ModelKinds.CHAT,
+    /**
      * 上下文窗口（token）。**真的会用**：聊天页顶部的占用百分比按它算。
      *
      * 空 = 不知道，不显示百分比。这一条是"填了必须生效"——以前没有这个字段，
@@ -33,6 +40,9 @@ internal data class ProviderModel(
 ) {
     /** 界面上一律用它：填了名字用名字，没填退回 id。 */
     val displayName: String get() = name.ifBlank { id }
+
+    /** 聊天页/助手页的选择器只认这一类。 */
+    val isChat: Boolean get() = kind == ModelKinds.CHAT
 
     /** 一行副标题：只写填了的，没填就不提。 */
     val summary: String
@@ -96,6 +106,29 @@ internal object ProviderKinds {
 }
 
 internal data class Kind(val wire: String, val label: String)
+
+/**
+ * 模型类型（0.15x）。
+ *
+ * wire 值存在 `ProviderModel.kind` 里；**认不出的按 `chat` 处理**——
+ * 老数据没有这个字段，而把一个旧模型当成嵌入模型会让它从选择器里消失（看着像丢了）。
+ */
+internal object ModelKinds {
+    const val CHAT = "chat"
+    const val EMBEDDING = "embedding"
+    const val IMAGE = "image"
+
+    val ALL = listOf(
+        Kind(CHAT, "聊天"),
+        Kind(EMBEDDING, "嵌入"),
+        Kind(IMAGE, "图像"),
+    )
+
+    fun label(wire: String): String = ALL.firstOrNull { it.wire == wire }?.label ?: "聊天"
+
+    fun normalize(wire: String): String =
+        if (ALL.any { it.wire == wire }) wire else CHAT
+}
 
 /**
  * 供应商配置的读写（D156 单条 → D157 多条）。
@@ -177,6 +210,7 @@ internal object ProviderRepository {
                                     .put("id", model.id.trim())
                                     .also { row ->
                                         if (model.name.isNotBlank()) row.put("name", model.name.trim())
+                                        row.put("kind", model.kind)
                                         model.contextWindow?.let { row.put("context_window", it) }
                                         model.maxTokens?.let { row.put("max_tokens", it) }
                                         model.temperature?.let { row.put("temperature", it) }
@@ -277,6 +311,8 @@ internal object ProviderRepository {
                         ProviderModel(
                             id = modelId,
                             name = row.optString("name", ""),
+                            // 老数据没有 kind：按聊天处理（D191），否则它们会从选择器里消失。
+                            kind = ModelKinds.normalize(row.optString("kind", ModelKinds.CHAT)),
                             contextWindow = row.optInt("context_window", 0).takeIf { it > 0 },
                             maxTokens = row.optInt("max_tokens", 0).takeIf { it > 0 },
                             temperature = if (row.has("temperature")) {

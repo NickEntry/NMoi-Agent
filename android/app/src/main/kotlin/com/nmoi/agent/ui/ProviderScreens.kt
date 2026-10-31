@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -60,8 +61,10 @@ import kotlinx.coroutines.withContext
  *   一条代码都没有读它们。要做也是先把那条路接上，再放控件。
  * - 没有「API 路径」：路径由 `kind` 决定（`crates/core/src/transport.rs`），
  *   让用户填一个不生效的路径比不填更坏。
- * - 模型没有「上下文窗口 / 定价 / 输入输出模态」：这一版只发 `max_tokens` 与
- *   `temperature`，别的字段存下来没有任何一处读。
+ * - 模型只有四样"真会被读"的东西：**类型**（`chat` / `embedding` / `image`，只决定它出现在哪类
+ *   选择器里）、上下文窗口（压缩判据与占用百分比）、最大输出、温度（后两项随请求发出去）。
+ *   **没有**「定价 / 输入输出模态 / 能力位 / 推理方言」：这些字段现在一条代码都不读，
+ *   摆上来就是"存了不生效"（用户最反感的那类，D191）。
  *
  * 密钥**从不回显**：只显示打码尾巴，输入框永远从空开始，留空就是不换。
  */
@@ -432,6 +435,7 @@ internal fun ProviderEditScreen(
                                         originalId = model.id,
                                         id = model.id,
                                         name = model.name,
+                                        kind = model.kind,
                                         contextWindow = model.contextWindow?.toString().orEmpty(),
                                         maxTokens = model.maxTokens?.toString().orEmpty(),
                                         temperature = model.temperature?.toString().orEmpty(),
@@ -492,9 +496,10 @@ internal fun ProviderEditScreen(
 
     val draft = modelDraft
     if (draft != null) {
-        ModelDialog(
+        ModelEditPage(
             draft = draft,
-            onDismiss = { modelDraft = null },
+            siblings = models.filterNot { it.id == draft.originalId }.map { it.id },
+            onClose = { modelDraft = null },
             onSave = { updated ->
                 // 改名字就按原位替换，新加就追加：顺序是用户排的，别按 id 重排。
                 val index = if (draft.existing) models.indexOfFirst { it.id == draft.originalId } else -1
@@ -872,7 +877,13 @@ private fun ModelRow(
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = model.summary,
+                text = if (model.isChat) {
+                    model.summary
+                } else {
+                    // 非聊天型在这里标出来：它在聊天页的选择器里**不会出现**，
+                    // 用户得能在这一行看出原因（D191）。
+                    "${ModelKinds.label(model.kind)} · ${model.summary}"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
@@ -963,13 +974,13 @@ private fun SecondaryButton(
     }
 }
 
-/** 行内文字按钮（「显示 / 隐藏」这种只需一个字的地方）。 */
+/** 行内文字按钮（「显示 / 隐藏」这种只需一个字的地方）。`danger` 只给"删"这类动作用。 */
 @Composable
-private fun TextAction(label: String, onClick: () -> Unit) {
+private fun TextAction(label: String, onClick: () -> Unit, danger: Boolean = false) {
     Text(
         text = label,
         style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
+        color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
         modifier = Modifier
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -1013,115 +1024,226 @@ private data class ModelDraft(
     val originalId: String = "",
     val id: String = "",
     val name: String = "",
+    val kind: String = ModelKinds.CHAT,
     val contextWindow: String = "",
     val maxTokens: String = "",
     val temperature: String = "",
 )
 
+/**
+ * 模型编辑页（0.15x 后半）：**整页，不是弹窗**。
+ *
+ * 「配置类的东西用整页，不用弹窗」——用户 2026-10-28 那次原话是"助手编辑是一个单独的完整页面，
+ * 不是这种小窗口"，判据是"关掉之后还有没有'我刚才只是试了一下'的感觉"。改模型 ID / 窗口 /
+ * 采样参数都属于长期配置，不是一次性动作。
+ *
+ * 为什么是一层整页浮层、而不是路由里的一条：模型是**供应商草稿**的一部分。
+ * 拆成路由就变成两个写者（模型页直接落库 / 供应商页按「保存」），谁后按谁赢，
+ * 而用户看不到这件事——他在供应商页改了一半的端点地址会在下一次保存时把模型改动盖掉。
+ * 所以它长在供应商页里，返回键先关它（[BackHandler] 后注册，比页面栈那条早轮到）。
+ *
+ * 两个页签：**基本**（ID / 名称 / 类型 / 窗口）、**采样**（最大输出 / 温度）。
+ * 设计稿里还有第三页（推理方言、级别、回放、始终保留采样、定价）——那些字段**现在没有任何一处读**，
+ * 摆上来就是"存了不生效"，正是用户最反感的那类（D191 第 4 条）。等它们各有读取点再各开一页。
+ */
 @Composable
-private fun ModelDialog(
+private fun ModelEditPage(
     draft: ModelDraft,
-    onDismiss: () -> Unit,
+    /** 同一个供应商下**别的**模型的 id：用来拦重名。 */
+    siblings: List<String>,
+    onClose: () -> Unit,
     onSave: (ProviderModel) -> Unit,
     onDelete: () -> Unit,
 ) {
+    var tab by remember { mutableStateOf(0) }
     var id by remember { mutableStateOf(draft.id) }
     var name by remember { mutableStateOf(draft.name) }
+    var kind by remember { mutableStateOf(draft.kind) }
     var contextWindow by remember { mutableStateOf(draft.contextWindow) }
     var maxTokens by remember { mutableStateOf(draft.maxTokens) }
     var temperature by remember { mutableStateOf(draft.temperature) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    OverlayCard(onDismiss = onDismiss) {
-        Text(
-            text = if (draft.existing) "改模型" else "添加模型",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        SectionLabel("模型 ID", modifier = Modifier.padding(top = 12.dp))
-        ProviderField(
-            value = id,
-            onChange = { id = it },
-            placeholder = "供应商那边怎么写的就怎么填",
-            modifier = Modifier.padding(vertical = 2.dp),
-        )
-        SectionLabel("模型名称（可空）", modifier = Modifier.padding(top = 10.dp))
-        ProviderField(
-            value = name,
-            onChange = { name = it },
-            placeholder = "聊天页顶部显示它；空 = 用 ID",
-            modifier = Modifier.padding(vertical = 2.dp),
-        )
-        SectionLabel("上下文窗口（可空）", modifier = Modifier.padding(top = 10.dp))
-        ProviderField(
-            value = contextWindow,
-            onChange = { contextWindow = it },
-            placeholder = "例如 128000；填了才显示占用百分比",
-            keyboard = KeyboardType.Number,
-            modifier = Modifier.padding(vertical = 2.dp),
-        )
-        SectionLabel("最大输出（可空）", modifier = Modifier.padding(top = 10.dp))
-        ProviderField(
-            value = maxTokens,
-            onChange = { maxTokens = it },
-            placeholder = "例如 8192；空 = 不传",
-            keyboard = KeyboardType.Number,
-            modifier = Modifier.padding(vertical = 2.dp),
-        )
-        SectionLabel("温度（可空）", modifier = Modifier.padding(top = 10.dp))
-        ProviderField(
-            value = temperature,
-            onChange = { temperature = it },
-            placeholder = "例如 0.7；空 = 不传",
-            keyboard = KeyboardType.Decimal,
-            modifier = Modifier.padding(vertical = 2.dp),
-        )
-        val line = error
-        if (line != null) {
-            Text(
-                text = line,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (draft.existing) {
-                DialogButton(label = "删除", danger = true) { onDelete() }
-                Spacer(Modifier.weight(1f))
+    // 返回键先关这一层（后注册者优先，轮不到页面栈那条）。
+    BackHandler(enabled = true) { onClose() }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BackButton(onBack = onClose)
+                Text(
+                    text = if (draft.existing) "改模型" else "添加模型",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                )
             }
-            DialogButton(label = "取消") { onDismiss() }
-            Spacer(Modifier.width(8.dp))
-            DialogButton(label = "保存", primary = true) {
-                val cleanId = id.trim()
-                val tokens = maxTokens.trim()
-                val heat = temperature.trim()
-                val parsedTokens = if (tokens.isEmpty()) null else tokens.toIntOrNull()
-                val parsedHeat = if (heat.isEmpty()) null else heat.toDoubleOrNull()
-                val window = contextWindow.trim()
-                val parsedWindow = if (window.isEmpty()) null else window.toIntOrNull()
-                when {
-                    cleanId.isEmpty() -> error = "模型 ID 不能是空的"
-                    window.isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) ->
-                        error = "上下文窗口要填正整数"
-                    tokens.isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) ->
-                        error = "最大输出要填正整数"
-                    heat.isNotEmpty() && (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) ->
-                        error = "温度是 0 到 2 之间的小数"
-                    else -> onSave(
-                        ProviderModel(
-                            id = cleanId,
-                            name = name.trim(),
-                            contextWindow = parsedWindow,
-                            maxTokens = parsedTokens,
-                            temperature = parsedHeat,
-                        ),
-                    )
+
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Segmented(
+                    options = listOf("基本", "采样"),
+                    selected = tab,
+                    onSelect = { tab = it },
+                )
+            }
+
+            // 红字放在页签下面、内容上面：它与"哪一页"无关，切页之后也还在。
+            val line = error
+            if (line != null) {
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                )
+            }
+
+            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                when (tab) {
+                    0 -> {
+                        GroupCard(modifier = Modifier.padding(top = 6.dp)) {
+                            SectionLabel("模型 ID")
+                            ProviderField(
+                                value = id,
+                                onChange = { id = it },
+                                placeholder = "供应商那边怎么写的就怎么填",
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Hint("改 ID 等于换成另一个模型；同一个供应商下不能重名。")
+                        }
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            SectionLabel("显示名（可空）")
+                            ProviderField(
+                                value = name,
+                                onChange = { name = it },
+                                placeholder = "聊天页顶部显示它；空 = 用 ID",
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                        }
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            SectionLabel("类型")
+                            Row(modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp)) {
+                                ModelKinds.ALL.forEachIndexed { index, option ->
+                                    if (index > 0) Spacer(Modifier.width(8.dp))
+                                    DialogButton(
+                                        label = option.label,
+                                        primary = kind == option.wire,
+                                        onClick = { kind = option.wire },
+                                    )
+                                }
+                            }
+                            Hint(
+                                if (kind == ModelKinds.CHAT) {
+                                    "只有「聊天」型的会出现在聊天页与助手页的模型选择器里。"
+                                } else {
+                                    "「${ModelKinds.label(kind)}」不会出现在聊天页的选择器里——那里只列聊天模型。"
+                                },
+                            )
+                        }
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            SectionLabel("上下文窗口（可空）")
+                            ProviderField(
+                                value = contextWindow,
+                                onChange = { contextWindow = it },
+                                placeholder = "例如 128000",
+                                keyboard = KeyboardType.Number,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Hint("填了才显示占用百分比；压缩判据也按它算。")
+                        }
+                    }
+
+                    else -> {
+                        GroupCard(modifier = Modifier.padding(top = 6.dp)) {
+                            SectionLabel("最大输出（可空）")
+                            ProviderField(
+                                value = maxTokens,
+                                onChange = { maxTokens = it },
+                                placeholder = "例如 8192；空 = 不传",
+                                keyboard = KeyboardType.Number,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Hint("空 = 不在请求里带这个字段，由端点自己决定。")
+                        }
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            SectionLabel("温度（可空）")
+                            ProviderField(
+                                value = temperature,
+                                onChange = { temperature = it },
+                                placeholder = "例如 0.7；空 = 不传",
+                                keyboard = KeyboardType.Decimal,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Hint("0 到 2 之间。空 = 不传。")
+                        }
+                        Hint(
+                            "这两项每次请求都会带上；助手页里也填了的话，那里填的优先——" +
+                                "模型这份是这个模型的常态，助手那份是这个助手要的口味。",
+                        )
+                    }
                 }
+
+                PrimaryButton(
+                    label = "保存",
+                    enabled = true,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    onClick = {
+                        val cleanId = id.trim()
+                        val tokens = maxTokens.trim()
+                        val heat = temperature.trim()
+                        val parsedTokens = if (tokens.isEmpty()) null else tokens.toIntOrNull()
+                        val parsedHeat = if (heat.isEmpty()) null else heat.toDoubleOrNull()
+                        val window = contextWindow.trim()
+                        val parsedWindow = if (window.isEmpty()) null else window.toIntOrNull()
+                        when {
+                            cleanId.isEmpty() -> error = "模型 ID 不能是空的"
+                            siblings.any { it == cleanId } ->
+                                error = "这个供应商下已经有「$cleanId」了"
+
+                            window.isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) -> {
+                                tab = 0
+                                error = "上下文窗口要填正整数"
+                            }
+
+                            tokens.isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) -> {
+                                tab = 1
+                                error = "最大输出要填正整数"
+                            }
+
+                            heat.isNotEmpty() &&
+                                (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) -> {
+                                tab = 1
+                                error = "温度是 0 到 2 之间的小数"
+                            }
+
+                            else -> onSave(
+                                ProviderModel(
+                                    id = cleanId,
+                                    name = name.trim(),
+                                    kind = kind,
+                                    contextWindow = parsedWindow,
+                                    maxTokens = parsedTokens,
+                                    temperature = parsedHeat,
+                                ),
+                            )
+                        }
+                    },
+                )
+
+                if (draft.existing) {
+                    // 删的是"这一行配置"（id + 参数），不碰别的模型、不碰供应商。
+                    Row(modifier = Modifier.padding(start = 6.dp)) {
+                        TextAction(
+                            label = "删除这个模型",
+                            danger = true,
+                            onClick = onDelete,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
