@@ -236,4 +236,32 @@ class ModelFieldsTest {
         assertEquals("用默认参数", model().summary)
         assertEquals("窗口 128000 · 温度 0.7", model(contextWindow = 128000, temperature = 0.7).summary)
     }
+
+    @Test
+    fun `界面上的徽标与落盘时的来源是同一条规则`() {
+        val stored = model(contextWindow = 128000, maxTokens = 8192)
+        val storedSources = mapOf(
+            ModelField.CONTEXT_WINDOW to FieldSource.Inferred,
+            ModelField.MAX_TOKENS to FieldSource.Default,
+        )
+        val editing = model(contextWindow = 64000, maxTokens = 8192)
+
+        val live = ModelField.liveSources(stored, storedSources, editing)
+        val saved = ModelField.mergeSources(
+            entry(stored, sources = mapOf(stored.id to storedSources)),
+            listOf(editing),
+        )[stored.id].orEmpty()
+
+        // 两处走的是同一个函数：界面上写"自定义"的格子，存下去不可能变成"推断"。
+        assertEquals(FieldSource.Custom, live[ModelField.CONTEXT_WINDOW])
+        assertEquals(live, saved)
+    }
+
+    @Test
+    fun `支持的级别里不含关闭-关闭由允许关闭单独回答`() {
+        assertTrue(Efforts.LEVELS.none { it.wire == "none" })
+        assertEquals(6, Efforts.LEVELS.size)
+        // 但 normalize 仍然认 none：老数据可能存着它。
+        assertEquals(listOf("none", "low"), Efforts.normalize(listOf("low", "none")))
+    }
 }

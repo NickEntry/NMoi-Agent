@@ -1,5 +1,8 @@
 package com.nmoi.agent.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -176,6 +180,8 @@ internal fun ProviderEditScreen(
     var baseUrl by remember { mutableStateOf("") }
     var models by remember { mutableStateOf(listOf<ProviderModel>()) }
     var activeModel by remember { mutableStateOf("") }
+    /** 每个模型每个字段的来源（D201）：只用来在界面上挂徽标，落盘由仓库那边再算一遍。 */
+    var sources by remember { mutableStateOf(emptyMap<String, Map<String, FieldSource>>()) }
     var keyDraft by remember { mutableStateOf("") }
     var keyVisible by remember { mutableStateOf(false) }
     var keyHint by remember { mutableStateOf<String?>(null) }
@@ -202,6 +208,7 @@ internal fun ProviderEditScreen(
                     baseUrl = entry.baseUrl
                     models = entry.models
                     activeModel = entry.activeModel
+                    sources = entry.fieldSources
                 },
                 onFailure = { notice = "读不到这份配置：${it.message}" },
             )
@@ -258,6 +265,12 @@ internal fun ProviderEditScreen(
             }
             models = cleaned
             activeModel = chosen
+            // 落盘之后**现读库**：来源标记是仓库比出来的，界面照抄一份算是两份规矩。
+            withContext(Dispatchers.IO) { ProviderRepository.load(databasePath, id) }
+                .onSuccess { fresh ->
+                    models = fresh.models
+                    sources = fresh.fieldSources
+                }
             if (keyed.isFailure) {
                 notice = "配置存了，但密钥没存进去：${keyed.exceptionOrNull()?.message}"
                 return@launch
@@ -430,16 +443,7 @@ internal fun ProviderEditScreen(
                                 current = model.id == activeModel,
                                 onSelect = { activeModel = model.id },
                                 onEdit = {
-                                    modelDraft = ModelDraft(
-                                        existing = true,
-                                        originalId = model.id,
-                                        id = model.id,
-                                        name = model.name,
-                                        kind = model.kind,
-                                        contextWindow = model.contextWindow?.toString().orEmpty(),
-                                        maxTokens = model.maxTokens?.toString().orEmpty(),
-                                        temperature = model.temperature?.toString().orEmpty(),
-                                    )
+                                    modelDraft = ModelDraft(stored = model, model = model)
                                 },
                             )
                         }
@@ -499,6 +503,8 @@ internal fun ProviderEditScreen(
         ModelEditPage(
             draft = draft,
             siblings = models.filterNot { it.id == draft.originalId }.map { it.id },
+            // 来源徽标的"打开时那一份"：老数据没有这段，全是空的 → 一律「默认」。
+            storedSources = sources[draft.originalId].orEmpty(),
             onClose = { modelDraft = null },
             onSave = { updated ->
                 // 改名字就按原位替换，新加就追加：顺序是用户排的，别按 id 重排。
@@ -515,6 +521,8 @@ internal fun ProviderEditScreen(
             },
             onDelete = {
                 models = models.filterNot { it.id == draft.originalId }
+                // 来源行别留着：删掉的模型在界面上已经指不出来了（铁律 ②）。
+                sources = sources - draft.originalId
                 if (activeModel == draft.originalId) {
                     activeModel = models.firstOrNull()?.id.orEmpty()
                 }
@@ -1018,93 +1026,214 @@ private fun EmptyProviders(onCreate: () -> Unit) {
     }
 }
 
-/** 模型编辑草稿：**字符串**，因为用户正在打字，这个阶段不该被解析。 */
+/**
+ * 模型编辑草稿（D201 第二片）：页面上正在改的那一份 + 打开时库里那一份。
+ *
+ * 两份都要。只有"打开时的那一份"才能回答**这一格改没改**——每个字段右边那个
+ * 来源徽标全靠这个判断（改了 = `自定义`，没改 = 库里记的 `推断` / `默认`）。
+ * `stored == null` = 新加的模型：没有"上一份"可比，填了值的格子一律算自定义。
+ */
 private data class ModelDraft(
-    val existing: Boolean = false,
-    val originalId: String = "",
-    val id: String = "",
-    val name: String = "",
-    val kind: String = ModelKinds.CHAT,
-    val contextWindow: String = "",
-    val maxTokens: String = "",
-    val temperature: String = "",
-)
+    val stored: ProviderModel? = null,
+    val model: ProviderModel = ProviderModel(id = ""),
+) {
+    val existing: Boolean get() = stored != null
+    val originalId: String get() = stored?.id.orEmpty()
+}
 
 /**
- * 模型编辑页（0.15x 后半）：**整页，不是弹窗**。
+ * 模型编辑页（D201 第二片）：**整页、三个页签、每格带出处**。
  *
- * 「配置类的东西用整页，不用弹窗」——用户 2026-10-28 那次原话是"助手编辑是一个单独的完整页面，
- * 不是这种小窗口"，判据是"关掉之后还有没有'我刚才只是试了一下'的感觉"。改模型 ID / 窗口 /
- * 采样参数都属于长期配置，不是一次性动作。
+ * 为什么是一层整页浮层而不是路由里的一条：模型是**供应商草稿**的一部分，
+ * 拆成路由就有两个写者（模型页直接落库 / 供应商页按「保存」），谁后按谁赢，
+ * 而用户看不到这件事——他在供应商页改了一半的端点会被下一次保存盖掉。
  *
- * 为什么是一层整页浮层、而不是路由里的一条：模型是**供应商草稿**的一部分。
- * 拆成路由就变成两个写者（模型页直接落库 / 供应商页按「保存」），谁后按谁赢，
- * 而用户看不到这件事——他在供应商页改了一半的端点地址会在下一次保存时把模型改动盖掉。
- * 所以它长在供应商页里，返回键先关它（[BackHandler] 后注册，比页面栈那条早轮到）。
+ * 三页按"这个问题属于哪一类"分，不按字段多少分：
  *
- * 两个页签：**基本**（ID / 名称 / 类型 / 窗口）、**采样**（最大输出 / 温度）。
- * 设计稿里还有第三页（推理方言、级别、回放、始终保留采样、定价）——那些字段**现在没有任何一处读**，
- * 摆上来就是"存了不生效"，正是用户最反感的那类（D191 第 4 条）。等它们各有读取点再各开一页。
+ * - **基本**：这个模型是什么（ID / 名字 / 类型 / 模态 / 能力 / 限额 / 定价）；
+ * - **推理**：它怎么想（方言 / 档位 / 能不能关 / 默认档）；
+ * - **高级**：这个请求要不要额外带东西（Headers / Body / 图片 / 内置工具）。
+ *
+ * 每一格右边是一个来源徽标（`自定义` / `推断` / `默认`），改过的格子多一个 ↺：
+ * 点它回到"打开这一页时库里的值"。**现在没有"数据源给的原始值"可回**——
+ * 那要等资源更新页把快照读进来，那时 ↺ 才真的回到"推断值"（见 docs/decisions.md D201）。
+ *
+ * 一部分字段**请求里还不会用到**（Headers / Body / 推理那一批 / 价格 / 模态 / 能力位），
+ * 所以每一页底部都写了一句话把这件事说明白：宁可写"现在只记录"，也不做成假开关。
  */
 @Composable
 private fun ModelEditPage(
     draft: ModelDraft,
     /** 同一个供应商下**别的**模型的 id：用来拦重名。 */
     siblings: List<String>,
+    /** 库里这个模型每个字段的来源（D201 第一片）。新模型是空的。 */
+    storedSources: Map<String, FieldSource>,
     onClose: () -> Unit,
     onSave: (ProviderModel) -> Unit,
     onDelete: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val base = draft.model
+
     var tab by remember { mutableStateOf(0) }
-    var id by remember { mutableStateOf(draft.id) }
-    var name by remember { mutableStateOf(draft.name) }
-    var kind by remember { mutableStateOf(draft.kind) }
-    var contextWindow by remember { mutableStateOf(draft.contextWindow) }
-    var maxTokens by remember { mutableStateOf(draft.maxTokens) }
-    var temperature by remember { mutableStateOf(draft.temperature) }
+    var id by remember { mutableStateOf(base.id) }
+    var name by remember { mutableStateOf(base.name) }
+    var kind by remember { mutableStateOf(base.kind) }
+    var window by remember { mutableStateOf(base.contextWindow?.toString().orEmpty()) }
+    var maxOut by remember { mutableStateOf(base.maxTokens?.toString().orEmpty()) }
+    var heat by remember { mutableStateOf(base.temperature?.toString().orEmpty()) }
+    var inputs by remember { mutableStateOf(base.inputModalities) }
+    var outputs by remember { mutableStateOf(base.outputModalities) }
+    var tools by remember { mutableStateOf(base.tools) }
+    var canReason by remember { mutableStateOf(base.reasoning) }
+    var structured by remember { mutableStateOf(base.structuredOutput) }
+    var inPrice by remember { mutableStateOf(base.inputPrice?.toString().orEmpty()) }
+    var outPrice by remember { mutableStateOf(base.outputPrice?.toString().orEmpty()) }
+    var cacheRead by remember { mutableStateOf(base.cacheReadPrice?.toString().orEmpty()) }
+    var cacheWrite by remember { mutableStateOf(base.cacheWritePrice?.toString().orEmpty()) }
+    var currency by remember { mutableStateOf(base.currency) }
+    var dialect by remember { mutableStateOf(base.reasoningDialect) }
+    var efforts by remember { mutableStateOf(base.efforts) }
+    var allowDisable by remember { mutableStateOf(base.allowDisable) }
+    var defaultEffort by remember { mutableStateOf(base.defaultEffort) }
+    var headers by remember { mutableStateOf(base.headers) }
+    var body by remember { mutableStateOf(base.bodyOverride) }
+    var imageUrl by remember { mutableStateOf(base.remoteImageUrl) }
+    var builtinTools by remember { mutableStateOf(base.builtinTools) }
     var error by remember { mutableStateOf<String?>(null) }
 
     // 返回键先关这一层（后注册者优先，轮不到页面栈那条）。
     BackHandler(enabled = true) { onClose() }
 
+    /** 把页面上的字符串**尽量**拼回一个模型：解析不了的数值给 `null`。 */
+    fun editing(): ProviderModel = ProviderModel(
+        id = id.trim(),
+        name = name.trim(),
+        kind = kind,
+        contextWindow = window.trim().toIntOrNull(),
+        maxTokens = maxOut.trim().toIntOrNull(),
+        temperature = heat.trim().toDoubleOrNull(),
+        inputModalities = Modalities.normalize(inputs, Modalities.INPUT),
+        outputModalities = Modalities.normalize(outputs, Modalities.OUTPUT),
+        tools = tools,
+        reasoning = canReason,
+        structuredOutput = structured,
+        inputPrice = inPrice.trim().toDoubleOrNull(),
+        outputPrice = outPrice.trim().toDoubleOrNull(),
+        cacheReadPrice = cacheRead.trim().toDoubleOrNull(),
+        cacheWritePrice = cacheWrite.trim().toDoubleOrNull(),
+        currency = currency.trim().uppercase(),
+        reasoningDialect = dialect,
+        efforts = Efforts.normalize(efforts),
+        allowDisable = allowDisable,
+        defaultEffort = defaultEffort,
+        headers = headers.filter { it.name.isNotBlank() },
+        bodyOverride = body.trim(),
+        remoteImageUrl = imageUrl.trim(),
+        builtinTools = builtinTools,
+    )
+
+    val editingModel = editing()
+    // 与仓库保存时**完全同一条**规则（ModelFields.liveSources）：界面说"自定义"的，
+    // 存下去也一定是自定义。
+    val live = ModelField.liveSources(draft.stored, storedSources, editingModel)
+    fun source(key: String): FieldSource = live[key] ?: FieldSource.Default
+    fun dirty(key: String): Boolean = draft.stored != null && source(key) == FieldSource.Custom
+
+    /** ↺：把这一格改回"打开这一页时库里的值"。 */
+    fun reset(key: String) {
+        when (key) {
+            ModelField.ID -> id = base.id
+            ModelField.NAME -> name = base.name
+            ModelField.KIND -> kind = base.kind
+            ModelField.CONTEXT_WINDOW -> window = base.contextWindow?.toString().orEmpty()
+            ModelField.MAX_TOKENS -> maxOut = base.maxTokens?.toString().orEmpty()
+            ModelField.TEMPERATURE -> heat = base.temperature?.toString().orEmpty()
+            ModelField.INPUT_MODALITIES -> inputs = base.inputModalities
+            ModelField.OUTPUT_MODALITIES -> outputs = base.outputModalities
+            ModelField.TOOLS -> tools = base.tools
+            ModelField.REASONING -> canReason = base.reasoning
+            ModelField.STRUCTURED_OUTPUT -> structured = base.structuredOutput
+            ModelField.INPUT_PRICE -> inPrice = base.inputPrice?.toString().orEmpty()
+            ModelField.OUTPUT_PRICE -> outPrice = base.outputPrice?.toString().orEmpty()
+            ModelField.CACHE_READ_PRICE -> cacheRead = base.cacheReadPrice?.toString().orEmpty()
+            ModelField.CACHE_WRITE_PRICE -> cacheWrite = base.cacheWritePrice?.toString().orEmpty()
+            ModelField.CURRENCY -> currency = base.currency
+            ModelField.REASONING_DIALECT -> dialect = base.reasoningDialect
+            ModelField.EFFORTS -> efforts = base.efforts
+            ModelField.ALLOW_DISABLE -> allowDisable = base.allowDisable
+            ModelField.DEFAULT_EFFORT -> defaultEffort = base.defaultEffort
+            ModelField.HEADERS -> headers = base.headers
+            ModelField.BODY -> body = base.bodyOverride
+            ModelField.REMOTE_IMAGE -> imageUrl = base.remoteImageUrl
+            ModelField.BUILTIN_TOOLS -> builtinTools = base.builtinTools
+        }
+    }
+
     // 保存（页顶右上角那个 ＋ / ✓）。校验与落点都在这儿，别在按钮里再写一遍。
     val save: () -> Unit = {
         val cleanId = id.trim()
-        val tokens = maxTokens.trim()
-        val heat = temperature.trim()
-        val parsedTokens = if (tokens.isEmpty()) null else tokens.toIntOrNull()
-        val parsedHeat = if (heat.isEmpty()) null else heat.toDoubleOrNull()
-        val window = contextWindow.trim()
-        val parsedWindow = if (window.isEmpty()) null else window.toIntOrNull()
+        val parsedWindow = window.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
+        val parsedTokens = maxOut.trim().takeIf { it.isNotEmpty() }?.toIntOrNull()
+        val parsedHeat = heat.trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
+        // 价格：空 = 没填（允许）；填了就得是 0 或更大的数。
+        val badPrice = listOf(inPrice, outPrice, cacheRead, cacheWrite).any { raw ->
+            val text = raw.trim()
+            text.isNotEmpty() && (text.toDoubleOrNull()?.let { it >= 0.0 } != true)
+        }
+        val bodyText = body.trim()
         when {
-            cleanId.isEmpty() -> error = "模型 ID 不能是空的"
-            siblings.any { it == cleanId } -> error = "这个供应商下已经有「$cleanId」了"
+            cleanId.isEmpty() -> {
+                tab = 0
+                error = "模型 ID 不能是空的"
+            }
 
-            window.isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) -> {
+            siblings.any { it == cleanId } -> {
+                tab = 0
+                error = "这个供应商下已经有「$cleanId」了"
+            }
+
+            window.trim().isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) -> {
                 tab = 0
                 error = "上下文窗口要填正整数"
             }
 
-            tokens.isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) -> {
-                tab = 1
+            maxOut.trim().isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) -> {
+                tab = 0
                 error = "最大输出要填正整数"
             }
 
-            heat.isNotEmpty() && (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) -> {
-                tab = 1
+            heat.trim().isNotEmpty() && (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) -> {
+                tab = 0
                 error = "温度是 0 到 2 之间的小数"
             }
 
-            else -> onSave(
-                ProviderModel(
-                    id = cleanId,
-                    name = name.trim(),
-                    kind = kind,
-                    contextWindow = parsedWindow,
-                    maxTokens = parsedTokens,
-                    temperature = parsedHeat,
-                ),
-            )
+            badPrice -> {
+                tab = 0
+                error = "定价要填 0 或更大的数字（每 100 万 token）"
+            }
+
+            defaultEffort.isNotEmpty() && defaultEffort !in Efforts.normalize(efforts) -> {
+                tab = 1
+                error = "默认级别要先在「支持的级别」里勾上"
+            }
+
+            bodyText.isNotEmpty() && !isJsonObject(bodyText) -> {
+                tab = 2
+                error = "自定义 Body 要是一个 JSON 对象，现在这段解析不了"
+            }
+
+            headers.any { it.name.isBlank() && it.value.isNotBlank() } -> {
+                tab = 2
+                error = "有 Header 只填了值、没填名字"
+            }
+
+            headers.any { it.name.contains(':') || it.name.contains('\n') } -> {
+                tab = 2
+                error = "Header 名里不能有冒号或换行"
+            }
+
+            else -> onSave(editingModel.copy(id = cleanId))
         }
     }
 
@@ -1132,7 +1261,7 @@ private fun ModelEditPage(
 
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                 Segmented(
-                    options = listOf("基本", "采样"),
+                    options = listOf("基本", "推理", "高级"),
                     selected = tab,
                     onSelect = { tab = it },
                 )
@@ -1153,17 +1282,29 @@ private fun ModelEditPage(
                 when (tab) {
                     0 -> {
                         GroupCard(modifier = Modifier.padding(top = 6.dp)) {
-                            SectionLabel("模型 ID")
-                            ProviderField(
-                                value = id,
-                                onChange = { id = it },
-                                placeholder = "供应商那边怎么写的就怎么填",
-                                modifier = Modifier.padding(horizontal = 8.dp),
-                            )
+                            ModelFieldHead("模型 ID", source(ModelField.ID), dirty(ModelField.ID), top = true) { reset(ModelField.ID) }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(end = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                ProviderField(
+                                    value = id,
+                                    onChange = { id = it },
+                                    placeholder = "供应商那边怎么写的就怎么填",
+                                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                )
+                                IconActionButton(
+                                    image = ActionIcons.Copy,
+                                    description = "复制模型 ID",
+                                    compact = true,
+                                    onClick = { putClipboard(context, "模型 ID", id.trim()) },
+                                )
+                            }
                             Hint("改 ID 等于换成另一个模型；同一个供应商下不能重名。")
                         }
+
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
-                            SectionLabel("显示名（可空）")
+                            ModelFieldHead("显示名（可空）", source(ModelField.NAME), dirty(ModelField.NAME), top = true) { reset(ModelField.NAME) }
                             ProviderField(
                                 value = name,
                                 onChange = { name = it },
@@ -1171,8 +1312,9 @@ private fun ModelEditPage(
                                 modifier = Modifier.padding(horizontal = 8.dp),
                             )
                         }
+
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
-                            SectionLabel("类型")
+                            ModelFieldHead("类型", source(ModelField.KIND), dirty(ModelField.KIND), top = true) { reset(ModelField.KIND) }
                             Row(modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp)) {
                                 ModelKinds.ALL.forEachIndexed { index, option ->
                                     if (index > 0) Spacer(Modifier.width(8.dp))
@@ -1191,46 +1333,256 @@ private fun ModelEditPage(
                                 },
                             )
                         }
+
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
-                            SectionLabel("上下文窗口（可空）")
+                            ModelFieldHead("输入模式", source(ModelField.INPUT_MODALITIES), dirty(ModelField.INPUT_MODALITIES), top = true) { reset(ModelField.INPUT_MODALITIES) }
+                            ChipGrid(
+                                options = Modalities.INPUT,
+                                selected = inputs,
+                                onToggle = { wire ->
+                                    inputs = toggle(inputs, wire, Modalities.INPUT)
+                                },
+                            )
+                            Hint("勾出来的是**这个模型收得下**的东西。空着 = 不知道，按纯文本处理。")
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("输出模式", source(ModelField.OUTPUT_MODALITIES), dirty(ModelField.OUTPUT_MODALITIES), top = true) { reset(ModelField.OUTPUT_MODALITIES) }
+                            ChipGrid(
+                                options = Modalities.OUTPUT,
+                                selected = outputs,
+                                onToggle = { wire ->
+                                    outputs = toggle(outputs, wire, Modalities.OUTPUT)
+                                },
+                            )
+                            Hint("输出侧没有 PDF / 视频：现在没有哪家生成得了它们，摆上去就是点不出东西的选项。")
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("工具调用", source(ModelField.TOOLS), dirty(ModelField.TOOLS), top = true) { reset(ModelField.TOOLS) }
+                            TriChoices(tools, "支持", "不支持") { tools = it }
+                            ModelFieldHead("推理", source(ModelField.REASONING), dirty(ModelField.REASONING), top = false) { reset(ModelField.REASONING) }
+                            TriChoices(canReason, "支持", "不支持") { canReason = it }
+                            ModelFieldHead("结构化输出", source(ModelField.STRUCTURED_OUTPUT), dirty(ModelField.STRUCTURED_OUTPUT), top = false) { reset(ModelField.STRUCTURED_OUTPUT) }
+                            TriChoices(structured, "支持", "不支持") { structured = it }
+                            Hint(
+                                "三个都是三态：「不知道」不是「不支持」——没数据时不要替模型说它能或不能。" +
+                                    "勾成「不支持」的地方，界面上对应功能该置灰（现在还没有置灰的读取点）。",
+                            )
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("上下文窗口（可空）", source(ModelField.CONTEXT_WINDOW), dirty(ModelField.CONTEXT_WINDOW), top = true) { reset(ModelField.CONTEXT_WINDOW) }
                             ProviderField(
-                                value = contextWindow,
-                                onChange = { contextWindow = it },
+                                value = window,
+                                onChange = { window = it },
                                 placeholder = "例如 128000",
                                 keyboard = KeyboardType.Number,
                                 modifier = Modifier.padding(horizontal = 8.dp),
                             )
-                            Hint("填了才显示占用百分比；压缩判据也按它算。")
+                            ModelFieldHead("最大输出（可空）", source(ModelField.MAX_TOKENS), dirty(ModelField.MAX_TOKENS), top = false) { reset(ModelField.MAX_TOKENS) }
+                            ProviderField(
+                                value = maxOut,
+                                onChange = { maxOut = it },
+                                placeholder = "例如 8192；空 = 不传",
+                                keyboard = KeyboardType.Number,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            ModelFieldHead("温度（可空）", source(ModelField.TEMPERATURE), dirty(ModelField.TEMPERATURE), top = false) { reset(ModelField.TEMPERATURE) }
+                            ProviderField(
+                                value = heat,
+                                onChange = { heat = it },
+                                placeholder = "例如 0.7；空 = 不传",
+                                keyboard = KeyboardType.Decimal,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Hint(
+                                "窗口填了才显示占用百分比，压缩判据也按它算；输出与温度每次请求都会带" +
+                                    "（助手页也填了的话，那里填的优先——模型这份是这个模型的常态）。",
+                            )
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("定价：输入（每 100 万 token）", source(ModelField.INPUT_PRICE), dirty(ModelField.INPUT_PRICE), top = true) { reset(ModelField.INPUT_PRICE) }
+                            ProviderField(
+                                value = inPrice,
+                                onChange = { inPrice = it },
+                                placeholder = "例如 0.27",
+                                keyboard = KeyboardType.Decimal,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            ModelFieldHead("定价：输出", source(ModelField.OUTPUT_PRICE), dirty(ModelField.OUTPUT_PRICE), top = false) { reset(ModelField.OUTPUT_PRICE) }
+                            ProviderField(
+                                value = outPrice,
+                                onChange = { outPrice = it },
+                                placeholder = "例如 1.1",
+                                keyboard = KeyboardType.Decimal,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            ModelFieldHead("定价：缓存读取（可空）", source(ModelField.CACHE_READ_PRICE), dirty(ModelField.CACHE_READ_PRICE), top = false) { reset(ModelField.CACHE_READ_PRICE) }
+                            ProviderField(
+                                value = cacheRead,
+                                onChange = { cacheRead = it },
+                                placeholder = "没有缓存价就留空",
+                                keyboard = KeyboardType.Decimal,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            ModelFieldHead("定价：缓存写入（可空）", source(ModelField.CACHE_WRITE_PRICE), dirty(ModelField.CACHE_WRITE_PRICE), top = false) { reset(ModelField.CACHE_WRITE_PRICE) }
+                            ProviderField(
+                                value = cacheWrite,
+                                onChange = { cacheWrite = it },
+                                placeholder = "没有缓存价就留空",
+                                keyboard = KeyboardType.Decimal,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            ModelFieldHead("货币", source(ModelField.CURRENCY), dirty(ModelField.CURRENCY), top = false) { reset(ModelField.CURRENCY) }
+                            ProviderField(
+                                value = currency,
+                                onChange = { currency = it },
+                                placeholder = "USD",
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            Hint(
+                                "**现在只记录**：没有哪一处按它算过钱。等你真要看花费时，它才变成读取点——" +
+                                    "所以这一格空着也不算错，别为了填满而猜。",
+                            )
+                        }
+
+                        Hint(
+                            "这一页里，类型 / 窗口 / 最大输出 / 温度真的会进请求；" +
+                                "模态、能力位、定价现在只跟着配置一起存（导出、备份会带走），请求里还不会用到。",
+                        )
+                    }
+
+                    1 -> {
+                        GroupCard(modifier = Modifier.padding(top = 6.dp)) {
+                            ModelFieldHead("推理方言", source(ModelField.REASONING_DIALECT), dirty(ModelField.REASONING_DIALECT), top = true) { reset(ModelField.REASONING_DIALECT) }
+                            ChoiceRow(
+                                value = dialect,
+                                options = ReasoningDialects.ALL,
+                                onSelect = { dialect = it },
+                            )
+                            Hint(
+                                "思考这一档**注到哪个字段上**。留「自动」就按供应商类型选——" +
+                                    "选错了不会报错，只会得到一段读不懂的话。",
+                            )
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("支持的级别", source(ModelField.EFFORTS), dirty(ModelField.EFFORTS), top = true) { reset(ModelField.EFFORTS) }
+                            ChipGrid(
+                                options = Efforts.LEVELS,
+                                selected = efforts,
+                                onToggle = { wire -> efforts = toggle(efforts, wire, Efforts.LEVELS) },
+                                perRow = 3,
+                            )
+                            Hint("只勾这个模型真接受的档。空着 = 没数据，界面上就只给「自动 / 关闭」。")
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("允许关闭", source(ModelField.ALLOW_DISABLE), dirty(ModelField.ALLOW_DISABLE), top = true) { reset(ModelField.ALLOW_DISABLE) }
+                            TriChoices(allowDisable, "可以关", "不能关") { allowDisable = it }
+                            Hint("有些模型只能开、不能关（传了 `none` 会 400）。不知道就留「不知道」。")
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("默认级别", source(ModelField.DEFAULT_EFFORT), dirty(ModelField.DEFAULT_EFFORT), top = true) { reset(ModelField.DEFAULT_EFFORT) }
+                            val chosen = Efforts.normalize(efforts)
+                            if (chosen.isEmpty()) {
+                                Hint("先在上一块里勾出支持的级别，这里才有得选。")
+                            } else {
+                                ChipGrid(
+                                    options = Efforts.LEVELS.filter { it.wire in chosen },
+                                    selected = listOf(defaultEffort),
+                                    onToggle = { wire ->
+                                        defaultEffort = if (defaultEffort == wire) "" else wire
+                                    },
+                                    perRow = 3,
+                                )
+                                Hint("不选 = 每次都由助手页那份「思考」决定。")
+                            }
+                            Hint(
+                                "**推理这一整页现在只记录**：真正发出去的思考档位仍由助手页的「思考」决定，" +
+                                    "方言由供应商类型推。等读取点接上，这里的勾才会影响请求。",
+                            )
                         }
                     }
 
                     else -> {
                         GroupCard(modifier = Modifier.padding(top = 6.dp)) {
-                            SectionLabel("最大输出（可空）")
-                            ProviderField(
-                                value = maxTokens,
-                                onChange = { maxTokens = it },
-                                placeholder = "例如 8192；空 = 不传",
-                                keyboard = KeyboardType.Number,
-                                modifier = Modifier.padding(horizontal = 8.dp),
+                            ModelFieldHead("自定义 Headers", source(ModelField.HEADERS), dirty(ModelField.HEADERS), top = true) { reset(ModelField.HEADERS) }
+                            headers.forEachIndexed { index, header ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(end = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    ProviderField(
+                                        value = header.name,
+                                        onChange = { value ->
+                                            headers = headers.toMutableList().also {
+                                                it[index] = it[index].copy(name = value)
+                                            }
+                                        },
+                                        placeholder = "名字",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    ProviderField(
+                                        value = header.value,
+                                        onChange = { value ->
+                                            headers = headers.toMutableList().also {
+                                                it[index] = it[index].copy(value = value)
+                                            }
+                                        },
+                                        placeholder = "值",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextAction(
+                                        label = "删",
+                                        danger = true,
+                                        onClick = { headers = headers.filterIndexed { i, _ -> i != index } },
+                                    )
+                                }
+                            }
+                            AddRow(
+                                label = "添加一行",
+                                onClick = { headers = headers + HeaderRow("", "") },
                             )
-                            Hint("空 = 不在请求里带这个字段，由端点自己决定。")
+                            Hint("**请求里还不会带上**：等这一层接到 `TurnRepository` 才算真生效。")
                         }
+
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
-                            SectionLabel("温度（可空）")
+                            ModelFieldHead("自定义 Body", source(ModelField.BODY), dirty(ModelField.BODY), top = true) { reset(ModelField.BODY) }
+                            BodyField(
+                                value = body,
+                                onChange = { body = it },
+                                placeholder = """{"temperature":0.2}""",
+                            )
+                            Hint(
+                                "一个 JSON 对象，保存时校验：解析不了就整页不写。**现在只记录**，" +
+                                    "不会并进请求体。",
+                            )
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("远程图片链接", source(ModelField.REMOTE_IMAGE), dirty(ModelField.REMOTE_IMAGE), top = true) { reset(ModelField.REMOTE_IMAGE) }
                             ProviderField(
-                                value = temperature,
-                                onChange = { temperature = it },
-                                placeholder = "例如 0.7；空 = 不传",
-                                keyboard = KeyboardType.Decimal,
+                                value = imageUrl,
+                                onChange = { imageUrl = it },
+                                placeholder = "https://…/icon.png",
+                                keyboard = KeyboardType.Uri,
                                 modifier = Modifier.padding(horizontal = 8.dp),
                             )
-                            Hint("0 到 2 之间。空 = 不传。")
+                            Hint("**还没有读取点**：界面上没有哪一处画它。等你说「图标走链接」时再接。")
                         }
-                        Hint(
-                            "这两项每次请求都会带上；助手页里也填了的话，那里填的优先——" +
-                                "模型这份是这个模型的常态，助手那份是这个助手要的口味。",
-                        )
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            ModelFieldHead("内置工具", source(ModelField.BUILTIN_TOOLS), dirty(ModelField.BUILTIN_TOOLS), top = true) { reset(ModelField.BUILTIN_TOOLS) }
+                            TriChoices(builtinTools, "允许", "不允许") { builtinTools = it }
+                            Hint(
+                                "供应商侧自带的那类工具（联网搜索之类）。**现在只记录**，" +
+                                    "请求里还不会带；不知道就留「不知道」。",
+                            )
+                        }
                     }
                 }
 
@@ -1248,6 +1600,222 @@ private fun ModelEditPage(
             }
         }
     }
+}
+
+/** 来源徽标（D201 第 3 条）：三种颜色，不写装饰、不加图标。 */
+@Composable
+private fun SourceBadge(source: FieldSource) {
+    val ink = when (source) {
+        FieldSource.Custom -> MaterialTheme.colorScheme.primary
+        FieldSource.Inferred -> MaterialTheme.colorScheme.tertiary
+        FieldSource.Default -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val plate = when (source) {
+        FieldSource.Custom -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        FieldSource.Inferred -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)
+        FieldSource.Default -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    Surface(shape = RoundedCornerShape(999.dp), color = plate) {
+        Text(
+            text = source.label,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
+            color = ink,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+        )
+    }
+}
+
+/** 多选 chips：每行 [perRow] 个，选中用主色实心（与「类型」那一排同形）。 */
+@Composable
+private fun ChipGrid(
+    options: List<Kind>,
+    selected: List<String>,
+    onToggle: (String) -> Unit,
+    perRow: Int = 3,
+) {
+    Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
+        options.chunked(perRow).forEach { row ->
+            Row(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                row.forEach { option ->
+                    DialogButton(
+                        label = option.label,
+                        primary = option.wire in selected,
+                        onClick = { onToggle(option.wire) },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+        }
+    }
+}
+
+/** 三态：不知道 / 支持 / 不支持。**不许省掉"不知道"**，它是"没数据"的唯一出口。 */
+@Composable
+private fun TriChoices(value: Boolean?, yes: String, no: String, onChange: (Boolean?) -> Unit) {
+    Row(modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp)) {
+        DialogButton(label = "不知道", primary = value == null, onClick = { onChange(null) })
+        Spacer(Modifier.width(8.dp))
+        DialogButton(label = yes, primary = value == true, onClick = { onChange(true) })
+        Spacer(Modifier.width(8.dp))
+        DialogButton(label = no, primary = value == false, onClick = { onChange(false) })
+    }
+}
+
+/** 单选下拉（就地展开，不用弹窗）：选项多、标签长的时候用它，chips 会挤成一团。 */
+@Composable
+private fun ChoiceRow(value: String, options: List<Kind>, onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val current = options.firstOrNull { it.wire == value } ?: options.firstOrNull()
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 2.dp)
+            .clickable { open = !open },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = current?.label ?: value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            androidx.compose.material3.Icon(
+                imageVector = ActionIcons.ChevronDown,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+    if (!open) return
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
+        options.forEach { option ->
+            val active = option.wire == value
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onSelect(option.wire)
+                        open = false
+                    }
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = option.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (active) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                if (active) {
+                    androidx.compose.material3.Icon(
+                        imageVector = ActionIcons.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+            if (option != options.last()) RowDivider(leading = 12.dp)
+        }
+    }
+}
+
+/** 多行文本框：只给自定义 Body 用。等宽字体，缩进才对得齐。 */
+@Composable
+private fun BodyField(value: String, onChange: (String) -> Unit, placeholder: String) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+    ) {
+        Box(contentAlignment = Alignment.TopStart) {
+            if (value.isEmpty()) {
+                Text(
+                    text = placeholder,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                textStyle = MaterialTheme.typography.bodySmall.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontFamily = FontFamily.Monospace,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 96.dp)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            )
+        }
+    }
+}
+
+/** 列表里的多选：勾上就加，勾掉就减，顺序按词表走（不按点击顺序）。 */
+private fun toggle(current: List<String>, wire: String, choices: List<Kind>): List<String> {
+    val next = if (wire in current) current - wire else current + wire
+    return choices.map { it.wire }.filter { it in next }
+}
+
+/** 价格：空 = 没填（允许），填了就得是 0 或更大的数。 */
+private fun priceOk(value: Double?): Boolean = value != null && value >= 0.0
+/**
+ * 一行"标签 + 来源徽标 + ↺"。
+ *
+ * 徽标贴在这一行右端、不另占一行：它是**这个标签的**一个属性（"这个数是谁说的"），
+ * 不是这个字段的第二行内容。↺ 只在"改过"时出现——没改的格子没有可回的东西，
+ * 摆一个点不动的图标就是假开关。
+ */
+@Composable
+private fun ModelFieldHead(
+    label: String,
+    source: FieldSource,
+    dirty: Boolean,
+    top: Boolean = false,
+    onReset: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 14.dp, end = 8.dp, top = if (top) 12.dp else 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SectionLabel(label, modifier = Modifier.weight(1f))
+        SourceBadge(source)
+        if (dirty) {
+            IconActionButton(
+                image = ActionIcons.RotateCcw,
+                description = "把「$label」改回保存前那一份",
+                compact = true,
+                onClick = onReset,
+            )
+        }
+    }
+}
+
+/** 自定义 Body 的 JSON 校验：只认**对象**（数组/标量不是"并进请求体"该有的形状）。 */
+private fun isJsonObject(text: String): Boolean =
+    runCatching { org.json.JSONObject(text) }.isSuccess
+
+/** 复制到剪贴板：只复制、不弹自己的提示（系统自带的那条够了）。 */
+private fun putClipboard(context: Context, label: String, text: String) {
+    if (text.isEmpty()) return
+    val manager = context.getSystemService(ClipboardManager::class.java) ?: return
+    manager.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
 @Composable

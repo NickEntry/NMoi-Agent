@@ -128,20 +128,34 @@ internal object ModelField {
         for (model in models) {
             val old = previous?.models?.firstOrNull { it.id == model.id }
             val oldSources = previous?.fieldSources?.get(model.id).orEmpty()
-            val row = LinkedHashMap<String, FieldSource>()
-            for (key in ALL) {
-                val now = valueOf(model, key)
-                val source = when {
-                    old == null -> if (now.isEmpty()) FieldSource.Default else FieldSource.Custom
-                    valueOf(old, key) != now -> FieldSource.Custom
-                    // 老数据没有来源记录：`FieldSource.of(null)` 给「默认」，与 D201 第 1 条对齐。
-                    else -> FieldSource.of(oldSources[key]?.wire)
-                }
-                row[key] = source
-            }
-            merged[model.id] = row
+            merged[model.id] = liveSources(old, oldSources, model)
         }
         return merged
+    }
+
+    /**
+     * 一个模型、一个字段的"现在是谁说的"。
+     *
+     * 界面拿它在**边打字边显示**徽标，仓库拿它在**保存时**落盘——同一份规则，
+     * 所以不会出现"格子右边写着自定义、存下去却是推断"这种事。
+     * 判据和 [mergeSources] 完全一样：值变了 = 用户改的。
+     */
+    fun liveSources(
+        stored: ProviderModel?,
+        storedSources: Map<String, FieldSource>,
+        editing: ProviderModel,
+    ): Map<String, FieldSource> {
+        val row = LinkedHashMap<String, FieldSource>()
+        for (key in ALL) {
+            val now = valueOf(editing, key)
+            row[key] = when {
+                stored == null -> if (now.isEmpty()) FieldSource.Default else FieldSource.Custom
+                valueOf(stored, key) != now -> FieldSource.Custom
+                // 老数据没有来源记录：`FieldSource.of(null)` 给「默认」，与 D201 第 1 条对齐。
+                else -> FieldSource.of(storedSources[key]?.wire)
+            }
+        }
+        return row
     }
 }
 
@@ -213,6 +227,14 @@ internal object Efforts {
         Kind("xhigh", "极高"),
         Kind("max", "最大"),
     )
+
+    /**
+     * "支持的级别"用的那一份：**不含 `none`**。
+     *
+     * `none` 在这里不是一个档位，它是"能不能关掉"——那件事由「允许关闭」单独回答。
+     * 把它混进档位列表里，用户会勾出一个"支持关闭"的奇怪事实。
+     */
+    val LEVELS = ALL.filter { it.wire != "none" }
 
     /** 按档位从低到高排好、去掉重复与不认识的。 */
     fun normalize(list: List<String>): List<String> {
