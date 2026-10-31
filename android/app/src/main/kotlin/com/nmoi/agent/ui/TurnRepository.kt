@@ -88,12 +88,19 @@ internal object TurnRepository {
         upTo: String,
         target: String?,
         allowNewVersion: Boolean,
+        /**
+         * 续话（D193）：落库的正文接在 `target` 现在的正文后面；`false` = 重试（整段换掉）。
+         *
+         * `target` 为空时这一项没有意义（落的是新消息），所以只在有 target 时才发出去。
+         */
+        append: Boolean = false,
     ): Result<TurnOutcome> = runTurn(
         context = context,
         databasePath = databasePath,
         sessionId = sessionId,
         decorate = { config ->
             config.put("up_to", upTo).put("allow_new_version", allowNewVersion)
+            if (append) config.put("append", true)
             target?.let { config.put("target", it) }
         },
         invoke = { config -> NmoiFfi.turnRegen(config) },

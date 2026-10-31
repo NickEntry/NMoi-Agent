@@ -271,6 +271,15 @@ internal object ActionIcons {
     }
 
     /**
+     * Lucide `arrow-right.svg`：续话（0.15h / D193）。语义表里它本来就是"续接"，
+     * 只是这一版之前没有一处代码用到它，所以没抄进 `ActionIcons`。
+     */
+    val ArrowRight: ImageVector = buildVector("arrow-right") {
+        stroke("M5 12h14")
+        stroke("m12 5 7 7-7 7")
+    }
+
+    /**
      * Lucide `ban.svg`：清除「被调用时指定的模型」（用户 2026-10-31 要的那个 🚫）。
      *
      * 形状就是"圆 + 左上到右下一条对角线，两端落在圆上"：圆心 (12,12)、半径 10，

@@ -740,13 +740,14 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
 
 /// 重试 / 续话：前缀重发（0.15h / D185）。
 ///
-/// 配置与 [`nmoi_turn_run_json`] 是**同一份**（同一个 `parse_config`），多三个字段：
+/// 配置与 [`nmoi_turn_run_json`] 是**同一份**（同一个 `parse_config`），多四个字段：
 ///
 /// - `up_to`（必填）：发出去的最后一条消息 id（含）。用户消息重试就是它自己，
 ///   助手消息重试是它**之前**那条，续话是段内最后一条。
 /// - `target`（可选）：结果落成哪条助手消息的新版本。给了就落版本；不给就追加一条新的
 ///   （只有"那条消息下面本来没有助手消息"时才该这么用）。
 /// - `allow_new_version`（可选，默认 `true`）：关着时覆盖那一版，不新增。
+/// - `append`（可选，默认 `false`）：**续话**（D193）——落库的正文接在 `target` 现在的正文后面。
 ///
 /// 出参：`{text, reasoning, target, appended, rounds, tool_calls, finished}`
 ///
@@ -777,6 +778,8 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             .get("allow_new_version")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // 续话（D193）：`true` = 落库的正文接在原正文后面；默认 `false` = 重试（整段换掉）。
+        let append = root.get("append").and_then(Value::as_bool).unwrap_or(false);
 
         let (_registration, cancel) = Registration::new(&input.session.to_string())?;
         let mut storage = Storage::attach(storage_path(input.storage)?)
@@ -866,6 +869,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             input.session,
             &up_to,
             target.as_ref(),
+            append,
             &registry,
             &policy,
             workspace.as_ref(),

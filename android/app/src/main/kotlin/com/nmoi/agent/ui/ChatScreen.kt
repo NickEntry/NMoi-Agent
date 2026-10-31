@@ -442,7 +442,7 @@ internal fun ChatScreen(
      * 所以真会话里目前只有一段；等线能插了，core 会用 `NotInWindow` 把跨段的请求顶回来
      * （不泄漏别的段），界面上再补"这条是这段的第一条"那种前置判断。
      */
-    val runRegen: (String, String, String?) -> Unit = { sid, upTo, target ->
+    val runRegen: (String, String, String?, Boolean) -> Unit = { sid, upTo, target, append ->
         scope.launch {
             busy = true
             waiting = true
@@ -458,6 +458,7 @@ internal fun ChatScreen(
                 target = target,
                 // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
                 allowNewVersion = AppSettings.allowNewVersion(context),
+                append = append,
             )
             runningSession = null
             GeneratingTracker.mark(sid, false)
@@ -465,8 +466,12 @@ internal fun ChatScreen(
             busy = false
             reloadKey += 1
             result.fold(
-                onSuccess = { outcome -> notice = "重试：${outcome.describe()}" },
-                onFailure = { error -> notice = "重试失败：${error.message}" },
+                onSuccess = { outcome ->
+                    notice = (if (append) "续话：" else "重试：") + outcome.describe()
+                },
+                onFailure = { error ->
+                    notice = (if (append) "续话失败：" else "重试失败：") + error.message
+                },
             )
         }
     }
@@ -482,11 +487,31 @@ internal fun ChatScreen(
             message.isUser -> {
                 // 用户消息重试：这一句自己就是最后一条发出去的东西。
                 val reply = allMessages.getOrNull(index + 1)?.takeIf { !it.isUser }
-                runRegen(sid, message.id, reply?.id)
+                runRegen(sid, message.id, reply?.id, false)
             }
 
             index == 0 -> notice = "这条是这段的第一条，前面没有可重发的内容"
-            else -> runRegen(sid, allMessages[index - 1].id, message.id)
+            else -> runRegen(sid, allMessages[index - 1].id, message.id, false)
+        }
+    }
+
+    /**
+     * 续话（D193）：把这一段再发一次，让模型**接着往下写**。
+     *
+     * - 最后一条是助手消息：`upTo` 与 `target` 都是它，正文接在原正文后面，落成新版本
+     *   （切回上一版能看见接之前的样子）。
+     * - 最后一条是用户消息：照常落一条新的助手消息。
+     *
+     * 只在"列表里最后一条可重试的消息"上给这一项——续话问的是"现在聊到哪儿了"，
+     * 挂在中间某条上会让模型把后面的话再写一遍。
+     */
+    val continueTurn: (ChatMessage) -> Unit = { message ->
+        val sid = sessionId
+        when {
+            busy -> notice = "上一轮还没结束（要打断就先点停止）"
+            sid == null -> notice = "这条会话还没落库，没法接着说"
+            message.isUser -> runRegen(sid, message.id, null, false)
+            else -> runRegen(sid, message.id, message.id, true)
         }
     }
 
@@ -869,6 +894,20 @@ internal fun ChatScreen(
                             label = if (shown.isUser) "重试这条之后" else "重试这一轮",
                             icon = ActionIcons.RotateCcw,
                             onClick = { retryTurn(shown) },
+                        )
+                    },
+                    // 续话（D193）：只挂在**列表里最后一条**可重试的消息上。
+                    // 挂在中间那条上，模型会把后面已经说过的话再写一遍。
+                    continueItem = if (
+                        sessionId == null || !shown.canRetry ||
+                        allMessages.lastOrNull { it.canRetry }?.id != shown.id
+                    ) {
+                        null
+                    } else {
+                        SheetItem(
+                            label = if (shown.isUser) "续话（让它回一条）" else "续话（接着往下写）",
+                            icon = ActionIcons.ArrowRight,
+                            onClick = { continueTurn(shown) },
                         )
                     },
                     onShare = {
@@ -2421,6 +2460,8 @@ private fun messageSheetItems(
     message: ChatMessage,
     /** 重试（0.15h）。`null` = 这一条现在没有可重发的东西（比如会话还没落库）。 */
     retryItem: SheetItem? = null,
+    /** 续话（D193）。只有列表里最后一条可重试的消息才有。 */
+    continueItem: SheetItem? = null,
     onShare: () -> Unit,
     onSelectOnly: () -> Unit,
     onSaveVersion: () -> Unit,
@@ -2431,8 +2472,8 @@ private fun messageSheetItems(
     onDeleteAll: () -> Unit,
 ): List<SheetItem> {
     val items = mutableListOf(
-        // 重试排在最前：它是对这一条最常见的动作，也是唯一会真的再发一次请求的。
-        *listOfNotNull(retryItem).toTypedArray(),
+        // 重试 / 续话排在最前：它们是对这一条最常见的动作，也是仅有的两条会真的再发请求的。
+        *listOfNotNull(retryItem, continueItem).toTypedArray(),
         SheetItem(
             label = "编辑",
             icon = ActionIcons.Pencil,

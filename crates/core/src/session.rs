@@ -553,6 +553,28 @@ pub struct RegenerateOutcome {
     pub appended: Option<UnitId>,
 }
 
+/// 把续文接到原正文后面（续话，D193）。
+///
+/// 三条规矩，都是为了"别把一句话劈成两句"：
+/// - 原文以空白/换行结尾、或续文以空白开头 → 直接接（那边已经把分隔管好了）；
+/// - 两侧都是非 ASCII（中文与中文标点）→ 直接接，中文不加空格；
+/// - 其余情况加一个空格：英文断在词中间只能认了，加一个空格比连成一个怪词好。
+fn join_continuation(before: &str, next: &str) -> String {
+    if before.is_empty() {
+        return next.to_string();
+    }
+    if next.is_empty() {
+        return before.to_string();
+    }
+    let glue = match (before.chars().last(), next.chars().next()) {
+        (Some(last), _) if last.is_whitespace() => "",
+        (_, Some(first)) if first.is_whitespace() => "",
+        (Some(last), Some(first)) if !last.is_ascii() && !first.is_ascii() => "",
+        _ => " ",
+    };
+    format!("{before}{glue}{next}")
+}
+
 /// 重试 / 续话：**前缀重发**（D185）。
 ///
 /// `up_to` 是发出去的最后一条消息（含）：
@@ -576,6 +598,10 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     session: SessionId,
     up_to: &MessageId,
     target: Option<&MessageId>,
+    // 续话（D193）：`true` 时落库的正文是"那条消息现在的正文 + 这次的续文"。
+    // 仍然走版本落点：旧那版留着，切回 <1/2> 就能看见接之前长什么样；
+    // 原地改写会把前一段正文毁掉，而续话的用途恰好是"接上"。
+    append: bool,
     registry: &ToolRegistry,
     policy: &AssistantPolicy,
     workspace: Option<&Workspace>,
@@ -643,13 +669,26 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 
     let appended = match target {
         Some(target) => {
+            // 续话：正文 = 原正文 + 续文。位置取的是**屏幕上那一份**（`content`），
+            // 不是某一版的原文——用户接的是他看见的那一段。
+            let text = if append {
+                let before = units_all
+                    .iter()
+                    .flat_map(|unit| unit.messages.iter())
+                    .find(|message| &message.id == target)
+                    .map(|message| message.content.as_str())
+                    .unwrap_or_default();
+                join_continuation(before, &report.text)
+            } else {
+                report.text.clone()
+            };
             if config.allow_new_version {
                 store
-                    .save_generated_version(target, &report.text)
+                    .save_generated_version(target, &text)
                     .map_err(SessionError::Save)?;
             } else {
                 store
-                    .overwrite_message_text(target, &report.text)
+                    .overwrite_message_text(target, &text)
                     .map_err(SessionError::Save)?;
             }
             None
@@ -1091,6 +1130,7 @@ mod tests {
             session,
             &user.id,
             Some(&first_answer.id),
+            false,
             &registry,
             &policy,
             Some(&workspace),
@@ -1115,6 +1155,84 @@ mod tests {
         assert_eq!(landed.len(), 1, "{landed:?}");
         assert_eq!(landed[0].0, first_answer.id);
         assert_eq!(landed[0].1, "新的回答");
+    }
+
+    /// 续话的拼接规则（D193）：中文直接接、英文之间留一个空格、换行不重复、空的那一侧原样。
+    #[test]
+    fn join_continuation_keeps_the_seam_natural() {
+        assert_eq!(
+            join_continuation("旧的回答：好的", "新的回答"),
+            "旧的回答：好的新的回答"
+        );
+        assert_eq!(join_continuation("the answer is", "42"), "the answer is 42");
+        assert_eq!(join_continuation("line\n", "next"), "line\nnext");
+        assert_eq!(join_continuation("", "只有后半段"), "只有后半段");
+    }
+
+    /// D193：续话 = 原正文 + 续文，落成**新版本**（旧那版留着，切回去能看见接之前的样子）。
+    #[test]
+    fn continue_merges_the_new_text_into_a_new_version() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = EditStore::default();
+
+        let user = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "讲个长故事",
+            3,
+            1,
+            LogicalClock::new(1),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(user.clone()).unwrap())
+            .unwrap();
+        let first_answer = Message::text(
+            MessageId::new(session, 2),
+            Role::Assistant,
+            SourceTag::History,
+            "从前有座山",
+            5,
+            2,
+            LogicalClock::new(2),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(first_answer.clone()).unwrap())
+            .unwrap();
+
+        let reply = r#"{"choices":[{"message":{"content":"山里有座庙"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport);
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+
+        // 续话：前缀一直发到最后那条助手消息，结果接在它自己身上。
+        let outcome = regenerate_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            &first_answer.id,
+            Some(&first_answer.id),
+            true,
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            3_000,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.text, "山里有座庙", "续回来的只是后半段");
+        let landed = store.generated.lock().unwrap().clone();
+        assert_eq!(landed.len(), 1, "{landed:?}");
+        assert_eq!(landed[0].0, first_answer.id);
+        assert_eq!(
+            landed[0].1, "从前有座山山里有座庙",
+            "落库的应该是接好的全文，不是只有后半段"
+        );
     }
 
     /// 目标不在当前窗口里：宁可明说"这一段里没有它"，也不悄悄从第一段开始重发。
@@ -1142,6 +1260,7 @@ mod tests {
             session,
             &stray,
             None,
+            false,
             &registry,
             &policy,
             Some(&workspace),
