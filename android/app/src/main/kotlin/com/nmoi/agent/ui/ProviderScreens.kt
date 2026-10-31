@@ -1067,6 +1067,47 @@ private fun ModelEditPage(
     // 返回键先关这一层（后注册者优先，轮不到页面栈那条）。
     BackHandler(enabled = true) { onClose() }
 
+    // 保存（页顶右上角那个 ＋ / ✓）。校验与落点都在这儿，别在按钮里再写一遍。
+    val save: () -> Unit = {
+        val cleanId = id.trim()
+        val tokens = maxTokens.trim()
+        val heat = temperature.trim()
+        val parsedTokens = if (tokens.isEmpty()) null else tokens.toIntOrNull()
+        val parsedHeat = if (heat.isEmpty()) null else heat.toDoubleOrNull()
+        val window = contextWindow.trim()
+        val parsedWindow = if (window.isEmpty()) null else window.toIntOrNull()
+        when {
+            cleanId.isEmpty() -> error = "模型 ID 不能是空的"
+            siblings.any { it == cleanId } -> error = "这个供应商下已经有「$cleanId」了"
+
+            window.isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) -> {
+                tab = 0
+                error = "上下文窗口要填正整数"
+            }
+
+            tokens.isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) -> {
+                tab = 1
+                error = "最大输出要填正整数"
+            }
+
+            heat.isNotEmpty() && (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) -> {
+                tab = 1
+                error = "温度是 0 到 2 之间的小数"
+            }
+
+            else -> onSave(
+                ProviderModel(
+                    id = cleanId,
+                    name = name.trim(),
+                    kind = kind,
+                    contextWindow = parsedWindow,
+                    maxTokens = parsedTokens,
+                    temperature = parsedHeat,
+                ),
+            )
+        }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
@@ -1079,6 +1120,13 @@ private fun ModelEditPage(
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
+                )
+                // 添加 = ＋、编辑 = ✓（用户 2026-10-31 给的图）。
+                // 两个动作都是"提交这一页"，只是图标不同——**不写文字**，但读屏要能念出来。
+                IconActionButton(
+                    image = if (draft.existing) ActionIcons.Check else ActionIcons.Plus,
+                    description = if (draft.existing) "保存这个模型" else "添加这个模型",
+                    onClick = save,
                 )
             }
 
@@ -1185,53 +1233,6 @@ private fun ModelEditPage(
                         )
                     }
                 }
-
-                PrimaryButton(
-                    label = "保存",
-                    enabled = true,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    onClick = {
-                        val cleanId = id.trim()
-                        val tokens = maxTokens.trim()
-                        val heat = temperature.trim()
-                        val parsedTokens = if (tokens.isEmpty()) null else tokens.toIntOrNull()
-                        val parsedHeat = if (heat.isEmpty()) null else heat.toDoubleOrNull()
-                        val window = contextWindow.trim()
-                        val parsedWindow = if (window.isEmpty()) null else window.toIntOrNull()
-                        when {
-                            cleanId.isEmpty() -> error = "模型 ID 不能是空的"
-                            siblings.any { it == cleanId } ->
-                                error = "这个供应商下已经有「$cleanId」了"
-
-                            window.isNotEmpty() && (parsedWindow == null || parsedWindow <= 0) -> {
-                                tab = 0
-                                error = "上下文窗口要填正整数"
-                            }
-
-                            tokens.isNotEmpty() && (parsedTokens == null || parsedTokens <= 0) -> {
-                                tab = 1
-                                error = "最大输出要填正整数"
-                            }
-
-                            heat.isNotEmpty() &&
-                                (parsedHeat == null || parsedHeat < 0.0 || parsedHeat > 2.0) -> {
-                                tab = 1
-                                error = "温度是 0 到 2 之间的小数"
-                            }
-
-                            else -> onSave(
-                                ProviderModel(
-                                    id = cleanId,
-                                    name = name.trim(),
-                                    kind = kind,
-                                    contextWindow = parsedWindow,
-                                    maxTokens = parsedTokens,
-                                    temperature = parsedHeat,
-                                ),
-                            )
-                        }
-                    },
-                )
 
                 if (draft.existing) {
                     // 删的是"这一行配置"（id + 参数），不碰别的模型、不碰供应商。
