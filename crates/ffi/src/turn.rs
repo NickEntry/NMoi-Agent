@@ -73,6 +73,81 @@ fn registry_lock() -> MutexGuard<'static, BTreeMap<String, Arc<AtomicBool>>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// 这一轮**正在说的话**（0.15n）。和取消标志分开一张表：
+/// 那张表只放 `Arc<AtomicBool>`，混进来的话每处都要多解一层。
+///
+/// 上限 deliberately 粗：一轮正文最多留 50 000 字（再多也不是"边写边看"了），
+/// 取出时再截到**尾部 8 KiB**——界面要的是"现在写到哪儿"，不是整篇。
+fn partials() -> &'static Mutex<BTreeMap<String, PartialText>> {
+    static TABLE: OnceLock<Mutex<BTreeMap<String, PartialText>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn partials_lock() -> MutexGuard<'static, BTreeMap<String, PartialText>> {
+    partials()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 一轮正在生成的正文/思考（尾部）。`text_len` 是**总量**，界面用它判断有没有被截。
+#[derive(Debug, Default, Clone)]
+struct PartialText {
+    text: String,
+    reasoning: String,
+}
+
+const PARTIAL_KEEP: usize = 50_000;
+const PARTIAL_TAIL: usize = 8_192;
+
+fn partial_reset(session: &str) {
+    partials_lock().remove(session);
+}
+
+fn partial_append(session: &str, text: &str, reasoning: &str) {
+    if text.is_empty() && reasoning.is_empty() {
+        return;
+    }
+    let mut table = partials_lock();
+    let slot = table.entry(session.to_string()).or_default();
+    slot.text.push_str(text);
+    slot.reasoning.push_str(reasoning);
+    // 太长就砍头：留着后面那截，界面反正只看尾部。
+    for buffer in [&mut slot.text, &mut slot.reasoning] {
+        if buffer.len() > PARTIAL_KEEP {
+            let mut cut = buffer.len() - PARTIAL_KEEP;
+            while cut < buffer.len() && !buffer.is_char_boundary(cut) {
+                cut += 1;
+            }
+            *buffer = buffer[cut..].to_string();
+        }
+    }
+}
+
+/// 尾部快照：`(text_for_ui, text_len, reasoning_for_ui, reasoning_len)`。
+fn partial_tail(session: &str) -> (String, usize, String, usize) {
+    let table = partials_lock();
+    let Some(slot) = table.get(session) else {
+        return (String::new(), 0, String::new(), 0);
+    };
+    (
+        tail(&slot.text),
+        slot.text.chars().count(),
+        tail(&slot.reasoning),
+        slot.reasoning.chars().count(),
+    )
+}
+
+fn tail(text: &str) -> String {
+    if text.len() <= PARTIAL_TAIL {
+        return text.to_string();
+    }
+    let mut cut = text.len() - PARTIAL_TAIL;
+    while cut < text.len() && !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    text[cut..].to_string()
+}
+
 #[derive(Debug)]
 struct CancelFlag(Arc<AtomicBool>);
 
@@ -91,6 +166,8 @@ struct Registration {
 
 impl Registration {
     fn new(session: &str) -> FfiResult<(Self, CancelFlag)> {
+        // 新一轮开始：把上一轮留在缓冲里的残字清掉，否则界面会先闪一下旧内容。
+        partial_reset(session);
         let mut table = registry_lock();
         if table.contains_key(session) {
             return Err(FfiError::new(
@@ -560,6 +637,13 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
     run_json(|| {
         let text = read_str(config, "config")?;
         let input = parse_config(text)?;
+        // 流式（0.15n）：默认关。开着时这一轮真的走 SSE，增量经 progress 钩子进 partial 表。
+        // `parse_config` 内部自己解析那份 JSON，`root` 在这一层没有；
+        // 为了一个布尔再解一遍不值当，但也不改 `parse_config` 的签名（它被 regen 共用）。
+        let stream = serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|root| root.get("stream").and_then(Value::as_bool))
+            .unwrap_or(false);
 
         // 顺序有讲究：先登记取消（可能因为"同一会话已有一轮"直接失败），
         // 再取出 storage——反过来的话失败路径还得把 storage 放回去。
@@ -644,7 +728,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             suppress_compression: false,
             turn: TurnConfig {
                 max_rounds: input.max_rounds,
-                stream: false,
+                stream,
                 ..TurnConfig::default()
             },
             // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
@@ -662,27 +746,45 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         // 会话记住这一轮用的模型（D101）：上下文面板靠它选词表、按模型取校准。
         // 写失败不让这一轮失败——为了一个显示用的列把用户刚说的话丢掉不值（同 D98 的校准写回）。
         let _ = storage.set_conversation_model(input.session, &input.model);
-        let turn = run_session_turn(
-            &client,
-            &request,
-            &mut storage,
-            input.session,
-            &input.user_text,
-            &registry,
-            &policy,
-            workspace.as_ref(),
-            &session_config,
-            input.now_ms,
-        )
-        .map_err(|error| match error {
-            // 过绝对线不是"失败"，是"先压再发"（D90）。给一个能分支的 code，
-            // 让 UI 不至于要在错误文案里认字符串。
-            SessionError::CompactionRequired { used, usable } => FfiError::new(
-                "compaction_required",
-                format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
-            ),
-            other => FfiError::new("turn", other.to_string()),
-        })?;
+        let session_key = input.session.to_string();
+        // 流式：把增量写进 partial 表（界面轮询 `turn_busy` 拿尾部）。
+        // 钩子是作用域内的——这一轮结束（含出错）自动撤掉，不会串到下一轮。
+        let sink: Option<nmoi_core::progress::Sink> = if stream {
+            let key = session_key.clone();
+            Some(std::rc::Rc::new(move |text: &str, reasoning: &str| {
+                partial_append(&key, text, reasoning);
+            }))
+        } else {
+            None
+        };
+
+        let mut call = || {
+            run_session_turn(
+                &client,
+                &request,
+                &mut storage,
+                input.session,
+                &input.user_text,
+                &registry,
+                &policy,
+                workspace.as_ref(),
+                &session_config,
+                input.now_ms,
+            )
+            .map_err(|error| match error {
+                // 过绝对线不是"失败"，是"先压再发"（D90）。给一个能分支的 code，
+                // 让 UI 不至于要在错误文案里认字符串。
+                SessionError::CompactionRequired { used, usable } => FfiError::new(
+                    "compaction_required",
+                    format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
+                ),
+                other => FfiError::new("turn", other.to_string()),
+            })
+        };
+        let turn = match sink {
+            Some(sink) => nmoi_core::progress::scope(sink, call)?,
+            None => call()?,
+        };
 
         // L2 校准：这一轮的真实用量反推出来的因子，落库给下一轮用（D95）。
         // 写不进去也不该让已经跑完的这一轮失败——用户的话已经落库了。
@@ -734,7 +836,18 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
             .get(session)
             .map(|flag| flag.load(Ordering::SeqCst))
             .unwrap_or(false);
-        Ok(json!({ "session": session, "running": running, "cancelled": cancelled }))
+        drop(table);
+        // 增量（0.15n）：只给**尾部**（≤8 KiB）+ 总量，界面拿它逐字画。
+        let (text, text_len, reasoning, reasoning_len) = partial_tail(session);
+        Ok(json!({
+            "session": session,
+            "running": running,
+            "cancelled": cancelled,
+            "text": text,
+            "text_len": text_len,
+            "reasoning": reasoning,
+            "reasoning_len": reasoning_len,
+        }))
     })
 }
 
@@ -1487,5 +1600,47 @@ mod tests {
         let out = read_json(nmoi_vars_validate_json(list.as_ptr()));
         assert_eq!(out["ok"], Value::Bool(true), "{out}");
         assert_eq!(out["problems"].as_array().unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod partial_tests {
+    use super::*;
+
+    #[test]
+    fn append_and_tail_keep_the_end_and_count_the_whole() {
+        let key = "partial-test-a";
+        partial_reset(key);
+        partial_append(key, "你", "");
+        partial_append(key, "好", "想");
+        let (text, len, reasoning, rlen) = partial_tail(key);
+        assert_eq!(text, "你好");
+        assert_eq!(len, 2);
+        assert_eq!(reasoning, "想");
+        assert_eq!(rlen, 1);
+
+        // 超过 8 KiB 只给尾部，但 `text_len` 是**总量**——界面靠它判断被截了没有。
+        let chunk = "字".repeat(3_000);
+        partial_append(key, &chunk, "");
+        let (tail_text, total, _, _) = partial_tail(key);
+        assert!(
+            tail_text.len() <= PARTIAL_TAIL,
+            "尾部窗口 {}B",
+            tail_text.len()
+        );
+        assert_eq!(total, 3_002);
+        assert!(tail_text.ends_with('字'), "砍掉的应该是头不是尾");
+        partial_reset(key);
+        assert_eq!(partial_tail(key), (String::new(), 0, String::new(), 0));
+    }
+
+    #[test]
+    fn opening_a_turn_clears_the_previous_leftovers() {
+        let key = "partial-test-b";
+        partial_append(key, "上一轮留下的", "");
+        // `Registration::new` 里会 reset，这里直接验那个函数的行为。
+        partial_reset(key);
+        let (text, len, _, _) = partial_tail(key);
+        assert!(text.is_empty() && len == 0);
     }
 }

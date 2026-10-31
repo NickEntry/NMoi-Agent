@@ -4557,3 +4557,20 @@ D185 说"续话＝合并进最新助手消息（追加到正文）"。实现时�
 
 **还没做的**（下一步）：FFI 装钩子把增量写进会话表、`turn_busy` 带出尾部增量、界面轮询逐字画。
 FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 + `progress::scope` 包住调用）。
+
+## D197 0.15n 第二层第二步：FFI 的增量通道（2026-10-31）
+
+`nmoi_turn_run_json` 现在认一个 `stream`（默认 `false`）：为真时这一轮真的走 SSE，
+增量经 `nmoi_core::progress::scope` 写进 FFI 自己的 `partial` 表。
+
+1. **两张表分开**：取消标志那张只放 `Arc<AtomicBool>`；增量另起一张 `session → PartialText`。
+   混在一起每处都要多解一层，而且两件东西的生命周期不同（取消是即时标志，增量是缓冲）。
+2. **每轮开始清一次**（`Registration::new` 里 reset）：不清的话界面会先闪一下上一轮的残字。
+3. **上限**：正文最多留 5 万字，取出时给**尾部 8 KiB**；`text_len` / `reasoning_len` 是**总量**，
+   界面靠它判断"我看到的只是尾巴"。这不是省内存，是省每 100 ms 一次的跨语言拷贝。
+4. **钩子在作用域内**：`progress::scope` 结束（含出错）自动撤掉，不会串到下一轮。
+5. `nmoi_turn_busy_json` 多四个字段：`text` / `text_len` / `reasoning` / `reasoning_len`。
+   没在流式的一轮里这几个是空的——老调用方读到空串，行为不变。
+
+**今天还看不到效果**：界面还没传 `stream`（`TurnRepository` 里那一步是下一层）。
+两条新测试只保证缓冲自己的规矩：追加/尾部/总量/清理。
