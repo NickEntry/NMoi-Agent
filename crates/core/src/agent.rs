@@ -203,8 +203,25 @@ pub fn run_turn<T: Transport>(
             let collected = stream
                 .collect_all(crate::progress::emit)
                 .map_err(|error| AgentError::Model(error.to_string()))?;
-            interrupted = collected.interrupted.is_some();
-            collected.completion
+            // 端点不认 `stream`（回了一段普通 JSON / 干脆没回）→ 一个字都没收到、流就断了。
+            // 这时候退回**非流式**重发这一轮一次：不这么做，"端点不支持流式"就变成"回答是空的"。
+            //
+            // 只有**一个字都没有**才退回：已经收到过正文的话，重发会把两段拼成一条不存在的回答（D40）。
+            if collected.interrupted.is_some() && collected.completion.text.trim().is_empty() {
+                let mut plain = request.clone();
+                plain.stream = false;
+                match retry {
+                    Some(policy) => client
+                        .complete_retrying(&plain, policy, cancel)
+                        .map_err(|error| AgentError::Model(error.to_string()))?,
+                    None => client
+                        .complete(&plain)
+                        .map_err(|error| AgentError::Model(error.to_string()))?,
+                }
+            } else {
+                interrupted = collected.interrupted.is_some();
+                collected.completion
+            }
         } else {
             match retry {
                 Some(policy) => client
@@ -534,6 +551,49 @@ mod tests {
         // 第二次请求里带着工具结果
         let requests = transport.requests();
         assert!(requests[1].contains("第一行"), "{}", requests[1]);
+    }
+
+    /// 端点不认 `stream`（回了一段普通 JSON）：退回非流式重发一次，别把回答变成空的。
+    #[test]
+    fn a_stream_that_yields_nothing_falls_back_to_plain_completion() {
+        let (_dir, workspace, policy) = setup();
+        // 第一次：请求是流式的，对面却回了一个普通 JSON（没有 data: 帧）；
+        // 第二次（退回非流式）：正常的整段回复。
+        let transport = Scripted::new(vec![
+            r#"{"choices":[{"message":{"content":"这不是流"}}]}"#.to_string(),
+            text_body("退回之后拿到的回答"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+        let config = TurnConfig {
+            stream: true,
+            ..TurnConfig::default()
+        };
+
+        let report = run_turn(
+            &client,
+            &base_request(),
+            &history(),
+            &registry,
+            &ctx,
+            &config,
+            &NeverCancel,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.text, "退回之后拿到的回答",
+            "不能因为对流就拿到空回答"
+        );
+        assert!(report.finished, "退回之后这一轮是正常收尾");
+        assert_eq!(transport.requests().len(), 2, "应当正好重发一次");
+        assert!(
+            !transport.requests()[1].contains("\"stream\":true"),
+            "第二次要是非流式：{}",
+            transport.requests()[1]
+        );
     }
 
     /// 流式（0.15n）：增量**边收边交出去**，最终正文与"整段"那条路一致。
