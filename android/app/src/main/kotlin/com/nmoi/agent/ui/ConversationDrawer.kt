@@ -486,8 +486,7 @@ private fun DrawerPanel(
     }
 
     // 置顶在前（按置顶顺序），其余保持原顺序（updated_at 倒序）。
-    // **算在 LazyColumn 外面**：它的内容 lambda 不是 @Composable，里面不能调 `remember`
-    // （CI 上就是这么红的：`@Composable invocations can only happen from ...`）。
+    // **算在 LazyColumn 外面**：它的内容 lambda 不是 @Composable，里面不能调 `remember`。
     // 现在更靠外：浮层是 Column 的兄弟，也要读这份顺序（多选的"置顶"按它算）。
     val ordered = remember(rows, pinnedIds) {
         if (pinnedIds.isEmpty()) {
@@ -499,55 +498,221 @@ private fun DrawerPanel(
     }
     val chosenNow = ConversationSelection.rowsInOrder(ordered, selectedIds)
 
-    // 浮层（动作菜单 / 改名 / 删除确认 / 移动）是**这一层的兄弟**，不是 Column 的孩子：
-    // 放进 Column 里，`fillMaxSize` 只拿到剩余高度，遮罩只盖下半屏；
-    // 更糟的是它会把带 `weight(1f)` 的列表挤成 0 高——真机上就是"删除时列表整片消失"。
+    // 浮层是这一层的**兄弟**，不是 Column 的孩子：放进 Column 里，
+    // `fillMaxSize` 只拿到剩余高度（遮罩只盖下半屏），还会把带 `weight(1f)` 的列表挤成 0 高。
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            if (selecting) {
-                // 选择时整块顶栏只回答一件事：勾了几条、还能不能全选、怎么退出去。
-                // 用户块与搜索在这一层没有用处，留着只会把"已选 N 项"挤成一行小字。
-                SelectionBar(
-                    count = selectedIds.size,
-                    allSelected = rows.isNotEmpty() && rows.all { it.id in selectedIds },
-                    onToggleAll = { selectedIds = ConversationSelection.toggleAll(rows, selectedIds) },
-                    onClose = {
-                        selecting = false
-                        selectedIds = emptySet()
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (selecting) {
+            // 选择时整块顶栏只回答一件事：勾了几条、还能不能全选、怎么退出去。
+            // 用户块与搜索在这一层没有用处，留着只会把"已选 N 项"挤成一行小字。
+            SelectionBar(
+                count = selectedIds.size,
+                allSelected = rows.isNotEmpty() && rows.all { it.id in selectedIds },
+                onToggleAll = { selectedIds = ConversationSelection.toggleAll(rows, selectedIds) },
+                onClose = {
+                    selecting = false
+                    selectedIds = emptySet()
+                },
+            )
+        } else {
+            // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 44.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DrawerAvatar(label = "我", size = 40.dp, mine = true)
+                Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+                    Text(
+                        text = USER_NAME,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        modifier = Modifier.clickable { onHint("编辑用户名字/头像待接：要头像存储与编辑对话框（D140）") },
+                    )
+                    Text(
+                        text = greeting(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+
+            // —— 搜索：两态，在框上向右滑切换 ——
+            SearchPill(
+                searchAll = searchAll,
+                onSwitchToAll = { searchAll = true },
+                onHint = { onHint("搜索待接：storage 还没有 search 动词（P4 / P10）") },
+            )
+        }
+
+        // —— 会话列表（新对话在最上面）——
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            if (rows.isEmpty()) {
+                item {
+                    Text(
+                        text = "还没有会话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
+
+            items(ordered) { row ->
+                // 当前行按 **id** 高亮，不按标题：两个会话重名是常事。
+                val current = currentId != null && row.id == currentId
+                Surface(
+                    color = if (current) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        Color.Transparent
                     },
-                )
-            } else {
-                // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 44.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 1.dp)
+                        // 点 = 打开；长按 = 这一条会话的更多动作。
+                        // 多选时点 = 勾选，长按不再弹菜单（同一条手势不能有两种意思）。
+                        .combinedClickable(
+                            onClick = {
+                                if (selecting) {
+                                    selectedIds = ConversationSelection.toggle(selectedIds, row.id)
+                                } else {
+                                    onOpenConversation(row)
+                                }
+                            },
+                            onLongClick = { if (!selecting) actionTarget = row },
+                        ),
                 ) {
-                    DrawerAvatar(label = "我", size = 40.dp, mine = true)
-                    Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (selecting) {
+                            SelectBox(checked = row.id in selectedIds)
+                            Spacer(Modifier.width(10.dp))
+                        }
                         Text(
-                            text = USER_NAME,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            text = row.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (current) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
                             maxLines = 1,
-                            modifier = Modifier.clickable { onHint("编辑用户名字/头像待接：要头像存储与编辑对话框（D140）") },
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
-                        Text(
-                            text = greeting(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
+                        // 正在跑：先于「草稿」显示——它是"这一行此刻在动"，比"有半句话"更该先看见。
+                        if (row.id in runningIds) {
+                            Text(
+                                text = "生成中",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (current) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.tertiary
+                                },
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                        // 草稿标记（0.15b）：这一行里还留着没发出去的字。
+                        if (drafts[row.id]?.isNotBlank() == true) {
+                            Text(
+                                text = "草稿",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (current) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
                     }
                 }
+            }
+        }
 
-                // —— 搜索：两态，在框上向右滑切换 ——
-                SearchPill(
-                    searchAll = searchAll,
-                    onSwitchToAll = { searchAll = true },
-                    onHint = { onHint("搜索待接：storage 还没有 search 动词（P4 / P10）") },
+        // —— 提示行（点搜索/助手头像这类"还没接"的地方，原因写在这里）——
+        val currentHint = hint ?: notice
+        if (currentHint != null) {
+            Text(
+                text = currentHint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        // —— 选择时底部换成动作条：这三件事都是"对勾中的那几条做" ——
+        if (selecting) {
+            BulkActionBar(
+                count = selectedIds.size,
+                pinLabel = if (ConversationSelection.allPinned(pinnedIds, chosenNow)) "取消置顶" else "置顶",
+                canMove = assistants.size > 1,
+                onPin = {
+                    onPinMany(chosenNow)
+                    selecting = false
+                    selectedIds = emptySet()
+                },
+                onMove = { bulkMoveOpen = true },
+                onDelete = { bulkDeleteOpen = true },
+                onMoveBlocked = { onHint("还没有别的助手：先用「新建助手」建一个") },
+            )
+        } else {
+            // —— 底部：助手切换 + 设置 ——
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 点头像 = 助手设置（待接）；点名字/箭头 = 助手列表。
+                Row(
+                    modifier = Modifier
+                        .clickable { onOpenAssistantMenu() }
+                        .padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                        Box(
+                            modifier = Modifier.clickable {
+                                onHint("改助手的名字要等助手页（P3.6）；现在能在聊天页顶部换模型")
+                            },
+                        ) {
+                            DrawerAvatar(
+                                label = activeAssistant.name.take(1).ifBlank { "助" },
+                                size = 30.dp,
+                                mine = false,
+                            )
+                        }
+                        Text(
+                            text = activeAssistant.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                    Icon(
+                        imageVector = ActionIcons.ChevronDown,
+                        contentDescription = "切换助手",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                // 设置图标是**自绘**的齿轮（D139），不用参考图里那个。
+                IconActionButton(
+                    image = ActionIcons.GearSelf,
+                    description = "设置",
+                    onClick = onOpenSettings,
+                    compact = true,
                 )
             }
         }
+    }
 
         // —— 长按一条会话：动作菜单（0.15d）——
         //
@@ -672,6 +837,7 @@ private fun DrawerPanel(
 
         // —— 多选：移动 / 删除（0.15d）——
         // 两个都先确认再写：一次动好几条，误触的代价比单个动作大得多。
+
         if (bulkMoveOpen) {
             val others = assistants.filter { it.id != activeAssistant.id }
             val items = if (others.isEmpty()) {

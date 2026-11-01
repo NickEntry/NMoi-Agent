@@ -5070,3 +5070,13 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Kotlin 单测新增四条模态用例
 （完整清单 / 明确不收图 / 输出模态 / 已填不覆盖），由 CI 的 `testDebugUnitTest` 跑。
 真机路径见 `docs/verification.md` **V43**。
+
+### D209 补丁：抽屉列表被搬丢了（2026-11-02 真机截图）
+
+上一版把浮层从 `Column` 挪出去时，用非贪婪正则切"置顶排序"那一段，切到了后面第一个
+`        }`——中间的 `LazyColumn`、提示行、底部助手行一起被删。括号是平衡的，
+`kotlinc` 全量类型检查一声不吭，真机上就是"抽屉只剩顶部一片白"。
+
+这一版从 `7039570` 的抽屉文件恢复，再按**成对标记**搬浮层：
+`Box { Column { 顶部 / 列表 / 提示行 / 底部栏 } 浮层 }`。
+判据：`grep -c "LazyColumn"` ≥ 2（import + 使用），且四个块都在 Column 里、浮层在 Column 外。
