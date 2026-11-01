@@ -140,13 +140,15 @@ internal object TurnRepository {
         }
         val provider = ProviderRepository.load(databasePath, assistant.providerId)
             .getOrElse { return@withContext Result.failure(it) }
-        val model = provider.models.firstOrNull { it.id == assistant.modelId } ?: provider.model
+        // **不回退**（用户 2026-11-01 定的）：助手指着的那个模型不在了，就报错。
+        //
+        // 以前这里是 `?: provider.model`，也就是"悄悄换成本供应商的第一个模型"——
+        // 用户看到的是"未选择模型"，发出去的却是别人的请求；那种错花的是他的钱，
+        // 而且他没有任何办法发现。宁可发不出去。
+        val model = provider.models.firstOrNull { it.id == assistant.modelId }
         if (model == null) {
             return@withContext Result.failure(
-                NmoiFfiException(
-                    "no_model",
-                    "「${provider.name.ifBlank { provider.id }}」里没有模型 ${assistant.modelId}",
-                ),
+                NmoiFfiException("no_model", "未选择模型，无法发送消息"),
             )
         }
         val temperature = assistant.temperature ?: model.temperature

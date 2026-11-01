@@ -1490,7 +1490,9 @@ private fun ModelEditPage(
     var defaultEffort by remember { mutableStateOf(base.defaultEffort) }
     var headers by remember { mutableStateOf(base.headers) }
     var bodyRows by remember { mutableStateOf(base.bodyFields) }
-    var imageUrl by remember { mutableStateOf(base.remoteImageUrl) }
+    // **三态**：`null` = 没动过。用 Boolean 会在每次保存时凭空写出一个 false，
+    // 徽标于是永远显示「自定义」——那不是用户改的。
+    var remoteImages by remember { mutableStateOf(base.sendRemoteImages) }
     var builtinTools by remember { mutableStateOf(base.builtinTools) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -1521,7 +1523,7 @@ private fun ModelEditPage(
         defaultEffort = defaultEffort,
         headers = headers.filter { it.name.isNotBlank() },
         bodyFields = bodyRows.filter { it.name.isNotBlank() },
-        remoteImageUrl = imageUrl.trim(),
+        sendRemoteImages = remoteImages,
         builtinTools = builtinTools,
     )
 
@@ -1557,7 +1559,7 @@ private fun ModelEditPage(
             ModelField.DEFAULT_EFFORT -> defaultEffort = base.defaultEffort
             ModelField.HEADERS -> headers = base.headers
             ModelField.BODY -> bodyRows = base.bodyFields
-            ModelField.REMOTE_IMAGE -> imageUrl = base.remoteImageUrl
+            ModelField.REMOTE_IMAGES -> remoteImages = base.sendRemoteImages == true
             ModelField.BUILTIN_TOOLS -> builtinTools = base.builtinTools
         }
     }
@@ -2008,15 +2010,30 @@ private fun ModelEditPage(
                         }
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
-                            ModelFieldHead("远程图片链接", source(ModelField.REMOTE_IMAGE), dirty(ModelField.REMOTE_IMAGE), top = true) { reset(ModelField.REMOTE_IMAGE) }
-                            ProviderField(
-                                value = imageUrl,
-                                onChange = { imageUrl = it },
-                                placeholder = "https://…/icon.png",
-                                keyboard = KeyboardType.Uri,
-                                modifier = Modifier.padding(horizontal = 8.dp),
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                SectionLabel("远程图片链接", modifier = Modifier.weight(1f))
+                                SourceBadge(source(ModelField.REMOTE_IMAGES))
+                                if (dirty(ModelField.REMOTE_IMAGES)) {
+                                    IconActionButton(
+                                        image = ActionIcons.RotateCcw,
+                                        description = "把「远程图片链接」改回保存前那一份",
+                                        compact = true,
+                                        onClick = { reset(ModelField.REMOTE_IMAGES) },
+                                    )
+                                }
+                                Spacer(Modifier.size(8.dp))
+                                androidx.compose.material3.Switch(
+                                    checked = remoteImages == true,
+                                    onCheckedChange = { remoteImages = it },
+                                )
+                            }
+                            Hint(
+                                "直接发送 http(s) 图片链接；关闭后丢弃远程链接，只发送本地图片。" +
+                                    "（图片附件这条路还没接上，这一项现在是先记下来。）",
                             )
-                            Hint("**还没有读取点**：界面上没有哪一处画它。等你说「图标走链接」时再接。")
                         }
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {

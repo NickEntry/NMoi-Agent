@@ -98,8 +98,13 @@ internal data class ProviderModel(
      * （见 `decodeBodyRows`）：形状变了，数据不丢。
      */
     val bodyFields: List<BodyRow> = emptyList(),
-    /** 远程图片链接（模型的示意图/图标）。 */
-    val remoteImageUrl: String = "",
+    /**
+     * 要不要把 http(s) 图片链接**原样发给上游**（用户 2026-11-01：这是个开关）。
+     *
+     * 开 = 远程链接直接发过去，由对方去取；关 = 丢掉远程链接，只发本地图片。
+     * 三态里 `null` 仍然是"没数据"，界面上一律按"关"显示——一个开关不该有第三种形态。
+     */
+    val sendRemoteImages: Boolean? = null,
     /** 允许模型用供应商侧的**内置工具**（联网搜索那类）。三态，理由同 [tools]。 */
     val builtinTools: Boolean? = null,
 ) {
@@ -442,9 +447,7 @@ internal object ProviderRepository {
                 },
             )
         }
-        if (model.remoteImageUrl.isNotBlank()) {
-            put(ModelField.REMOTE_IMAGE, model.remoteImageUrl.trim())
-        }
+        model.sendRemoteImages?.let { put(ModelField.REMOTE_IMAGES, it) }
         model.builtinTools?.let { put(ModelField.BUILTIN_TOOLS, it) }
     }
 
@@ -476,7 +479,7 @@ internal object ProviderRepository {
             defaultEffort = row.optString(ModelField.DEFAULT_EFFORT, "").trim(),
             headers = headerRows(row.optJSONArray(ModelField.HEADERS)),
             bodyFields = decodeBodyRows(row),
-            remoteImageUrl = row.optString(ModelField.REMOTE_IMAGE, "").trim(),
+            sendRemoteImages = boolOrNull(row, ModelField.REMOTE_IMAGES),
             builtinTools = boolOrNull(row, ModelField.BUILTIN_TOOLS),
         )
     }

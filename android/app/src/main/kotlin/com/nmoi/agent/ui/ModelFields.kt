@@ -48,7 +48,11 @@ internal object ModelField {
     // 高级页
     const val HEADERS = "headers"
     const val BODY = "body"
-    const val REMOTE_IMAGE = "remote_image"
+    /**
+     * 要不要**直接把 http(s) 图片链接发给上游**（用户 2026-11-01：这一项是开关，不是输入框）。
+     * 关掉 = 丢掉远程链接、只发本地图片。
+     */
+    const val REMOTE_IMAGES = "remote_images"
     const val BUILTIN_TOOLS = "builtin_tools"
 
     /**
@@ -61,7 +65,7 @@ internal object ModelField {
         CONTEXT_WINDOW, MAX_TOKENS, TEMPERATURE,
         INPUT_PRICE, OUTPUT_PRICE, CACHE_READ_PRICE, CACHE_WRITE_PRICE, CURRENCY,
         REASONING_DIALECT, EFFORTS, ALLOW_DISABLE, DEFAULT_EFFORT,
-        HEADERS, BODY, REMOTE_IMAGE, BUILTIN_TOOLS,
+        HEADERS, BODY, REMOTE_IMAGES, BUILTIN_TOOLS,
     )
 
     /**
@@ -105,7 +109,7 @@ internal object ModelField {
             .map { "${it.name.trim()}=${it.value.trim()}" }
             .sorted()
             .joinToString("\n")
-        REMOTE_IMAGE -> model.remoteImageUrl.trim()
+        REMOTE_IMAGES -> tri(model.sendRemoteImages)
         BUILTIN_TOOLS -> tri(model.builtinTools)
         else -> ""
     }
