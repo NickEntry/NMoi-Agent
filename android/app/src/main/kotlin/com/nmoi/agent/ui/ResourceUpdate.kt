@@ -93,6 +93,45 @@ internal object ResourceUpdate {
         )
     }
 
+    /**
+     * 新加一个模型时**自动把快照里有的字段填上**（用户 2026-10-31 的要求）。
+     *
+     * 填进去的值一律算 `推断`（它们出自快照，不是用户手打的）：调用方拿第二项
+     * `inferred` 交给 `ProviderRepository.save(..., inferred)`，界面上的徽标才会写「推断」。
+     *
+     * 猜出来的匹配（家族/厂商最新）**不填**：刚加一个模型就把别人的窗口写上去，
+     * 是最容易让人对整份数据失去信任的那种错。要填得走资源更新页、点「用这条」。
+     */
+    fun fill(model: ProviderModel, entry: SnapshotEntry): Pair<ProviderModel, Map<String, String>> {
+        var filled = model
+        val written = LinkedHashMap<String, String>()
+        for (key in ModelField.ALL) {
+            if (key !in FILLABLE) continue
+            // **只补空的**：用户已经填了的格子一个字都不动（"自动填"不该覆盖手打的值）。
+            if (ModelField.valueOf(filled, key).isNotEmpty()) continue
+            filled = writeField(filled, key, entry)
+            val value = ModelField.valueOf(filled, key)
+            if (value.isNotEmpty() && value != ModelField.valueOf(model, key)) {
+                written[key] = value
+            }
+        }
+        return filled to written
+    }
+
+    /** 自动填只碰这些：都是"快照真给得出"的字段。温度、显示名、类型这些它没有。 */
+    private val FILLABLE = setOf(
+        ModelField.CONTEXT_WINDOW,
+        ModelField.MAX_TOKENS,
+        ModelField.TOOLS,
+        ModelField.STRUCTURED_OUTPUT,
+        ModelField.REASONING,
+        ModelField.EFFORTS,
+        ModelField.INPUT_MODALITIES,
+        ModelField.INPUT_PRICE,
+        ModelField.OUTPUT_PRICE,
+        ModelField.CURRENCY,
+    )
+
     fun apply(models: List<ProviderModel>, plans: List<ModelPlan>): UpdateApplied {
         val byId = plans.filter { it.entry != null && it.write.isNotEmpty() }.associateBy { it.modelId }
         val inferred = LinkedHashMap<String, Map<String, String>>()

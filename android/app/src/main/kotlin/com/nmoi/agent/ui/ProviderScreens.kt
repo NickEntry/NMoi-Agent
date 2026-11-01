@@ -5,6 +5,13 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -214,6 +222,46 @@ internal fun ProviderEditScreen(
      */
     var remoteIds by remember { mutableStateOf<List<String>?>(null) }
     var remoteNote by remember { mutableStateOf<String?>(null) }
+    /**
+     * 随包的模型快照（延迟读一次）。
+     *
+     * 用来**新加模型时自动填参数**（用户 2026-10-31）：加一个 `deepseek-v4-1-flash`，
+     * 窗口/输出/能力位/价格就跟着到了，不用再去资源更新页走一趟。
+     */
+    var snapshot by remember { mutableStateOf<SnapshotIndex?>(null) }
+    /** 多选删模型（真机反馈：删除按钮待在每一行里不好看，也不好点）。 */
+    var modelSelecting by remember { mutableStateOf(false) }
+    var modelSelected by remember { mutableStateOf(setOf<String>()) }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { snapshot = ModelSnapshot.load(context) }
+    }
+
+    /**
+     * 把一个模型加进这份配置，并**顺手把快照里有的字段填上**。
+     *
+     * 只有"名字对得上"（Exact / Stripped / DigitsJoined）才自动填；猜出来的匹配
+     * 一律只加一个空模型——刚加就把别人的窗口写上去，是最伤信任的那种错。
+     * 填进去的值记进 `pendingInferred`，保存时落成「推断」，界面会照实标出来。
+     */
+    fun addModel(rawId: String): ProviderModel? {
+        val id = rawId.trim()
+        if (id.isEmpty()) return null
+        models.firstOrNull { it.id == id }?.let { return it }
+        val bare = ProviderModel(id = id)
+        val match = snapshot?.match(id)
+        val (model, written) = if (match != null && !match.how.guessed) {
+            ResourceUpdate.fill(bare, match.entry)
+        } else {
+            bare to emptyMap()
+        }
+        if (written.isNotEmpty()) {
+            pendingInferred = pendingInferred.toMutableMap().apply { put(id, written) }
+        }
+        models = models + model
+        if (activeModel.isBlank()) activeModel = id
+        return model
+    }
 
     LaunchedEffect(providerId) {
         if (providerId != null) {
@@ -253,14 +301,11 @@ internal fun ProviderEditScreen(
                 notice = "API Base URL 要以 http:// 或 https:// 开头"
                 return
             }
-            cleaned.isEmpty() -> {
-                notice = "至少填一个模型（切到「模型」页）"
-                tab = 1
-                return
-            }
         }
+        // **允许一个模型都没有**（用户 2026-10-31）：删光了就是"这个供应商还没选模型"，
+        // 以前这里硬拦一句"至少填一个模型"，于是删除看起来"没生效"——库里还是旧的那一份。
         val chosen = activeModel.takeIf { candidate -> cleaned.any { it.id == candidate } }
-            ?: cleaned.first().id
+            ?: cleaned.firstOrNull()?.id.orEmpty()
         val entry = ProviderEntry(
             id = id,
             name = name.trim(),
@@ -362,6 +407,13 @@ internal fun ProviderEditScreen(
                 title = if (providerId == null) "新建供应商" else name.ifBlank { "供应商" },
                 onBack = onBack,
             ) {
+                if (providerId != null && tab == 1 && models.isNotEmpty() && !modelSelecting) {
+                    IconActionButton(
+                        image = ActionIcons.CheckSquare,
+                        description = "多选模型（可以批量删除）",
+                        onClick = { modelSelecting = true },
+                    )
+                }
                 if (providerId != null) {
                     IconActionButton(
                         image = ActionIcons.Database,
@@ -463,15 +515,85 @@ internal fun ProviderEditScreen(
                     )
 
                 } else {
+                    if (modelSelecting) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "已选 ${modelSelected.size} 项",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextAction(
+                                label = "删除",
+                                danger = true,
+                                onClick = {
+                                    if (modelSelected.isEmpty()) {
+                                        notice = "先勾几个模型"
+                                    } else {
+                                        models = models.filterNot { it.id in modelSelected }
+                                        sources = sources - modelSelected
+                                        if (activeModel in modelSelected) {
+                                            activeModel = models.firstOrNull()?.id.orEmpty()
+                                        }
+                                        notice = "删掉了 ${modelSelected.size} 个模型"
+                                        modelSelecting = false
+                                        modelSelected = emptySet()
+                                        persist()
+                                    }
+                                },
+                            )
+                            IconActionButton(
+                                image = ActionIcons.Close,
+                                description = "退出多选",
+                                onClick = {
+                                    modelSelecting = false
+                                    modelSelected = emptySet()
+                                },
+                            )
+                        }
+                    }
+
                     GroupCard(modifier = Modifier.padding(top = 8.dp)) {
                         models.forEachIndexed { index, model ->
                             if (index > 0) RowDivider(leading = 14.dp)
                             ModelRow(
                                 model = model,
                                 current = model.id == activeModel,
-                                onSelect = { activeModel = model.id },
+                                selecting = modelSelecting,
+                                selected = model.id in modelSelected,
+                                onSelect = {
+                                    if (modelSelecting) {
+                                        modelSelected = if (model.id in modelSelected) {
+                                            modelSelected - model.id
+                                        } else {
+                                            modelSelected + model.id
+                                        }
+                                    } else {
+                                        activeModel = model.id
+                                    }
+                                },
+                                onToggleSelect = {
+                                    modelSelected = if (model.id in modelSelected) {
+                                        modelSelected - model.id
+                                    } else {
+                                        modelSelected + model.id
+                                    }
+                                },
                                 onEdit = {
                                     modelDraft = ModelDraft(stored = model, model = model)
+                                },
+                                onDelete = {
+                                    // 左滑拉出来的删除：只动这一行，**立刻落库**（跟 ✓ 一个口径）。
+                                    models = models.filterNot { it.id == model.id }
+                                    sources = sources - model.id
+                                    if (activeModel == model.id) {
+                                        activeModel = models.firstOrNull()?.id.orEmpty()
+                                    }
+                                    notice = "删掉了 ${model.id}"
+                                    persist()
                                 },
                             )
                         }
@@ -534,12 +656,8 @@ internal fun ProviderEditScreen(
             // **按 id 精确比对**（用户 2026-10-31 的口径）：列表里是 name1、本地存的是 name2 时
             // 不算同一条——既不会显示成"已添加"，删除也不会误删用户改过名字的那一行。
             isLocal = { id -> models.any { it.id == id } },
-            onAdd = { id ->
-                if (models.none { it.id == id }) {
-                    models = models + ProviderModel(id = id)
-                    if (activeModel.isBlank()) activeModel = id
-                }
-            },
+            // 加进来时自动填快照里有的参数（同一个 `addModel`，两条入口一个行为）。
+            onAdd = { id -> addModel(id) },
             onRemove = { id ->
                 models = models.filterNot { it.id == id }
                 sources = sources - id
@@ -600,7 +718,22 @@ internal fun ProviderEditScreen(
             // 来源徽标的"打开时那一份"：老数据没有这段，全是空的 → 一律「默认」。
             storedSources = sources[draft.originalId].orEmpty(),
             onClose = { modelDraft = null },
-            onSave = { updated ->
+            onSave = { raw ->
+                // **新加的模型自动填参数**（用户 2026-10-31）：名字对得快照就补上
+                // 窗口/输出/能力位/价格，填进去的记成「推断」。
+                // 只补空的（`fill` 内部判空），所以用户手填的那几格一个字都不动。
+                val match = snapshot?.match(raw.id)
+                val (filled, written) = if (
+                    !draft.existing && match != null && !match.how.guessed
+                ) {
+                    ResourceUpdate.fill(raw, match.entry)
+                } else {
+                    raw to emptyMap()
+                }
+                if (written.isNotEmpty()) {
+                    pendingInferred = pendingInferred.toMutableMap().apply { put(filled.id, written) }
+                }
+                val updated = filled
                 // 改名字就按原位替换，新加就追加：顺序是用户排的，别按 id 重排。
                 val index = if (draft.existing) models.indexOfFirst { it.id == draft.originalId } else -1
                 models = if (index >= 0) {
@@ -618,15 +751,6 @@ internal fun ProviderEditScreen(
                 // 不在这里再抄一遍。校验没过（比如新供应商还没起名）不丢改动，
                 // 提示行会说明差什么。
                 persist()
-            },
-            onDelete = {
-                models = models.filterNot { it.id == draft.originalId }
-                // 来源行别留着：删掉的模型在界面上已经指不出来了（铁律 ②）。
-                sources = sources - draft.originalId
-                if (activeModel == draft.originalId) {
-                    activeModel = models.firstOrNull()?.id.orEmpty()
-                }
-                modelDraft = null
             },
         )
     }
@@ -927,7 +1051,8 @@ private fun ProviderRow(entry: ProviderEntry, onClick: () -> Unit) {
                 text = buildString {
                     append(ProviderKinds.label(entry.kind))
                     append(" · ")
-                    append(if (entry.models.isEmpty()) "没有模型" else "${entry.models.size} 个模型")
+                    append(if (entry.models.isEmpty()) "未选择模型" else "${entry.models.size} 个模型")
+                    // 有模型才写"当前那一条"；一条都没有时前面已经写了「未选择模型」。
                     entry.model?.let { append(" · ${it.id}") }
                 },
                 style = MaterialTheme.typography.labelSmall,
@@ -945,57 +1070,136 @@ private fun ProviderRow(entry: ProviderEntry, onClick: () -> Unit) {
     }
 }
 
-/** 模型一行：主行动是"选它"，铅笔才是"改它"。 */
+/**
+ * 模型一行（2026-10-31 改）：**选它 / 改它 / 左滑删它**，删除不再放在编辑页里。
+ *
+ * 为什么左滑而不是右上角垃圾桶：一屏十来个模型时，每行挂一个红色垃圾桶既吵又容易误触；
+ * 左滑是一次明确的手势，而且**松手就弹回去**（除非滑过一半）——不会留着一条红色待命。
+ * 多选模式下行首是勾选框，这一行不再接受滑动（避免"想勾却滑开"）。
+ */
 @Composable
 private fun ModelRow(
     model: ProviderModel,
     current: Boolean,
+    selecting: Boolean,
+    selected: Boolean,
     onSelect: () -> Unit,
+    onToggleSelect: () -> Unit,
     onEdit: () -> Unit,
+    onDelete: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-            if (current) {
-                androidx.compose.material3.Icon(
-                    imageVector = ActionIcons.Check,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
+    val scope = rememberCoroutineScope()
+    val reveal = with(LocalDensity.current) { 88.dp.toPx() }
+    val offset = remember(model.id) { Animatable(0f) }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        // 背后那颗删除：只有滑开才露出来。
+        Row(
+            modifier = Modifier.matchParentSize(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(88.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.error)
+                    .clickable {
+                        scope.launch { offset.snapTo(0f) }
+                        onDelete()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "删除",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onError,
                 )
             }
         }
-        Column(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
-            Text(
-                text = model.id,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = if (model.isChat) {
-                    model.summary
-                } else {
-                    // 非聊天型在这里标出来：它在聊天页的选择器里**不会出现**，
-                    // 用户得能在这一行看出原因（D191）。
-                    "${ModelKinds.label(model.kind)} · ${model.summary}"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp),
-            )
+
+        Row(
+            modifier = Modifier
+                // 不透明：不铺底色的话背后那颗红按钮会从行缝里透出来。
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .fillMaxWidth()
+                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .pointerInput(model.id, selecting) {
+                    if (selecting) return@pointerInput
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { _, drag ->
+                            scope.launch {
+                                offset.snapTo((offset.value + drag).coerceIn(-reveal, 0f))
+                            }
+                        },
+                        onDragEnd = {
+                            // 超过一半就停在"露出删除"，否则弹回去；不留半开的状态。
+                            val target = if (offset.value < -reveal / 2f) -reveal else 0f
+                            scope.launch { offset.animateTo(target) }
+                        },
+                        onDragCancel = { scope.launch { offset.animateTo(0f) } },
+                    )
+                }
+                .clickable {
+                    when {
+                        selecting -> onToggleSelect()
+                        // 滑开的时候点一下 = 收回去，而不是"选中它"（那会是误触）。
+                        offset.value < -1f -> scope.launch { offset.animateTo(0f) }
+                        else -> onSelect()
+                    }
+                }
+                .padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                when {
+                    selecting -> SelectBox(checked = selected)
+                    current -> androidx.compose.material3.Icon(
+                        imageVector = ActionIcons.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
+                Text(
+                    text = model.id,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = if (model.isChat) {
+                        model.summary
+                    } else {
+                        // 非聊天型在这里标出来：它在聊天页的选择器里**不会出现**，
+                        // 用户得能在这一行看出原因（D191）。
+                        "${ModelKinds.label(model.kind)} · ${model.summary}"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            if (!selecting) {
+                IconActionButton(
+                    image = ActionIcons.Pencil,
+                    description = "改这个模型",
+                    onClick = onEdit,
+                    compact = true,
+                )
+            }
         }
-        IconActionButton(
-            image = ActionIcons.Pencil,
-            description = "改这个模型",
-            onClick = onEdit,
-            compact = true,
-        )
     }
 }
 
+/**
+ * 列表底部那一行"＋ 添加…"。
+ *
+ * 它和模型行之间**没有行线**（本来就不属于同一个列表），图标用主色、文字也用主色：
+ * 这是一个动作，不是一条数据。
+ */
 @Composable
 private fun AddRow(label: String, onClick: () -> Unit) {
     Row(
@@ -1018,6 +1222,7 @@ private fun AddRow(label: String, onClick: () -> Unit) {
         )
     }
 }
+
 
 /**
  * 一屏只有一个主按钮（填色）。页面底部那颗主按钮。**实现只有一份**（[WideButton]，在 Controls.kt）：
@@ -1258,7 +1463,6 @@ private fun ModelEditPage(
     storedSources: Map<String, FieldSource>,
     onClose: () -> Unit,
     onSave: (ProviderModel) -> Unit,
-    onDelete: () -> Unit,
 ) {
     val context = LocalContext.current
     val base = draft.model
@@ -1826,16 +2030,6 @@ private fun ModelEditPage(
                     }
                 }
 
-                if (draft.existing) {
-                    // 删的是"这一行配置"（id + 参数），不碰别的模型、不碰供应商。
-                    Row(modifier = Modifier.padding(start = 6.dp)) {
-                        TextAction(
-                            label = "删除这个模型",
-                            danger = true,
-                            onClick = onDelete,
-                        )
-                    }
-                }
                 Spacer(Modifier.height(24.dp))
             }
         }

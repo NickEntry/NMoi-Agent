@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -246,3 +247,26 @@ internal fun RowDivider(leading: Dp) {
         modifier = Modifier.padding(start = leading),
     )
 }
+
+/** 多选时左边那个小方框：勾上是主色实心 + 白勾。 */
+@Composable
+internal fun SelectBox(checked: Boolean) {
+    val stroke = MaterialTheme.colorScheme.outline
+    val fill = MaterialTheme.colorScheme.primary
+    Box(
+        modifier = Modifier
+            .size(20.dp)
+            .border(1.5.dp, if (checked) fill else stroke, RoundedCornerShape(5.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Icon(
+                imageVector = ActionIcons.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+

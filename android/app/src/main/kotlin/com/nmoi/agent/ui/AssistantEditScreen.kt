@@ -78,6 +78,11 @@ internal fun AssistantEditScreen(
     // 模型选择面板（0.15x 后半）：只在「被调用时」那一格用。
     // 这个助手**自己**的模型仍然只在聊天页顶部换——同一件事摆两处，迟早给出两个答案。
     var modelSheet by remember(assistantId) { mutableStateOf(false) }
+    /**
+     * 供应商 id → 名字。这一页以前写的是 `供应商 id / 模型 id`，
+     * 真机上那一行是 `pmvtgpg6c / raccoon/...` —— 用户看不出是哪一家（2026-10-31 报的）。
+     */
+    var providerNames by remember(assistantId) { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     // 面板要的 (供应商, 模型) 清单。读失败给空表：面板自己会说"还没有可用的模型"，
     // 总好过摆一份看着有、点了没反应的列表。
@@ -87,6 +92,14 @@ internal fun AssistantEditScreen(
     ) {
         value = withContext(Dispatchers.IO) {
             AssistantRepository.choices(databasePath).getOrElse { emptyList() }
+        }
+    }
+    LaunchedEffect(assistantId) {
+        providerNames = withContext(Dispatchers.IO) {
+            ProviderRepository.list(databasePath).getOrNull()
+                ?.rows
+                ?.associate { it.id to it.name.ifBlank { it.id } }
+                .orEmpty()
         }
     }
 
@@ -237,7 +250,7 @@ internal fun AssistantEditScreen(
                             Text(
                                 text = entry?.let {
                                     if (it.isRunnable) {
-                                        "${it.providerId} / ${it.modelId}"
+                                        "${providerNames[it.providerId] ?: it.providerId} / ${it.modelId}"
                                     } else {
                                         "还没选模型（在聊天页顶部换）"
                                     }

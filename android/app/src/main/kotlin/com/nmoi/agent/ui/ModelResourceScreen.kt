@@ -13,9 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -145,35 +145,44 @@ internal fun ModelResourceScreen(
                 }
             }
 
-            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                Note(
-                    title = "数据来自随包的快照",
-                    body = buildString {
-                        append("生成时间 ")
-                        append(index?.fetchedAt?.takeIf { it.isNotBlank() } ?: "（没写）")
-                        append("。只填**你没自己填过**的字段：")
-                        append("窗口 / 最大输出 / 工具 / 结构化输出 / 推理 / 支持的级别 / 输入模态（只有图片一项）/ 输入价 / 输出价。")
-                    },
-                )
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                item {
+                    Note(
+                        title = "数据来自随包的快照",
+                        body = buildString {
+                            append("生成时间 ")
+                            append(index?.fetchedAt?.takeIf { it.isNotBlank() } ?: "（没写）")
+                            append("。只填**你没自己填过**的字段：")
+                            append("窗口 / 最大输出 / 工具 / 结构化输出 / 推理 / 支持的级别 / 输入模态（只有图片一项）/ 输入价 / 输出价。")
+                        },
+                    )
+                }
 
                 when {
-                    loading -> Note("正在读快照…", null)
-                    failure != null -> Note("读不到快照", failure)
-                    models.isEmpty() -> Note("这个供应商还没有模型", "先回上一页加一个模型，再来这里对齐。")
+                    loading -> item { Note("正在读快照…", null) }
+                    failure != null -> item { Note("读不到快照", failure) }
+                    models.isEmpty() -> item {
+                        Note("这个供应商还没有模型", "先回上一页加一个模型，再来这里对齐。")
+                    }
+
                     else -> Unit
                 }
 
                 val line = notice
                 if (line != null) {
-                    Text(
-                        text = line,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
-                    )
+                    item {
+                        Text(
+                            text = line,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                        )
+                    }
                 }
 
-                plans.forEach { plan ->
+                // **懒加载**：一个供应商几十个模型时，每张卡里都是七八行文字，
+                // 一次性铺开在真机上会明显掉帧（用户 2026-11-01 提的滚动性能）。
+                items(plans, key = { it.modelId }) { plan ->
                     ModelPlanCard(
                         plan = plan,
                         selecting = selecting,
@@ -190,6 +199,7 @@ internal fun ModelResourceScreen(
                 }
 
                 if (plans.isNotEmpty() && !selecting) {
+                    item {
                     Text(
                         text = buildString {
                             if (changeCount == 0) {
@@ -205,8 +215,9 @@ internal fun ModelResourceScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
                     )
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
+                item { Spacer(Modifier.height(8.dp)) }
             }
 
             if (!selecting) {
@@ -326,28 +337,6 @@ private fun ModelPlanCard(
                 ChangeRow(change, muted = true, guessed = false)
             }
             Spacer(Modifier.height(4.dp))
-        }
-    }
-}
-
-/** 多选时左边那个小方框：勾上是主色实心 + 白勾。 */
-@Composable
-private fun SelectBox(checked: Boolean) {
-    val stroke = MaterialTheme.colorScheme.outline
-    val fill = MaterialTheme.colorScheme.primary
-    Box(
-        modifier = Modifier
-            .size(20.dp)
-            .border(1.5.dp, if (checked) fill else stroke, RoundedCornerShape(5.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (checked) {
-            Icon(
-                imageVector = ActionIcons.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(14.dp),
-            )
         }
     }
 }

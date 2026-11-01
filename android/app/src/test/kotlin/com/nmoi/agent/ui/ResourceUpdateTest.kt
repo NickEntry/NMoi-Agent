@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -307,5 +308,36 @@ class ResourceUpdateTest {
         )
         val plan = ResourceUpdate.plan(listOf(before), emptyMap(), idx).single()
         assertTrue(plan.changes.isEmpty())
+    }
+
+    @Test
+    fun `新加模型时自动填快照里的字段-并且只补空的`() {
+        val entry = snapshot(
+            contextWindow = 128000,
+            maxOutput = 8192,
+            tools = true,
+            efforts = listOf("low", "high"),
+            inputPrice = 0.27,
+            outputPrice = 1.1,
+        )
+
+        // 空模型：能填的都填上，并回报"写进去的值"（保存时据此记成推断）。
+        val (filled, written) = ResourceUpdate.fill(model(id = "vendor/model-a"), entry)
+        assertEquals(128000, filled.contextWindow)
+        assertEquals(8192, filled.maxTokens)
+        assertEquals(true, filled.tools)
+        assertEquals(listOf("low", "high"), filled.efforts)
+        assertEquals(0.27, filled.inputPrice)
+        assertEquals("USD", filled.currency)
+        assertTrue(ModelField.CONTEXT_WINDOW in written)
+        assertEquals("128000", written[ModelField.CONTEXT_WINDOW])
+
+        // 用户已经填过的格子一个字都不动，也不进 written。
+        val typed = model(id = "vendor/model-a", contextWindow = 64000)
+        val (kept, keptWritten) = ResourceUpdate.fill(typed, entry)
+        assertEquals(64000, kept.contextWindow)
+        assertFalse(ModelField.CONTEXT_WINDOW in keptWritten)
+        // 别的空格照填。
+        assertEquals(8192, kept.maxTokens)
     }
 }

@@ -195,6 +195,14 @@ internal fun ChatScreen(
     // 用哪一套端点 / 哪个模型归**助手**（D161）。这一屏只负责显示和切换它。
     var assistant by remember { mutableStateOf(AssistantEntry()) }
     var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
+    /**
+     * 供应商 id → 名字。
+     *
+     * 为什么不从 `choices` 里取：那一份只收"能跑的聊天模型"。助手指着的模型被删掉之后
+     * 它就消失了，于是标题掉回内部 id（`pmvtgpg6c`）——真机截图里那一行就是这么来的。
+     * 名称要按**供应商**查，与"那个模型还在不在"无关。
+     */
+    var providerNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var modelSheet by remember { mutableStateOf(false) }
     var thinkingSheet by remember { mutableStateOf(false) }
     /** 发送队列那一层小窗（长按发送键进）。 */
@@ -203,6 +211,9 @@ internal fun ChatScreen(
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
             AssistantRepository.choices(databasePath).onSuccess { choices = it }
+            ProviderRepository.list(databasePath).onSuccess { page ->
+                providerNames = page.rows.associate { it.id to it.name.ifBlank { it.id } }
+            }
         }
     }
     // 这个助手当前用的那个模型：思考档位能选哪几档由它说了算（D201 第四片之后的读取点）。
@@ -243,17 +254,17 @@ internal fun ChatScreen(
     // 顶部这一行是**显示**，不是选择器（用户 2026-10-31）：一轮里用哪个模型由这一页决定，
     // 而模型条还兼着"当前用的是谁"的说明作用。格式「模型名称 (模型提供商)」——
     // id 是给端点看的，摆在标题下面只会让用户读到一串内部编号。
-    val modelLabel = remember(assistant, choices) {
+    val modelLabel = remember(assistant, choices, providerNames) {
         val pair = choices.firstOrNull {
             it.first.id == assistant.providerId && it.second.id == assistant.modelId
         }
+        val providerName = providerNames[assistant.providerId]
+            ?: assistant.providerId.ifBlank { "" }
         when {
-            pair != null -> {
-                val providerName = pair.first.name.ifBlank { pair.first.id }
-                "${pair.second.displayName} ($providerName)"
-            }
-            assistant.isRunnable -> "${assistant.modelId} (${assistant.providerId})"
-            else -> "还没选模型"
+            pair != null -> "${pair.second.displayName} ($providerName)"
+            // 供应商里已经没有这个模型了：说清楚"没选"，而不是继续显示一个不存在的名字。
+            assistant.providerId.isBlank() || assistant.modelId.isBlank() -> "还没选模型"
+            else -> "未选择模型（$providerName 里已没有 ${assistant.modelId}）"
         }
     }
 
