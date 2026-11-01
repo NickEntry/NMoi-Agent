@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -46,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -119,6 +122,11 @@ internal fun ConversationDrawer(
     onEditAssistant: (AssistantEntry) -> Unit = {},
     /** 把某条会话移到某个助手（D174）：改归属，不复制。 */
     onMoveConversation: (ConversationRow, String) -> Unit = { _, _ -> },
+    /** 置顶的会话（按用户排的顺序）。置顶的行排在列表最前面（0.15d）。 */
+    pinnedIds: List<String> = emptyList(),
+    onTogglePin: (ConversationRow) -> Unit = {},
+    onRename: (ConversationRow, String) -> Unit = { _, _ -> },
+    onDelete: (ConversationRow) -> Unit = {},
     onOpenSettings: () -> Unit,
     onClose: () -> Unit,
     content: @Composable () -> Unit,
@@ -408,11 +416,19 @@ private fun DrawerPanel(
     canOpenByDrag: Boolean = true,
     onMoveConversation: (ConversationRow, String) -> Unit,
     onOpenSettings: () -> Unit,
+    pinnedIds: List<String> = emptyList(),
+    onTogglePin: (ConversationRow) -> Unit = {},
+    onRename: (ConversationRow, String) -> Unit = { _, _ -> },
+    onDelete: (ConversationRow) -> Unit = {},
 ) {
     var searchAll by remember { mutableStateOf(false) }
     // 长按某一行弹出的"移动到其他助手"（D174）。存这一行本身，不存索引——
     // 沙盒页面刷新之后索引会指到别的会话上去。
     var moveTarget by remember { mutableStateOf<ConversationRow?>(null) }
+    /** 长按弹出的动作菜单（0.15d）：重命名 / 置顶 / 移动 / 删除。 */
+    var actionTarget by remember { mutableStateOf<ConversationRow?>(null) }
+    var renameTarget by remember { mutableStateOf<ConversationRow?>(null) }
+    var deleteTarget by remember { mutableStateOf<ConversationRow?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
@@ -458,7 +474,17 @@ private fun DrawerPanel(
                 }
             }
 
-            items(rows) { row ->
+            // 置顶在前（按置顶顺序），其余保持原顺序（updated_at 倒序）。
+            // 只在这里排序、不落库：顺序是"我怎么看"，不是会话的事实。
+            val ordered = remember(rows, pinnedIds) {
+                if (pinnedIds.isEmpty()) {
+                    rows
+                } else {
+                    val byId = rows.associateBy { it.id }
+                    pinnedIds.mapNotNull { byId[it] } + rows.filterNot { it.id in pinnedIds }
+                }
+            }
+            items(ordered) { row ->
                 // 当前行按 **id** 高亮，不按标题：两个会话重名是常事。
                 val current = currentId != null && row.id == currentId
                 Surface(
@@ -475,7 +501,7 @@ private fun DrawerPanel(
                         // 长按比每行挂一个"更多"图标省地方，也和消息区的长按选择同一个手势语言。
                         .combinedClickable(
                             onClick = { onOpenConversation(row) },
-                            onLongClick = { moveTarget = row },
+                            onLongClick = { actionTarget = row },
                         ),
                 ) {
                     Row(
@@ -525,6 +551,85 @@ private fun DrawerPanel(
                     }
                 }
             }
+        }
+
+        // —— 长按一条会话：动作菜单（0.15d）——
+        //
+        // 为什么是菜单而不是每行挂三个图标：抽屉本来就窄（300dp），一行里塞图标之后
+        // 标题会被挤到看不清；而且这些动作里有破坏性的，露在外面容易误触。
+        actionTarget?.let { target ->
+            val pinned = target.id in pinnedIds
+            MenuSheet(
+                title = target.title.ifBlank { "（没有标题）" },
+                items = listOf(
+                    SheetItem(
+                        label = "重命名",
+                        icon = ActionIcons.Pencil,
+                        onClick = {
+                            actionTarget = null
+                            renameTarget = target
+                        },
+                    ),
+                    SheetItem(
+                        label = if (pinned) "取消置顶" else "置顶",
+                        icon = ActionIcons.ChevronUp,
+                        onClick = {
+                            actionTarget = null
+                            onTogglePin(target)
+                        },
+                    ),
+                    SheetItem(
+                        label = "移动到其他助手",
+                        icon = ActionIcons.ArrowRight,
+                        onClick = {
+                            actionTarget = null
+                            moveTarget = target
+                        },
+                    ),
+                    SheetItem(
+                        label = "删除会话",
+                        icon = ActionIcons.Trash2,
+                        onClick = {
+                            actionTarget = null
+                            deleteTarget = target
+                        },
+                    ),
+                    SheetItem(
+                        label = "多选（置顶 / 删除）",
+                        icon = ActionIcons.CheckSquare,
+                        hint = "多选下一批接：先把单个动作做稳",
+                    ),
+                ),
+                onHint = onHint,
+                onDismiss = { actionTarget = null },
+            )
+        }
+
+        // 改名：一个输入框 + 取消/保存。空标题不给保存（列表里一行没名字就认不出来了）。
+        renameTarget?.let { target ->
+            RenameConversationSheet(
+                initial = target.title,
+                onCancel = { renameTarget = null },
+                onConfirm = { title ->
+                    renameTarget = null
+                    onRename(target, title)
+                },
+            )
+        }
+
+        // 删除：破坏性动作，说清删掉的是什么、什么不会动。
+        deleteTarget?.let { target ->
+            ConfirmSheet(
+                title = "删掉「${target.title.ifBlank { "（没有标题）" }}」？",
+                body = "这个会话里的消息、版本、分界线一起删掉，收不回来。" +
+                    "助手与其它会话都不动。",
+                confirmLabel = "删除",
+                onCancel = { deleteTarget = null },
+                onConfirm = {
+                    deleteTarget = null
+                    onDelete(target)
+                },
+            )
         }
 
         // —— 长按一条会话：移动到其他助手（D174）——
@@ -698,5 +803,152 @@ private fun DrawerAvatar(label: String, size: Dp, mine: Boolean) {
                 maxLines = 1,
             )
         }
+    }
+}
+/** 改名那一层：一个输入框，空标题不许提交。 */
+@Composable
+private fun RenameConversationSheet(
+    initial: String,
+    onCancel: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    val clean = text.trim()
+    OverlayCardBox(onDismiss = onCancel) {
+        Text(
+            text = "重命名会话",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        ) {
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it.take(60) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+            )
+        }
+        Text(
+            text = if (clean.isEmpty()) "标题不能是空的" else "最多 60 个字；改名不会让它跳到列表顶上。",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (clean.isEmpty()) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DialogPill(label = "取消", onClick = onCancel)
+            Spacer(Modifier.size(8.dp))
+            DialogPill(
+                label = "保存",
+                primary = true,
+                enabled = clean.isNotEmpty(),
+                onClick = { onConfirm(clean) },
+            )
+        }
+    }
+}
+
+/** 破坏性动作的确认层（删会话用）。 */
+@Composable
+private fun ConfirmSheet(
+    title: String,
+    body: String,
+    confirmLabel: String,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    OverlayCardBox(onDismiss = onCancel) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = body,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DialogPill(label = "取消", onClick = onCancel)
+            Spacer(Modifier.size(8.dp))
+            DialogPill(label = confirmLabel, danger = true, onClick = onConfirm)
+        }
+    }
+}
+
+/** 居中的小卡片（抽屉里这几层共用）。 */
+@Composable
+private fun OverlayCardBox(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(onClick = onDismiss),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) { content() }
+            }
+        }
+    }
+}
+
+/** 小卡片里的胶囊按钮（与供应商页那颗同一形制）。 */
+@Composable
+private fun DialogPill(
+    label: String,
+    primary: Boolean = false,
+    danger: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val fill = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh
+        danger -> MaterialTheme.colorScheme.error
+        primary -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.surfaceContainer
+    }
+    val ink = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant
+        danger -> MaterialTheme.colorScheme.onError
+        primary -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = fill,
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = ink,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
     }
 }

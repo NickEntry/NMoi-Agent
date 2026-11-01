@@ -137,7 +137,11 @@ internal object AssistantRepository {
                         ?: all.first().id
                     AssistantList(
                         activeId = active,
-                        rows = all.sortedWith(compareBy({ it.id != active }, { it.name })),
+                        // **保持存储顺序**（0.15e）：以前按"当前那个排最前 + 名字"排，
+                        // 于是切一下助手，列表就自己跳一次位——用户会以为列表在乱动。
+                        // 现在顺序 = 建出来的顺序（settings 里插入的先后），
+                        // 只有新建才会往后加；改名与切换都不影响。
+                        rows = all,
                     )
                 }
         }

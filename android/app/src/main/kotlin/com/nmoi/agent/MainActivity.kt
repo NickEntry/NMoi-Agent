@@ -186,6 +186,20 @@ class MainActivity : ComponentActivity() {
 
                 // 草稿标记（0.15b）：抽屉打开时读一次就够——关闭期间改的是输入框，
                 // 下次打开会重新读。跟着 `drawerOpen` 刷新，不额外轮询。
+                // 置顶顺序（0.15d）：跟草稿同一个节奏，抽屉打开时读一次。
+                val pinnedIds by produceState(
+                    initialValue = emptyList<String>(),
+                    drawerOpen, listReload,
+                ) {
+                    value = if (drawerOpen) {
+                        withContext(Dispatchers.IO) {
+                            ConversationRepository.pinned(databasePath).getOrDefault(emptyList())
+                        }
+                    } else {
+                        emptyList()
+                    }
+                }
+
                 val drafts by produceState(
                     initialValue = emptyMap<String, String>(),
                     drawerOpen,
@@ -243,8 +257,42 @@ class MainActivity : ComponentActivity() {
                     // 只有聊天页能从边缘拖出抽屉；子页面上不认这个手势。
                     canOpenByDrag = route is Route.Chat,
                     drafts = drafts,
+                    pinnedIds = pinnedIds,
                     // 抽屉里给"正在跑"的会话加一行小字（多会话并发之后才有意义）。
                     runningIds = TurnRunner.running.collectAsState().value,
+                    onTogglePin = { row ->
+                        scope.launch {
+                            val next = if (row.id in pinnedIds) {
+                                pinnedIds - row.id
+                            } else {
+                                pinnedIds + row.id
+                            }
+                            withContext(Dispatchers.IO) {
+                                ConversationRepository.setPinned(databasePath, next)
+                            }.onFailure { NLog.w("Storage", "置顶失败：${it.message}") }
+                            listReload += 1
+                        }
+                    },
+                    onRename = { row, title ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                ConversationRepository.rename(databasePath, row.id, title)
+                            }.onFailure { NLog.w("Storage", "改名失败：${it.message}") }
+                            listReload += 1
+                        }
+                    },
+                    onDelete = { row ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                ConversationRepository.delete(databasePath, row.id)
+                            }.onFailure { NLog.w("Storage", "删会话失败：${it.message}") }
+                            // 删掉的正是开着的那个：回空白会话，别停在一个不存在的会话里。
+                            if ((route as? Route.Chat)?.sessionId == row.id) {
+                                backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
+                            }
+                            listReload += 1
+                        }
+                    },
                     onSwitchAssistant = { id ->
                         scope.launch {
                             withContext(Dispatchers.IO) { AssistantRepository.setActive(databasePath, id) }
