@@ -461,6 +461,18 @@ private fun DrawerPanel(
             onHint = { onHint("搜索待接：storage 还没有 search 动词（P4 / P10）") },
         )
 
+        // 置顶在前（按置顶顺序），其余保持原顺序（updated_at 倒序）。
+        // **算在 LazyColumn 外面**：它的内容 lambda 不是 @Composable，里面不能调 `remember`
+        // （CI 上就是这么红的：`@Composable invocations can only happen from ...`）。
+        val ordered = remember(rows, pinnedIds) {
+            if (pinnedIds.isEmpty()) {
+                rows
+            } else {
+                val byId = rows.associateBy { it.id }
+                pinnedIds.mapNotNull { byId[it] } + rows.filterNot { it.id in pinnedIds }
+            }
+        }
+
         // —— 会话列表（新对话在最上面）——
         LazyColumn(modifier = Modifier.weight(1f)) {
             if (rows.isEmpty()) {
@@ -474,16 +486,6 @@ private fun DrawerPanel(
                 }
             }
 
-            // 置顶在前（按置顶顺序），其余保持原顺序（updated_at 倒序）。
-            // 只在这里排序、不落库：顺序是"我怎么看"，不是会话的事实。
-            val ordered = remember(rows, pinnedIds) {
-                if (pinnedIds.isEmpty()) {
-                    rows
-                } else {
-                    val byId = rows.associateBy { it.id }
-                    pinnedIds.mapNotNull { byId[it] } + rows.filterNot { it.id in pinnedIds }
-                }
-            }
             items(ordered) { row ->
                 // 当前行按 **id** 高亮，不按标题：两个会话重名是常事。
                 val current = currentId != null && row.id == currentId
