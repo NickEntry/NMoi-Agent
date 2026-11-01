@@ -197,6 +197,8 @@ internal fun ChatScreen(
     var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
     var modelSheet by remember { mutableStateOf(false) }
     var thinkingSheet by remember { mutableStateOf(false) }
+    /** 发送队列那一层小窗（长按发送键进）。 */
+    var queueSheet by remember { mutableStateOf(false) }
     LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
@@ -621,62 +623,72 @@ internal fun ChatScreen(
         }
     }
 
-    // 真的发一轮（D157）：用户那句话由 `run_session_turn` 在发之前就落库了，
-    // 所以失败也要重读一次界面——[TurnRepository.wasUserTextSaved] 判它到底存没存。
+    // 真的发一轮（D157；2026-10-31 改成"交给 TurnRunner，页面只订阅"）。
+    //
+    // 三条规矩合起来是用户那天口述的语义：
+    // - 会话**空闲** → 立刻发；
+    // - 会话**正在跑** → 不报错、不丢字，**排进这个会话的队列**，并告诉他排第几位；
+    // - 这一轮**正常结束** → TurnRunner 自动取队首接着发；**失败 / 被停止** → 队列停在原地等他处理。
     val sendTurn: () -> Unit = {
         val text = draft.trim()
         when {
             text.isEmpty() -> notice = "先写点什么"
-            busy -> notice = "上一轮还没结束（要打断就先点停止）"
-            else -> scope.launch {
-                busy = true
-                notice = null
-                // 先上屏、先清输入框，再谈请求：发送这件事对用户来说是**立刻发生**的，
-                // 那一秒里输入框还留着字，看起来就像没发出去（2026-10-27 报的就是这个）。
-                pending = PendingSend(text = text, at = System.currentTimeMillis())
-                waiting = true
+            else -> {
                 draft = ""
-                val sid = sessionId ?: onCreateSession()
-                if (sid == null) {
-                    // 连会话都建不出来：把字放回输入框，别吞掉用户刚打的。
-                    pending = null
-                    waiting = false
-                    draft = text
-                    notice = "建会话失败：原因在 设置 → 调试 → 日志"
-                    busy = false
-                } else {
-                    runningSession = sid
-                    // 先记在共用的那份上：切走再切回来才看得见"还在跑"（0.15c）。
-                    GeneratingTracker.mark(sid, true)
+                notice = null
+                scope.launch {
+                    val sid = sessionId ?: onCreateSession()
+                    if (sid == null) {
+                        // 连会话都建不出来：把字放回输入框，别吞掉用户刚打的。
+                        draft = text
+                        notice = "建会话失败：原因在 设置 → 调试 → 日志"
+                        return@launch
+                    }
                     // 空白会话的草稿挪到真 id：用户回来时那半句还应该在。
                     DraftStore.migrateNewTo(context, sid)
-                    val result = TurnRepository.send(context, databasePath, sid, text)
-                    runningSession = null
-                    GeneratingTracker.mark(sid, false)
+                    if (TurnRunner.isRunning(sid)) {
+                        val position = SendQueue.enqueue(sid, text)
+                        notice = "已排队（第 $position 位）：这一轮结束后自动继续"
+                    } else if (!TurnRunner.start(context, databasePath, sid, text)) {
+                        // 抢跑（刚好在这一瞬间被别的入口起来了）：退一步排队，不丢字。
+                        SendQueue.enqueue(sid, text)
+                        notice = "已排队：这一轮马上结束，等它收尾就继续"
+                    }
+                }
+            }
+        }
+    }
+
+    // 后台跑出来的结果。**只在"正看着这个会话"时反应**：事件带 sessionId，
+    // 不是当前这个就丢掉——这正是以前"跑完 A 却把 B 的按钮点亮"的那类错。
+    LaunchedEffect(sessionId) {
+        val watching = sessionId ?: return@LaunchedEffect
+        TurnRunner.events.collect { event ->
+            if (event.sessionId != watching) return@collect
+            when (event) {
+                is TurnEvent.Started -> {
+                    pending = PendingSend(text = event.text, at = System.currentTimeMillis())
+                    waiting = true
+                    busy = true
+                }
+
+                is TurnEvent.Finished -> {
                     pending = null
                     waiting = false
                     busy = false
-                    result.fold(
-                        onSuccess = { outcome ->
-                            reloadKey += 1
-                            notice = outcome.describe()
-                        },
-                        onFailure = { error ->
-                            // 请求可能死在半路，但用户那句话**已经进库了**——这是
-                            // `run_session_turn` 的第一步。所以先重读，再决定草稿留不留。
-                            reloadKey += 1
-                            val saved = withContext(Dispatchers.IO) {
-                                TurnRepository.wasUserTextSaved(databasePath, sid, text)
-                            }
-                            // 没存进去就把字还回去：宁可让他看到重复的一句，也不要静默丢字。
-                            if (!saved) draft = text
-                            notice = buildString {
-                                append("请求失败：")
-                                append(error.message)
-                                append(if (saved) "（你这句话已经存进库里了）" else "（这句话没存进去，已放回输入框）")
-                            }
-                        },
-                    )
+                    reloadKey += 1
+                    val left = SendQueue.count(watching)
+                    notice = if (left > 0) "${event.message}（队列还有 $left 条）" else event.message
+                }
+
+                is TurnEvent.Failed -> {
+                    pending = null
+                    waiting = false
+                    busy = false
+                    reloadKey += 1
+                    // 没存进去就把字还回输入框：宁可让他看到重复的一句，也不要静默丢字。
+                    if (!event.textSaved) draft = event.text
+                    notice = event.message
                 }
             }
         }
@@ -775,6 +787,8 @@ internal fun ChatScreen(
                     thinkingLabel = thinkingLabel,
                     onEditTextReady = { editTextRef.value = it },
                     onSend = sendTurn,
+                    onQueue = { queueSheet = true },
+                    queued = if (sessionId == null) 0 else SendQueue.count(sessionId),
                     onStop = {
                         val running = runningSession
                             ?: sessionId?.takeIf { GeneratingTracker.isRunning(it) }
@@ -831,6 +845,28 @@ internal fun ChatScreen(
                 onNotice = { notice = it },
                 onDismiss = { modelSheet = false },
             )
+        }
+
+        if (queueSheet) {
+            val sid = sessionId
+            if (sid == null) {
+                // 还没有会话就没有队列：这一层不该出现（调用方已经拦了，这里只是兜底）。
+                queueSheet = false
+            } else {
+                SendQueueSheet(
+                    sessionId = sid,
+                    running = TurnRunner.isRunning(sid),
+                    onSendNow = { text ->
+                        // 手动发队首：只在"这个会话没在请求"时允许（用户 2026-10-31 的口径）。
+                        pending = PendingSend(text = text, at = System.currentTimeMillis())
+                        waiting = true
+                        busy = true
+                        TurnRunner.start(context, databasePath, sid, text)
+                        queueSheet = false
+                    },
+                    onClose = { queueSheet = false },
+                )
+            }
         }
 
         if (thinkingSheet) {
@@ -2347,6 +2383,9 @@ private fun Composer(
     onEditTextReady: (EditText) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    /** 长按菜单里进"发送队列"那一层（用户 2026-10-31 指定的入口）。 */
+    onQueue: () -> Unit,
+    queued: Int,
     onSaveAssistant: () -> Unit,
     onSaveUser: () -> Unit,
 ) {
@@ -2425,6 +2464,8 @@ private fun Composer(
                         enabled = canSend && draft.isNotBlank(),
                         busy = busy,
                         onSend = onSend,
+                    onQueue = onQueue,
+                    queued = queued,
                         onStop = onStop,
                         onSaveAssistant = onSaveAssistant,
                         onSaveUser = onSaveUser,
@@ -2461,6 +2502,8 @@ private fun SendStopButton(
     busy: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onQueue: () -> Unit,
+    queued: Int,
     onSaveAssistant: () -> Unit,
     onSaveUser: () -> Unit,
 ) {
@@ -2484,7 +2527,9 @@ private fun SendStopButton(
                                 active -> onSend()
                             }
                         },
-                        onLongPress = { if (!busy) menuOpen = true },
+                        // **生成中也允许长按**：队列窗口正是在"它还在跑"的时候最需要打开
+                        // （看排到第几条、要不要插队、要不要删掉）。以前这一下被 `if (!busy)` 挡了。
+                        onLongPress = { menuOpen = true },
                     )
                 },
             contentAlignment = Alignment.Center,
@@ -2501,6 +2546,15 @@ private fun SendStopButton(
             }
         }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = {
+                    Text(if (queued > 0) "发送队列（$queued）" else "发送队列")
+                },
+                onClick = {
+                    menuOpen = false
+                    onQueue()
+                },
+            )
             DropdownMenuItem(
                 text = { Text("仅保存为助手消息") },
                 onClick = {

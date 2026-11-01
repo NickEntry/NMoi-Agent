@@ -129,6 +129,11 @@ internal object ActionIcons {
         stroke("M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11")
     }
 
+    /** Lucide `chevron-up.svg`：队列里往上挪一条。 */
+    val ChevronUp: ImageVector = buildVector("chevron-up") {
+        stroke("m18 15-6-6-6 6")
+    }
+
     /** Lucide `chevron-right.svg`：进下一层。设置类页面右侧那颗，不是文字 `›`。 */
     val ChevronRight: ImageVector = buildVector("chevron-right") {
         stroke("m9 18 6-6-6-6")

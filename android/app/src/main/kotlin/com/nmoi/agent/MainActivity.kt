@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -47,6 +48,7 @@ import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.ToolsScreen
+import com.nmoi.agent.ui.TurnRunner
 import com.nmoi.agent.ui.theme.NMoiTheme
 import com.nmoi.agent.ui.theme.SystemBarsForTheme
 import com.nmoi.agent.ui.theme.ThemeStore
@@ -241,6 +243,8 @@ class MainActivity : ComponentActivity() {
                     // 只有聊天页能从边缘拖出抽屉；子页面上不认这个手势。
                     canOpenByDrag = route is Route.Chat,
                     drafts = drafts,
+                    // 抽屉里给"正在跑"的会话加一行小字（多会话并发之后才有意义）。
+                    runningIds = TurnRunner.running.collectAsState().value,
                     onSwitchAssistant = { id ->
                         scope.launch {
                             withContext(Dispatchers.IO) { AssistantRepository.setActive(databasePath, id) }

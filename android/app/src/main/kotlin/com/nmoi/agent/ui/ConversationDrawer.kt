@@ -91,6 +91,13 @@ internal fun ConversationDrawer(
      */
     drafts: Map<String, String> = emptyMap(),
     /**
+     * 正在跑的会话（多会话并发，2026-10-31）。
+     *
+     * 为什么抽屉要知道：并发之后"看不见的那个会话还在烧钱"是最难受的状态——
+     * 用户切走了，回来才发现它早跑完了或者卡住了。有一行字总比什么都没有强。
+     */
+    runningIds: Set<String> = emptySet(),
+    /**
      * 能不能"从边缘拖出来"。
      *
      * 子页面（助手页、设置页…）上不该能拖出抽屉：那会让用户以为自己在另一层里滑，
@@ -281,6 +288,7 @@ internal fun ConversationDrawer(
                     onOpenAssistantMenu = { assistantMenu = true },
                     onOpenConversation = onOpenConversation,
                     drafts = drafts,
+                    runningIds = runningIds,
                     onMoveConversation = onMoveConversation,
                     assistants = assistants,
                     onOpenSettings = onOpenSettings,
@@ -319,6 +327,7 @@ internal fun ConversationDrawer(
                         onOpenAssistantMenu = { assistantMenu = true },
                         onOpenConversation = onOpenConversation,
                         drafts = drafts,
+                        runningIds = runningIds,
                         onMoveConversation = onMoveConversation,
                         assistants = assistants,
                         onOpenSettings = onOpenSettings,
@@ -388,6 +397,7 @@ private fun DrawerPanel(
     onOpenAssistantMenu: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
     drafts: Map<String, String> = emptyMap(),
+    runningIds: Set<String> = emptySet(),
     /**
      * 能不能"从边缘拖出来"。
      *
@@ -486,6 +496,19 @@ private fun DrawerPanel(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
+                        // 正在跑：先于「草稿」显示——它是"这一行此刻在动"，比"有半句话"更该先看见。
+                        if (row.id in runningIds) {
+                            Text(
+                                text = "生成中",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (current) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.tertiary
+                                },
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
                         // 草稿标记（0.15b）：这一行里还留着没发出去的字。
                         if (drafts[row.id]?.isNotBlank() == true) {
                             Text(
