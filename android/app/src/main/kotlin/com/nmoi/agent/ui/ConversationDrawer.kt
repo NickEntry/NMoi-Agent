@@ -127,6 +127,19 @@ internal fun ConversationDrawer(
     onTogglePin: (ConversationRow) -> Unit = {},
     onRename: (ConversationRow, String) -> Unit = { _, _ -> },
     onDelete: (ConversationRow) -> Unit = {},
+    /** 复制会话（0.15d）：消息整份拷到一条新会话里，原件一个字节不动。 */
+    onCopy: (ConversationRow) -> Unit = {},
+    /** 多选（0.15d）：置顶 / 移动 / 删除。选中的行**按列表顺序**给，顺序即用户看到的顺序。 */
+    onPinMany: (List<ConversationRow>) -> Unit = {},
+    onMoveMany: (List<ConversationRow>, String) -> Unit = { _, _ -> },
+    onDeleteMany: (List<ConversationRow>) -> Unit = {},
+    /**
+     * 抽屉外面算出来的提示（例如"已复制 42 条"）。
+     *
+     * 为什么不走 `onHint`：那个是抽屉内部点的结果，写在这里的是"外面干完一件事"。
+     * 两条同时存在时内部那条优先——用户刚点的动作，比他刚才干的事更该先看见。
+     */
+    notice: String? = null,
     onOpenSettings: () -> Unit,
     onClose: () -> Unit,
     content: @Composable () -> Unit,
@@ -300,6 +313,15 @@ internal fun ConversationDrawer(
                     onMoveConversation = onMoveConversation,
                     assistants = assistants,
                     onOpenSettings = onOpenSettings,
+                    pinnedIds = pinnedIds,
+                    onTogglePin = onTogglePin,
+                    onRename = onRename,
+                    onDelete = onDelete,
+                    onCopy = onCopy,
+                    onPinMany = onPinMany,
+                    onMoveMany = onMoveMany,
+                    onDeleteMany = onDeleteMany,
+                    notice = notice,
                 )
             }
         } else {
@@ -339,6 +361,15 @@ internal fun ConversationDrawer(
                         onMoveConversation = onMoveConversation,
                         assistants = assistants,
                         onOpenSettings = onOpenSettings,
+                        pinnedIds = pinnedIds,
+                        onTogglePin = onTogglePin,
+                        onRename = onRename,
+                        onDelete = onDelete,
+                        onCopy = onCopy,
+                        onPinMany = onPinMany,
+                        onMoveMany = onMoveMany,
+                        onDeleteMany = onDeleteMany,
+                        notice = notice,
                     )
                 }
             }
@@ -420,6 +451,11 @@ private fun DrawerPanel(
     onTogglePin: (ConversationRow) -> Unit = {},
     onRename: (ConversationRow, String) -> Unit = { _, _ -> },
     onDelete: (ConversationRow) -> Unit = {},
+    onCopy: (ConversationRow) -> Unit = {},
+    onPinMany: (List<ConversationRow>) -> Unit = {},
+    onMoveMany: (List<ConversationRow>, String) -> Unit = { _, _ -> },
+    onDeleteMany: (List<ConversationRow>) -> Unit = {},
+    notice: String? = null,
 ) {
     var searchAll by remember { mutableStateOf(false) }
     // 长按某一行弹出的"移动到其他助手"（D174）。存这一行本身，不存索引——
@@ -430,36 +466,69 @@ private fun DrawerPanel(
     var renameTarget by remember { mutableStateOf<ConversationRow?>(null) }
     var deleteTarget by remember { mutableStateOf<ConversationRow?>(null) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 44.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DrawerAvatar(label = "我", size = 40.dp, mine = true)
-            Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
-                Text(
-                    text = USER_NAME,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    modifier = Modifier.clickable { onHint("编辑用户名字/头像待接：要头像存储与编辑对话框（D140）") },
-                )
-                Text(
-                    text = greeting(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-        }
+    /**
+     * 多选（0.15d）：从长按菜单进来，勾中的 id 自己存。
+     *
+     * 存 id 不存行：列表会刷新（置顶、改名、别处删掉一条），存行就会把一条
+     * 界面上已经不在的会话写进置顶数组里。
+     */
+    var selecting by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(emptySet<String>()) }
+    var bulkDeleteOpen by remember { mutableStateOf(false) }
+    var bulkMoveOpen by remember { mutableStateOf(false) }
 
-        // —— 搜索：两态，在框上向右滑切换 ——
-        SearchPill(
-            searchAll = searchAll,
-            onSwitchToAll = { searchAll = true },
-            onHint = { onHint("搜索待接：storage 还没有 search 动词（P4 / P10）") },
-        )
+    // 列表变了就把已经不存在的 id 清掉：留着它，全选的判据会一直歪。
+    LaunchedEffect(rows) { selectedIds = ConversationSelection.prune(selectedIds, rows) }
+    // 返回键先退选择模式，再轮到抽屉（0.15j：选择模式在抽屉之前）。
+    BackHandler(enabled = selecting) {
+        selecting = false
+        selectedIds = emptySet()
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (selecting) {
+            // 选择时整块顶栏只回答一件事：勾了几条、还能不能全选、怎么退出去。
+            // 用户块与搜索在这一层没有用处，留着只会把"已选 N 项"挤成一行小字。
+            SelectionBar(
+                count = selectedIds.size,
+                allSelected = rows.isNotEmpty() && rows.all { it.id in selectedIds },
+                onToggleAll = { selectedIds = ConversationSelection.toggleAll(rows, selectedIds) },
+                onClose = {
+                    selecting = false
+                    selectedIds = emptySet()
+                },
+            )
+        } else {
+            // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 44.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DrawerAvatar(label = "我", size = 40.dp, mine = true)
+                Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+                    Text(
+                        text = USER_NAME,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        modifier = Modifier.clickable { onHint("编辑用户名字/头像待接：要头像存储与编辑对话框（D140）") },
+                    )
+                    Text(
+                        text = greeting(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+
+            // —— 搜索：两态，在框上向右滑切换 ——
+            SearchPill(
+                searchAll = searchAll,
+                onSwitchToAll = { searchAll = true },
+                onHint = { onHint("搜索待接：storage 还没有 search 动词（P4 / P10）") },
+            )
+        }
 
         // 置顶在前（按置顶顺序），其余保持原顺序（updated_at 倒序）。
         // **算在 LazyColumn 外面**：它的内容 lambda 不是 @Composable，里面不能调 `remember`
@@ -499,11 +568,17 @@ private fun DrawerPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 10.dp, vertical = 1.dp)
-                        // 点 = 打开；长按 = 这一条会话的更多动作（现在是"移动到其他助手"）。
-                        // 长按比每行挂一个"更多"图标省地方，也和消息区的长按选择同一个手势语言。
+                        // 点 = 打开；长按 = 这一条会话的更多动作。
+                        // 多选时点 = 勾选，长按不再弹菜单（同一条手势不能有两种意思）。
                         .combinedClickable(
-                            onClick = { onOpenConversation(row) },
-                            onLongClick = { actionTarget = row },
+                            onClick = {
+                                if (selecting) {
+                                    selectedIds = ConversationSelection.toggle(selectedIds, row.id)
+                                } else {
+                                    onOpenConversation(row)
+                                }
+                            },
+                            onLongClick = { if (!selecting) actionTarget = row },
                         ),
                 ) {
                     Row(
@@ -512,6 +587,10 @@ private fun DrawerPanel(
                             .padding(horizontal = 12.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (selecting) {
+                            SelectBox(checked = row.id in selectedIds)
+                            Spacer(Modifier.width(10.dp))
+                        }
                         Text(
                             text = row.title,
                             style = MaterialTheme.typography.bodyLarge,
@@ -589,17 +668,31 @@ private fun DrawerPanel(
                         },
                     ),
                     SheetItem(
+                        label = "复制会话",
+                        icon = ActionIcons.Copy,
+                        onClick = {
+                            actionTarget = null
+                            onCopy(target)
+                        },
+                    ),
+                    SheetItem(
+                        label = "多选",
+                        icon = ActionIcons.CheckSquare,
+                        // 进来时就把长按的这一条勾上：长按本身已经指名道姓选了它，
+                        // 再让用户重勾一次，等于把刚才那个手势作废。
+                        onClick = {
+                            actionTarget = null
+                            selecting = true
+                            selectedIds = setOf(target.id)
+                        },
+                    ),
+                    SheetItem(
                         label = "删除会话",
                         icon = ActionIcons.Trash2,
                         onClick = {
                             actionTarget = null
                             deleteTarget = target
                         },
-                    ),
-                    SheetItem(
-                        label = "多选（置顶 / 删除）",
-                        icon = ActionIcons.CheckSquare,
-                        hint = "多选下一批接：先把单个动作做稳",
                     ),
                 ),
                 onHint = onHint,
@@ -662,8 +755,54 @@ private fun DrawerPanel(
             )
         }
 
+        // —— 多选：移动 / 删除（0.15d）——
+        // 两个都先确认再写：一次动好几条，误触的代价比单个动作大得多。
+        val chosenNow = ConversationSelection.rowsInOrder(ordered, selectedIds)
+
+        if (bulkMoveOpen) {
+            val others = assistants.filter { it.id != activeAssistant.id }
+            val items = if (others.isEmpty()) {
+                listOf(SheetItem(label = "还没有别的助手：先用「新建助手」建一个"))
+            } else {
+                others.map { entry ->
+                    SheetItem(
+                        label = entry.name,
+                        avatar = entry.name.take(1).ifBlank { "助" },
+                        onClick = {
+                            bulkMoveOpen = false
+                            onMoveMany(chosenNow, entry.id)
+                            selecting = false
+                            selectedIds = emptySet()
+                        },
+                    )
+                }
+            }
+            MenuSheet(
+                title = "把选中的 ${chosenNow.size} 条移到",
+                items = items,
+                onHint = onHint,
+                onDismiss = { bulkMoveOpen = false },
+            )
+        }
+
+        if (bulkDeleteOpen) {
+            ConfirmSheet(
+                title = "删掉选中的 ${chosenNow.size} 个会话？",
+                body = "这些会话里的消息、版本、分界线一起删掉，收不回来。" +
+                    "置顶位也一起清掉；助手与其它会话都不动。",
+                confirmLabel = "删除 ${chosenNow.size} 个",
+                onCancel = { bulkDeleteOpen = false },
+                onConfirm = {
+                    bulkDeleteOpen = false
+                    onDeleteMany(chosenNow)
+                    selecting = false
+                    selectedIds = emptySet()
+                },
+            )
+        }
+
         // —— 提示行（点搜索/助手头像这类"还没接"的地方，原因写在这里）——
-        val currentHint = hint
+        val currentHint = hint ?: notice
         if (currentHint != null) {
             Text(
                 text = currentHint,
@@ -673,52 +812,175 @@ private fun DrawerPanel(
             )
         }
 
-        // —— 底部：助手切换 + 设置 ——
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 点头像 = 助手设置（待接）；点名字/箭头 = 助手列表。
+        // —— 选择时底部换成动作条：这三件事都是"对勾中的那几条做" ——
+        if (selecting) {
+            BulkActionBar(
+                count = selectedIds.size,
+                pinLabel = if (ConversationSelection.allPinned(pinnedIds, chosenNow)) "取消置顶" else "置顶",
+                canMove = assistants.size > 1,
+                onPin = {
+                    onPinMany(chosenNow)
+                    selecting = false
+                    selectedIds = emptySet()
+                },
+                onMove = { bulkMoveOpen = true },
+                onDelete = { bulkDeleteOpen = true },
+                onMoveBlocked = { onHint("还没有别的助手：先用「新建助手」建一个") },
+            )
+        } else {
+            // —— 底部：助手切换 + 设置 ——
             Row(
-                modifier = Modifier
-                    .clickable { onOpenAssistantMenu() }
-                    .padding(end = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                    Box(
-                        modifier = Modifier.clickable {
-                            onHint("改助手的名字要等助手页（P3.6）；现在能在聊天页顶部换模型")
-                        },
-                    ) {
-                        DrawerAvatar(
-                            label = activeAssistant.name.take(1).ifBlank { "助" },
-                            size = 30.dp,
-                            mine = false,
+                // 点头像 = 助手设置（待接）；点名字/箭头 = 助手列表。
+                Row(
+                    modifier = Modifier
+                        .clickable { onOpenAssistantMenu() }
+                        .padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                        Box(
+                            modifier = Modifier.clickable {
+                                onHint("改助手的名字要等助手页（P3.6）；现在能在聊天页顶部换模型")
+                            },
+                        ) {
+                            DrawerAvatar(
+                                label = activeAssistant.name.take(1).ifBlank { "助" },
+                                size = 30.dp,
+                                mine = false,
+                            )
+                        }
+                        Text(
+                            text = activeAssistant.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            modifier = Modifier.padding(start = 10.dp),
                         )
-                    }
-                    Text(
-                        text = activeAssistant.name,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        modifier = Modifier.padding(start = 10.dp),
+                    Icon(
+                        imageVector = ActionIcons.ChevronDown,
+                        contentDescription = "切换助手",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 6.dp).size(18.dp),
                     )
-                Icon(
-                    imageVector = ActionIcons.ChevronDown,
-                    contentDescription = "切换助手",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                }
+                Spacer(Modifier.weight(1f))
+                // 设置图标是**自绘**的齿轮（D139），不用参考图里那个。
+                IconActionButton(
+                    image = ActionIcons.GearSelf,
+                    description = "设置",
+                    onClick = onOpenSettings,
+                    compact = true,
                 )
             }
-            Spacer(Modifier.weight(1f))
-            // 设置图标是**自绘**的齿轮（D139），不用参考图里那个。
-            IconActionButton(
-                image = ActionIcons.GearSelf,
-                description = "设置",
-                onClick = onOpenSettings,
-                compact = true,
-            )
         }
+    }
+}
+
+/**
+ * 多选时那块顶栏（0.15d）：只回答"勾了几条 / 还能不能全选 / 怎么退出去"。
+ *
+ * 全选以**当前列表**为准（含置顶排序），不用"数量相等"去猜——已删除却还留在
+ * 选择集里的 id 会让那种判据永远差一条。
+ */
+@Composable
+private fun SelectionBar(
+    count: Int,
+    allSelected: Boolean,
+    onToggleAll: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 8.dp, top = 44.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "已选 $count 项",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = if (allSelected) "取消全选" else "全选",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clickable { onToggleAll() }
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+        )
+        IconActionButton(
+            image = ActionIcons.Close,
+            description = "退出多选",
+            onClick = onClose,
+            compact = true,
+        )
+    }
+}
+
+/**
+ * 多选时底部那条动作栏（0.15d）：置顶 / 移动 / 删除。
+ *
+ * 一条都没勾时**不摆按钮**，只写一句"还没勾"：三个按不动的字摆在那儿，
+ * 用户会去点，然后怀疑是不是坏了（「空位可以、假开关不行」）。
+ * 没有别的助手可移动时"移动"仍然在，但点下去给的是原因，不是一个死按钮。
+ */
+@Composable
+private fun BulkActionBar(
+    count: Int,
+    pinLabel: String,
+    canMove: Boolean,
+    onPin: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit,
+    onMoveBlocked: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (count == 0) {
+            Text(
+                text = "还没勾：点一行开始",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Row
+        }
+        Text(
+            text = pinLabel,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier
+                .clickable { onPin() }
+                .padding(vertical = 8.dp),
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "移动",
+            style = MaterialTheme.typography.labelLarge,
+            color = if (canMove) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            },
+            modifier = Modifier
+                .clickable { if (canMove) onMove() else onMoveBlocked() }
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        )
+        Text(
+            text = "删除",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier
+                .clickable { onDelete() }
+                .padding(start = 10.dp, top = 8.dp, bottom = 8.dp),
+        )
     }
 }
 

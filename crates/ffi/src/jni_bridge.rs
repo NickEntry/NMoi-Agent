@@ -525,6 +525,37 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteConversationJso
     to_jstring(&mut env, text)
 }
 
+/// 复制会话（0.15d / D207）：消息整份拷到新会话，原件不动。
+/// `title` 空串 = 用默认的「原标题 副本」。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_copyConversationJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    title: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let title = read_string(&mut env, &title);
+    let text = guarded(move || {
+        let (Some(session_id), Some(title)) = (session_id, title) else {
+            return bad_string();
+        };
+        let (Ok(c_session), Ok(c_title)) = (CString::new(session_id), CString::new(title)) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session / title）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_copy_conversation_json(
+            handle as u64,
+            c_session.as_ptr(),
+            c_title.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 只改归属：消息、版本、摘要一个字节都不搬（搬就会有两份"同一个会话"）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_moveConversationJson<'local>(

@@ -7,6 +7,12 @@ package com.nmoi.agent.ui
  * `nmoi_storage_list_conversations_json`（契约见 docs/PLAN.md §3.11），
  * 字段顺序与这里列的这几样一一对应（含 D101 的 `model`，NULL 表示这一轮还没跑过）。
  */
+/** 复制会话的结果（0.15d）：新会话 id + 拷过去的消息条数。 */
+internal data class ConversationCopy(
+    val sessionId: String,
+    val messages: Int,
+)
+
 internal data class ConversationRow(
     /** 库里的会话 id。占位数据给空串：空串 = "这一行不是真的"，聊天页据此不假装能读。 */
     val id: String,

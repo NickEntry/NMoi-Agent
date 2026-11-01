@@ -151,11 +151,73 @@ impl Storage {
     pub fn delete_conversation(&mut self, session: SessionId) -> Result<bool, StorageError> {
         let tx = self.conn.transaction()?;
         let id = session.to_string();
-        tx.execute("DELETE FROM archive WHERE conv_id = ?1", params![id])?;
+        // 归档按 ref 全局唯一（内容寻址），副本会继续指着原会话写下的那一行。
+        // 所以只删"没有别人还在引用"的：否则删掉原件，副本里的 `archived_ref` 就悬空了。
+        tx.execute(
+            "DELETE FROM archive WHERE conv_id = ?1
+               AND ref NOT IN (
+                   SELECT archived_ref FROM messages
+                   WHERE conv_id <> ?1 AND archived_ref IS NOT NULL
+               )",
+            params![id],
+        )?;
         tx.execute("DELETE FROM events WHERE conv_id = ?1", params![id])?;
         let changed = tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(changed > 0)
+    }
+
+    /// 复制一个会话（0.15d / D207）：新建一个会话，把消息按原顺序整份拷过去。
+    ///
+    /// 为什么走 `load_units` → 按新会话重赋 id → `append_unit`，而不是一条
+    /// `INSERT ... SELECT`：单元是"调用 + 结果成对闭合"的整体，直接抄 SQL 会绕过
+    /// `validate()` 与 `append_unit` 自带的写后读回比对；抄漏一行就是铁律 ② 里的
+    /// "不可见消息"。`seq` 原样保留，所以副本里的消息顺序与原件一一对应。
+    ///
+    /// **不复制**的东西，理由各自不同：
+    /// - 分界线：`summary_ref` 指向原会话压出来的摘要，搬过去就悬空（`load_window` 会直接报错）；
+    /// - 置顶位：那是"我怎么看这个列表"，不是会话本身的事实；
+    /// - 草稿：根本不在库里（`DraftStore` 走 SharedPreferences）。
+    ///
+    /// 标题：调用方给了非空就用它，否则「原标题 副本」。给这个默认值是因为
+    /// 列表里两条同名会话根本分不出哪条是新的。
+    pub fn copy_conversation(
+        &mut self,
+        session: SessionId,
+        title: Option<&str>,
+    ) -> Result<SessionId, StorageError> {
+        let found: Option<(String, String, String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT title, device_origin, assistant_id, model FROM conversations WHERE id = ?1",
+                [session.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let (source_title, device, assistant, model) =
+            found.ok_or_else(|| StorageError::Inconsistent(format!("会话 {session} 不存在")))?;
+
+        let units = self.load_units(session)?;
+        let copy_title = match title.map(str::trim) {
+            Some(given) if !given.is_empty() => given.to_string(),
+            _ => format!("{source_title} 副本"),
+        };
+        let target = self.create_conversation(&copy_title, &device, &assistant)?;
+        for unit in &units {
+            let new_unit = UnitId::new(target, unit.id.seq());
+            let mut copy = unit.clone();
+            copy.id = new_unit.clone();
+            for message in &mut copy.messages {
+                message.id = MessageId::new(target, message.id.seq());
+                message.unit_id = new_unit.clone();
+            }
+            self.append_unit(target, &copy)?;
+        }
+        // 模型跟着走：副本第一次发消息时用的是"原来那个"，而不是供应商的第一个模型（D205）。
+        if let Some(model) = model {
+            self.set_conversation_model(target, &model)?;
+        }
+        Ok(target)
     }
 
     /// 这个会话最近一次用的模型（D101）。`None` = 还没跑过一轮。

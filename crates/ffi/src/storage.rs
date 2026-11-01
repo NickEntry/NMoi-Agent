@@ -221,6 +221,39 @@ pub extern "C" fn nmoi_storage_delete_conversation_json(
     })
 }
 
+/// 复制一个会话（0.15d / D207）：新建一条，把消息整份拷过去。
+///
+/// `title` 空串 = 用默认的「原标题 副本」；给出非空串就用它。
+/// 返回 `{"session":"<新会话 id>","copied":<消息条数>,"source":"<原会话 id>"}`——
+/// 界面要能立刻说"复制了几条"，而不是只回一个 ok（那种页面上用户只能靠翻列表确认）。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_copy_conversation_json(
+    handle: u64,
+    session: *const c_char,
+    title: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let title = read_str(title, "title")?;
+        let title = if title.trim().is_empty() {
+            None
+        } else {
+            Some(title)
+        };
+        with_storage(handle, |storage| {
+            let copied = storage
+                .copy_conversation(session_id, title)
+                .map_err(storage_error)?;
+            let messages = storage.message_count(copied).map_err(storage_error)?;
+            Ok(json!({
+                "session": copied.to_string(),
+                "copied": messages,
+                "source": session_id.to_string(),
+            }))
+        })
+    })
+}
+
 /// 单独一条而不是塞进 `create_conversation`：用户常常先建会话、再挑模型，
 /// 而 `create` 的签名一动，C 侧所有调用点都得跟着改。
 ///

@@ -4958,3 +4958,44 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 
 **验证**：kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Rust 侧这一批没动
 （上一批的 744 项仍是绿的）。
+
+## D207 会话多选工具条 + 复制会话（用户 2026-11-01 定的下一步）
+
+用户 2026-11-01 定的顺序里，这一批是"会话多选工具条 → `copy_conversation`"。
+两件一起做，因为它们共用同一块界面（抽屉里的选择模式）。
+
+1. **`Storage::copy_conversation(session, title)`**：新建一条会话 → `load_units` →
+   单元与消息按**新会话**重赋 id（`seq` 原样）→ `append_unit` 逐条写回。
+   不走 `INSERT ... SELECT`：单元是"调用 + 结果成对闭合"的整体，直接抄 SQL 会绕过
+   `validate()` 与 `append_unit` 自带的"写完读回比对"；抄漏一行就是铁律 ② 里的不可见消息。
+   - 标题：给了非空就用它，否则「原标题 副本」。列表里两条同名，用户分不出哪条是新的。
+   - 模型跟着走（`conversations.model`），副本第一句就用原来那个模型，而不是供应商的第一个（D205）。
+   - **不复制**：分界线（`summary_ref` 指向原会话压出来的摘要，搬过去就悬空，`load_window` 会直接报错）、
+     置顶位（那是"我怎么看这个列表"）、草稿（根本不在库里）。
+   - 返回值带上 `copied`（拷了几条消息）：只说"已复制"的话，用户得翻列表自己确认。
+2. **删原件不再删掉副本还指着的归档**：`archive.ref` 是内容寻址的全局主键，副本里的
+   `archived_ref` 仍指向同一行。`delete_conversation` 现在只删"没有别人引用"的归档行——
+   否则删掉原件之后，副本会在下一次 L3 校验里被判成"引用不存在"。判据在
+   `deleting_the_original_keeps_archive_rows_a_copy_still_points_at`。
+3. **多选**：长按菜单里的「多选」进来，长按的那一条**已经勾上**（那个手势本身已经指名道姓）。
+   - 顶部：`已选 N 项 · 全选/取消全选 · ×`；全选以**当前列表**为准，不用"数量相等"去猜
+     （已删除却还留在选择集里的 id 会让那种判据永远差一条）。
+   - 行：点 = 勾选（不进会话），长按不再弹菜单；行首出现勾选框（复用 `Controls.kt` 的 `SelectBox`）。
+   - 底部：`置顶 / 移动 / 删除`。选中的全都已置顶时那颗按钮写「取消置顶」——同一颗按钮
+     按"全都已置顶"这一个条件分叉，不做部分取消（勾三条两条已置顶时，文案说不清会发生什么）。
+   - 一条都没勾时**不摆按钮**，只写「还没勾：点一行开始」；没有别的助手可移动时"移动"仍在，
+     点下去给的是原因（「还没有别的助手…」），不是一颗死按钮。
+   - 删除与移动都先确认再写；删完顺带把置顶数组里那几条摘掉（不然 settings 里留着界面上不存在的 id）。
+   - 返回键先退多选，再收抽屉（0.15j 的优先级：选择模式在抽屉之前）。
+4. **补 0.15d 的接线洞**：`ConversationDrawer` 收了 `pinnedIds / onTogglePin / onRename / onDelete`
+   却没传给 `DrawerPanel`——参数有默认值，编译器不吭声，真机上置顶 / 改名 / 删除三个动作
+   是"点了没反应"。这一批把它们接上，另外把"复制成功几条第"的回话通过 `notice` 传回抽屉的提示行。
+5. 纯逻辑抽成 `ConversationSelection`（toggle / rowsInOrder / toggleAll / allPinned /
+   pinAfterToggle / prune），本机 JVM 上 7 条单测钉住顺序与判据。
+
+**验证**：`cargo test --workspace --all-targets` **748 项全绿**（storage lib 34，新增 4 条：
+复制保序与 id 重赋、工具对闭合、未知会话被拒、删原件留归档）；
+`cargo fmt --check` / `clippy -D warnings` 干净；`scripts/ffi_smoke.sh` **321 项 0 失败**；
+`check_jni_symbols.sh --expected-only` 的期望表已含 `copyConversationJson`；
+本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；`ConversationSelectionTest` **7/7 绿**。
+真机路径见 `docs/verification.md` **V41**（未实测）。

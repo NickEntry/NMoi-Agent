@@ -592,4 +592,137 @@ mod tests {
         let report = storage.backup(dest).unwrap();
         assert!(report.verified, "{:?}", report.problems);
     }
+
+    /// 复制会话（D207）：消息整份过去、id 换成新会话、原件一个字节不动。
+    #[test]
+    fn copy_conversation_keeps_every_message_under_a_new_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+
+        let copy = storage.copy_conversation(session, None).unwrap();
+        assert_ne!(copy, session);
+
+        let original = storage.load_units(session).unwrap();
+        let duplicated = storage.load_units(copy).unwrap();
+        assert_eq!(original.len(), 1);
+        assert_eq!(duplicated.len(), 1);
+        assert_eq!(original[0].messages.len(), duplicated[0].messages.len());
+
+        // 内容与 seq 一致，但 id 属于新会话——抄漏 id 会让两条会话抢同一行主键。
+        for (before, after) in original[0].messages.iter().zip(&duplicated[0].messages) {
+            assert_eq!(before.content, after.content);
+            assert_eq!(before.id.seq(), after.id.seq());
+            assert_eq!(after.id.session(), copy);
+            assert_eq!(after.unit_id.session(), copy);
+        }
+        // 原件没被动过：单元 id 还在老会话里。
+        assert_eq!(original[0].id.session(), session);
+        assert_eq!(unit.id, original[0].id);
+
+        // 标题默认带"副本"，否则列表里两条同名根本分不出哪条是新的。
+        let page = storage.list_conversations(Some("default"), 10, 0).unwrap();
+        let titles: Vec<&str> = page.items.iter().map(|c| c.title.as_str()).collect();
+        assert!(titles.contains(&"体检 副本"), "{titles:?}");
+    }
+
+    /// 工具对也要成对搬过去：只搬调用不搬结果，副本里那个单元就是开口的。
+    #[test]
+    fn copy_conversation_keeps_tool_pairs_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("工具对", "device-a", "default")
+            .unwrap();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![nmoi_core::message::OutgoingToolCall::new(
+                "call-1",
+                "read_file",
+                "{\"path\":\"a\"}",
+            )],
+            5,
+            1_700_000_000_000,
+            LogicalClock::new(1),
+        );
+        let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        let unit_id = unit.id.clone();
+        let result = Message::tool_result(
+            MessageId::new(session, 2),
+            "call-1",
+            "文件内容 a",
+            3,
+            1_700_000_000_001,
+            LogicalClock::new(2),
+        )
+        .with_unit(unit_id);
+        unit.add_result(result).unwrap();
+        storage.append_unit(session, &unit).unwrap();
+
+        let copy = storage
+            .copy_conversation(session, Some("工具对 2"))
+            .unwrap();
+        let duplicated = storage.load_units(copy).unwrap();
+        assert_eq!(duplicated.len(), 1);
+        assert!(duplicated[0].is_closed(), "副本的工具对必须是闭合的");
+        assert_eq!(duplicated[0].messages.len(), 2);
+        assert_eq!(
+            duplicated[0].messages[1].tool_call_id.as_deref(),
+            Some("call-1")
+        );
+    }
+
+    /// 副本还指着的归档，删原件时不能删掉：`ref` 是内容寻址的全局主键，
+    /// 删了那一行，副本里的 `archived_ref` 就悬空，L3 下次会说这个库坏了。
+    #[test]
+    fn deleting_the_original_keeps_archive_rows_a_copy_still_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("带归档", "device-a", "default")
+            .unwrap();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "很长的原文".to_string(),
+            SourceTag::History,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 1),
+            9,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+
+        let message = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "原文在归档里",
+            9,
+            1_700_000_000_000,
+            LogicalClock::new(1),
+        )
+        .with_archive(nmoi_core::message::ContentForm::Pointer, reference.clone());
+        let unit = AtomicUnit::turn(message).unwrap();
+        storage.append_unit(session, &unit).unwrap();
+
+        let copy = storage.copy_conversation(session, None).unwrap();
+        assert!(storage.delete_conversation(session).unwrap());
+
+        // 副本还在，它的归档引用也还解得开。
+        let duplicated = storage.load_units(copy).unwrap();
+        assert_eq!(
+            duplicated[0].messages[0].archived_ref.as_ref(),
+            Some(&reference)
+        );
+        assert!(storage.fetch_archive(&reference).is_ok());
+    }
+
+    /// 不存在的会话复制不了：静默建出一个空会话比报错更难查。
+    #[test]
+    fn copy_conversation_refuses_unknown_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let stranger = nmoi_core::ids::SessionId::new();
+        let refused = storage.copy_conversation(stranger, None);
+        assert!(refused.is_err());
+    }
 }

@@ -152,6 +152,25 @@ internal object ConversationRepository {
         }
 
     /**
+     * 复制会话（0.15d / D207）：新建一条，消息整份拷过去，原件不动。
+     *
+     * 返回新会话 id；`copied` 是拷过去的消息条数，界面拿它说"复制了 N 条"——
+     * 只说"已复制"的话，用户得翻列表自己确认，而列表里两条长得一样。
+     */
+    suspend fun copy(
+        databasePath: String,
+        sessionId: String,
+        title: String = "",
+    ): Result<ConversationCopy> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.copyConversation(handle, sessionId, title).mapCatching { envelope ->
+                val id = envelope.optString("session", "")
+                if (id.isEmpty()) error("原生层没给新会话 id")
+                ConversationCopy(sessionId = id, messages = envelope.optInt("copied", 0))
+            }
+        }
+
+    /**
      * 置顶的会话 id（按**用户排的顺序**，最早置顶的在最前）。
      *
      * 存 `settings(scope=conversation)` 的一个键，不加列：这是"我怎么看这个列表"，

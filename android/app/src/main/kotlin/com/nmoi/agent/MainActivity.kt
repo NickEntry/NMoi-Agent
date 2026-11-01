@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,7 @@ import com.nmoi.agent.ui.AppSettingsScreen
 import com.nmoi.agent.ui.AppIconSwitcher
 import com.nmoi.agent.ui.AssistantEditScreen
 import com.nmoi.agent.ui.AssistantEntry
+import com.nmoi.agent.ui.ConversationSelection
 import com.nmoi.agent.ui.AssistantList
 import com.nmoi.agent.ui.AssistantRepository
 import com.nmoi.agent.ui.AssistantScreen
@@ -248,6 +250,12 @@ class MainActivity : ComponentActivity() {
 
                 // 切助手 / 新建助手 / 移动会话（D174）：三个动作都要落库，然后让抽屉重读。
                 val scope = rememberCoroutineScope()
+                // 抽屉顶部（底部提示行）那一句话：复制这种"外面才算出条数"的动作要有回话，
+                // 不然用户只能翻列表自己确认，而列表里两条长得一样。
+                var drawerNotice by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(drawerOpen) {
+                    if (!drawerOpen) drawerNotice = null
+                }
                 ConversationDrawer(
                     open = drawerOpen,
                     rows = snapshot?.rows.orEmpty(),
@@ -290,6 +298,82 @@ class MainActivity : ComponentActivity() {
                             if ((route as? Route.Chat)?.sessionId == row.id) {
                                 backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
                             }
+                            // 置顶数组里也要把它摘掉，否则 settings 里留着一个界面上不存在的 id。
+                            if (row.id in pinnedIds) {
+                                withContext(Dispatchers.IO) {
+                                    ConversationRepository.setPinned(databasePath, pinnedIds - row.id)
+                                }
+                            }
+                            listReload += 1
+                        }
+                    },
+                    notice = drawerNotice,
+                    onCopy = { row ->
+                        scope.launch {
+                            val title = row.title.ifBlank { "会话" }
+                            withContext(Dispatchers.IO) {
+                                ConversationRepository.copy(databasePath, row.id, "$title 副本")
+                            }.fold(
+                                onSuccess = { result ->
+                                    NLog.i("Storage", "复制会话成功：${result.messages} 条 → ${result.sessionId}")
+                                    drawerNotice = "已复制 ${result.messages} 条到「$title 副本」"
+                                    listReload += 1
+                                },
+                                onFailure = {
+                                    NLog.w("Storage", "复制会话失败：${it.message}")
+                                    drawerNotice = "复制失败：${it.message}"
+                                },
+                            )
+                        }
+                    },
+                    onPinMany = { chosen ->
+                        scope.launch {
+                            // 与抽屉里那颗按钮的文案用同一个判断，不然"写着置顶、结果是取消"。
+                            val next = ConversationSelection.pinAfterToggle(pinnedIds, chosen)
+                            withContext(Dispatchers.IO) {
+                                ConversationRepository.setPinned(databasePath, next)
+                            }.onFailure { NLog.w("Storage", "批量置顶失败：${it.message}") }
+                            listReload += 1
+                        }
+                    },
+                    onMoveMany = { chosen, assistantId ->
+                        scope.launch {
+                            var moved = 0
+                            for (row in chosen) {
+                                withContext(Dispatchers.IO) {
+                                    ConversationRepository.move(databasePath, row.id, assistantId)
+                                }.onSuccess { moved += 1 }
+                                    .onFailure { NLog.w("Storage", "移动 ${row.id} 失败：${it.message}") }
+                            }
+                            // 开着的那个被移走了：它已经不属于当前助手，留着就再也从列表里进不去。
+                            if (chosen.any { it.id == (route as? Route.Chat)?.sessionId }) {
+                                backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
+                            }
+                            drawerNotice = "已移动 $moved 条"
+                            listReload += 1
+                        }
+                    },
+                    onDeleteMany = { chosen ->
+                        scope.launch {
+                            var deleted = 0
+                            for (row in chosen) {
+                                withContext(Dispatchers.IO) {
+                                    ConversationRepository.delete(databasePath, row.id)
+                                }.onSuccess { deleted += 1 }
+                                    .onFailure { NLog.w("Storage", "删 ${row.id} 失败：${it.message}") }
+                            }
+                            // 置顶数组里一次摘干净，别留下界面上已经不存在的 id。
+                            val gone = chosen.map { it.id }.toSet()
+                            val stillPinned = pinnedIds.filterNot { it in gone }
+                            if (stillPinned != pinnedIds) {
+                                withContext(Dispatchers.IO) {
+                                    ConversationRepository.setPinned(databasePath, stillPinned)
+                                }
+                            }
+                            if (chosen.any { it.id == (route as? Route.Chat)?.sessionId }) {
+                                backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
+                            }
+                            drawerNotice = "已删除 $deleted 个会话"
                             listReload += 1
                         }
                     },

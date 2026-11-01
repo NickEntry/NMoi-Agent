@@ -74,6 +74,10 @@ internal object NmoiFfi {
     suspend fun deleteConversation(handle: Long, session: String): Result<JSONObject> =
         call("delete_conversation") { NativeBridge.deleteConversationJson(handle, session) }
 
+    /** 复制会话（0.15d）：消息整份拷到新会话，原件一个字节不动。 */
+    suspend fun copyConversation(handle: Long, session: String, title: String = ""): Result<JSONObject> =
+        call("copy_conversation") { NativeBridge.copyConversationJson(handle, session, title) }
+
     /**
      * 校验子助手名单（D176）。**不需要存储句柄**：它是一条纯检查，
      * 保存助手配置之前调它，撞名当场红字，而不是等发请求时才 400。
