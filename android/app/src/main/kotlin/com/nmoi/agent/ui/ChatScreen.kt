@@ -130,7 +130,12 @@ internal fun ChatScreen(
     // 存完一条要重读：`produceState` 只有 key 变了才会重跑，所以用它当"刷新一下"。
     var reloadKey by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
+    // **按会话记**（2026-10-31 真机报：在一个会话里聊过，切到新会话第一句发不出去，
+    // 提示"上一轮还没结束"）。原来 `remember {}` 不带 key，切会话时这个状态跟着上一场
+    // 留在原地，于是新会话一进来就是 busy。
+    var busy by remember(sessionId) {
+        mutableStateOf(sessionId != null && GeneratingTracker.isRunning(sessionId))
+    }
     // 刚发出去的那句话：**先进消息区**（用户 2026-10-27："发送的时候先把消息推到消息框"），
     // 输入框当场清空。这一条不进库、也不算"已存"——库里有没有得等这一轮收尾后现读。
     var pending by remember { mutableStateOf<PendingSend?>(null) }
@@ -140,7 +145,7 @@ internal fun ChatScreen(
     // 而这里的 state 已经随重组回到初值了。写成 `remember(sessionId)` 才跟着会话换。
     // 这一轮已经收到的正文/思考（0.15n）。**只用于画**：一轮结束以落库结果为准，
     // 免得"流里画的和库里存的"两套东西对不上（铁律①）。
-    var partialText by remember { mutableStateOf("") }
+    var partialText by remember(sessionId) { mutableStateOf("") }
     var waiting by remember(sessionId) {
         mutableStateOf(sessionId != null && GeneratingTracker.isRunning(sessionId))
     }
@@ -198,8 +203,40 @@ internal fun ChatScreen(
             AssistantRepository.choices(databasePath).onSuccess { choices = it }
         }
     }
-    val thinkingLabel = remember(assistant.thinking) {
-        THINKING_LEVELS.firstOrNull { it.first == assistant.thinking }?.second ?: assistant.thinking
+    // 这个助手当前用的那个模型：思考档位能选哪几档由它说了算（D201 第四片之后的读取点）。
+    val currentModel = remember(assistant, choices) {
+        choices.firstOrNull {
+            it.first.id == assistant.providerId && it.second.id == assistant.modelId
+        }?.second
+    }
+    /**
+     * 「思考」那一张表：**只列这个模型真接受的档位**。
+     *
+     * 真机反馈（2026-10-31）：模型里只勾了 low / medium，助手这边照样能把「高」选上，
+     * 然后发请求时被 FFI 顶回来——选的时候不拦，发的时候才报错，等于让用户白填一次。
+     *
+     * 三条兜底：
+     * - 模型没勾任何档位（`efforts` 空 = 没数据）→ **全列**，别替它做决定；
+     * - `off` 只在「允许关闭」不是 `false` 时出现；
+     * - `auto` 永远在场（它是"这次不指定"）。
+     */
+    val thinkingLevels = remember(currentModel) {
+        val allowed = currentModel?.efforts.orEmpty()
+        val canDisable = currentModel?.allowDisable != false
+        THINKING_LEVELS.filter { (wire, _) ->
+            when {
+                wire == "auto" -> true
+                wire == "off" -> canDisable
+                allowed.isEmpty() -> true
+                else -> wire in allowed
+            }
+        }
+    }
+    val thinkingLabel = remember(assistant.thinking, thinkingLevels) {
+        val known = THINKING_LEVELS.firstOrNull { it.first == assistant.thinking }?.second
+            ?: assistant.thinking
+        val supported = thinkingLevels.any { it.first == assistant.thinking }
+        if (supported) known else "$known（这个模型不支持）"
     }
     // 顶部这一行是**显示**，不是选择器（用户 2026-10-31）：一轮里用哪个模型由这一页决定，
     // 而模型条还兼着"当前用的是谁"的说明作用。格式「模型名称 (模型提供商)」——
@@ -799,7 +836,7 @@ internal fun ChatScreen(
         if (thinkingSheet) {
             MenuSheet(
                 title = "思考强度",
-                items = THINKING_LEVELS.map { (wire, label) ->
+                items = thinkingLevels.map { (wire, label) ->
                     SheetItem(
                         label = if (wire == assistant.thinking) "$label（当前）" else label,
                         icon = ActionIcons.Gauge,

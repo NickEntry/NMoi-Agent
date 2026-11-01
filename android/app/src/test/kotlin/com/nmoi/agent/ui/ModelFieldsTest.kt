@@ -29,7 +29,7 @@ class ModelFieldsTest {
         currency: String = "",
         efforts: List<String> = emptyList(),
         headers: List<HeaderRow> = emptyList(),
-        bodyOverride: String = "",
+        bodyRows: List<BodyRow> = emptyList(),
     ) = ProviderModel(
         id = id,
         name = name,
@@ -43,7 +43,7 @@ class ModelFieldsTest {
         currency = currency,
         efforts = efforts,
         headers = headers,
-        bodyOverride = bodyOverride,
+        bodyFields = bodyRows,
     )
 
     private fun entry(vararg models: ProviderModel, sources: Map<String, Map<String, FieldSource>> = emptyMap()) =
@@ -159,15 +159,19 @@ class ModelFieldsTest {
     }
 
     @Test
-    fun `body 只多打了首尾空白不算改动-改中间算`() {
-        val old = entry(model(bodyOverride = """{"a":1}"""))
-        val padded = model(bodyOverride = """  {"a":1}
-""")
+    fun `body 行的值只多打了空白不算改动-改了才算`() {
+        val old = entry(model(bodyRows = listOf(BodyRow("top_k", "42"), BodyRow("seed", "7"))))
+
+        // 值首尾空白不算改内容（数字两边多打了空格，还是同一个数）。
+        val padded = model(bodyRows = listOf(BodyRow("top_k", " 42 "), BodyRow("seed", "7")))
         assertEquals(FieldSource.Default, sourcesOf(padded, old)[ModelField.BODY])
 
-        // 中间改一个字（或缩进）就是改内容：不先解析 JSON 就没法说"结构一样"。
-        val respaced = model(bodyOverride = """{"a": 1}""")
-        assertEquals(FieldSource.Custom, sourcesOf(respaced, old)[ModelField.BODY])
+        // 行序变了也不算：这里比的是"有哪些键值"，不是"谁先写"。
+        val reordered = model(bodyRows = listOf(BodyRow("seed", "7"), BodyRow("top_k", "42")))
+        assertEquals(FieldSource.Default, sourcesOf(reordered, old)[ModelField.BODY])
+
+        val changed = model(bodyRows = listOf(BodyRow("top_k", "43"), BodyRow("seed", "7")))
+        assertEquals(FieldSource.Custom, sourcesOf(changed, old)[ModelField.BODY])
     }
 
     @Test

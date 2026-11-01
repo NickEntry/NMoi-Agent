@@ -50,6 +50,12 @@ internal fun AssistantScreen(
 ) {
     val scope = rememberCoroutineScope()
     var list by remember { mutableStateOf<AssistantList?>(null) }
+    /**
+     * 供应商 id → 名字。列表行里写「当前 · **供应商名** / 模型 id」，
+     * 不写 `p1x9...` 这种内部 id（真机截图里那一行就是 `pmvtgpg6c / raccoon/...`，
+     * 用户看不出那是哪一家）。读不到就退回 id，不留空。
+     */
+    var providerNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var notice by remember { mutableStateOf<String?>(null) }
     var noticeIsError by remember { mutableStateOf(false) }
     var reload by remember { mutableStateOf(0) }
@@ -58,6 +64,11 @@ internal fun AssistantScreen(
         // 每次进这一页先保证默认助手在库里：它是"第一次启动就自带的那一个"，
         // 少了它，迁移到 default 的老会话在界面上就没有家（铁律 ②）。
         withContext(Dispatchers.IO) { AssistantRepository.ensureDefault(databasePath) }
+        withContext(Dispatchers.IO) {
+            ProviderRepository.list(databasePath).onSuccess { page ->
+                providerNames = page.rows.associate { it.id to it.name.ifBlank { it.id } }
+            }
+        }
         withContext(Dispatchers.IO) { AssistantRepository.list(databasePath) }.fold(
             onSuccess = { list = it },
             onFailure = {
@@ -196,7 +207,9 @@ internal fun AssistantScreen(
                                                     if (entry.id == page?.activeId) append("当前 · ")
                                                     append(
                                                         if (entry.isRunnable) {
-                                                            "${entry.providerId} / ${entry.modelId}"
+                                                            val provider = providerNames[entry.providerId]
+                                                                ?: entry.providerId
+                                                            "$provider / ${entry.modelId}"
                                                         } else {
                                                             "还没选模型"
                                                         },

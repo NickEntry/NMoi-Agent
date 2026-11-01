@@ -115,6 +115,11 @@ internal object ActionIcons {
         stroke("m6 9 6 6 6-6")
     }
 
+    /** Lucide `chevron-right.svg`：进下一层。设置类页面右侧那颗，不是文字 `›`。 */
+    val ChevronRight: ImageVector = buildVector("chevron-right") {
+        stroke("m9 18 6-6-6-6")
+    }
+
     /** Lucide `share-2.svg`：分享。三个 `circle r=3` + 两条连线。 */
     val Share2: ImageVector = buildVector("share-2") {
         stroke("M21 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0")

@@ -4780,3 +4780,34 @@ storage 108 等）；`cargo fmt --check` 与 `clippy -D warnings` 干净；
 `scripts/ffi_smoke.sh` **321 项 0 失败**；`scripts/check_jni_symbols.sh --expected-only`
 仍是 33 个符号（这一片没加 JNI）；Kotlin 单测 **42/42**；kotlinc 全量类型检查只剩 9 条
 `unresolved reference 'R'`。真机路径见 `docs/verification.md` **V35**。
+
+## D202 真机第一轮反馈的返工（用户 2026-10-31 晚，8 条）
+
+用户按 V33–V35 走了一遍，报回 8 条。这一条记**先落地的 5 条**，余下 3 条在下面列着。
+
+1. **切会话后"上一轮还没结束"**（blocking）：`ChatScreen` 里 `busy` 是 `remember { }`，
+   **不带 key**——切会话时它跟着上一场留在原地，新会话一进来就是 busy。
+   改成 `remember(sessionId)`，初值取 `GeneratingTracker`（真在跑的会话照样显示生成中）。
+   `partialText` 一并按会话重置（不然流式的残字会飘到另一个会话里）。
+2. **模型编辑页的 ✓ 不落库**（用户原话："自定义好像会失败，再点进编辑没看到"）：
+   以前 ✓ 只写回供应商页的表单，要再按一次「保存」。现在 ✓ 收起这一页之后立刻走
+   `persist()`——同一条保存路径（校验、密钥、现读库都不另写一份）。
+   读屏文案也改成"保存这个模型并返回"。
+3. **自定义 Body 改成按行填 key / JSON 值**（用户要求）：`ProviderModel.bodyOverride: String`
+   → `bodyFields: List<BodyRow>`，wire 仍是 `body` 但形状从"一整段字符串"变成
+   `[{name,value}]`。读取时**两种都认**（老的整段 JSON 会就地拆成行，铁律 ②）。
+   校验三条，都在保存那一下：值必须是合法 JSON 字面量（字符串要带引号）、
+   `messages`/`model`/`stream`/`tools` 不许填（核心自己写）、只填值不填名直接拦。
+   FFI 契约不变（它收的仍是字符串），Kotlin 这边把行拼成对象再发。
+4. **助手列表的「当前」写的是供应商 id**（`pmvtgpg6c / raccoon/...`，看不出是哪家）：
+   列表页顺带读一次供应商表，写成「供应商名 / 模型 id」，读不到才退回 id。
+5. **思考档位能选到模型不支持的**：`ChatScreen` 的「思考」表现在按当前模型过滤——
+   `efforts` 空（没数据）**全列**；`off` 只在「允许关闭」不是 `false` 时出现；
+   `auto` 永远在。已经选中但不被支持的档位，标签后面加「（这个模型不支持）」，
+   让它可见而不是悄悄消失。
+6. **三个分组页还是老样子**（模型与提示词 / 会话与上下文 / 调试）：`GroupScreen` 按
+   D200 样板重写——一张连续的板、行高 ≥64、行线从文字起点缩进、右侧写"当前/待接阶段"
+   或 chevron、页边距 24。`RowDivider` 与 `WideButton` 一起挪进 `Controls.kt`（同一形状一份实现）。
+
+**还欠着的三条**（下一批）：拉取模型改成"可搜索的挑选窗口 + 增删"（按 id 匹配，不用名字）；
+资源更新页加多选删除；快照匹配放宽（`sn-` 前缀 / 日期尾巴 / 厂商最新）。

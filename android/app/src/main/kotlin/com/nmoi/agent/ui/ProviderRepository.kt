@@ -14,6 +14,15 @@ import java.io.File
 internal data class HeaderRow(val name: String, val value: String)
 
 /**
+ * 自定义 Body 的一行（用户 2026-10-31 改的口径）：**跟 Header 一样填 key + value**，
+ * 区别只在 `value` 是 **JSON 字面量**（数字、布尔、字符串、对象、数组都行）。
+ *
+ * 为什么不做成"一个大 JSON 文本框"：一个整段 JSON 的框看起来更自由，但它不告诉你
+ * "这一行错了"，保存时只能整段拒绝；按行填能点到哪一行、哪一个值，手势也跟 Header 一致。
+ */
+internal data class BodyRow(val name: String, val value: String)
+
+/**
  * 一个供应商下的一个模型（D157）。
  *
  * 左边这几样（名字 / 类型 / 窗口 / 输出 / 温度）**每一处都有读取点**：
@@ -82,8 +91,13 @@ internal data class ProviderModel(
     // ---- D201 高级页 ---------------------------------------------------------
     /** 每次请求附带的 Header（**还没有读取点**，见类注释）。 */
     val headers: List<HeaderRow> = emptyList(),
-    /** 直接并进请求体的 JSON 片段（原文保存，校验留给保存那一下）。 */
-    val bodyOverride: String = "",
+    /**
+     * 直接并进请求体的键值（`value` 是 JSON 字面量）。空 = 不并。
+     *
+     * 老数据里这一项是**一整段 JSON 字符串**，读取时会被拆成这些行
+     * （见 `decodeBodyRows`）：形状变了，数据不丢。
+     */
+    val bodyFields: List<BodyRow> = emptyList(),
     /** 远程图片链接（模型的示意图/图标）。 */
     val remoteImageUrl: String = "",
     /** 允许模型用供应商侧的**内置工具**（联网搜索那类）。三态，理由同 [tools]。 */
@@ -418,7 +432,16 @@ internal object ProviderRepository {
                 },
             )
         }
-        if (model.bodyOverride.isNotBlank()) put(ModelField.BODY, model.bodyOverride)
+        if (model.bodyFields.isNotEmpty()) {
+            put(
+                ModelField.BODY,
+                JSONArray().apply {
+                    model.bodyFields.forEach { row ->
+                        put(JSONObject().put("name", row.name).put("value", row.value))
+                    }
+                },
+            )
+        }
         if (model.remoteImageUrl.isNotBlank()) {
             put(ModelField.REMOTE_IMAGE, model.remoteImageUrl.trim())
         }
@@ -452,11 +475,71 @@ internal object ProviderRepository {
             allowDisable = boolOrNull(row, ModelField.ALLOW_DISABLE),
             defaultEffort = row.optString(ModelField.DEFAULT_EFFORT, "").trim(),
             headers = headerRows(row.optJSONArray(ModelField.HEADERS)),
-            bodyOverride = row.optString(ModelField.BODY, ""),
+            bodyFields = decodeBodyRows(row),
             remoteImageUrl = row.optString(ModelField.REMOTE_IMAGE, "").trim(),
             builtinTools = boolOrNull(row, ModelField.BUILTIN_TOOLS),
         )
     }
+
+    /**
+     * 自定义 Body 的读取，**两种形状都认**：
+     *
+     * - 新：`[{name,value}]`；
+     * - 老（这一版之前）：一整段 JSON 字符串，甚至直接存成对象。
+     *
+     * 老形状在这里被**拆成行**而不是原样留着：界面上只有"按行填"这一种编辑器，
+     * 留着整段就没有能显示它的地方（铁律 ②：库里的每样东西都要能在界面上指出来）。
+     */
+    private fun decodeBodyRows(row: JSONObject): List<BodyRow> {
+        val value = row.opt(ModelField.BODY)
+        return when (value) {
+            is JSONArray -> buildList {
+                for (index in 0 until value.length()) {
+                    val item = value.optJSONObject(index) ?: continue
+                    val name = item.optString("name", "").trim()
+                    if (name.isEmpty()) continue
+                    add(BodyRow(name, item.optString("value", "")))
+                }
+            }
+
+            is JSONObject -> value.keys().asSequence().map { key ->
+                BodyRow(key, jsonText(value.opt(key)))
+            }.toList()
+
+            is String -> parseLegacyBody(value)
+
+            else -> emptyList()
+        }
+    }
+
+    private fun parseLegacyBody(text: String): List<BodyRow> {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val parsed = runCatching { JSONObject(trimmed) }.getOrNull() ?: return emptyList()
+        return parsed.keys().asSequence().map { key -> BodyRow(key, jsonText(parsed.opt(key))) }
+            .toList()
+    }
+
+    /** 值转回"能填进那一格"的 JSON 文本：字符串带引号，别的原样。 */
+    private fun jsonText(raw: Any?): String = when (raw) {
+        null, JSONObject.NULL -> "null"
+        is String -> JSONObject.quote(raw)
+        else -> raw.toString()
+    }
+
+    /**
+     * 一行 Body 能不能用：`value` 必须是**合法 JSON 字面量**。
+     *
+     * 只认 JSON、不把裸字符串当字符串收：同一个格子里 `"text"` 与 `text` 一个是字符串、
+     * 一个是非法 JSON；静默把它们当成同一件事，用户就永远学不会这里的规则。
+     */
+    fun bodyValueOk(value: String): Boolean = runCatching {
+        org.json.JSONTokener(value).nextValue()
+    }.isSuccess
+
+    /** 这几把键由核心写（FFI 的 `parse_body` 也拦）；界面上先拦一次，省一次"保存后才报错"。 */
+    fun bodyKeyReserved(name: String): Boolean =
+        name.trim().lowercase() in setOf("messages", "model", "stream", "tools")
 
     fun encodeSources(sources: Map<String, Map<String, FieldSource>>): JSONObject =
         JSONObject().apply {

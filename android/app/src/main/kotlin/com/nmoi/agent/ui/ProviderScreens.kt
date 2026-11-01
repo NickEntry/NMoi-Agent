@@ -561,6 +561,12 @@ internal fun ProviderEditScreen(
                     activeModel = updated.id
                 }
                 modelDraft = null
+                // 页顶那个 ✓ 就是「保存完毕」（真机反馈 2026-10-31：「自定义好像保存失败，
+                // 再点进编辑没看到」——以前它只写回这个表单，用户以为已经落库了）。
+                // 现在收起这一页之后立刻走**同一条**保存路径：校验、密钥、现读库都在 persist() 里，
+                // 不在这里再抄一遍。校验没过（比如新供应商还没起名）不丢改动，
+                // 提示行会说明差什么。
+                persist()
             },
             onDelete = {
                 models = models.filterNot { it.id == draft.originalId }
@@ -632,16 +638,6 @@ private fun GroupCard(
     ) {
         Column { content() }
     }
-}
-
-/** 行线从文字起点开始（不是从卡片边缘），跟分组列表的规矩一致。 */
-@Composable
-private fun RowDivider(leading: androidx.compose.ui.unit.Dp) {
-    HorizontalDivider(
-        thickness = 1.dp,
-        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-        modifier = Modifier.padding(start = leading),
-    )
 }
 
 @Composable
@@ -1122,7 +1118,7 @@ private fun ModelEditPage(
     var allowDisable by remember { mutableStateOf(base.allowDisable) }
     var defaultEffort by remember { mutableStateOf(base.defaultEffort) }
     var headers by remember { mutableStateOf(base.headers) }
-    var body by remember { mutableStateOf(base.bodyOverride) }
+    var bodyRows by remember { mutableStateOf(base.bodyFields) }
     var imageUrl by remember { mutableStateOf(base.remoteImageUrl) }
     var builtinTools by remember { mutableStateOf(base.builtinTools) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1153,7 +1149,7 @@ private fun ModelEditPage(
         allowDisable = allowDisable,
         defaultEffort = defaultEffort,
         headers = headers.filter { it.name.isNotBlank() },
-        bodyOverride = body.trim(),
+        bodyFields = bodyRows.filter { it.name.isNotBlank() },
         remoteImageUrl = imageUrl.trim(),
         builtinTools = builtinTools,
     )
@@ -1189,7 +1185,7 @@ private fun ModelEditPage(
             ModelField.ALLOW_DISABLE -> allowDisable = base.allowDisable
             ModelField.DEFAULT_EFFORT -> defaultEffort = base.defaultEffort
             ModelField.HEADERS -> headers = base.headers
-            ModelField.BODY -> body = base.bodyOverride
+            ModelField.BODY -> bodyRows = base.bodyFields
             ModelField.REMOTE_IMAGE -> imageUrl = base.remoteImageUrl
             ModelField.BUILTIN_TOOLS -> builtinTools = base.builtinTools
         }
@@ -1206,7 +1202,6 @@ private fun ModelEditPage(
             val text = raw.trim()
             text.isNotEmpty() && (text.toDoubleOrNull()?.let { it >= 0.0 } != true)
         }
-        val bodyText = body.trim()
         when {
             cleanId.isEmpty() -> {
                 tab = 0
@@ -1243,9 +1238,21 @@ private fun ModelEditPage(
                 error = "默认级别要先在「支持的级别」里勾上"
             }
 
-            bodyText.isNotEmpty() && !isJsonObject(bodyText) -> {
+            bodyRows.any { row -> row.name.isBlank() && row.value.isNotBlank() } -> {
                 tab = 2
-                error = "自定义 Body 要是一个 JSON 对象，现在这段解析不了"
+                error = "有 Body 行只填了值、没填名字"
+            }
+
+            bodyRows.any { row -> ProviderRepository.bodyKeyReserved(row.name) } -> {
+                tab = 2
+                error = "messages / model / stream / tools 由核心写，Body 里不能填这几把键"
+            }
+
+            bodyRows.any {
+                it.name.isNotBlank() && !ProviderRepository.bodyValueOk(it.value)
+            } -> {
+                tab = 2
+                error = "Body 的值要写成 JSON：字符串带引号（\"abc\"），数字/对象/数组照写"
             }
 
             headers.any { it.name.isBlank() && it.value.isNotBlank() } -> {
@@ -1279,7 +1286,9 @@ private fun ModelEditPage(
                 // 两个动作都是"提交这一页"，只是图标不同——**不写文字**，但读屏要能念出来。
                 IconActionButton(
                     image = if (draft.existing) ActionIcons.Check else ActionIcons.Plus,
-                    description = if (draft.existing) "保存这个模型" else "添加这个模型",
+                    // description 是读屏念的，也是「这个图标到底干了什么」的唯一说明：
+                    // **它会落库**（保存整份供应商配置），不是"只改表单"。
+                    description = if (draft.existing) "保存这个模型并返回" else "添加这个模型并返回",
                     onClick = save,
                 )
             }
@@ -1582,15 +1591,48 @@ private fun ModelEditPage(
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
                             ModelFieldHead("自定义 Body", source(ModelField.BODY), dirty(ModelField.BODY), top = true) { reset(ModelField.BODY) }
-                            BodyField(
-                                value = body,
-                                onChange = { body = it },
-                                placeholder = """{"temperature":0.2}""",
+                            bodyRows.forEachIndexed { index, field ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(end = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    ProviderField(
+                                        value = field.name,
+                                        onChange = { value ->
+                                            bodyRows = bodyRows.toMutableList().also {
+                                                it[index] = it[index].copy(name = value)
+                                            }
+                                        },
+                                        placeholder = "键",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    ProviderField(
+                                        value = field.value,
+                                        onChange = { value ->
+                                            bodyRows = bodyRows.toMutableList().also {
+                                                it[index] = it[index].copy(value = value)
+                                            }
+                                        },
+                                        placeholder = "JSON 值",
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextAction(
+                                        label = "删",
+                                        danger = true,
+                                        onClick = {
+                                            bodyRows = bodyRows.filterIndexed { i, _ -> i != index }
+                                        },
+                                    )
+                                }
+                            }
+                            AddRow(
+                                label = "添加一行",
+                                onClick = { bodyRows = bodyRows + BodyRow("", "") },
                             )
                             Hint(
-                                "一个 JSON 对象，保存时校验：解析不了就整页不写。每次请求都会并进去，" +
-                                    "排在你填的温度/输出上限之后（同名的键以这里为准）。" +
-                                    "messages / model / stream / tools 由核心写，填了会被拒。",
+                                "值写成 **JSON**：数字 `0.2`、布尔 `true`、对象 `{\"a\":1}`、字符串要带引号 " +
+                                    "`\"text\"`。每次请求都会并进去，排在你填的温度/输出上限之后" +
+                                    "（同名的键以这里为准）。messages / model / stream / tools 由核心写，填了会被拒。",
                             )
                         }
 
@@ -1762,40 +1804,6 @@ private fun ChoiceRow(value: String, options: List<Kind>, onSelect: (String) -> 
     }
 }
 
-/** 多行文本框：只给自定义 Body 用。等宽字体，缩进才对得齐。 */
-@Composable
-private fun BodyField(value: String, onChange: (String) -> Unit, placeholder: String) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
-    ) {
-        Box(contentAlignment = Alignment.TopStart) {
-            if (value.isEmpty()) {
-                Text(
-                    text = placeholder,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
-                )
-            }
-            BasicTextField(
-                value = value,
-                onValueChange = onChange,
-                textStyle = MaterialTheme.typography.bodySmall.copy(
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontFamily = FontFamily.Monospace,
-                ),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 96.dp)
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-            )
-        }
-    }
-}
-
 /** 列表里的多选：勾上就加，勾掉就减，顺序按词表走（不按点击顺序）。 */
 private fun toggle(current: List<String>, wire: String, choices: List<Kind>): List<String> {
     val next = if (wire in current) current - wire else current + wire
@@ -1837,10 +1845,6 @@ private fun ModelFieldHead(
         }
     }
 }
-
-/** 自定义 Body 的 JSON 校验：只认**对象**（数组/标量不是"并进请求体"该有的形状）。 */
-private fun isJsonObject(text: String): Boolean =
-    runCatching { org.json.JSONObject(text) }.isSuccess
 
 /** 复制到剪贴板：只复制、不弹自己的提示（系统自带的那条够了）。 */
 private fun putClipboard(context: Context, label: String, text: String) {

@@ -226,7 +226,20 @@ internal object TurnRepository {
                                 },
                             )
                         }
-                        if (model.bodyOverride.isNotBlank()) row.put("body", model.bodyOverride)
+                        // 自定义 Body：按行填的 key → JSON 值，在这里拼成一个对象再发。
+                        // FFI 那边收的仍是**字符串**（它自己解析、自己拦保留键），
+                        // 所以这里只负责把字面量拼对；填坏的行在保存时已经拦过了。
+                        val bodyRows = model.bodyFields.filter { it.name.isNotBlank() }
+                        if (bodyRows.isNotEmpty()) {
+                            val body = JSONObject()
+                            bodyRows.forEach { field ->
+                                val parsed = runCatching {
+                                    org.json.JSONTokener(field.value).nextValue()
+                                }.getOrNull()
+                                if (parsed != null) body.put(field.name.trim(), parsed)
+                            }
+                            if (body.length() > 0) row.put("body", body.toString())
+                        }
                         if (model.reasoningDialect.isNotBlank()) {
                             row.put("thinking_field", model.reasoningDialect)
                         }

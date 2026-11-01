@@ -100,7 +100,11 @@ internal object ModelField {
             .map { "${it.name.trim().lowercase()}=${it.value.trim()}" }
             .sorted()
             .joinToString("\n")
-        BODY -> model.bodyOverride.trim()
+        BODY -> model.bodyFields
+            .filter { it.name.isNotBlank() }
+            .map { "${it.name.trim()}=${it.value.trim()}" }
+            .sorted()
+            .joinToString("\n")
         REMOTE_IMAGE -> model.remoteImageUrl.trim()
         BUILTIN_TOOLS -> tri(model.builtinTools)
         else -> ""

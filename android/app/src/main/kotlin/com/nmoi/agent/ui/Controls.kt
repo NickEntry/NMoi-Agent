@@ -28,6 +28,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -229,4 +230,19 @@ internal fun WideButton(
             modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp),
         )
     }
+}
+
+/**
+ * 行线从文字起点开始（不是从卡片边缘），跟分组列表的规矩一致。
+ *
+ * 放在这里而不是某个页面里：供应商页、分组页、资源更新页都要用同一条。
+ * 各画一条的话，缩进与透明度会一点点分叉，最后看起来像三个应用拼起来的。
+ */
+@Composable
+internal fun RowDivider(leading: Dp) {
+    androidx.compose.material3.HorizontalDivider(
+        thickness = 1.dp,
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+        modifier = Modifier.padding(start = leading),
+    )
 }
