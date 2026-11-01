@@ -73,6 +73,12 @@ internal object NativeBridge {
     /** 把会话移到另一个助手（D174）：改归属，不复制。回 `{"session","assistant"}`。 */
     external fun moveConversationJson(handle: Long, session: String, assistant: String): String
 
+    /** 改会话标题（0.15d）。回 `{"renamed":true}`；不动 `updated_at`。 */
+    external fun renameConversationJson(handle: Long, session: String, title: String): String
+
+    /** 删会话（0.15d）。回 `{"deleted":bool}`；`false` = 本来就没有（不算错）。 */
+    external fun deleteConversationJson(handle: Long, session: String): String
+
     /** 校验子助手名单（D176）：`[{owner,id,description}]` → `{ok, problems:[{kind,message}]}`。 */
     external fun validateVarsJson(list: String): String
 

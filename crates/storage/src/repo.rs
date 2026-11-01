@@ -124,6 +124,40 @@ impl Storage {
         Ok(session)
     }
 
+    /// 改会话标题（0.15d）。**不动 `updated_at`**：改名不是"会话有活动"，
+    /// 让它在列表里跳到最上面，用户会以为多了新消息。
+    pub fn rename_conversation(&self, session: SessionId, title: &str) -> Result<(), StorageError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(StorageError::Inconsistent("标题不能是空的".to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE conversations SET title = ?1 WHERE id = ?2",
+            params![title, session.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::Inconsistent(format!("会话 {session} 不存在")));
+        }
+        Ok(())
+    }
+
+    /// 删一个会话（0.15d）。
+    ///
+    /// 消息、版本、分界线、编辑审计都靠外键 `ON DELETE CASCADE` 跟着走；
+    /// **`archive` 与 `events` 没有外键**，得自己删——不然库里会留下
+    /// "指不出来的东西"（铁律 ②），备份也会越带越大。
+    ///
+    /// 返回 `false` = 本来就没有这个会话（不算错：两个入口同时点的情况真实存在）。
+    pub fn delete_conversation(&mut self, session: SessionId) -> Result<bool, StorageError> {
+        let tx = self.conn.transaction()?;
+        let id = session.to_string();
+        tx.execute("DELETE FROM archive WHERE conv_id = ?1", params![id])?;
+        tx.execute("DELETE FROM events WHERE conv_id = ?1", params![id])?;
+        let changed = tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+
     /// 这个会话最近一次用的模型（D101）。`None` = 还没跑过一轮。
     ///
     /// 与"模型叫空串"分开：面板上"未知"和"用了一个没名字的模型"不该显示成一个样子。
@@ -1192,5 +1226,32 @@ impl nmoi_core::session::HistoryStore for Storage {
                 removed: outcome.removed,
             })
             .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod conversation_admin_tests {
+    use super::*;
+
+    /// 改标题 / 删会话（0.15d）：这两条都不动消息，容易在"删了但列表还在"上翻车。
+    #[test]
+    fn rename_then_delete_is_idempotent() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = storage
+            .create_conversation("旧标题", "dev", "default")
+            .expect("建会话");
+
+        storage
+            .rename_conversation(session, " 新标题 ")
+            .expect("改名");
+        assert!(storage.conversation_exists(session).expect("查"));
+
+        // 空标题当场拒绝：列表里一行没有名字，用户就再也认不出它。
+        assert!(storage.rename_conversation(session, "   ").is_err());
+
+        assert!(storage.delete_conversation(session).expect("删"));
+        assert!(!storage.conversation_exists(session).expect("查"));
+        // 再删一次：返回 false，不报错（两个入口同时点到是真会发生的）。
+        assert!(!storage.delete_conversation(session).expect("再删"));
     }
 }

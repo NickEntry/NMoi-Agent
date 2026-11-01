@@ -4916,3 +4916,27 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`。真机路径见 `docs/ve
      凭空写出一个 `false`，徽标于是永远显示「自定义」，而那并不是用户改的；
    - 图片附件这条路**还没接**，所以提示行后面补了一句"这一项现在是先记下来"——
      宁可多一句实话，也不做成看起来生效的开关。
+
+## D206 会话管理：改标题与删除（0.15d 的底层，2026-11-01）
+
+**先落地的是存储层**（下一步才接抽屉里的长按菜单）：
+
+- `Storage::rename_conversation`：只改 `conversations.title`，**不动 `updated_at`**——
+  改名不是"会话有活动"，不该让它在列表里跳到最上面；空标题当场拒绝。
+- `Storage::delete_conversation`：消息 / 版本 / 分界线 / 编辑审计靠外键 `ON DELETE CASCADE`
+  跟着走；**`archive` 与 `events` 没有外键**，必须手删，否则库里会留下"界面上指不出来的东西"
+  （铁律 ②）。返回 `false` = 本来就没有这条（两个入口同时点到是真会发生的，不算失败）。
+- 两条都通了 FFI（`nmoi_storage_{rename,delete}_conversation_json`）与 JNI
+  （`renameConversationJson` / `deleteConversationJson`），Kotlin 侧
+  `ConversationRepository.{rename,delete}` 已就位；置顶顺序的读写
+  （`settings(scope=conversation)` 的 `pinned` 键）也一起加了。
+
+**还欠的（下一批）**：抽屉里的长按菜单（重命名 / 置顶 / 移动到 / 删除 / 多选）、
+多选工具条，以及「复制 = 新建会话并把消息整份拷过去」——最后这条要在 storage 里新加
+`copy_conversation`（用 `load_units` → 重新赋 id → `append_unit`，别直接抄 SQL：
+`append_unit` 自带"写完读回比对"）。
+
+**验证**：`cargo test --workspace --all-targets` **744 项全绿**（新增 rename/delete 的两条边界：
+空标题被拒、第二次删除返回 false）；`fmt --check` 与 `clippy -D warnings` 干净；
+kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotlin 推出来的期望表
+已含这两条（等 CI 编译出 .so 后逐条对账）。

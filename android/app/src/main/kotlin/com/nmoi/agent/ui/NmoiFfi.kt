@@ -66,6 +66,14 @@ internal object NmoiFfi {
     suspend fun moveConversation(handle: Long, session: String, assistant: String): Result<JSONObject> =
         call("move_conversation") { NativeBridge.moveConversationJson(handle, session, assistant) }
 
+    /** 改会话标题（0.15d）。 */
+    suspend fun renameConversation(handle: Long, session: String, title: String): Result<JSONObject> =
+        call("rename_conversation") { NativeBridge.renameConversationJson(handle, session, title) }
+
+    /** 删会话（0.15d）。`deleted=false` 不算失败。 */
+    suspend fun deleteConversation(handle: Long, session: String): Result<JSONObject> =
+        call("delete_conversation") { NativeBridge.deleteConversationJson(handle, session) }
+
     /**
      * 校验子助手名单（D176）。**不需要存储句柄**：它是一条纯检查，
      * 保存助手配置之前调它，撞名当场红字，而不是等发请求时才 400。

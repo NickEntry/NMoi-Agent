@@ -183,7 +183,44 @@ pub extern "C" fn nmoi_storage_create_conversation_json(
 }
 
 /// 记下"这个会话现在用哪个模型"（D101）。
+/// 改会话标题（0.15d）。出参：`{renamed: true}`。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_rename_conversation_json(
+    handle: u64,
+    session: *const c_char,
+    title: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let title = read_str(title, "title")?;
+        with_storage(handle, |storage| {
+            storage
+                .rename_conversation(session_id, title)
+                .map_err(storage_error)
+        })?;
+        Ok(json!({ "renamed": true }))
+    })
+}
+
+/// 删一个会话（0.15d）。出参：`{deleted: bool}`。
 ///
+/// `deleted=false` 不算失败：两个入口（长按菜单、多选删除）同时点到同一条是真会发生的。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_delete_conversation_json(
+    handle: u64,
+    session: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let deleted = with_storage(handle, |storage| {
+            storage
+                .delete_conversation(session_id)
+                .map_err(storage_error)
+        })?;
+        Ok(json!({ "deleted": deleted }))
+    })
+}
+
 /// 单独一条而不是塞进 `create_conversation`：用户常常先建会话、再挑模型，
 /// 而 `create` 的签名一动，C 侧所有调用点都得跟着改。
 ///

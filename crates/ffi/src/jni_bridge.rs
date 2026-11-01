@@ -468,6 +468,63 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_validateVarsJson<'loc
 
 /// `Native.moveConversationJson(handle, session, assistant)`：把会话移到另一个助手（D174）。
 ///
+/// 改会话标题（0.15d）：只动 `conversations.title`，不搬消息、不刷 `updated_at`。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_renameConversationJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    title: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let title = read_string(&mut env, &title);
+    let text = guarded(move || {
+        let (Some(session_id), Some(title)) = (session_id, title) else {
+            return bad_string();
+        };
+        let (Ok(c_session), Ok(c_title)) = (CString::new(session_id), CString::new(title)) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session / title）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_rename_conversation_json(
+            handle as u64,
+            c_session.as_ptr(),
+            c_title.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// 删会话（0.15d）：消息/版本/分界线/审计靠外键跟着走，archive 与 events 在这里手删。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteConversationJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let text = guarded(move || {
+        let Some(session_id) = session_id else {
+            return bad_string();
+        };
+        let Ok(c_session) = CString::new(session_id) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_delete_conversation_json(
+            handle as u64,
+            c_session.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 只改归属：消息、版本、摘要一个字节都不搬（搬就会有两份"同一个会话"）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_moveConversationJson<'local>(

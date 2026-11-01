@@ -138,6 +138,48 @@ internal object ConversationRepository {
      *
      * 移动之后两个列表都要重读（源里消失、目标里出现），调用方负责刷新。
      */
+    /** 改会话标题（0.15d）。 */
+    suspend fun rename(databasePath: String, sessionId: String, title: String): Result<Unit> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.renameConversation(handle, sessionId, title.trim()).map { }
+        }
+
+    /** 删会话（0.15d）。`false` = 本来就没有，不算失败。 */
+    suspend fun delete(databasePath: String, sessionId: String): Result<Boolean> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.deleteConversation(handle, sessionId)
+                .map { envelope -> envelope.optBoolean("deleted", false) }
+        }
+
+    /**
+     * 置顶的会话 id（按**用户排的顺序**，最早置顶的在最前）。
+     *
+     * 存 `settings(scope=conversation)` 的一个键，不加列：这是"我怎么看这个列表"，
+     * 不是会话本身的事实；换一台机器恢复库时它跟着走，正好。
+     */
+    suspend fun pinned(databasePath: String): Result<List<String>> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.settingsGet(handle, SettingsScope.Conversation, PINNED_KEY).map { envelope ->
+                val ids = envelope.optJSONObject("doc")?.optJSONArray("ids")
+                buildList {
+                    if (ids != null) {
+                        for (index in 0 until ids.length()) {
+                            val id = ids.optString(index, "").trim()
+                            if (id.isNotEmpty()) add(id)
+                        }
+                    }
+                }
+            }
+        }
+
+    suspend fun setPinned(databasePath: String, ids: List<String>): Result<Unit> =
+        withStorageHandle(databasePath) { handle ->
+            val doc = JSONObject().put("ids", JSONArray(ids))
+            NmoiFfi.settingsPut(handle, SettingsScope.Conversation, PINNED_KEY, doc).map { }
+        }
+
+    private const val PINNED_KEY = "pinned"
+
     suspend fun move(databasePath: String, sessionId: String, assistantId: String): Result<Unit> =
         withStorageHandle(databasePath) { handle ->
             NmoiFfi.moveConversation(handle, sessionId, assistantId)
