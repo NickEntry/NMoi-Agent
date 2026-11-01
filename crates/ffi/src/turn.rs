@@ -12,8 +12,9 @@
 //!
 //! - **不注入系统提示词**：系统提示是会话的一部分，要能看见、能改、能被压缩带走。
 //!   调用方先 `nmoi_storage_append_text_json(role="system")` 落库。
-//! - **不发思考档位**：D37 要求"关闭必须显式"，这一层不知道模型支持哪一档，猜一个
-//!   等于替用户做决定。等 P3.2 的角色配置把档位接上。
+//! - **不替用户挑档位**：助手页给了就用它，没给（`auto`）才落到模型编辑页的
+//!   「默认级别」，两边都没有就一个字段都不注。模型勾了「支持的级别」时，
+//!   别的档位**当场报错并点名**——悄悄改成最近的一档等于替用户做决定（D37 / D201）。
 //! - **`api_key` 只进不出**：返回体、错误信息里都没有它。
 //!
 //! # 取消（D58）
@@ -35,7 +36,7 @@ use nmoi_core::budget::{Budget, CompressAction, CompressionTrigger, TriggerPolic
 use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::Role;
 use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
-use nmoi_core::provider::{ProviderConfig, ProviderKind};
+use nmoi_core::provider::{ProviderConfig, ProviderKind, ThinkingEffort, ThinkingField};
 use nmoi_core::runtime::{ChatClient, ChatRequest};
 use nmoi_core::session::{
     regenerate_turn, run_session_turn, SessionConfig, SessionError, SessionTurn,
@@ -229,6 +230,20 @@ struct TurnInput {
     /// 随包的预设原文（D178 / 0.14t）。平台侧从 APK 的 `assets/presets/` 读出来。
     /// 空 = 这一轮不注入任何预设（老客户端、或者还没接线）。
     presets: Vec<nmoi_core::preset::AssetPreset>,
+    /// 模型编辑页「高级」里的自定义 Header（D201 第四片）。鉴权头仍由核心拼，
+    /// 这里只加**额外的**那些；保留字（host / content-length 之类）在解析处就拒。
+    headers: Vec<(String, String)>,
+    /// 模型级的 body 覆盖：一个 JSON 对象，排在软件默认值之后、屏蔽之前
+    /// （`build_body` 里那条顺序）。几把"改了就没法解析"的键在解析处拒掉。
+    body: Option<Value>,
+    /// 推理方言：思考这一档注到哪个字段族。`None` = 按供应商类型推（老行为）。
+    thinking_field: Option<ThinkingField>,
+    /// 这个模型接受的档位。空 = 没数据（不限制）——**不要**拿空表当成"一档都不支持"。
+    thinking_efforts: Vec<ThinkingEffort>,
+    /// 能不能显式关闭思考。`None` = 不知道（沿用老行为：可以）。
+    thinking_allow_disable: Option<bool>,
+    /// 助手页没指定档位（`auto`）时用这一档。
+    thinking_default: Option<ThinkingEffort>,
 }
 
 /// 解析 `envir`（D172）。**五个字段缺一不可**：少一个就是一条拼不起来的命令行，
@@ -436,7 +451,192 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         system,
         sub_agents,
         presets,
+        headers: parse_headers(&root)?,
+        body: parse_body(&root)?,
+        thinking_field: parse_thinking_field(&root)?,
+        thinking_efforts: parse_thinking_efforts(&root)?,
+        thinking_allow_disable: optional_bool(&root, "thinking_allow_disable")?,
+        thinking_default: parse_thinking_default(&root)?,
     })
+}
+
+/// 自定义 Header（D201 第四片）：`[{"name":"X-Foo","value":"bar"}]`。
+///
+/// 三条界限都在这个解析里定死：
+/// - **保留字不许覆盖**：`host` / `content-length` / `content-type` / `accept` 这些是核心
+///   自己拼的，让用户改等于让他把协议改坏（症状是"上游回了一段读不懂的话"）。
+/// - **名字里不许有冒号/空格/换行**：那是头部注入的形状，不是"用户手滑"。
+/// - **值里不许有换行**：同上。
+fn parse_headers(root: &Value) -> FfiResult<Vec<(String, String)>> {
+    let Some(value) = field(root, "headers") else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(bad("headers", "必须是数组"));
+    };
+    if items.len() > 32 {
+        return Err(bad("headers", "最多 32 条：再多就该查是不是填错了"));
+    }
+    let mut out: Vec<(String, String)> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if !item.is_object() {
+            return Err(bad(&format!("headers[{index}]"), "必须是对象"));
+        }
+        let name = optional_str(item, "name")?
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        // 空名 = 用户点了「添加一行」还没填。**忽略，不报错**：那不是配置错误，
+        // 是他正在打字（保存时界面已经拦过一次，这里只是兜底）。
+        if name.is_empty() {
+            continue;
+        }
+        let name_field = format!("headers[{index}].name");
+        if name.contains(':') || name.contains(' ') || name.contains('\n') || name.contains('\r') {
+            return Err(bad(&name_field, "里不能有冒号、空格或换行"));
+        }
+        if name.len() > 64 {
+            return Err(bad(&name_field, "太长了（上限 64）"));
+        }
+        let lower = name.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "host"
+                | "content-length"
+                | "content-type"
+                | "accept"
+                | "transfer-encoding"
+                | "connection"
+        ) {
+            return Err(bad(
+                &name_field,
+                &format!("`{name}` 由核心自己写，自定义 Header 不能覆盖它"),
+            ));
+        }
+        if out
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+        {
+            return Err(bad(&name_field, &format!("`{name}` 重复了")));
+        }
+        let header_value = optional_str(item, "value")?.unwrap_or_default();
+        if header_value.contains('\n') || header_value.contains('\r') {
+            return Err(bad(&format!("headers[{index}].value"), "里不能有换行"));
+        }
+        out.push((name, header_value));
+    }
+    Ok(out)
+}
+
+/// 模型级 body 覆盖（D201 第四片）：一个 JSON 对象。
+///
+/// 四把键由核心写，这里拒掉：`messages`（内容是会话）、`model`（内容是模型 id）、
+/// `stream`（核心按这次调用的方式定，改成 `false` 会让流式解析拿到一整个 JSON）、
+/// `tools`（声明表来自这一轮的工具门控）。放开任何一把，症状都是"请求发出去了、
+/// 回的东西对不上"，而原因离现场很远。
+fn parse_body(root: &Value) -> FfiResult<Option<Value>> {
+    let Some(text) = optional_str(root, "body")?.filter(|text| !text.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| bad("body", &format!("不是合法 JSON：{error}")))?;
+    let Some(object) = value.as_object() else {
+        return Err(bad("body", "必须是一个 JSON 对象"));
+    };
+    for key in ["messages", "model", "stream", "tools"] {
+        if object.contains_key(key) {
+            return Err(bad("body", &format!("`{key}` 由核心写，不能在这里覆盖")));
+        }
+    }
+    Ok(Some(value))
+}
+
+/// 推理方言（D201 第四片）：`thinking` 这一档注到哪个字段族上。
+///
+/// wire 名与 `ThinkingField` 的 serde 序列化结果逐字一致（`open_ai_effort` 不是
+/// `openai_effort`）——两份名字漂移的话，这里会静默落回"按供应商类型推"。
+fn parse_thinking_field(root: &Value) -> FfiResult<Option<ThinkingField>> {
+    let Some(text) = optional_str(root, "thinking_field")?.filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let normalized = text.trim().to_ascii_lowercase();
+    let field = match normalized.as_str() {
+        "none" => ThinkingField::None,
+        "open_ai_effort" => ThinkingField::OpenAiEffort,
+        "responses_reasoning" => ThinkingField::ResponsesReasoning,
+        "anthropic_effort" => ThinkingField::AnthropicEffort,
+        "anthropic_thinking" => ThinkingField::AnthropicThinking,
+        "gemini_thinking_config" => ThinkingField::GeminiThinkingConfig,
+        other => {
+            return Err(bad(
+                "thinking_field",
+                &format!(
+                    "只能是 none / open_ai_effort / responses_reasoning / anthropic_effort / \
+                     anthropic_thinking / gemini_thinking_config，收到 `{other}`（自定义 JSON 请写进 body）"
+                ),
+            ))
+        }
+    };
+    Ok(Some(field))
+}
+
+/// 这个模型支持的档位。空数组 = **没数据**（不限制），不是"一档都不支持"。
+fn parse_thinking_efforts(root: &Value) -> FfiResult<Vec<ThinkingEffort>> {
+    let Some(value) = field(root, "thinking_efforts") else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(bad("thinking_efforts", "必须是数组"));
+    };
+    let mut out: Vec<ThinkingEffort> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let Some(text) = item.as_str() else {
+            return Err(bad(&format!("thinking_efforts[{index}]"), "必须是字符串"));
+        };
+        let effort = ThinkingEffort::parse(text).ok_or_else(|| {
+            bad(
+                &format!("thinking_efforts[{index}]"),
+                &format!(
+                    "只能是 none / minimal / low / medium / high / xhigh / max，收到 `{text}`"
+                ),
+            )
+        })?;
+        if !out.contains(&effort) {
+            out.push(effort);
+        }
+    }
+    Ok(out)
+}
+
+/// 助手页没指定档位时用的那一档。
+fn parse_thinking_default(root: &Value) -> FfiResult<Option<ThinkingEffort>> {
+    let Some(text) = optional_str(root, "thinking_default")?.filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    ThinkingEffort::parse(&text).map(Some).ok_or_else(|| {
+        bad(
+            "thinking_default",
+            &format!("只能是 minimal / low / medium / high / xhigh / max，收到 `{text}`"),
+        )
+    })
+}
+
+/// 这一轮的供应商配置：把「模型编辑页」里那三样接进来（D201 第四片）。
+///
+/// 位置固定在这里而不是散在两个入口里：`turn_run` 与 `turn_regen` 各拼一遍的话，
+/// 迟早一边加了 header、另一边忘了——而症状是"重试时行为不一样"，最难查。
+fn provider_config(input: &TurnInput) -> ProviderConfig {
+    let mut provider =
+        ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
+    if !input.headers.is_empty() {
+        provider.extra_headers = input.headers.clone();
+    }
+    if let Some(body) = input.body.as_ref() {
+        provider.overrides.model = Some(body.clone());
+    }
+    provider
 }
 
 /// 解析 `sub_agents`（D176）：`[{"id":"test_agent","description":"test"}, …]`。
@@ -484,40 +684,69 @@ fn parse_sub_agents(root: &Value) -> FfiResult<Vec<SubAgentEntry>> {
 /// 字段族由 `default_thinking_field` 按 (provider, 模型风味) 选：OpenAI 系是 `reasoning_effort`，
 /// Anthropic / Gemini 是预算式字段。所以这里只填 `effort`，不自己拼 JSON——
 /// 拼错一个键，模型会当没看见，用户看到的是"我选了 max 它没反应"。
-fn apply_thinking(request: ChatRequest, kind: ProviderKind, level: &str) -> FfiResult<ChatRequest> {
+fn apply_thinking(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequest> {
     use nmoi_core::config::{default_thinking_field, ModelFlavor, ThinkingContext};
-    use nmoi_core::provider::{ThinkingEffort, ThinkingSetting};
+    use nmoi_core::provider::ThinkingSetting;
 
-    let level = level.trim();
-    if level.eq_ignore_ascii_case("auto") {
-        return Ok(request);
-    }
-    let setting = if level.eq_ignore_ascii_case("off") {
-        ThinkingSetting::disabled()
-    } else {
-        let effort = match level.to_ascii_lowercase().as_str() {
-            "minimal" => ThinkingEffort::Minimal,
-            "low" => ThinkingEffort::Low,
-            "medium" => ThinkingEffort::Medium,
-            "high" => ThinkingEffort::High,
-            "xhigh" => ThinkingEffort::XHigh,
-            "max" => ThinkingEffort::Max,
-            other => {
-                return Err(FfiError::new(
-                    "bad_argument",
-                    format!(
-                        "thinking 只能是 auto / off / minimal / low / medium / high / xhigh / max，收到 `{other}`"
-                    ),
-                ))
-            }
-        };
-        ThinkingSetting {
-            field: default_thinking_field(&ThinkingContext::new(kind, ModelFlavor::Other)),
-            effort: Some(effort),
-            ..ThinkingSetting::default()
-        }
+    // 档位的来源有两处，优先级写死在这里：**助手页这一次要的** > 模型编辑页的「默认级别」>
+    // 什么都不注。`auto` 等于"助手没说"，所以它也落到默认级别上。
+    let requested = input
+        .thinking
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && !text.eq_ignore_ascii_case("auto"));
+    let level = match requested {
+        Some(level) => level.to_ascii_lowercase(),
+        None => match input.thinking_default {
+            Some(effort) => effort.as_str().to_string(),
+            None => return Ok(request),
+        },
     };
-    Ok(request.thinking(setting))
+
+    if level == "off" {
+        // 「允许关闭」明确是 `false` 时才拦：`None`（不知道）沿用老行为，否则老配置
+        // 会突然发不出去——那不是"更严谨"，是"没打招呼就改了规矩"。
+        if input.thinking_allow_disable == Some(false) {
+            return Err(FfiError::new(
+                "bad_argument",
+                "这个模型不允许关闭思考（模型编辑页 → 推理 → 允许关闭 = 不能关）；\n请换一档，或把那一项改成「不知道 / 可以关」",
+            ));
+        }
+        // 关掉 = 一个字段都不注（老行为，别改成 `type: disabled`：那在 OpenAI 兼容系是未知字段）。
+        return Ok(request.thinking(ThinkingSetting::disabled()));
+    }
+
+    let effort = ThinkingEffort::parse(&level).ok_or_else(|| {
+        FfiError::new(
+            "bad_argument",
+            format!("thinking 只能是 auto / off / minimal / low / medium / high / xhigh / max，收到 `{level}`"),
+        )
+    })?;
+    if !input.thinking_efforts.is_empty() && !input.thinking_efforts.contains(&effort) {
+        let allowed = input
+            .thinking_efforts
+            .iter()
+            .map(|effort| effort.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        return Err(FfiError::new(
+            "bad_argument",
+            format!("这个模型不支持 `{level}` 这一档；模型编辑页里勾的支持档位是 {allowed}",),
+        ));
+    }
+
+    let field = match input.thinking_field {
+        Some(field) => field,
+        None => default_thinking_field(&ThinkingContext::new(
+            input.provider_kind,
+            ModelFlavor::Other,
+        )),
+    };
+    Ok(request.thinking(ThinkingSetting {
+        field,
+        effort: Some(effort),
+        ..ThinkingSetting::default()
+    }))
 }
 
 fn policy_for(input: &TurnInput) -> AssistantPolicy {
@@ -660,8 +889,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         let policy = policy_for(&input);
         let registry = ToolRegistry::workspace_defaults();
 
-        let provider =
-            ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
+        let provider = provider_config(&input);
         // 系统提示词里的占位符在这里替换（D176）：名单是**这一轮**的，
         // 所以不能在建会话时替换一次了事。
         let system = input.system.as_deref().map(|text| {
@@ -711,9 +939,9 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         if let Some(temperature) = input.temperature {
             request = request.temperature(temperature);
         }
-        if let Some(level) = input.thinking.as_deref() {
-            request = apply_thinking(request, input.provider_kind, level)?;
-        }
+        // 思考档位**总是**走一遍：助手页的档位、模型的默认档位、方言与允许关闭
+        // 都在 apply_thinking 里合起来判定（省掉这一步 = 那些格子只是摆设）。
+        request = apply_thinking(request, &input)?;
 
         // 校准按模型取：换模型就是另一套口径（D95 的键里有模型）。
         let calibrations = storage
@@ -904,8 +1132,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
         let policy = policy_for(&input);
         let registry = ToolRegistry::workspace_defaults();
 
-        let provider =
-            ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
+        let provider = provider_config(&input);
         let system = input.system.as_deref().map(|text| {
             nmoi_core::vars::replace(
                 text,
@@ -948,9 +1175,9 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
         if let Some(temperature) = input.temperature {
             request = request.temperature(temperature);
         }
-        if let Some(level) = input.thinking.as_deref() {
-            request = apply_thinking(request, input.provider_kind, level)?;
-        }
+        // 思考档位**总是**走一遍：助手页的档位、模型的默认档位、方言与允许关闭
+        // 都在 apply_thinking 里合起来判定（省掉这一步 = 那些格子只是摆设）。
+        request = apply_thinking(request, &input)?;
 
         let calibrations = storage
             .calibrations(&input.model, input.now_ms)
@@ -1280,27 +1507,179 @@ mod tests {
         assert!(error.message.contains("`model`"), "{}", error.message);
     }
 
+    /// 在最小配置上打几个字段，得到一个 TurnInput。
+    fn with_extra(patch: Value) -> TurnInput {
+        let mut value: Value = serde_json::from_str(&minimal()).unwrap();
+        if let Some(object) = patch.as_object() {
+            for (key, item) in object {
+                value[key] = item.clone();
+            }
+        }
+        parse(&value.to_string()).unwrap()
+    }
+
+    fn thinking_of(input: &TurnInput) -> FfiResult<ChatRequest> {
+        apply_thinking(
+            ChatRequest::new(
+                ProviderConfig::new("p", input.provider_kind, "http://127.0.0.1:1/v1"),
+                "m",
+            ),
+            input,
+        )
+    }
+
     /// `auto` = 一个字段都不注；给了档位 = 真的落到 `thinking.effort` 上。
     #[test]
     fn thinking_levels_land_on_the_request() {
-        use nmoi_core::provider::{ProviderConfig, ThinkingEffort};
-        let base = || {
-            ChatRequest::new(
-                ProviderConfig::new("p", ProviderKind::OpenAiCompatible, "http://127.0.0.1:1/v1"),
-                "m",
-            )
-        };
+        let auto = with_extra(json!({ "thinking": "auto" }));
+        assert_eq!(thinking_of(&auto).unwrap().thinking.effort, None);
 
-        let auto = apply_thinking(base(), ProviderKind::OpenAiCompatible, "auto").unwrap();
-        assert_eq!(auto.thinking.effort, None, "auto 不该注任何字段");
+        let high = with_extra(json!({ "thinking": "high" }));
+        let request = thinking_of(&high).unwrap();
+        assert_eq!(request.thinking.effort, Some(ThinkingEffort::High));
+        // 没填方言：按供应商类型推（兼容系 = `reasoning_effort`）。
+        assert_eq!(request.thinking.field, ThinkingField::OpenAiEffort);
 
-        let high = apply_thinking(base(), ProviderKind::OpenAiCompatible, "high").unwrap();
-        assert_eq!(high.thinking.effort, Some(ThinkingEffort::High));
+        let off = with_extra(json!({ "thinking": "off" }));
+        assert_eq!(thinking_of(&off).unwrap().thinking.effort, None);
 
-        let off = apply_thinking(base(), ProviderKind::OpenAiCompatible, "off").unwrap();
-        assert_eq!(off.thinking.effort, None);
+        let broken = with_extra(json!({ "thinking": "超高" }));
+        assert!(thinking_of(&broken).is_err());
+    }
 
-        assert!(apply_thinking(base(), ProviderKind::OpenAiCompatible, "超高").is_err());
+    /// 方言与默认档（D201 第四片）：方言改字段族，`auto` 落到模型的默认档上。
+    #[test]
+    fn dialect_and_default_effort_are_wired() {
+        let custom = with_extra(json!({
+            "thinking": "auto",
+            "thinking_field": "anthropic_effort",
+            "thinking_default": "medium",
+        }));
+        let request = thinking_of(&custom).unwrap();
+        assert_eq!(request.thinking.field, ThinkingField::AnthropicEffort);
+        assert_eq!(request.thinking.effort, Some(ThinkingEffort::Medium));
+
+        // 助手页明确要的那一档优先于模型默认档。
+        let explicit = with_extra(json!({
+            "thinking": "low",
+            "thinking_default": "medium",
+        }));
+        assert_eq!(
+            thinking_of(&explicit).unwrap().thinking.effort,
+            Some(ThinkingEffort::Low)
+        );
+    }
+
+    /// 模型勾了"支持的级别"之后，别的档位要**当场报错并点名**，不许悄悄改成最近的一档。
+    #[test]
+    fn unsupported_effort_names_the_allowed_set() {
+        let input = with_extra(json!({
+            "thinking": "high",
+            "thinking_efforts": ["low", "medium"],
+        }));
+        let error = thinking_of(&input).unwrap_err();
+        assert!(error.message.contains("high"), "{}", error.message);
+        assert!(error.message.contains("low"), "{}", error.message);
+        assert!(error.message.contains("medium"), "{}", error.message);
+
+        let ok = with_extra(json!({
+            "thinking": "medium",
+            "thinking_efforts": ["low", "medium"],
+        }));
+        assert!(thinking_of(&ok).is_ok());
+
+        // 空数组 = 没数据 = 不限制（不是"一档都不支持"）。
+        let unconstrained = with_extra(json!({ "thinking": "max", "thinking_efforts": [] }));
+        assert_eq!(
+            thinking_of(&unconstrained).unwrap().thinking.effort,
+            Some(ThinkingEffort::Max)
+        );
+    }
+
+    /// 「允许关闭 = 不能关」时，显式 `off` 要拦住；`null`（不知道）沿用老行为。
+    #[test]
+    fn closing_thinking_can_be_refused_by_the_model() {
+        let refused = with_extra(json!({
+            "thinking": "off",
+            "thinking_allow_disable": false,
+        }));
+        let error = thinking_of(&refused).unwrap_err();
+        assert!(error.message.contains("不允许关闭"), "{}", error.message);
+
+        let unknown = with_extra(json!({ "thinking": "off" }));
+        assert!(thinking_of(&unknown).is_ok());
+    }
+
+    /// 自定义 Header：保留字、重名、换行都在解析处拦住；空名当"还没填"直接忽略。
+    #[test]
+    fn headers_are_guarded() {
+        let good = parse_headers(&json!({
+            "headers": [
+                {"name": "X-Foo", "value": "bar"},
+                {"name": "", "value": "还没填名字"},
+            ]
+        }))
+        .unwrap();
+        assert_eq!(good, vec![("X-Foo".to_string(), "bar".to_string())]);
+
+        for broken in [
+            json!({"headers": [{"name": "Host", "value": "evil"}]}),
+            json!({"headers": [{"name": "X-A", "value": "1"}, {"name": "x-a", "value": "2"}]}),
+            json!({"headers": [{"name": "X A", "value": "1"}]}),
+            json!({"headers": [{"name": "X-A", "value": "1\nX-B: 2"}]}),
+            json!({"headers": "X-A"}),
+        ] {
+            assert!(parse_headers(&broken).is_err(), "这条应当被拦住：{broken}");
+        }
+    }
+
+    /// 自定义 Body：核心自己写的那几把键不许覆盖（覆盖了症状会离现场很远）。
+    #[test]
+    fn body_override_refuses_the_keys_core_owns() {
+        assert!(parse_body(&json!({ "body": "{\"top_k\": 42}" }))
+            .unwrap()
+            .is_some());
+        assert!(parse_body(&json!({ "body": "   " })).unwrap().is_none());
+
+        for broken in [
+            json!({ "body": "[1,2,3]" }),
+            json!({ "body": "不是 JSON" }),
+            json!({ "body": "{\"stream\": false}" }),
+            json!({ "body": "{\"messages\": []}" }),
+            json!({ "body": "{\"model\": \"x\"}" }),
+            json!({ "body": "{\"tools\": []}" }),
+        ] {
+            assert!(parse_body(&broken).is_err(), "这条应当被拦住：{broken}");
+        }
+    }
+
+    /// 端到端（不到网络）：配置里的 header 与 body 真的落到这次请求上。
+    ///
+    /// 这条是两个入口共用的证据：`provider_config` 只有一份，`turn_run` 与
+    /// `turn_regen` 都从它拿——所以"重试时行为不一样"这种毛病不会从这里长出来。
+    #[test]
+    fn model_headers_and_body_reach_the_request() {
+        let input = with_extra(json!({
+            "headers": [{"name": "X-Relay-Tag", "value": "nmoi"}],
+            "body": "{\"top_k\": 42}",
+        }));
+
+        let provider = provider_config(&input);
+        assert_eq!(
+            provider.extra_headers,
+            vec![("X-Relay-Tag".to_string(), "nmoi".to_string())]
+        );
+        assert_eq!(
+            provider.overrides.model,
+            Some(json!({ "top_k": 42 })),
+            "模型级 body 要进 overrides.model"
+        );
+
+        let request = ChatRequest::from_turns(provider, "m", &[(Role::User, "在吗")]);
+        let body = nmoi_core::runtime::build_body(&request).unwrap();
+        assert_eq!(body["top_k"], json!(42), "自定义 body 没并进请求体");
+        assert_eq!(body["model"], json!("m"), "核心自己的字段要留着");
+        assert_eq!(body["stream"], json!(true), "stream 由核心定");
     }
 
     #[test]

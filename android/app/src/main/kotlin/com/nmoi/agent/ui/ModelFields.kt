@@ -285,7 +285,9 @@ internal object ReasoningDialects {
         Kind("anthropic_effort", "output_config.effort"),
         Kind("anthropic_thinking", "thinking.budget_tokens"),
         Kind("gemini_thinking_config", "generationConfig.thinkingConfig"),
-        Kind("custom", "自定义 JSON 片段"),
+        // 没有 `custom`：那意味着"这段 JSON 自己写"，而那种东西的正确归宿是
+        // 高级页的「自定义 Body」（核心会把它整个并进请求体）。这里再开一个入口，
+        // 就等于同一件事有两种写法，而且两种都不完整。
     )
 
     fun label(wire: String): String = ALL.firstOrNull { it.wire == wire }?.label ?: wire

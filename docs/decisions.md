@@ -4741,3 +4741,42 @@ FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 +
 `data/models.snapshot.json` → **1727 条**、`fetched_at=2026-10-20T13:20:53Z`、解析 **887 ms**（JVM；
 真机更慢，所以页面有 loading 态）、抽查 6 条自带 id 全命中、大小写/分隔符变体命中、乱名不命中。
 kotlinc 全量类型检查只剩 9 条 `unresolved reference 'R'`。真机路径见 `docs/verification.md` **V34**。
+
+### D201 第四片（接读取点：Headers / Body / 推理真的进请求）已落地（2026-10-31）
+
+三片做完之后，那三页里还有一批"存了但不生效"的格子。这一片把**能接的**都接了，
+接不上的留着并写明（见文末）。
+
+- **入参新增**（`nmoi_turn_run_json` / `nmoi_turn_regen_json` 同一套）：
+  `headers[]`（`{name,value}`）、`body`（JSON 对象的**字符串**）、`thinking_field`、
+  `thinking_efforts[]`、`thinking_allow_disable`、`thinking_default`。
+  空值一律不发——FFI 把"没这个字段"当"用默认"，发空数组反而要它多判一次。
+- **落点只有一处**：`provider_config(&input)` 把 header 写进 `ProviderConfig.extra_headers`、
+  把 body 写进 `ProviderConfig.overrides.model`。`turn_run` 与 `turn_regen` 都从它拿，
+  所以不会出现"重试时行为不一样"。核心那边**本来就有**这条链
+  （`build_body`：默认值 → thinking → overrides → 屏蔽；`send()`：auth 头 + extra_headers），
+  这一片只是把两头接上。
+- **解析处的三道闸**：
+  - Header：保留字（`host` / `content-length` / `content-type` / `accept` /
+    `transfer-encoding` / `connection`）不许覆盖；名字里不许有冒号/空格/换行、不许重名
+    （大小写不敏感）；值里不许有换行；最多 32 条；空名（点了「添加一行」没填）**静默跳过**。
+  - Body：必须是 JSON 对象；`messages` / `model` / `stream` / `tools` 四把键归核心，填了拒绝。
+  - 推理：`thinking_field` 只认 6 个 wire 名；`thinking_efforts` 只认 7 个档位；
+    档位优先级 = 助手页这一次要的（非 `auto`）> 模型「默认级别」> 一个字段都不注。
+- **不悄悄改用户的档位**：勾了「支持的级别」之后选了没勾的那一档 → **当场报错并点名**
+  允许的几档。改成"最近的一档"是替用户做决定，且失败现场离配置页很远。
+- **`允许关闭 = 不能关`** 时显式 `off` 报错；`null`（不知道）沿用老行为。
+  `off` 仍然是"一个字段都不注"，没有改成 Anthropic 的 `type: disabled` —— 那在
+  OpenAI 兼容系是未知字段。
+- **方言里的 `custom` 删掉了**：自定义这段 JSON 的正确归宿是高级页的「自定义 Body」。
+  留着它就是同一件事两种写法，而且两种都不完整（Rust 那边也不会认它）。
+- **界面文案跟着改**：推理页、Headers、Body 三处的"现在只记录"全部换成了真实行为。
+  远程图片、价格、模态、三个能力位**仍然只记录**——它们的读取点（图标、花费统计、
+  能力置灰）还没做，那几句仍留着，别提前删。
+
+**验证**：`cargo test -q --workspace --all-targets` 全绿（core **588** / ffi **44**
+（新增 6 条：方言与默认档、档位不许悄悄改、允许关闭、Header 闸、Body 闸、端到端到请求体）/
+storage 108 等）；`cargo fmt --check` 与 `clippy -D warnings` 干净；
+`scripts/ffi_smoke.sh` **321 项 0 失败**；`scripts/check_jni_symbols.sh --expected-only`
+仍是 33 个符号（这一片没加 JNI）；Kotlin 单测 **42/42**；kotlinc 全量类型检查只剩 9 条
+`unresolved reference 'R'`。真机路径见 `docs/verification.md` **V35**。

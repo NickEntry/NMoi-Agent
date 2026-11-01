@@ -1489,7 +1489,8 @@ private fun ModelEditPage(
                             )
                             Hint(
                                 "思考这一档**注到哪个字段上**。留「自动」就按供应商类型选——" +
-                                    "选错了不会报错，只会得到一段读不懂的话。",
+                                    "选错了不会报错，只会得到一段读不懂的话。要写自定义 JSON，" +
+                                    "去「高级 → 自定义 Body」，别指望这里。",
                             )
                         }
 
@@ -1527,8 +1528,9 @@ private fun ModelEditPage(
                                 Hint("不选 = 每次都由助手页那份「思考」决定。")
                             }
                             Hint(
-                                "**推理这一整页现在只记录**：真正发出去的思考档位仍由助手页的「思考」决定，" +
-                                    "方言由供应商类型推。等读取点接上，这里的勾才会影响请求。",
+                                "这一页真的会进请求：助手页选了一档就用它，助手页留「自动」时才用这里的" +
+                                    "「默认级别」；方言决定它注到哪个字段上。勾了「支持的级别」之后，发请求时" +
+                                    "选了没勾的那一档会当场报错并点名——不会悄悄改成最近的一档。",
                             )
                         }
                     }
@@ -1572,7 +1574,10 @@ private fun ModelEditPage(
                                 label = "添加一行",
                                 onClick = { headers = headers + HeaderRow("", "") },
                             )
-                            Hint("**请求里还不会带上**：等这一层接到 `TurnRepository` 才算真生效。")
+                            Hint(
+                                "每次请求都会带上。host / content-length / content-type / accept 这类" +
+                                    "由核心自己写的头部不能覆盖，重名也会在保存前被拦住。",
+                            )
                         }
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
@@ -1583,8 +1588,9 @@ private fun ModelEditPage(
                                 placeholder = """{"temperature":0.2}""",
                             )
                             Hint(
-                                "一个 JSON 对象，保存时校验：解析不了就整页不写。**现在只记录**，" +
-                                    "不会并进请求体。",
+                                "一个 JSON 对象，保存时校验：解析不了就整页不写。每次请求都会并进去，" +
+                                    "排在你填的温度/输出上限之后（同名的键以这里为准）。" +
+                                    "messages / model / stream / tools 由核心写，填了会被拒。",
                             )
                         }
 

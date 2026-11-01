@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** 一轮跑完之后，界面该知道的几件事（不做成"模型原文"，那是库里的活）。 */
@@ -203,6 +204,39 @@ internal object TurnRepository {
                     .also { row ->
                         maxTokens?.let { row.put("max_tokens", it) }
                         temperature?.let { row.put("temperature", it) }
+                    }
+                    .also { row ->
+                        // 模型编辑页（D201 第四片）那三样真的接进请求：
+                        // 自定义 Header / 自定义 Body / 推理方言与档位。
+                        //
+                        // 空值一律不发：FFI 那边把"没这个字段"当"用默认"，
+                        // 发一个空数组/空串反而要它多判一次（两份规矩，迟早不一致）。
+                        val keptHeaders = model.headers.filter { it.name.isNotBlank() }
+                        if (keptHeaders.isNotEmpty()) {
+                            row.put(
+                                "headers",
+                                JSONArray().apply {
+                                    keptHeaders.forEach { header ->
+                                        put(
+                                            JSONObject()
+                                                .put("name", header.name.trim())
+                                                .put("value", header.value),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                        if (model.bodyOverride.isNotBlank()) row.put("body", model.bodyOverride)
+                        if (model.reasoningDialect.isNotBlank()) {
+                            row.put("thinking_field", model.reasoningDialect)
+                        }
+                        if (model.efforts.isNotEmpty()) {
+                            row.put("thinking_efforts", JSONArray(model.efforts))
+                        }
+                        model.allowDisable?.let { row.put("thinking_allow_disable", it) }
+                        if (model.defaultEffort.isNotBlank()) {
+                            row.put("thinking_default", model.defaultEffort)
+                        }
                     }
                     .also { row ->
                         // 压缩判据（D90）：窗口来自**这个模型**填的 `contextWindow`。
