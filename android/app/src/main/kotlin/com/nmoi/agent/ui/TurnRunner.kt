@@ -68,10 +68,17 @@ internal object TurnRunner {
      * 跑完之后：正常结束 → 自动取队首接着发；非正常结束 → 把这个会话的队列**阻塞**，
      * 等用户自己处理（重排 / 删掉 / 手动发送）。
      */
-    fun start(context: Context, databasePath: String, sessionId: String, text: String): Boolean {
+    fun start(
+        context: Context,
+        databasePath: String,
+        sessionId: String,
+        text: String,
+        /** 这一轮带的图片（D208）：跟着用户那条消息一起落库。 */
+        images: List<PendingImage> = emptyList(),
+    ): Boolean {
         synchronized(jobs) {
             if (jobs.containsKey(sessionId)) return false
-            val job = scope.launch { run(context, databasePath, sessionId, text) }
+            val job = scope.launch { run(context, databasePath, sessionId, text, images) }
             jobs[sessionId] = job
             mark(sessionId, true)
         }
@@ -83,9 +90,17 @@ internal object TurnRunner {
         scope.launch { TurnRepository.cancel(sessionId) }
     }
 
-    private suspend fun run(context: Context, databasePath: String, sessionId: String, text: String) {
+    private suspend fun run(
+        context: Context,
+        databasePath: String,
+        sessionId: String,
+        text: String,
+        images: List<PendingImage> = emptyList(),
+    ) {
         _events.emit(TurnEvent.Started(sessionId, text))
-        val result = runCatching { TurnRepository.send(context, databasePath, sessionId, text) }
+        val result = runCatching {
+            TurnRepository.send(context, databasePath, sessionId, text, images)
+        }
             .getOrElse { Result.failure(it) }
         val outcome = result.getOrNull()
         // "正常结束" = 有结果且不是被停掉的。`cancelled=true` 也走下面那条（阻塞队列）：

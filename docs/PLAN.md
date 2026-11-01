@@ -1349,3 +1349,11 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 抽屉多选工具条（顶部 `已选 N 项 · 全选 · ×`、行首勾选框、底部 `置顶 / 移动 / 删除`）已接；
 长按菜单补了「复制会话」与「多选」；0.15d 那处"收了参数没往下传"的接线洞已补。
 **未实测**：全部界面行为都要真机走（V41）。**没做**：复制分界线（会悬空）、复制置顶位、拖动手势排序。
+| 0.15z | **图片附件 + 能力位置灰**（用户 2026-11-01 定的顺序第 2 条；D208） | ① **schema v10**：新表 `attachments(id, conv_id, message_id, mime, bytes, size, created_at)`，外键跟会话/消息级联删；图片存 BLOB 而不是文件路径——备份是一份 .db，路径会指着另一台机器上不存在的文件。② **core**：`ImagePart{mime,data}`、`ChatRequest.images`（按消息 id 索引），OpenAI 兼容端口把用户消息的 `content` 发成 `[{type:"text"},{type:"image_url",image_url:{url:"data:<mime>;base64,…"}}]`；Responses / Anthropic / Gemini 三个端口**明确报不支持**，不静默丢图。`HistoryStore::attachments` 默认空，SQLite 实现覆盖。③ **FFI**：`put_attachment` / `attachment`（取 base64）/ `list_attachments`；`load_units` 每条消息带 `images:[{id,mime,size}]`（只带元数据，字节按需取——一次列 80 条消息不该把几十 MB base64 拖过来）。④ **界面**：输入岛「＋」菜单里「图片」→ 系统照片选择器 → 缩略图预览（可移除）→ 发送时先落用户消息、再挂附件，然后照常跑一轮；消息气泡里显示缩略图（点开大图）。⑤ **能力位置灰**：当前模型的 `input_modalities` **明确不含 image** 时，「图片」那一项灰掉并写原因（「这个模型不接受图片输入」）；**没数据（空）不算不支持**——不知道就不拦。**判据**：附图发送后请求体里是多模态 content（抓包/日志）、库里 `attachments` 有一行、气泡里看得见图；模型改成不支持图片后那一项变灰且点不开（V42）。 |
+
+**0.15z 落地进度（2026-11-01）**：schema **v10**（`attachments`）已上；core 的
+`ChatRequest.images` + OpenAI 兼容端口多模态 content 已通（其余三个端口明确报不支持）；
+`run_session_turn_with_images` 让这一轮的图跟着用户消息落库；FFI 三条附件动词 + `turn_run.images`
+已接；界面「＋ → 图片 → 发送 → 气泡里看得见」已通；能力位三态（`ModelCapabilities`）已接。
+**未实测**：全部界面与真发图要真机走（V42）。**没做**：文件/音频附件、图片压缩与裁剪、
+Anthropic / Gemini / Responses 三个端口的图片、图片在"编辑消息"页里的增删。

@@ -39,7 +39,7 @@ use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
 use nmoi_core::provider::{ProviderConfig, ProviderKind, ThinkingEffort, ThinkingField};
 use nmoi_core::runtime::{ChatClient, ChatRequest};
 use nmoi_core::session::{
-    regenerate_turn, run_session_turn, SessionConfig, SessionError, SessionTurn,
+    regenerate_turn, run_session_turn_with_images, SessionConfig, SessionError, SessionTurn,
 };
 use nmoi_core::shell::EnvirSpec;
 use nmoi_core::tools::ToolRegistry;
@@ -627,6 +627,68 @@ fn parse_thinking_default(root: &Value) -> FfiResult<Option<ThinkingEffort>> {
 ///
 /// 位置固定在这里而不是散在两个入口里：`turn_run` 与 `turn_regen` 各拼一遍的话，
 /// 迟早一边加了 header、另一边忘了——而症状是"重试时行为不一样"，最难查。
+/// 这一轮带的图片（D208）：`[{"mime":"image/png","data":"<base64>"}]`。
+///
+/// 在这里把能挡的都挡掉（不是图片、base64 坏了、太大、太多）：等上游 400 的时候，
+/// 用户看到的是"请求失败"，而真正的原因是他选了一张 HEIC。
+fn parse_images(text: &str) -> FfiResult<Vec<nmoi_core::message::ImagePart>> {
+    let root: Value = serde_json::from_str(text)
+        .map_err(|error| FfiError::new("bad_argument", format!("配置不是合法 JSON: {error}")))?;
+    let Some(list) = root.get("images") else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or_else(|| FfiError::new("bad_argument", "`images` 必须是数组"))?;
+    if list.len() > 4 {
+        return Err(FfiError::new(
+            "bad_argument",
+            format!("一轮最多带 4 张图，给了 {} 张", list.len()),
+        ));
+    }
+    let mut out = Vec::with_capacity(list.len());
+    for (index, item) in list.iter().enumerate() {
+        let mime = item
+            .get("mime")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FfiError::new("bad_argument", format!("第 {index} 张图缺 `mime`")))?;
+        if !mime.starts_with("image/") {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!("第 {index} 张图的 mime 不是图片：{mime}"),
+            ));
+        }
+        let data = item
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FfiError::new("bad_argument", format!("第 {index} 张图缺 `data`")))?;
+        let bytes = nmoi_core::base64::decode(data).ok_or_else(|| {
+            FfiError::new("bad_argument", format!("第 {index} 张图的 base64 解不开"))
+        })?;
+        if bytes.is_empty() {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!("第 {index} 张图是空的"),
+            ));
+        }
+        if bytes.len() > nmoi_storage::repo::MAX_ATTACHMENT_BYTES {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!(
+                    "第 {index} 张图 {} 字节，超过上限 {}",
+                    bytes.len(),
+                    nmoi_storage::repo::MAX_ATTACHMENT_BYTES
+                ),
+            ));
+        }
+        out.push(nmoi_core::message::ImagePart {
+            mime: mime.to_string(),
+            data: data.to_string(),
+        });
+    }
+    Ok(out)
+}
+
 fn provider_config(input: &TurnInput) -> ProviderConfig {
     let mut provider =
         ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
@@ -869,6 +931,9 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         // 流式（0.15n）：默认关。开着时这一轮真的走 SSE，增量经 progress 钩子进 partial 表。
         // `parse_config` 内部自己解析那份 JSON，`root` 在这一层没有；
         // 为了一个布尔再解一遍不值当，但也不改 `parse_config` 的签名（它被 regen 共用）。
+        // 图片（D208）：和 `stream` 一样从原始 JSON 里取——`parse_config` 被 regen 共用，
+        // 为了一个可选数组改它的签名不值当。
+        let images = parse_images(text)?;
         let stream = serde_json::from_str::<Value>(text)
             .ok()
             .and_then(|root| root.get("stream").and_then(Value::as_bool))
@@ -987,12 +1052,13 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         };
 
         let mut call = || {
-            run_session_turn(
+            run_session_turn_with_images(
                 &client,
                 &request,
                 &mut storage,
                 input.session,
                 &input.user_text,
+                &images,
                 &registry,
                 &policy,
                 workspace.as_ref(),
@@ -2021,5 +2087,35 @@ mod partial_tests {
         partial_reset(key);
         let (text, len, _, _) = partial_tail(key);
         assert!(text.is_empty() && len == 0);
+    }
+
+    /// 图片参数（D208）：能挡的都在这里挡掉，别等上游 400 才让用户猜。
+    #[test]
+    fn parse_images_checks_mime_base64_and_size() {
+        let ok = parse_images(r#"{"images":[{"mime":"image/png","data":"aGVsbG8="}]}"#)
+            .expect("合法图片应当通过");
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].mime, "image/png");
+
+        // 没写 images：空，不是错。
+        assert!(parse_images(r#"{"user_text":"hi"}"#).unwrap().is_empty());
+
+        let not_image = parse_images(r#"{"images":[{"mime":"text/plain","data":"aGVsbG8="}]}"#);
+        assert!(not_image.is_err());
+
+        let broken = parse_images(r#"{"images":[{"mime":"image/png","data":"aGVsbG8"}]}"#);
+        assert!(broken.is_err(), "长度不是 4 的倍数");
+
+        let empty = parse_images(r#"{"images":[{"mime":"image/png","data":""}]}"#);
+        assert!(empty.is_err());
+
+        let too_many = format!(
+            r#"{{"images":[{}]}}"#,
+            (0..5)
+                .map(|_| r#"{"mime":"image/png","data":"aGVsbG8="}"#)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_images(&too_many).is_err(), "一轮最多 4 张");
     }
 }

@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod anchor;
 pub mod archive;
+pub mod base64;
 pub mod budget;
 pub mod clock;
 pub mod compress;

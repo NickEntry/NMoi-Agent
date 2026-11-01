@@ -45,6 +45,28 @@ pub trait HistoryStore {
     fn append_unit(&mut self, session: SessionId, unit: &AtomicUnit) -> Result<(), String>;
     fn load_units(&self, session: SessionId) -> Result<Vec<AtomicUnit>, String>;
 
+    /// 一条消息带的图片（D208）。
+    ///
+    /// 默认空：内存实现、测试夹具、以及"这个历史实现压根不存附件"的路径行为不变。
+    /// 发请求时按**消息 id**取，取到的字节原样进 `ChatRequest.images`。
+    fn attachments(&self, message: &MessageId) -> Result<Vec<crate::message::ImagePart>, String> {
+        let _ = message;
+        Ok(Vec::new())
+    }
+
+    /// 把这一轮用户带的图片落到那条消息上（D208）。
+    ///
+    /// 默认实现**什么都不存**（内存实现没有附件表），但这一轮的请求里仍然会带上它们——
+    /// 落库失败不该让用户刚发的图凭空消失，只是下一轮重发时不会再带。
+    fn save_attachments(
+        &mut self,
+        message: &MessageId,
+        parts: &[crate::message::ImagePart],
+    ) -> Result<(), String> {
+        let _ = (message, parts);
+        Ok(())
+    }
+
     /// 当前窗口：最新分界线以下的单元 + 那条线的摘要（D149）。
     ///
     /// 默认实现把整条历史当窗口——**没画过线的会话行为完全不变**，
@@ -288,12 +310,63 @@ fn with_task_anchor(summary: Option<Message>, compacted: bool, user_text: &str) 
 ///
 /// `now` 是这一轮的时间戳（毫秒），由调用方给：core 不读墙上时钟。
 #[allow(clippy::too_many_arguments)]
+/// 把历史里每条消息的图片挂到请求上（D208）。
+///
+/// 覆盖而不是追加：同一份 base 会被多轮复用（重试、队列），追加会让上一轮的图
+/// 跟着下一轮再发一遍——那既费钱又会让模型看到"你没发过的图"。
+fn attach_images<S: HistoryStore>(
+    request: &mut ChatRequest,
+    store: &S,
+    history: &[Message],
+) -> Result<(), SessionError> {
+    request.images.clear();
+    for message in history {
+        let parts = store.attachments(&message.id).map_err(SessionError::Load)?;
+        if !parts.is_empty() {
+            request.images.push((message.id.clone(), parts));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run_session_turn<T: Transport, S: HistoryStore>(
     client: &ChatClient<T>,
     base: &ChatRequest,
     store: &mut S,
     session: SessionId,
     user_text: &str,
+    registry: &ToolRegistry,
+    policy: &AssistantPolicy,
+    workspace: Option<&Workspace>,
+    config: &SessionConfig<'_>,
+    now: i64,
+) -> Result<SessionTurn, SessionError> {
+    run_session_turn_with_images(
+        client,
+        base,
+        store,
+        session,
+        user_text,
+        &[],
+        registry,
+        policy,
+        workspace,
+        config,
+        now,
+    )
+}
+
+/// 带图片的一轮（D208）。图片挂在这一轮**新落的那条用户消息**上：
+/// 先落库、再发请求，所以下一轮重试/续话还能把同一张图带上。
+#[allow(clippy::too_many_arguments)]
+pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
+    client: &ChatClient<T>,
+    base: &ChatRequest,
+    store: &mut S,
+    session: SessionId,
+    user_text: &str,
+    images: &[crate::message::ImagePart],
     registry: &ToolRegistry,
     policy: &AssistantPolicy,
     workspace: Option<&Workspace>,
@@ -370,6 +443,11 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     store
         .append_unit(session, &user_unit)
         .map_err(SessionError::Save)?;
+    if !images.is_empty() {
+        store
+            .save_attachments(&user.id, images)
+            .map_err(SessionError::Save)?;
+    }
 
     // 2. 把历史摊成消息序列，跑工具循环
     // 断块修复（P4.1 / D66）：不完整的工具单元在**这里**被翻译成文字块，
@@ -385,6 +463,12 @@ pub fn run_session_turn<T: Transport, S: HistoryStore>(
     // 一轮之内模型冻结（D76）：这一轮的每一次请求都用同一份模型与思考设置，
     // 工具声明也用同一份名单。冻结在**发出去的那一份**上生效，base 由调用方持有。
     let mut frozen_base = base.clone();
+    // 图片（D208）：按消息 id 从**库里那一份**取，不经过界面缓存。
+    attach_images(&mut frozen_base, store, &history)?;
+    // 内存实现不存附件（`save_attachments` 默认空实现），这一轮仍要把刚发的图带上。
+    if !images.is_empty() && !frozen_base.images.iter().any(|(id, _)| id == &user.id) {
+        frozen_base.images.push((user.id.clone(), images.to_vec()));
+    }
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
@@ -636,6 +720,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     history.extend(crate::repair::normalize(&units));
 
     let mut frozen_base = base.clone();
+    // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
+    attach_images(&mut frozen_base, store, &history)?;
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
@@ -2454,5 +2540,50 @@ mod tests {
             "要点名正确的三种：{}",
             record.outcome
         );
+    }
+
+    /// 图片（D208）：这一轮带的图必须真的进请求体——`content` 变成多模态数组。
+    /// 只测"库里存了"是不够的：存了不发，用户看到的是"模型说没图"。
+    #[test]
+    fn images_reach_the_wire_as_multimodal_content() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = EditStore::default();
+        let reply =
+            r#"{"choices":[{"message":{"content":"看见了一只猫"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+        let images = vec![crate::message::ImagePart {
+            mime: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }];
+
+        run_session_turn_with_images(
+            &client,
+            &base,
+            &mut store,
+            session,
+            "看图",
+            &images,
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let sent = transport.requests();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("image_url"), "{}", sent[0]);
+        assert!(
+            sent[0].contains("data:image/png;base64,aGVsbG8="),
+            "{}",
+            sent[0]
+        );
+        assert!(sent[0].contains("\"type\":\"text\""), "{}", sent[0]);
     }
 }

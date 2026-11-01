@@ -66,11 +66,26 @@ internal object TurnRepository {
         databasePath: String,
         sessionId: String,
         text: String,
+        /** 图片（D208）：`[{mime,data}]`，core 会把它们挂在这一轮新落的那条用户消息上。 */
+        images: List<PendingImage> = emptyList(),
     ): Result<TurnOutcome> = runTurn(
         context = context,
         databasePath = databasePath,
         sessionId = sessionId,
-        decorate = { config -> config.put("user_text", text) },
+        decorate = { config ->
+            config.put("user_text", text)
+            if (images.isNotEmpty()) {
+                val array = org.json.JSONArray()
+                for (image in images) {
+                    array.put(
+                        org.json.JSONObject()
+                            .put("mime", image.mime)
+                            .put("data", image.data),
+                    )
+                }
+                config.put("images", array)
+            }
+        },
         invoke = { config -> NmoiFfi.turnRun(config) },
         parse = { envelope -> parse(envelope) },
     )

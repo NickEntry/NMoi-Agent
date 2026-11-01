@@ -254,6 +254,83 @@ pub extern "C" fn nmoi_storage_copy_conversation_json(
     })
 }
 
+/// 存一张图片（D208）。`data` 是 base64（Kotlin 侧 `Base64.encodeToString` 会带换行，
+/// 解码时去掉）。出参 `{"id","message","mime","size"}`。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_put_attachment_json(
+    handle: u64,
+    session: *const c_char,
+    message: *const c_char,
+    mime: *const c_char,
+    data: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let message_id = parse_message(read_str(message, "message")?)?;
+        let mime = read_str(mime, "mime")?;
+        let encoded = read_str(data, "data")?;
+        let bytes = nmoi_core::base64::decode(encoded)
+            .ok_or_else(|| FfiError::new("bad_argument", "`data` 不是合法 base64"))?;
+        with_storage(handle, |storage| {
+            let id = storage
+                .put_attachment(session_id, &message_id, mime, &bytes)
+                .map_err(storage_error)?;
+            Ok(json!({
+                "id": id,
+                "message": message_id.to_string(),
+                "mime": mime,
+                "size": bytes.len(),
+            }))
+        })
+    })
+}
+
+/// 取一张图片（D208）：出参 `{"id","mime","data"}`，`data` 是 base64。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_attachment_json(
+    handle: u64,
+    attachment: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let id = read_str(attachment, "attachment")?;
+        with_storage(handle, |storage| {
+            let (mime, bytes) = storage.attachment(id).map_err(storage_error)?;
+            Ok(json!({
+                "id": id,
+                "mime": mime,
+                "data": nmoi_core::base64::encode(&bytes),
+            }))
+        })
+    })
+}
+
+/// 一个会话的附件清单（D208）：`{"items":[{"id","message","mime","size"}]}`。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_list_attachments_json(
+    handle: u64,
+    session: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        with_storage(handle, |storage| {
+            let items: Vec<Value> = storage
+                .attachments_of(session_id)
+                .map_err(storage_error)?
+                .into_iter()
+                .map(|info| {
+                    json!({
+                        "id": info.id,
+                        "message": info.message.to_string(),
+                        "mime": info.mime,
+                        "size": info.size,
+                    })
+                })
+                .collect();
+            Ok(json!({ "session": session_id.to_string(), "items": items }))
+        })
+    })
+}
+
 /// 单独一条而不是塞进 `create_conversation`：用户常常先建会话、再挑模型，
 /// 而 `create` 的签名一动，C 侧所有调用点都得跟着改。
 ///
@@ -630,6 +707,20 @@ pub extern "C" fn nmoi_storage_load_units_json(
             let units = storage.load_units(session_id).map_err(storage_error)?;
             // 版本概要一次查完（不是每条消息一次：那是 N+1，滚动会顿）。
             let versions = storage.version_index(session_id).map_err(storage_error)?;
+            // 图片元数据一次查完（D208）：每条约一次是 N+1，滚动会顿；
+            // 字节不在这里带——80 条消息乘几 MB base64 会把首屏拖死。
+            let mut images_by_message: std::collections::HashMap<String, Vec<Value>> =
+                std::collections::HashMap::new();
+            for info in storage.attachments_of(session_id).map_err(storage_error)? {
+                images_by_message
+                    .entry(info.message.to_string())
+                    .or_default()
+                    .push(json!({
+                        "id": info.id,
+                        "mime": info.mime,
+                        "size": info.size,
+                    }));
+            }
             let total = units.len();
             let take = if limit <= 0 {
                 total
@@ -680,6 +771,11 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "version_active": brief.map(|b| b.active).unwrap_or(0),
                                 "version_view": brief.map(|b| b.view.as_str()).unwrap_or("raw"),
                                 "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
+                                // 图片（D208）：只给元数据，字节走 `attachment` 按需取。
+                                "images": images_by_message
+                                    .get(&message.id.to_string())
+                                    .cloned()
+                                    .unwrap_or_default(),
                             })
                         })
                         .collect();

@@ -78,6 +78,24 @@ internal object NmoiFfi {
     suspend fun copyConversation(handle: Long, session: String, title: String = ""): Result<JSONObject> =
         call("copy_conversation") { NativeBridge.copyConversationJson(handle, session, title) }
 
+    /** 存一张图片（D208）：`data` 是 base64。 */
+    suspend fun putAttachment(
+        handle: Long,
+        session: String,
+        message: String,
+        mime: String,
+        data: String,
+    ): Result<JSONObject> =
+        call("put_attachment") { NativeBridge.putAttachmentJson(handle, session, message, mime, data) }
+
+    /** 取一张图片（D208）：回 base64。 */
+    suspend fun attachment(handle: Long, id: String): Result<JSONObject> =
+        call("attachment") { NativeBridge.attachmentJson(handle, id) }
+
+    /** 一个会话的附件清单（D208）。 */
+    suspend fun listAttachments(handle: Long, session: String): Result<JSONObject> =
+        call("list_attachments") { NativeBridge.listAttachmentsJson(handle, session) }
+
     /**
      * 校验子助手名单（D176）。**不需要存储句柄**：它是一条纯检查，
      * 保存助手配置之前调它，撞名当场红字，而不是等发请求时才 400。

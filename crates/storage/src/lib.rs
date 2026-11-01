@@ -672,6 +672,94 @@ mod tests {
         );
     }
 
+    /// 图片附件（D208）：存进去、取出来、跟着会话一起走。
+    #[test]
+    fn attachments_roundtrip_and_follow_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        let bytes = vec![0xffu8, 0xd8, 0xff, 0x00, 0x10, 0x20];
+
+        let id = storage
+            .put_attachment(session, &message, "image/jpeg", &bytes)
+            .unwrap();
+
+        let listed = storage.attachments_of(session).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, id);
+        assert_eq!(listed[0].message, message);
+        assert_eq!(listed[0].size, bytes.len() as u64);
+
+        let (mime, read_back) = storage.attachment(&id).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(read_back, bytes);
+
+        // 发请求那条路：base64 编出来的必须能解回原字节。
+        let parts = storage.attachments_for(&message).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            nmoi_core::base64::decode(&parts[0].1).unwrap(),
+            bytes,
+            "base64 往返不能丢字节"
+        );
+
+        // 删会话：外键级联把附件一起带走，不留孤儿。
+        assert!(storage.delete_conversation(session).unwrap());
+        let left: i64 = storage
+            .conn
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// 四种拒绝：非图片、空字节、超上限、消息不属于这个会话。
+    #[test]
+    fn attachments_refuse_what_cannot_be_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        let other = storage
+            .create_conversation("另一条", "device-a", "default")
+            .unwrap();
+
+        assert!(storage
+            .put_attachment(session, &message, "text/plain", b"hi")
+            .is_err());
+        assert!(storage
+            .put_attachment(session, &message, "image/png", b"")
+            .is_err());
+        let huge = vec![0u8; repo::MAX_ATTACHMENT_BYTES + 1];
+        assert!(storage
+            .put_attachment(session, &message, "image/png", &huge)
+            .is_err());
+        assert!(storage
+            .put_attachment(other, &message, "image/png", b"x")
+            .is_err());
+    }
+
+    /// 发请求时的取图路径（`HistoryStore::attachments`）也要通。
+    #[test]
+    fn history_store_exposes_attachments_for_the_wire() {
+        use nmoi_core::session::HistoryStore;
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        storage
+            .put_attachment(session, &message, "image/png", b"\x89PNG")
+            .unwrap();
+
+        let parts = HistoryStore::attachments(&storage, &message).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].mime, "image/png");
+        assert_eq!(
+            nmoi_core::base64::decode(&parts[0].data).unwrap(),
+            b"\x89PNG"
+        );
+    }
+
     /// 副本还指着的归档，删原件时不能删掉：`ref` 是内容寻址的全局主键，
     /// 删了那一行，副本里的 `archived_ref` 就悬空，L3 下次会说这个库坏了。
     #[test]

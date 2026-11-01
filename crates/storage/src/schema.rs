@@ -267,3 +267,22 @@ pub const SCHEMA_V9: &str = r#"
 ALTER TABLE conversations ADD COLUMN assistant_id TEXT NOT NULL DEFAULT 'default';
 CREATE INDEX conversations_by_assistant ON conversations(assistant_id, updated_at DESC);
 "#;
+
+/// v10（D208）：图片附件。
+///
+/// 为什么存 BLOB 而不是文件路径：备份是一份 `.db`（`Storage::backup` 在副本上校验），
+/// 路径会指着另一台机器上不存在的文件；而"库里有一条指不出来的记录"正是铁律 ② 要挡的。
+/// 外键跟着消息走：删消息（或删会话级联）时图片一起走，不留孤儿。
+pub const SCHEMA_V10: &str = r#"
+CREATE TABLE attachments (
+    id         TEXT PRIMARY KEY,
+    conv_id    TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    mime       TEXT NOT NULL,
+    bytes      BLOB NOT NULL,
+    size       INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX attachments_by_conv ON attachments(conv_id, created_at);
+CREATE INDEX attachments_by_message ON attachments(message_id);
+"#;

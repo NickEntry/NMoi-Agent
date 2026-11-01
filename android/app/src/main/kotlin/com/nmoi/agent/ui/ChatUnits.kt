@@ -39,6 +39,11 @@ internal data class ChatMessage(
     val reasoning: String? = null,
     /** 这条消息声明的工具调用（名字 + 参数原文）。增强编辑要能在界面上指出改的是哪一块。 */
     val toolArgs: List<ToolCallArg> = emptyList(),
+    /**
+     * 图片附件（D208）：**只有元数据**（id / mime / 大小），字节按需再取。
+     * 一次列 80 条消息时把几十 MB base64 拖过来，滚动会直接卡死。
+     */
+    val images: List<ChatImage> = emptyList(),
 ) {
     val isThinking: Boolean get() = source == "model_thinking"
     val isToolCall: Boolean get() = source == "tool_call"
@@ -77,6 +82,24 @@ private fun JSONObject.text(key: String, fallback: String = ""): String {
     return if (raw == "null") fallback else raw
 }
 
+private fun parseImages(array: JSONArray?): List<ChatImage> {
+    if (array == null) return emptyList()
+    return buildList {
+        for (index in 0 until array.length()) {
+            val row = array.optJSONObject(index) ?: continue
+            val id = row.text("id")
+            if (id.isEmpty()) continue
+            add(
+                ChatImage(
+                    id = id,
+                    mime = row.text("mime", "image/jpeg"),
+                    size = row.optLong("size", 0L),
+                ),
+            )
+        }
+    }
+}
+
 private fun parseToolArgs(array: JSONArray?): List<ToolCallArg> {
     if (array == null) return emptyList()
     return buildList {
@@ -92,6 +115,13 @@ private fun parseToolArgs(array: JSONArray?): List<ToolCallArg> {
         }
     }
 }
+
+/** 一张附在消息上的图片（D208）：元数据随消息来，字节用 `id` 单独取。 */
+internal data class ChatImage(
+    val id: String,
+    val mime: String,
+    val size: Long,
+)
 
 /** 断块（P4.1 / D67）的声明行：由 core 给，不由 UI 拼 `ID+块类+原因`。 */internal data class BrokenBlock(
     val id: String,
@@ -177,6 +207,7 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
                     versionEdited = message.optBoolean("version_edited", false),
                     reasoning = message.text("reasoning").ifBlank { null },
                     toolArgs = parseToolArgs(message.optJSONArray("tool_call_args")),
+                    images = parseImages(message.optJSONArray("images")),
                 ),
             )
         }

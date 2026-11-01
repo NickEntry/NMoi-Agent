@@ -178,6 +178,18 @@ impl OutgoingToolCall {
     }
 }
 
+/// 一张随消息发出去的图片（D208）。
+///
+/// `data` 是 base64（**不带** `data:` 前缀）：库里存原始字节，发请求时才编码一次，
+/// 这样同一张图不会在库里躺两份（一份 bytes、一份 base64）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePart {
+    /// 例如 `image/jpeg`、`image/png`。上游按它拼 `data:` URL。
+    pub mime: String,
+    /// 原始字节的 base64。
+    pub data: String,
+}
+
 /// 一条消息。归属某个原子单元，`seq` 在会话内递增。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {

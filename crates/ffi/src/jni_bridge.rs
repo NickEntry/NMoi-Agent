@@ -556,6 +556,103 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_copyConversationJson<
     to_jstring(&mut env, text)
 }
 
+/// 存一张图片（D208）：`data` 是 base64。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_putAttachmentJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    message: JString<'local>,
+    mime: JString<'local>,
+    data: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let message = read_string(&mut env, &message);
+    let mime = read_string(&mut env, &mime);
+    let data = read_string(&mut env, &data);
+    let text = guarded(move || {
+        let (Some(session_id), Some(message), Some(mime), Some(data)) =
+            (session_id, message, mime, data)
+        else {
+            return bad_string();
+        };
+        let (Ok(c_session), Ok(c_message), Ok(c_mime), Ok(c_data)) = (
+            CString::new(session_id),
+            CString::new(message),
+            CString::new(mime),
+            CString::new(data),
+        ) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session / message / mime / data）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_put_attachment_json(
+            handle as u64,
+            c_session.as_ptr(),
+            c_message.as_ptr(),
+            c_mime.as_ptr(),
+            c_data.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// 取一张图片（D208）：回 base64。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_attachmentJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    attachment: JString<'local>,
+) -> jstring {
+    let id = read_string(&mut env, &attachment);
+    let text = guarded(move || {
+        let Some(id) = id else {
+            return bad_string();
+        };
+        let Ok(c_id) = CString::new(id) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（attachment）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_attachment_json(
+            handle as u64,
+            c_id.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// 一个会话的附件清单（D208）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAttachmentsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let text = guarded(move || {
+        let Some(session_id) = session_id else {
+            return bad_string();
+        };
+        let Ok(c_session) = CString::new(session_id) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_list_attachments_json(
+            handle as u64,
+            c_session.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 只改归属：消息、版本、摘要一个字节都不搬（搬就会有两份"同一个会话"）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_moveConversationJson<'local>(

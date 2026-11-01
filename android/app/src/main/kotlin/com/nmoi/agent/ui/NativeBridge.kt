@@ -82,6 +82,15 @@ internal object NativeBridge {
     /** 复制会话（0.15d）：消息整份拷到新会话。回 `{"session","copied","source"}`；title 空串用默认名。 */
     external fun copyConversationJson(handle: Long, session: String, title: String): String
 
+    /** 存一张图片（D208）：`data` 是 base64。回 `{"id","message","mime","size"}`。 */
+    external fun putAttachmentJson(handle: Long, session: String, message: String, mime: String, data: String): String
+
+    /** 取一张图片（D208）：回 `{"id","mime","data"}`（base64）。 */
+    external fun attachmentJson(handle: Long, attachment: String): String
+
+    /** 一个会话的附件清单（D208）：回 `{"session","items":[…]}`，不含字节。 */
+    external fun listAttachmentsJson(handle: Long, session: String): String
+
     /** 校验子助手名单（D176）：`[{owner,id,description}]` → `{ok, problems:[{kind,message}]}`。 */
     external fun validateVarsJson(list: String): String
 

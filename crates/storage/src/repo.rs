@@ -37,6 +37,10 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
 }
 
+/// 单张图片的上限（D208）。挡的是"手滑选了原图"：8 MB 的字节编成 base64 是 11 MB，
+/// 一轮请求体再大就没有意义了（上游普遍 20 MB 起，但那是整包上限）。
+pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+
 pub fn sha256_hex(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -46,6 +50,15 @@ pub fn sha256_hex(content: &str) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// 一条附件的元数据（D208）：**不带字节**。列表用它，别把几十 MB 拖进界面。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentInfo {
+    pub id: String,
+    pub message: MessageId,
+    pub mime: String,
+    pub size: u64,
 }
 
 /// 列表页里的一条会话（D61）。
@@ -218,6 +231,129 @@ impl Storage {
             self.set_conversation_model(target, &model)?;
         }
         Ok(target)
+    }
+
+    /// 存一张图片（D208）。返回附件 id。
+    ///
+    /// 校验三样：`mime` 必须是 `image/…`、字节非空且不超上限、消息真的属于这个会话。
+    /// 第三条不能省——写进去一条挂在不存在的消息上的附件，就是"界面上指不出来的数据"（铁律 ②）。
+    pub fn put_attachment(
+        &mut self,
+        session: SessionId,
+        message: &MessageId,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<String, StorageError> {
+        let mime = mime.trim();
+        if !mime.starts_with("image/") {
+            return Err(StorageError::Inconsistent(format!(
+                "附件只收图片，给的是 {mime:?}"
+            )));
+        }
+        if bytes.is_empty() {
+            return Err(StorageError::Inconsistent("图片是空的".to_string()));
+        }
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(StorageError::Inconsistent(format!(
+                "图片 {} 字节，超过上限 {}",
+                bytes.len(),
+                MAX_ATTACHMENT_BYTES
+            )));
+        }
+        if message.session() != session {
+            return Err(StorageError::Inconsistent(format!(
+                "消息 {message} 不属于会话 {session}"
+            )));
+        }
+        let owned: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM messages WHERE id = ?1 AND conv_id = ?2",
+                params![message.to_string(), session.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if owned.is_none() {
+            return Err(StorageError::Inconsistent(format!(
+                "消息 {message} 不在会话 {session} 里，图片没地方挂"
+            )));
+        }
+        let id = Uuid::now_v7().to_string();
+        self.conn.execute(
+            "INSERT INTO attachments(id, conv_id, message_id, mime, bytes, size, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                session.to_string(),
+                message.to_string(),
+                mime,
+                bytes,
+                bytes.len() as i64,
+                crate::validate::now_ms(),
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// 一个会话里所有附件的元数据（不带字节）：消息区画缩略图前先知道"哪条有几个"。
+    pub fn attachments_of(&self, session: SessionId) -> Result<Vec<AttachmentInfo>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, message_id, mime, size FROM attachments
+             WHERE conv_id = ?1 ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([session.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, message, mime, size) = row?;
+            out.push(AttachmentInfo {
+                id,
+                message: MessageId::from_str_value(&message).map_err(StorageError::Inconsistent)?,
+                mime,
+                size: size as u64,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 取一张图片的字节（D208）。找不到就报错，不返回空图——
+    /// 空图在界面上是一块灰，比报错更难查。
+    pub fn attachment(&self, id: &str) -> Result<(String, Vec<u8>), StorageError> {
+        let found: Option<(String, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT mime, bytes FROM attachments WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        found.ok_or_else(|| StorageError::Inconsistent(format!("附件 {id} 不存在")))
+    }
+
+    /// 一条消息的图片（base64），发请求时用。
+    pub fn attachments_for(
+        &self,
+        message: &MessageId,
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT mime, bytes FROM attachments WHERE message_id = ?1
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([message.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (mime, bytes) = row?;
+            out.push((mime, nmoi_core::base64::encode(&bytes)));
+        }
+        Ok(out)
     }
 
     /// 这个会话最近一次用的模型（D101）。`None` = 还没跑过一轮。
@@ -1238,6 +1374,35 @@ impl nmoi_core::session::HistoryStore for Storage {
 
     fn load_units(&self, session: SessionId) -> Result<Vec<AtomicUnit>, String> {
         Storage::load_units(self, session).map_err(|error| error.to_string())
+    }
+
+    /// 图片（D208）：发请求前按消息 id 取 base64。取不出来就报错——
+    /// 静默少一张图，用户会以为模型没看懂。
+    fn attachments(
+        &self,
+        message: &MessageId,
+    ) -> Result<Vec<nmoi_core::message::ImagePart>, String> {
+        let parts = Storage::attachments_for(self, message).map_err(|error| error.to_string())?;
+        Ok(parts
+            .into_iter()
+            .map(|(mime, data)| nmoi_core::message::ImagePart { mime, data })
+            .collect())
+    }
+
+    /// 这一轮刚发的图片（D208）：解码后逐张落库。解不开就报错——
+    /// 悄悄少存一张，下一轮重试时那张图就没了。
+    fn save_attachments(
+        &mut self,
+        message: &MessageId,
+        parts: &[nmoi_core::message::ImagePart],
+    ) -> Result<(), String> {
+        for part in parts {
+            let bytes = nmoi_core::base64::decode(&part.data)
+                .ok_or_else(|| format!("附件 base64 解不开（消息 {message}）"))?;
+            Storage::put_attachment(self, message.session(), message, &part.mime, &bytes)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// 认分界线的实现走 SQLite 那份（D149）：编排层只看到"窗口"，

@@ -11,6 +11,9 @@ import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -22,6 +25,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -59,6 +63,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
@@ -70,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
+import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -207,6 +215,49 @@ internal fun ChatScreen(
     var thinkingSheet by remember { mutableStateOf(false) }
     /** 发送队列那一层小窗（长按发送键进）。 */
     var queueSheet by remember { mutableStateOf(false) }
+    /** 「＋」面板（D208）：附件入口在这里，不再靠一句"待接"。 */
+    var plusMenu by remember { mutableStateOf(false) }
+    /**
+     * 待发的图片（D208）。发送时随这一轮交出去，发完清空。
+     *
+     * 为什么不先进库再发：这一轮的用户消息由 core 在跑的时候落（`run_session_turn`），
+     * 图片跟着那条消息一起落——先落一条再补图，中间断掉就会留下"一条没有图的空消息"。
+     */
+    var pendingImages by remember { mutableStateOf(listOf<PendingImage>()) }
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            when {
+                pendingImages.size >= 4 -> notice = "一轮最多带 4 张图"
+                else -> scope.launch {
+                    val picked = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val mime = context.contentResolver.getType(uri)
+                                ?.takeIf { it.startsWith("image/") }
+                                ?: "image/jpeg"
+                            val bytes = context.contentResolver.openInputStream(uri)
+                                ?.use { it.readBytes() }
+                                ?: error("读不到这张图")
+                            when {
+                                bytes.isEmpty() -> error("这张图是空的")
+                                bytes.size > MAX_IMAGE_BYTES -> error(
+                                    "图片 ${bytes.size / 1024 / 1024} MB，超过 8 MB 上限",
+                                )
+                            }
+                            PendingImage(
+                                mime = mime,
+                                data = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                                bytes = bytes.size,
+                            )
+                        }
+                    }
+                    picked.fold(
+                        onSuccess = { pendingImages = pendingImages + it },
+                        onFailure = { notice = "选图失败：${it.message}" },
+                    )
+                }
+            }
+        }
+    }
     LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
         withContext(Dispatchers.IO) {
             AssistantRepository.current(databasePath).onSuccess { assistant = it }
@@ -221,6 +272,13 @@ internal fun ChatScreen(
         choices.firstOrNull {
             it.first.id == assistant.providerId && it.second.id == assistant.modelId
         }?.second
+    }
+    /**
+     * 这个模型收不收图片（D208 的能力位）：`true` 收、`false` 明确不收、`null` 不知道。
+     * 只有 `false` 才拦——没数据就当它能发，等上游报错也比冤枉它强。
+     */
+    val imageCapability = remember(currentModel) {
+        ModelCapabilities.acceptsImages(currentModel?.inputModalities.orEmpty())
     }
     /**
      * 「思考」那一张表：**只列这个模型真接受的档位**。
@@ -642,25 +700,44 @@ internal fun ChatScreen(
     // - 这一轮**正常结束** → TurnRunner 自动取队首接着发；**失败 / 被停止** → 队列停在原地等他处理。
     val sendTurn: () -> Unit = {
         val text = draft.trim()
+        val images = pendingImages
+        // 只有图没有字：正文给一句占位，否则库里会是一条空消息（`Message::validate` 也拒）。
+        // 这句话是**用户那条消息的正文**，界面上能看见，不是藏在别处的元数据。
+        val body = text.ifEmpty { if (images.isEmpty()) "" else "（图片）" }
         when {
-            text.isEmpty() -> notice = "先写点什么"
+            body.isEmpty() -> notice = "先写点什么"
             else -> {
                 draft = ""
+                pendingImages = emptyList()
                 notice = null
                 scope.launch {
                     val sid = sessionId ?: onCreateSession()
                     if (sid == null) {
                         // 连会话都建不出来：把字放回输入框，别吞掉用户刚打的。
                         draft = text
+                        pendingImages = images
                         notice = "建会话失败：原因在 设置 → 调试 → 日志"
                         return@launch
                     }
                     // 空白会话的草稿挪到真 id：用户回来时那半句还应该在。
                     DraftStore.migrateNewTo(context, sid)
                     if (TurnRunner.isRunning(sid)) {
+                        if (images.isNotEmpty()) {
+                            // 队列里只存文字：带图的这一轮排进去，图就悄悄丢了。
+                            draft = text
+                            pendingImages = images
+                            notice = "这一轮还在跑：等它结束再发图（排队暂不支持图片）"
+                            return@launch
+                        }
                         val position = SendQueue.enqueue(sid, text)
                         notice = "已排队（第 $position 位）：这一轮结束后自动继续"
-                    } else if (!TurnRunner.start(context, databasePath, sid, text)) {
+                    } else if (!TurnRunner.start(context, databasePath, sid, body, images)) {
+                        if (images.isNotEmpty()) {
+                            draft = text
+                            pendingImages = images
+                            notice = "这一轮马上结束：等它收尾再发图（排队暂不支持图片）"
+                            return@launch
+                        }
                         // 抢跑（刚好在这一瞬间被别的入口起来了）：退一步排队，不丢字。
                         SendQueue.enqueue(sid, text)
                         notice = "已排队：这一轮马上结束，等它收尾就继续"
@@ -822,12 +899,56 @@ internal fun ChatScreen(
                     },
                     onSaveAssistant = { appendOnly("assistant") },
                     onSaveUser = { appendOnly("user") },
+                    pending = pendingImages,
+                    onRemovePending = { index ->
+                        pendingImages = pendingImages.filterIndexed { i, _ -> i != index }
+                    },
+                    onPlus = { plusMenu = true },
+                    imageCapability = imageCapability,
                 )
 
             } else {
                 // 选择模式下藏起输入区，但留 10dp 底边，免得最后一条消息贴住屏幕边缘。
                 Spacer(Modifier.heightIn(min = 10.dp))
             }
+        }
+
+        if (plusMenu) {
+            // 「＋」面板（D208）：图片是真入口，其余三项照旧给"差什么"。
+            // 不给假开关的意思是"点了要有回应"，不是"不许摆"。
+            MenuSheet(
+                title = "添加",
+                items = listOf(
+                    if (imageCapability == false) {
+                        SheetItem(
+                            label = "图片（这个模型不收）",
+                            icon = ActionIcons.Cpu,
+                            hint = ModelCapabilities.refusal(currentModel?.inputModalities.orEmpty()),
+                        )
+                    } else {
+                        SheetItem(
+                            label = "图片",
+                            icon = ActionIcons.Cpu,
+                            onClick = {
+                                plusMenu = false
+                                pickImage.launch("image/*")
+                            },
+                        )
+                    },
+                    SheetItem(
+                        label = "文件",
+                        icon = ActionIcons.Wrench,
+                        hint = "文件附件待接：这一批只做了图片（D208）",
+                    ),
+                    SheetItem(
+                        label = "技能 / 世界书",
+                        icon = ActionIcons.GitBranch,
+                        hint = "技能与世界书入口待接：预设（P4）之后",
+                    ),
+                ),
+                onHint = { notice = it },
+                onDismiss = { plusMenu = false },
+            )
         }
 
         if (modelSheet) {
@@ -1615,6 +1736,9 @@ private fun UnitBlock(
 private data class PendingSend(val text: String, val at: Long)
 
 private const val USER_NAME = "我"
+
+/** 单张图片的上限（D208）：与存储层 `MAX_ATTACHMENT_BYTES` 同一个数，界面先挡一次。 */
+private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
 private const val ASSISTANT_NAME = "助手"
 
 /**
@@ -1686,6 +1810,114 @@ private fun InitialAvatar(letter: String, size: Dp, mine: Boolean) {
 }
 
 /** 用户那一条：右对齐的头像/名字/时间 + 气泡 + 动作行。 */
+/**
+ * 待发图片那排缩略图（D208）。
+ *
+ * 为什么画在输入框**上面**：那是"还没发出去"的东西，跟草稿同一个位置；
+ * 塞进输入框里会被原生 `EditText` 盖住，画在下面又会被当成"已经发过"。
+ */
+@Composable
+private fun PendingImageStrip(images: List<PendingImage>, onRemove: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        images.forEachIndexed { index, image ->
+            Box {
+                val bitmap = remember(image) { image.bitmap() }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "待发图片 $index",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainerHighest,
+                                RoundedCornerShape(10.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("读不出", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-6).dp)
+                        .size(20.dp)
+                        .background(MaterialTheme.colorScheme.surface, CircleShape)
+                        .clickable { onRemove(index) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = ActionIcons.Close,
+                        contentDescription = "移除这张图",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(12.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 消息气泡里的图片（D208）。
+ *
+ * 字节按 id 现取：一条消息可能带几张图，而首屏只画看得见的那几条。
+ * 读不出来的**要说出来**——画一个空白框，用户会以为图被吞了。
+ */
+@Composable
+private fun MessageImages(images: List<ChatImage>) {
+    if (images.isEmpty()) return
+    val context = LocalContext.current
+    val databasePath = remember(context) { ProviderRepository.databasePath(context) }
+    val loaded by produceState(initialValue = null as List<Pair<ChatImage, android.graphics.Bitmap?>>?, images) {
+        value = withContext(Dispatchers.IO) {
+            images.map { image -> image to AttachmentStore.bitmap(databasePath, image.id) }
+        }
+    }
+    val rows = loaded
+    Column(
+        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (rows == null) {
+            Text(
+                text = "读图…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+            )
+        } else {
+            for ((image, bitmap) in rows) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "图片附件",
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier
+                            .widthIn(max = 220.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                    )
+                } else {
+                    Text(
+                        text = "有一张图读不出来（${image.mime}，${image.size / 1024} KB）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun UserMessage(
     message: ChatMessage,
@@ -1755,6 +1987,7 @@ private fun UserMessage(
                     },
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                    MessageImages(images = message.images)
                     Text(
                         text = message.content.ifEmpty { "（空消息）" },
                         style = MaterialTheme.typography.bodyMedium,
@@ -2399,6 +2632,13 @@ private fun Composer(
     queued: Int,
     onSaveAssistant: () -> Unit,
     onSaveUser: () -> Unit,
+    /** 待发的图片（D208）：输入框上方那排缩略图。 */
+    pending: List<PendingImage>,
+    onRemovePending: (Int) -> Unit,
+    /** 「＋」面板：附件入口。 */
+    onPlus: () -> Unit,
+    /** `false` = 这个模型明确不收图（灰掉「图片」那一项并给原因）。 */
+    imageCapability: Boolean?,
 ) {
     Column {
         if (notice != null) {
@@ -2420,6 +2660,9 @@ private fun Composer(
                 .padding(start = 12.dp, end = 12.dp),
         ) {
             Column(modifier = Modifier.padding(top = 6.dp, bottom = 6.dp)) {
+                if (pending.isNotEmpty()) {
+                    PendingImageStrip(images = pending, onRemove = onRemovePending)
+                }
                 NativeEditText(
                     value = draft,
                     onValueChange = onDraftChange,
@@ -2462,7 +2705,7 @@ private fun Composer(
                     IconActionButton(
                         image = ActionIcons.Plus,
                         description = "＋ 菜单",
-                        onClick = { onHint("「＋」面板待接：附件管线（P7.7）+ 技能 / 世界书 / 上下文管理") },
+                        onClick = onPlus,
                         compact = true,
                     )
                     IconActionButton(

@@ -4999,3 +4999,42 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 `check_jni_symbols.sh --expected-only` 的期望表已含 `copyConversationJson`；
 本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；`ConversationSelectionTest` **7/7 绿**。
 真机路径见 `docs/verification.md` **V41**（未实测）。
+
+## D208 图片附件 + 能力位置灰（用户 2026-11-01 定的顺序第 2 条）
+
+1. **schema v10**：新表 `attachments(id, conv_id, message_id, mime, bytes BLOB, size, created_at)`，
+   两个索引（按会话、按消息），外键跟会话/消息级联删。
+   为什么是 BLOB 不是文件路径：备份是**一份 `.db`**（`Storage::backup` 在副本上校验），
+   路径会指着另一台机器上不存在的文件；而"库里有一条指不出来的记录"正是铁律 ② 要挡的。
+2. **core**：`ImagePart{mime,data(base64)}`；`ChatRequest.images` 按**消息 id**索引
+   （不塞进 `Message`：历史消息不该背着几 MB base64，压缩、版本、备份全跟着变重）。
+   OpenAI 兼容端口把带图的用户消息发成
+   `content:[{type:"text",text:…},{type:"image_url",image_url:{url:"data:<mime>;base64,…"}}]`；
+   Responses / Anthropic / Gemini 三个端口**明确报 Unsupported**，不静默丢图。
+   `HistoryStore::attachments` 默认空、`save_attachments` 默认不存（内存实现行为不变），
+   SQLite 实现覆盖两者。
+3. **这一轮的图跟着用户消息走**：`run_session_turn_with_images` 先落用户单元、再
+   `save_attachments`，然后组请求——所以下一轮重试/续话还能把同一张图带上。
+   老签名 `run_session_turn` 委托给带图那条（24 个调用点不动）。
+4. **FFI**：`put_attachment` / `attachment` / `list_attachments`；`turn_run` 多认一个可选
+   `images:[{mime,data}]`，在入口就把能挡的挡掉（不是图片、base64 坏、空、超 8 MB、一轮超 4 张）。
+   `load_units` 每条消息带 `images:[{id,mime,size}]`——**只带元数据**，字节按需取：
+   一次列 80 条消息把几十 MB base64 拖进界面，滚动会直接顿住。
+5. **界面**：输入岛「＋」→「图片」→ 系统照片选择器 → 缩略图预览（右上角 × 可移除）→
+   发送时随这一轮交出去；用户气泡里画缩略图（读不出来的那张**要说出来**，不画空白框）。
+   只有图没有字时正文落「（图片）」——库里不写空消息，界面上也看得见这句话。
+   生成中带图发送**不排队**：队列只存文字，排进去图就悄悄丢了，所以直接说"等它结束再发图"。
+6. **能力位置灰**：`ModelCapabilities.acceptsImages(input_modalities)` 三态——
+   `true` 收 / `false` 明确不收 / `null` 没数据。只有 `false` 才灰掉「图片」并写原因
+   （「这个模型只收 text，不接受图片输入」）；空列表按"不知道"放行，
+   因为冤枉一个能发图的模型，比让上游报错更难受。判据在 `ModelCapabilitiesTest`。
+7. **删会话不再删掉别人还指着的归档**（顺带修的上一批遗留）：`archive.ref` 是内容寻址的
+   全局主键，副本会继续指着原会话写下的那一行；`delete_conversation` 现在只删无人引用的。
+
+**验证**：`cargo test --workspace --all-targets` **758 项全绿**（新增 10 条：schema v10 迁移、
+附件往返/级联/四种拒绝/HistoryStore 取图、多模态 body、非 OpenAI 端口拒绝、`parse_images`
+的四种拒绝、base64 往返与非法输入）；`fmt --check` / `clippy -D warnings` 干净；
+`scripts/ffi_smoke.sh` **321 项 0 失败**；JNI 期望表 39 条（含三条 attachment + copy）；
+本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Kotlin 单测 **11/11 绿**
+（`ConversationSelectionTest` 7 + `ModelCapabilitiesTest` 4）。
+真机路径见 `docs/verification.md` **V42**（未实测；实际发图必须真机走）。

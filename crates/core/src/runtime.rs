@@ -126,6 +126,11 @@ pub struct ChatRequest {
     pub top_p: Option<f32>,
     pub stop: Vec<String>,
     pub tools: Vec<ToolSpec>,
+    /// 每条消息带的图片（D208）。按消息 id 索引，`build_body` 时按 id 取。
+    ///
+    /// 为什么不塞进 `Message`：那会让 `Message` 多一份"字节存在别处"的字段，
+    /// 而历史消息本身不该背着几 MB base64（库、版本、压缩全都跟着变重）。
+    pub images: Vec<(crate::ids::MessageId, Vec<crate::message::ImagePart>)>,
     pub reasoning_replay: ReasoningReplay,
     pub api_key: Option<ApiKey>,
     /// 单次读超时。SSE 两帧之间的静默上限，不是整轮上限。
@@ -145,6 +150,7 @@ impl ChatRequest {
             top_p: None,
             stop: Vec::new(),
             tools: Vec::new(),
+            images: Vec::new(),
             reasoning_replay: ReasoningReplay::Auto,
             api_key: None,
             read_timeout: None,
@@ -927,6 +933,19 @@ pub fn build_body(request: &ChatRequest) -> Result<Value, ChatError> {
             "messages 是空的：至少要有一条消息，否则上游只会回一个看不出原因的 400".into(),
         ));
     }
+    // 图片（D208）：现在只有 OpenAI 兼容端口会发。其余三个端口**明确报错**——
+    // 静默把图丢掉，用户会以为模型没看懂，而其实是根本没发出去。
+    if !request.images.is_empty() && request.provider.kind != ProviderKind::OpenAiCompatible {
+        return Err(ChatError::Unsupported(format!(
+            "{} 端口的图片发送还没做：这一轮带了 {} 张图，先换 OpenAI 兼容端口",
+            request.provider.kind.as_str(),
+            request
+                .images
+                .iter()
+                .map(|(_, parts)| parts.len())
+                .sum::<usize>()
+        )));
+    }
     let mut body = match request.provider.kind {
         ProviderKind::OpenAiCompatible => openai_body(request)?,
         ProviderKind::OpenAiResponses => responses_body(request)?,
@@ -1016,7 +1035,13 @@ fn openai_body(request: &ChatRequest) -> Result<Value, ChatError> {
     let mut messages = Vec::new();
     for message in &request.messages {
         ensure_representable(message)?;
-        messages.push(openai_message(message, replay)?);
+        let images = request
+            .images
+            .iter()
+            .find(|(id, _)| id == &message.id)
+            .map(|(_, parts)| parts.as_slice())
+            .unwrap_or(&[]);
+        messages.push(openai_message(message, replay, images)?);
     }
 
     let mut body = json!({
@@ -1050,7 +1075,11 @@ fn openai_body(request: &ChatRequest) -> Result<Value, ChatError> {
     Ok(body)
 }
 
-fn openai_message(message: &Message, replay: ReasoningReplay) -> Result<Value, ChatError> {
+fn openai_message(
+    message: &Message,
+    replay: ReasoningReplay,
+    images: &[crate::message::ImagePart],
+) -> Result<Value, ChatError> {
     if message.role == Role::Tool {
         let id = tool_call_id(message)?;
         return Ok(json!({
@@ -1061,6 +1090,23 @@ fn openai_message(message: &Message, replay: ReasoningReplay) -> Result<Value, C
     }
 
     let mut item = json!({"role": message.role.as_str(), "content": message.content});
+    // 图片只在用户消息上发：助手/工具消息带图是另一套协议（编辑回传），现在不做。
+    if !images.is_empty() {
+        if message.role != Role::User {
+            return Err(ChatError::Unsupported(format!(
+                "只有用户消息能带图片，{} 是 {}",
+                message.id, message.role
+            )));
+        }
+        let mut parts = vec![json!({"type": "text", "text": message.content})];
+        for image in images {
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": {"url": format!("data:{};base64,{}", image.mime, image.data)},
+            }));
+        }
+        item["content"] = Value::Array(parts);
+    }
     if message.role == Role::Assistant {
         if replay == ReasoningReplay::Always {
             if let Some(reasoning) = &message.reasoning {
@@ -2406,6 +2452,67 @@ mod tests {
         let error = client.chat(&request).unwrap_err();
         assert!(matches!(error, ChatError::Unsupported(_)));
         assert!(error.to_string().contains("流式"));
+    }
+
+    /// 图片（D208）：用户消息的 `content` 变成多模态数组，顺序是"文字在前、图在后"。
+    #[test]
+    fn images_turn_a_user_message_into_multimodal_content() {
+        use crate::message::ImagePart;
+        let mut request = chat_request();
+        request.messages = vec![Message::text(
+            MessageId::new(SessionId::new(), 1),
+            Role::User,
+            crate::source::SourceTag::History,
+            "这图里是什么",
+            3,
+            1,
+            crate::clock::LogicalClock::new(1),
+        )];
+        let id = request.messages[0].id.clone();
+        request.images.push((
+            id,
+            vec![ImagePart {
+                mime: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+        ));
+        let body = build_body(&request).unwrap();
+        let content = &body["messages"][0]["content"];
+        assert!(content.is_array(), "带图的消息必须是数组: {content}");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "这图里是什么");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+    }
+
+    /// 别的端口还没做图：必须**报错**，不能静默把图丢掉。
+    #[test]
+    fn images_are_refused_on_ports_that_do_not_support_them() {
+        use crate::message::ImagePart;
+        let mut request = chat_request();
+        request.provider.kind = ProviderKind::Anthropic;
+        request.messages = vec![Message::text(
+            MessageId::new(SessionId::new(), 1),
+            Role::User,
+            crate::source::SourceTag::History,
+            "看图",
+            1,
+            1,
+            crate::clock::LogicalClock::new(1),
+        )];
+        let id = request.messages[0].id.clone();
+        request.images.push((
+            id,
+            vec![ImagePart {
+                mime: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+        ));
+        let error = build_body(&request).unwrap_err();
+        assert!(format!("{error}").contains("图片"), "{error}");
     }
 
     #[test]
