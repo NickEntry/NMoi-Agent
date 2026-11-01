@@ -15,12 +15,20 @@ internal data class ModelPlan(
     val modelId: String,
     val displayName: String,
     /** null = 快照里没有这一条（界面上要说清，不许猜一个最像的）。 */
-    val entry: SnapshotEntry?,
+    val match: SnapshotMatch?,
     val changes: List<FieldChange>,
     /** 值确实不一样、但这一格是用户自己填的 → 不动它，只把原因说出来。 */
     val skipped: List<FieldChange>,
     val write: Set<String>,
+    /**
+     * 这一条是**猜**出来的（家族最新 / 厂商最新），用户还没点「用这条」。
+     *
+     * 猜出来的匹配只显示、不写。用户 2026-10-31 要的就是"没有对应数据时按公司最新模型判断"，
+     * 但把猜的结果直接写进配置、他事后根本不知道哪几个数是猜的——所以多这一步确认。
+     */
+    val awaitingAccept: Boolean = false,
 ) {
+    val entry: SnapshotEntry? get() = match?.entry
     val hasWork: Boolean get() = write.isNotEmpty()
 }
 
@@ -50,8 +58,12 @@ internal object ResourceUpdate {
         models: List<ProviderModel>,
         sources: Map<String, Map<String, FieldSource>>,
         index: SnapshotIndex,
+        /** 用户明确点了「用这条」的那些模型 id（只对"猜出来"的匹配有意义）。 */
+        accepted: Set<String> = emptySet(),
     ): List<ModelPlan> = models.map { model ->
-        val entry = index.find(model.id)
+        val match = index.match(model.id)
+        val entry = match?.entry
+        val awaiting = match != null && match.how.guessed && model.id !in accepted
         val own = sources[model.id].orEmpty()
         val changes = mutableListOf<FieldChange>()
         val skipped = mutableListOf<FieldChange>()
@@ -59,21 +71,25 @@ internal object ResourceUpdate {
 
         for (candidate in candidates(model, entry)) {
             if (candidate.from == candidate.to) continue
-            if (FieldSource.of(own[candidate.key]?.wire) == FieldSource.Custom) {
-                skipped += candidate
-            } else {
-                changes += candidate
-                write += candidate.key
+            when {
+                // 猜出来的匹配：先只显示"如果接受会改成什么"，一个字都不写。
+                awaiting -> changes += candidate
+                FieldSource.of(own[candidate.key]?.wire) == FieldSource.Custom -> skipped += candidate
+                else -> {
+                    changes += candidate
+                    write += candidate.key
+                }
             }
         }
 
         ModelPlan(
             modelId = model.id,
             displayName = model.displayName,
-            entry = entry,
+            match = match,
             changes = changes,
             skipped = skipped,
             write = write,
+            awaitingAccept = awaiting,
         )
     }
 

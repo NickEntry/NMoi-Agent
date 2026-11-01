@@ -40,6 +40,11 @@ internal object ActionIcons {
     }
 
     /** Lucide `plus.svg`：新建会话。 */
+    /** Lucide `minus.svg`：从列表里移掉那一行（拉取模型的挑选窗口用它配平 `plus`）。 */
+    val Minus: ImageVector = buildVector("minus") {
+        stroke("M5 12h14")
+    }
+
     val Plus: ImageVector = buildVector("plus") {
         stroke("M5 12h14")
         stroke("M12 5v14")
@@ -113,6 +118,15 @@ internal object ActionIcons {
     /** Lucide `chevron-down.svg`：折叠块的开合指示。 */
     val ChevronDown: ImageVector = buildVector("chevron-down") {
         stroke("m6 9 6 6 6-6")
+    }
+
+    /**
+     * Lucide `check-square`：方框里一个对勾 —— 「多选」那个入口（用户 2026-10-31 口述的形状）。
+     * 不是 `check`：那个是"确认这一页"，混用会让两个动作用同一个图标。
+     */
+    val CheckSquare: ImageVector = buildVector("check-square") {
+        stroke("M9 11l3 3L22 4")
+        stroke("M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11")
     }
 
     /** Lucide `chevron-right.svg`：进下一层。设置类页面右侧那颗，不是文字 `›`。 */

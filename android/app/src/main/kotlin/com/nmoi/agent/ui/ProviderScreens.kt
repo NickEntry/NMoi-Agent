@@ -8,6 +8,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -202,6 +205,15 @@ internal fun ProviderEditScreen(
     // 从端点读模型清单：只读一次 GET，改配置仍然只由「保存」落库。
     var fetching by remember { mutableStateOf(false) }
     var fetchNote by remember { mutableStateOf<String?>(null) }
+    /**
+     * 拉回来的清单（非 null = 挑选窗口开着）。
+     *
+     * 为什么不直接并进列表：上游常给几十上百条，全塞进去之后用户还得一条条删。
+     * 挑选窗口里按 **id 精确比对**本地已有（用户改过 id 的那条就不会被认成同一条，
+     * 删除时也不会误删它）——这是用户 2026-10-31 明确要的口径。
+     */
+    var remoteIds by remember { mutableStateOf<List<String>?>(null) }
+    var remoteNote by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(providerId) {
         if (providerId != null) {
@@ -329,16 +341,18 @@ internal fun ProviderEditScreen(
                 notice = null
                 return@launch
             }
-            val (next, added) = ModelCatalog.merge(models, fetched.ids)
-            models = next
-            if (activeModel.isBlank()) activeModel = next.firstOrNull()?.id.orEmpty()
-            fetchNote = when {
-                fetched.ids.isEmpty() -> "端点回了 HTTP ${fetched.status}，但清单是空的"
-                added == 0 -> "一共 ${fetched.ids.size} 个模型，都是已有的（没有覆盖你填的参数）"
-                else -> "新增 $added 个（共 ${next.size} 个）· ${fetched.durationMs} ms · 记得点保存"
+            if (fetched.ids.isEmpty()) {
+                fetchNote = "端点回了 HTTP ${fetched.status}，但清单是空的"
+                notice = null
+                return@launch
             }
+            // 不再"拉回来就全塞进去"（用户 2026-10-31 的要求）：
+            // 清单进一个可搜索的挑选窗口，要哪个点哪个。
+            remoteIds = fetched.ids
+            remoteNote = "拉回 ${fetched.ids.size} 个模型 · ${fetched.durationMs} ms"
+            fetchNote = null
             notice = null
-            NLog.i("Provider", "${reason}：新增 $added，共 ${next.size}")
+            NLog.i("Provider", "${reason}：拉回 ${fetched.ids.size} 个模型，等用户挑")
         }
     }
 
@@ -512,11 +526,48 @@ internal fun ProviderEditScreen(
         }
     }
 
+    val remote = remoteIds
+    if (remote != null) {
+        RemoteModelsPage(
+            ids = remote,
+            note = remoteNote,
+            // **按 id 精确比对**（用户 2026-10-31 的口径）：列表里是 name1、本地存的是 name2 时
+            // 不算同一条——既不会显示成"已添加"，删除也不会误删用户改过名字的那一行。
+            isLocal = { id -> models.any { it.id == id } },
+            onAdd = { id ->
+                if (models.none { it.id == id }) {
+                    models = models + ProviderModel(id = id)
+                    if (activeModel.isBlank()) activeModel = id
+                }
+            },
+            onRemove = { id ->
+                models = models.filterNot { it.id == id }
+                sources = sources - id
+                if (activeModel == id) activeModel = models.firstOrNull()?.id.orEmpty()
+            },
+            onClose = {
+                remoteIds = null
+                remoteNote = null
+                persist()
+            },
+        )
+    }
+
     if (resourceOpen) {
         ModelResourceScreen(
             models = models,
             sources = sources,
-            onClose = { resourceOpen = false },
+            // 关掉这一页也走同一次保存（跟模型编辑页的 ✓ 一个口径：
+            // 「点完了就该落库」，不要让用户再猜一次要不要按「保存」）。
+            onClose = {
+                resourceOpen = false
+                persist()
+            },
+            onDelete = { ids ->
+                models = models.filterNot { it.id in ids }
+                sources = sources - ids
+                if (activeModel in ids) activeModel = models.firstOrNull()?.id.orEmpty()
+            },
             onApply = { updated, inferred ->
                 models = updated
                 // 界面上的来源也要跟着变：不然刚更新完，徽标还写着「默认」，
@@ -1005,7 +1056,7 @@ private fun SecondaryButton(
 
 /** 行内文字按钮（「显示 / 隐藏」这种只需一个字的地方）。`danger` 只给"删"这类动作用。 */
 @Composable
-private fun TextAction(label: String, onClick: () -> Unit, danger: Boolean = false) {
+internal fun TextAction(label: String, onClick: () -> Unit, danger: Boolean = false) {
     Text(
         text = label,
         style = MaterialTheme.typography.labelMedium,
@@ -1044,6 +1095,122 @@ private fun EmptyProviders(onCreate: () -> Unit) {
             modifier = Modifier.padding(horizontal = 40.dp),
             onClick = onCreate,
         )
+    }
+}
+
+/**
+ * 「从端点拉回来的模型」挑选窗口（用户 2026-10-31 的要求）。
+ *
+ * 以前拉回来就整份并进列表，几十上百条之后还得一条条删。现在：搜索框 + 一行一个 + 右侧
+ * 加/减。加 = 往这份配置里插一条只有 id 的模型（参数留空，让它走默认）；
+ * 减 = 从这份配置里删掉**id 完全相同**的那一条（按名字比会误伤用户改过 id 的行）。
+ *
+ * 这一页同样**不直接落库**：改的是供应商页的表单，关掉时由那一次保存写进去。
+ */
+@Composable
+private fun RemoteModelsPage(
+    ids: List<String>,
+    note: String?,
+    isLocal: (String) -> Boolean,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    BackHandler(enabled = true) { onClose() }
+
+    val filtered = remember(ids, query) {
+        val needle = query.trim()
+        if (needle.isEmpty()) ids else ids.filter { it.contains(needle, ignoreCase = true) }
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BackButton(onBack = onClose)
+                Text(
+                    text = "选择模型",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                )
+                Text(
+                    text = "${filtered.size} / ${ids.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            SearchRow(
+                value = query,
+                onChange = { query = it },
+                placeholder = "按名称或 id 过滤",
+            )
+
+            val hint = note
+            if (hint != null) {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                )
+            }
+
+            if (filtered.isEmpty()) {
+                Text(
+                    text = if (ids.isEmpty()) "端点没给任何模型" else "没有匹配「${query.trim()}」的模型",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                )
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(filtered) { id ->
+                        val local = isLocal(id)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 56.dp)
+                                .padding(start = 24.dp, end = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = id,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                if (local) {
+                                    Text(
+                                        text = "已在这份配置里",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            // 已经在配置里 → 减号（删掉它）；不在 → 加号（加进来）。
+                            IconActionButton(
+                                image = if (local) ActionIcons.Minus else ActionIcons.Plus,
+                                description = if (local) "从这份配置里移除 $id" else "把 $id 加进这份配置",
+                                onClick = { if (local) onRemove(id) else onAdd(id) },
+                            )
+                        }
+                        RowDivider(leading = 24.dp)
+                    }
+                }
+            }
+
+            WideButton(
+                label = "完成",
+                enabled = true,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                onClick = onClose,
+            )
+        }
     }
 }
 
@@ -1912,7 +2079,7 @@ private fun OverlayCard(onDismiss: () -> Unit, content: @Composable () -> Unit) 
 }
 
 @Composable
-private fun DialogButton(
+internal fun DialogButton(
     label: String,
     primary: Boolean = false,
     danger: Boolean = false,

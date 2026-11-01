@@ -15,6 +15,10 @@ import org.junit.Test
 class ResourceUpdateTest {
 
     private fun snapshot(
+        id: String = "vendor/model-a",
+        family: String = id,
+        version: List<Int> = emptyList(),
+        aliases: List<String> = emptyList(),
         contextWindow: Int? = null,
         maxOutput: Int? = null,
         tools: Boolean? = null,
@@ -25,8 +29,10 @@ class ResourceUpdateTest {
         inputPrice: Double? = null,
         outputPrice: Double? = null,
     ) = SnapshotEntry(
-        id = "vendor/model-a",
-        family = "vendor/model-a",
+        id = id,
+        family = family,
+        version = version,
+        aliases = aliases,
         contextWindow = contextWindow,
         maxOutput = maxOutput,
         tools = tools,
@@ -89,18 +95,97 @@ class ResourceUpdateTest {
         assertEquals(128000, idx.find("DeepSeek V4.1 Flash")?.contextWindow)
         // 带版本尾巴：切出来按家族查。
         assertEquals(128000, idx.find("deepseek-v4-1-flash-20260101")?.contextWindow)
-        assertNull(idx.find("deepseek-v4-1-pro"))
+        // 同一家公司的另一个型号（库里没有）：落到"厂商最新"那一档，并标成猜的。
+        // 这是用户 2026-10-31 定的口径——没有对应数据就按公司最新的那条判断。
+        assertEquals(MatchHow.VendorLatest, idx.match("deepseek-v4-1-pro")?.how)
+        assertNull(idx.match("zzz-完全对不上的名字"))
     }
 
     @Test
-    fun `家族重名时不猜-宁可说快照里没有`() {
-        val a = snapshot(contextWindow = 1000).copy(id = "claude-3-7-sonnet", family = "claude")
-        val b = snapshot(contextWindow = 2000).copy(id = "claude-3-5-sonnet", family = "claude")
-        val idx = index(a, b)
-        // 精确命中照旧可以（id 就是它自己）。
-        assertEquals(1000, idx.find("claude-3-7-sonnet")?.contextWindow)
-        // 只切出家族 `claude` 时，两条都说得通 → 返回 null。
-        assertNull(idx.find("claude-3-7-sonnet-20250219"))
+    fun `同名家族取最新版本-并且明确说这是猜的`() {
+        val older = snapshot(
+            id = "claude-3-5-sonnet",
+            family = "claude",
+            version = listOf(3, 5),
+            contextWindow = 2000,
+        )
+        val newer = snapshot(
+            id = "claude-3-7-sonnet",
+            family = "claude",
+            version = listOf(3, 7),
+            contextWindow = 1000,
+        )
+        val idx = index(older, newer)
+
+        // 精确命中照旧（名字就是它自己）。
+        assertEquals(MatchHow.Exact, idx.match("claude-3-7-sonnet")?.how)
+        // 带日期尾巴、去掉日期就能对上已有 id → 「去掉装饰」那一档，不算猜。
+        val stripped = idx.match("claude-3-7-sonnet-20250219")
+        assertEquals("claude-3-7-sonnet", stripped?.entry?.id)
+        assertEquals(MatchHow.Stripped, stripped?.how)
+
+        // 换一个连去装饰都对不上的名字：先落到"同一家族的某个型号"这一档。
+        val family = idx.match("claude-3-9-sonnet-20251010")
+        assertEquals("claude-3-7-sonnet", family?.entry?.id)
+        assertTrue(family!!.how.guessed)
+    }
+
+    @Test
+    fun `家族前缀对得上但型号名对不上-按家族最新猜`() {
+        val entry = snapshot(
+            id = "deepseek-v4-1-flash",
+            family = "deepseek-v4-1-flash",
+            contextWindow = 1000000,
+        )
+        val idx = index(entry)
+
+        val match = idx.match("deepseek-v4-1-flash-xyz")
+        assertEquals(MatchHow.FamilyLatest, match?.how)
+        assertEquals("deepseek-v4-1-flash", match?.entry?.id)
+    }
+
+    @Test
+    fun `三种名字写法各走各的一档`() {
+        val entry = snapshot(
+            id = "deepseek-v4-1-flash-1017",
+            family = "deepseek-v4-1-flash",
+            version = listOf(1017),
+            contextWindow = 1000000,
+        )
+        val plain = snapshot(id = "deepseek-v4-1-flash", family = "deepseek-v4-1-flash", contextWindow = 1000000)
+        val idx = index(entry, plain)
+
+        // 1) 原样
+        assertEquals(MatchHow.Exact, idx.match("deepseek-v4-1-flash-1017")?.how)
+        // 2) 中转前缀 + 日期尾巴（用户举的例子）
+        val stripped = idx.match("raccoon/sn-deepseek-v4-1-flash-1017")
+        assertEquals(MatchHow.Stripped, stripped?.how)
+        assertEquals("deepseek-v4-1-flash-1017", stripped?.entry?.id)
+        // 3) 版本号少了连字符
+        assertEquals(MatchHow.DigitsJoined, idx.match("deepseek-v41-flash")?.how)
+    }
+
+    @Test
+    fun `没有对应条目时按同一厂商最新的一条猜-并等用户点确认`() {
+        val old = snapshot(id = "deepseek-v4-flash", version = listOf(4), contextWindow = 128000)
+        val newest = snapshot(id = "deepseek-v4-1-flash", version = listOf(4, 1), contextWindow = 1000000)
+        val idx = index(old, newest)
+
+        val match = idx.match("deepseek-flash-xyz")
+        assertEquals(MatchHow.VendorLatest, match?.how)
+        assertEquals("deepseek-v4-1-flash", match?.entry?.id)
+
+        // 猜出来的**不自动写**：没点「用这条」时 write 是空的。
+        val model = model(id = "deepseek-flash-xyz", contextWindow = 32000)
+        val plan = ResourceUpdate.plan(listOf(model), emptyMap(), idx).single()
+        assertTrue(plan.awaitingAccept)
+        assertTrue(plan.write.isEmpty())
+        // 接受之前也要显示"会改成什么"（不然用户看不到自己错过了什么）。
+        assertTrue(plan.changes.isNotEmpty())
+
+        // 点了之后才写。
+        val accepted = ResourceUpdate.plan(listOf(model), emptyMap(), idx, accepted = setOf(model.id)).single()
+        assertEquals(setOf(ModelField.CONTEXT_WINDOW), accepted.write)
     }
 
     // ---- 计划 -------------------------------------------------------------
@@ -133,7 +218,7 @@ class ResourceUpdateTest {
     @Test
     fun `快照里没有的模型什么都不动`() {
         val idx = index(snapshot(contextWindow = 128000))
-        val plan = ResourceUpdate.plan(listOf(model(id = "vendor/other")), emptyMap(), idx).single()
+        val plan = ResourceUpdate.plan(listOf(model(id = "zzz-完全对不上的名字")), emptyMap(), idx).single()
         assertNull(plan.entry)
         assertTrue(plan.write.isEmpty())
     }

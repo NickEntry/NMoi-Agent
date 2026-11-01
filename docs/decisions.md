@@ -4811,3 +4811,31 @@ storage 108 等）；`cargo fmt --check` 与 `clippy -D warnings` 干净；
 
 **还欠着的三条**（下一批）：拉取模型改成"可搜索的挑选窗口 + 增删"（按 id 匹配，不用名字）；
 资源更新页加多选删除；快照匹配放宽（`sn-` 前缀 / 日期尾巴 / 厂商最新）。
+
+### D202 余下三条也落地了（2026-10-31 深夜）
+
+7. **拉取模型改成"挑选窗口"**：拉回来不再整份塞进列表，而是进一层整页浮层
+   ——搜索框 + 一行一个 id + 右侧 ＋/－。加 = 插入一条只有 id 的模型；减 = 删掉
+   **id 完全相同**的那一条（用户 2026-10-31 的口径：列表里是 name1、本地存的是 name2 时
+   不算同一条，既不会显示成"已添加"，也不会误删他改过名字的行）。
+   关掉这一页即保存（同"点完就落库"的口径）。`ModelCatalog.merge` 保留但不再被这条路径用。
+8. **资源更新页加了多选删除**：右上角「方框 + 对勾」（`ActionIcons.CheckSquare`）进多选，
+   勾几个 → 「删除」→ 从这份配置里去掉（来源行一起清），退出这一页时落库。
+9. **快照匹配放宽成五档**（`SnapshotIndex.match`），每档都**说清自己是哪一档**：
+   `Exact`（原样 id/别名）→ `Stripped`（去供应商前缀、去 `sn-`、去尾部日期/序号）→
+   `DigitsJoined`（`v4-1` ≈ `v41`）→ `FamilyLatest`（家族前缀 + 取版本最新）→
+   `VendorLatest`（同一厂商最新）。
+   **后两档是猜的**（`MatchHow.guessed`）：只显示、不写，卡片上给一颗「用这条」，
+   用户点了才进 `write`。用户举的三个名字在真快照上跑出来的结果：
+   `raccoon/sn-deepseek-v4-1-flash-1017` → `Stripped` → `deepseek-v4-1-flash-1017`；
+   `deepseek-v41-flash` → `DigitsJoined` → `deepseek-v4-1-flash`；
+   `deepseek-flash` → `Exact` → `deepseek-flash`；乱名 → `null`。
+   - **id 比别名权威**：真快照里 `deepseek-1017` 与 `deepseek-v4-1-flash-1017` 都挂别名
+     `deepseek-v4.1-flash-1017`（一份 1.05M、一份 1M）。字典分两遍建：先登记每份自己的 id，
+     再登记别名，否则"谁先被读到谁赢"，同一台机器上结果可能不一样。
+   - `VendorLatest` 是最后一档，也最粗：`claude-3-9-sonnet-…` 会落到 `claude-opus-…`
+     （该厂商最新）。正因为粗，它才必须用户点一下。
+
+**验证**：`ResourceUpdateTest` 增到 15 条（五档各一条 + 猜的不自动写 + 点了才写 +
+三种名字写法 + 家族取最新 + 厂商兜底），三个测试类合计 **45/45 绿**；
+另用真快照在本机跑过上面那 6 个名字（结果见上）；kotlinc 全量只剩 9 条 `unresolved reference 'R'`。

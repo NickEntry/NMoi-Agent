@@ -1,6 +1,8 @@
 package com.nmoi.agent.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,10 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,16 +36,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 资源更新页（D201 第三片）：把随包的模型快照对齐到这份供应商配置上。
+ * 资源更新页（D201 第三片；多选删除是 2026-10-31 真机反馈加的）。
  *
  * 这一页只回答三个问题，顺序也是这个顺序：
  *
- * 1. **哪些模型在快照里对得上**（对不上的明说，不猜）；
+ * 1. **哪些模型在快照里对得上**（对不上的明说；对上了但属于"猜的"要用户点一下）；
  * 2. **哪些字段会变**（`旧 → 新`，一行一个）；
  * 3. **哪些字段本可以变但没动**（用户自己填过 → 跳过，并写出原因）。
  *
- * 它是**一层整页浮层**，和模型编辑页同级、同样不落库：改动先回到供应商页的表单里，
- * 由那一个「保存」写库。理由和模型页一样——供应商草稿只能有一个写者。
+ * 右上角那个"方框 + 对勾"是**多选**：勾几个模型直接删掉（删的是这份供应商配置里的行，
+ * 落库仍然由「保存」/ 关闭这一页那一下完成）。
+ *
+ * 它是一层整页浮层，和模型编辑页同级、同样不落库：改动先回到供应商页的表单里。
  */
 @Composable
 internal fun ModelResourceScreen(
@@ -50,11 +56,17 @@ internal fun ModelResourceScreen(
     onClose: () -> Unit,
     /** 应用：改完的模型表 + "哪些字段是快照写的"（用来落 `推断` 来源）。 */
     onApply: (List<ProviderModel>, Map<String, Map<String, String>>) -> Unit,
+    /** 多选删掉的模型 id（父页面把它从表单里去掉；落库由那一下「保存」完成）。 */
+    onDelete: (Set<String>) -> Unit,
 ) {
     val context = LocalContext.current
     var index by remember { mutableStateOf<SnapshotIndex?>(null) }
     var loading by remember { mutableStateOf(true) }
     var failure by remember { mutableStateOf<String?>(null) }
+    var accepted by remember { mutableStateOf(setOf<String>()) }
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    var notice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         // 1.2 MB 的 JSON：解析一次几百毫秒，必须在 IO 上，而且只解析一次。
@@ -64,28 +76,73 @@ internal fun ModelResourceScreen(
         loading = false
     }
 
-    BackHandler(enabled = true) { onClose() }
-
-    val plans = remember(index, models, sources) {
-        index?.let { ResourceUpdate.plan(models, sources, it) }.orEmpty()
+    BackHandler(enabled = true) {
+        if (selecting) {
+            selecting = false
+            selected = emptySet()
+        } else {
+            onClose()
+        }
     }
-    val changeCount = plans.sumOf { it.changes.size }
+
+    val plans = remember(index, models, sources, accepted) {
+        index?.let { ResourceUpdate.plan(models, sources, it, accepted) }.orEmpty()
+    }
+    val changeCount = plans.sumOf { it.write.size }
+    val guessed = plans.count { it.awaitingAccept }
     val skipCount = plans.sumOf { it.skipped.size }
-    val touched = plans.count { it.hasWork }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                BackButton(onBack = onClose)
+                BackButton(onBack = {
+                    if (selecting) {
+                        selecting = false
+                        selected = emptySet()
+                    } else {
+                        onClose()
+                    }
+                })
                 Text(
-                    text = "资源更新",
+                    text = if (selecting) "已选 ${selected.size} 项" else "资源更新",
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
                 )
+                if (selecting) {
+                    TextAction(
+                        label = "删除",
+                        danger = true,
+                        onClick = {
+                            if (selected.isEmpty()) {
+                                notice = "先勾几个模型"
+                            } else {
+                                onDelete(selected)
+                                notice = "从这份配置里删掉了 ${selected.size} 个模型（还要保存）"
+                                selecting = false
+                                selected = emptySet()
+                            }
+                        },
+                    )
+                    IconActionButton(
+                        image = ActionIcons.Close,
+                        description = "退出多选",
+                        onClick = {
+                            selecting = false
+                            selected = emptySet()
+                        },
+                    )
+                } else {
+                    // 方框 + 对勾 = 多选（用户 2026-10-31 口述的形状）。
+                    IconActionButton(
+                        image = ActionIcons.CheckSquare,
+                        description = "多选模型（可以批量删除）",
+                        onClick = { selecting = true },
+                    )
+                }
             }
 
             Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
@@ -106,55 +163,103 @@ internal fun ModelResourceScreen(
                     else -> Unit
                 }
 
-                plans.forEach { plan ->
-                    ModelPlanCard(plan)
+                val line = notice
+                if (line != null) {
+                    Text(
+                        text = line,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                    )
                 }
 
-                if (plans.isNotEmpty()) {
+                plans.forEach { plan ->
+                    ModelPlanCard(
+                        plan = plan,
+                        selecting = selecting,
+                        selected = plan.modelId in selected,
+                        onToggleSelect = {
+                            selected = if (plan.modelId in selected) {
+                                selected - plan.modelId
+                            } else {
+                                selected + plan.modelId
+                            }
+                        },
+                        onAccept = { accepted = accepted + plan.modelId },
+                    )
+                }
+
+                if (plans.isNotEmpty() && !selecting) {
                     Text(
-                        text = if (changeCount == 0) {
-                            "没有要更新的字段——库里这份已经和快照一致（跳过 $skipCount 处你自己填的）。"
-                        } else {
-                            "会写 $changeCount 处" + if (skipCount > 0) "；跳过 $skipCount 处（你填过）" else "。"
+                        text = buildString {
+                            if (changeCount == 0) {
+                                append("没有要自动写入的字段——库里这份已经和快照一致")
+                            } else {
+                                append("会写 $changeCount 处")
+                            }
+                            if (skipCount > 0) append("；跳过 $skipCount 处（你填过）")
+                            if (guessed > 0) append("；另有 $guessed 个模型是猜出来的，要你点「用这条」才写")
+                            append("。")
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
                     )
                 }
                 Spacer(Modifier.height(8.dp))
             }
 
-            WideButton(
-                label = when {
-                    loading -> "读快照…"
-                    changeCount == 0 -> "没有可更新的字段"
-                    else -> "更新 $touched 个模型 · $changeCount 处"
-                },
-                enabled = !loading && changeCount > 0,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                onClick = {
-                    val applied = ResourceUpdate.apply(models, plans)
-                    onApply(applied.models, applied.inferred)
-                },
-            )
+            if (!selecting) {
+                WideButton(
+                    label = when {
+                        loading -> "读快照…"
+                        changeCount == 0 -> "没有可更新的字段"
+                        else -> "更新 ${plans.count { it.hasWork }} 个模型 · $changeCount 处"
+                    },
+                    enabled = !loading && changeCount > 0,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                    onClick = {
+                        val applied = ResourceUpdate.apply(models, plans)
+                        onApply(applied.models, applied.inferred)
+                    },
+                )
+            }
         }
     }
 }
 
-/** 一个模型一张卡：名字 + 状态 + `旧 → 新` 的逐行清单。 */
+/** 一个模型一张卡：多选框（多选时）+ 名字 + 匹配方式 + `旧 → 新` 的逐行清单。 */
 @Composable
-private fun ModelPlanCard(plan: ModelPlan) {
+private fun ModelPlanCard(
+    plan: ModelPlan,
+    selecting: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
+    onAccept: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 6.dp)
+            .then(
+                if (selecting) {
+                    Modifier.clickable(onClick = onToggleSelect)
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (selecting) {
+                    SelectBox(selected)
+                    Spacer(Modifier.size(10.dp))
+                }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = plan.displayName,
@@ -168,23 +273,25 @@ private fun ModelPlanCard(plan: ModelPlan) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                val match = plan.match
                 Text(
                     text = when {
-                        plan.entry == null -> "快照里没有"
-                        plan.changes.isNotEmpty() -> "${plan.changes.size} 处"
-                        plan.skipped.isNotEmpty() -> "已是最新"
+                        match == null -> "快照里没有"
+                        plan.awaitingAccept -> "猜的"
+                        plan.write.isNotEmpty() -> "${plan.write.size} 处"
                         else -> "已是最新"
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = when {
-                        plan.entry == null -> MaterialTheme.colorScheme.onSurfaceVariant
-                        plan.changes.isNotEmpty() -> MaterialTheme.colorScheme.primary
+                        match == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                        plan.awaitingAccept -> MaterialTheme.colorScheme.tertiary
+                        plan.write.isNotEmpty() -> MaterialTheme.colorScheme.primary
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
             }
 
-            if (plan.entry == null) {
+            if (plan.match == null) {
                 Text(
                     text = "快照里没有这个模型的条目，什么都不动。名字差一个字符就对不上——" +
                         "宁可空着，也不拿一个最像的来顶。",
@@ -194,19 +301,59 @@ private fun ModelPlanCard(plan: ModelPlan) {
                 )
             }
 
+            val match = plan.match
+            if (match != null && match.how != MatchHow.Exact) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${match.how.label}：${match.entry.id}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (plan.awaitingAccept) {
+                        DialogButton(label = "用这条", primary = true, onClick = onAccept)
+                    }
+                }
+            }
+
             plan.changes.forEach { change ->
-                ChangeRow(change, muted = false)
+                ChangeRow(change, muted = false, guessed = plan.awaitingAccept)
             }
             plan.skipped.forEach { change ->
-                ChangeRow(change, muted = true)
+                ChangeRow(change, muted = true, guessed = false)
             }
             Spacer(Modifier.height(4.dp))
         }
     }
 }
 
+/** 多选时左边那个小方框：勾上是主色实心 + 白勾。 */
 @Composable
-private fun ChangeRow(change: FieldChange, muted: Boolean) {
+private fun SelectBox(checked: Boolean) {
+    val stroke = MaterialTheme.colorScheme.outline
+    val fill = MaterialTheme.colorScheme.primary
+    Box(
+        modifier = Modifier
+            .size(20.dp)
+            .border(1.5.dp, if (checked) fill else stroke, RoundedCornerShape(5.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Icon(
+                imageVector = ActionIcons.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChangeRow(change: FieldChange, muted: Boolean, guessed: Boolean) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -228,10 +375,10 @@ private fun ChangeRow(change: FieldChange, muted: Boolean) {
             Text(
                 text = change.to,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (muted) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.primary
+                color = when {
+                    muted -> MaterialTheme.colorScheme.onSurfaceVariant
+                    guessed -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.primary
                 },
             )
         }
@@ -245,7 +392,7 @@ private fun ChangeRow(change: FieldChange, muted: Boolean) {
         HorizontalDivider(
             thickness = 1.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-            modifier = Modifier.padding(top = 6.dp, start = 0.dp),
+            modifier = Modifier.padding(top = 6.dp),
         )
     }
 }
@@ -256,7 +403,7 @@ private fun Note(title: String, body: String?) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp),
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
