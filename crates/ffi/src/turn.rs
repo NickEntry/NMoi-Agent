@@ -394,10 +394,10 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
     let api_key = optional_str(provider, "api_key")?;
 
     let model = required_str(&root, "model")?;
-    let user_text = required_str(&root, "user_text")?;
-    if user_text.trim().is_empty() {
-        return Err(bad("user_text", "不能是空串"));
-    }
+    // `user_text` 只有 `turn_run` 需要（重试/续话走 `up_to`，不发新消息）。
+    // 以前这里一律必填，于是"重试"在真机上永远是
+    // `bad_argument：配置字段 user_text 是必填的`——两条 FFI 共用一份解析的代价。
+    let user_text = optional_str(&root, "user_text")?.unwrap_or_default();
     let now_ms = optional_i64(&root, "now_ms")?.unwrap_or(0);
 
     let max_rounds = optional_u64(&root, "max_rounds")?.unwrap_or(12);
@@ -928,6 +928,13 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
     run_json(|| {
         let text = read_str(config, "config")?;
         let input = parse_config(text)?;
+        // 这一条只有 `turn_run` 要：重试/续话不发新消息，所以那边不填也合法。
+        if input.user_text.trim().is_empty() {
+            return Err(FfiError::new(
+                "bad_argument",
+                "配置字段 `user_text` 不能是空串：要发新消息就得有内容",
+            ));
+        }
         // 流式（0.15n）：默认关。开着时这一轮真的走 SSE，增量经 progress 钩子进 partial 表。
         // `parse_config` 内部自己解析那份 JSON，`root` 在这一层没有；
         // 为了一个布尔再解一遍不值当，但也不改 `parse_config` 的签名（它被 regen 共用）。
@@ -1756,11 +1763,18 @@ mod tests {
         assert!(error.message.contains("anthropic"), "{}", error.message);
     }
 
+    /// `user_text` 只在 `turn_run` 必填：重试/续话走 `up_to`，解析层不能再拦它。
+    /// 真机上那句 `重试失败：bad_argument：配置字段 user_text 是必填的` 就是这里来的。
     #[test]
-    fn empty_user_text_is_rejected_here_not_upstream() {
-        let broken = minimal().replace("\"在吗\"", "\"   \"");
-        let error = parse(&broken).unwrap_err();
-        assert!(error.message.contains("user_text"), "{}", error.message);
+    fn user_text_is_optional_for_regen_and_checked_by_turn_run() {
+        let blank = minimal().replace("\"在吗\"", "\"   \"");
+        let parsed = parse(&blank).expect("解析层不该因为 user_text 为空就拒");
+        assert_eq!(parsed.user_text.trim(), "");
+
+        // 少了这个键也一样能解析（重试那条根本不带它）。
+        let mut value: Value = serde_json::from_str(&minimal()).unwrap();
+        value.as_object_mut().unwrap().remove("user_text");
+        assert!(parse(&value.to_string()).is_ok());
     }
 
     #[test]

@@ -126,6 +126,10 @@ internal fun ChatScreen(
      * 那个只有本页自己发起的动作才会加一，从别的页面回来时它没变，消息区就不会重画。
      */
     externalReload: Int = 0,
+    /** 长按模型选择里的一行 → 去改这个模型（D209）。 */
+    onEditModel: ((providerId: String, modelId: String) -> Unit)? = null,
+    /** 长按模型选择里的供应商组头 → 去改这个供应商。 */
+    onEditProvider: ((providerId: String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
@@ -545,9 +549,15 @@ internal fun ChatScreen(
     // 返回键要一层一层退（用户 2026-10-26 报：浮层弹出来后按返回直接退应用，不是关浮层）。
     // 优先级按叠放层次从高到低：编辑对话框 → 「更多」面板 → 分享面板 → 选择模式。
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
-    val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen || selecting
+    val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen ||
+        selecting || modelSheet || thinkingSheet || queueSheet || plusMenu
     BackHandler(enabled = overlayOpen) {
         when {
+            // 顺序 = 叠放顺序，从上往下退：先关最后打开的那一层。
+            plusMenu -> plusMenu = false
+            queueSheet -> queueSheet = false
+            thinkingSheet -> thinkingSheet = false
+            modelSheet -> modelSheet = false
             confirmDelete != null -> confirmDelete = null
             editingId != null -> editingId = null
             moreForId != null -> moreForId = null
@@ -645,8 +655,17 @@ internal fun ChatScreen(
 
     // 只落库、不请求（长按 ↑ 的那两项，PLAN §3.12）：语义是"先记下来、晚点再发"。
     // 会话不存在就先建——建失败要说原因，不能静默丢掉用户刚打的字。
+    /**
+     * 屏幕上此刻的正文（D209）。**以原生输入框为准**，`draft` 只当兜底：
+     * 输入法、程序化清空、草稿恢复三条路都可能让两者短暂不一致，
+     * 而用户点发送时看到的是框里那一份。
+     */
+    fun composerText(): String =
+        editTextRef.value?.text?.toString()?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: draft.trim()
+
     val appendOnly: (String) -> Unit = { role ->
-        val text = draft.trim()
+        val text = composerText()
         when {
             text.isEmpty() -> notice = "先写点什么"
             busy -> notice = "上一轮还没结束（要打断就先点停止）"
@@ -699,7 +718,7 @@ internal fun ChatScreen(
     // - 会话**正在跑** → 不报错、不丢字，**排进这个会话的队列**，并告诉他排第几位；
     // - 这一轮**正常结束** → TurnRunner 自动取队首接着发；**失败 / 被停止** → 队列停在原地等他处理。
     val sendTurn: () -> Unit = {
-        val text = draft.trim()
+        val text = composerText()
         val images = pendingImages
         // 只有图没有字：正文给一句占位，否则库里会是一条空消息（`Message::validate` 也拒）。
         // 这句话是**用户那条消息的正文**，界面上能看见，不是藏在别处的元数据。
@@ -976,6 +995,18 @@ internal fun ChatScreen(
                 },
                 onNotice = { notice = it },
                 onDismiss = { modelSheet = false },
+                onEditModel = onEditModel?.let { edit ->
+                    { choice ->
+                        modelSheet = false
+                        edit(choice.provider.id, choice.model.id)
+                    }
+                },
+                onEditProvider = onEditProvider?.let { edit ->
+                    { providerId ->
+                        modelSheet = false
+                        edit(providerId)
+                    }
+                },
             )
         }
 
@@ -2972,8 +3003,16 @@ private fun NativeEditText(
             editText.setTextColor(textColor)
             editText.setHintTextColor(hintColor)
             if (editText.text?.toString() != value) {
-                editText.setText(value)
-                editText.setSelection(value.length)
+                if (value.isEmpty()) {
+                    // **原地清空**，不要 `setText("")`：那会把 Editable 换成一个新对象，
+                    // 而输入法还连着旧的——之后敲的字进不了这个框，`afterTextChanged`
+                    // 也不再触发。真机上的"保存一次之后再也发不出去、提示先写点什么"
+                    // 就是这个：界面看着有字，`draft` 一直是空串。
+                    editText.text?.clear()
+                } else {
+                    editText.setText(value)
+                    editText.setSelection(value.length)
+                }
             }
         },
     )

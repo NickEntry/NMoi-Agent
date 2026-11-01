@@ -127,6 +127,7 @@ internal object ResourceUpdate {
         ModelField.REASONING,
         ModelField.EFFORTS,
         ModelField.INPUT_MODALITIES,
+        ModelField.OUTPUT_MODALITIES,
         ModelField.INPUT_PRICE,
         ModelField.OUTPUT_PRICE,
         ModelField.CURRENCY,
@@ -201,18 +202,28 @@ internal object ResourceUpdate {
                 effortsText(entry.efforts),
             )
         }
-        entry.images?.let { images ->
+        if (entry.inputModalities != null || entry.images != null) {
             val now = Modalities.normalize(model.inputModalities, Modalities.INPUT)
-            val after = if (images) {
-                Modalities.normalize(now + "image", Modalities.INPUT)
-            } else {
-                now - "image"
+            val after = when {
+                entry.inputModalities != null ->
+                    Modalities.normalize(entry.inputModalities, Modalities.INPUT)
+                entry.images == true -> Modalities.normalize(now + "image", Modalities.INPUT)
+                else -> Modalities.normalize(now + "text", Modalities.INPUT)
             }
             rows += FieldChange(
                 ModelField.INPUT_MODALITIES,
                 "输入模态",
                 modalitiesText(now),
                 modalitiesText(after),
+            )
+        }
+        entry.outputModalities?.let { values ->
+            val now = Modalities.normalize(model.outputModalities, Modalities.OUTPUT)
+            rows += FieldChange(
+                ModelField.OUTPUT_MODALITIES,
+                "输出模态",
+                modalitiesText(now, Modalities.OUTPUT),
+                modalitiesText(Modalities.normalize(values, Modalities.OUTPUT), Modalities.OUTPUT),
             )
         }
         entry.inputPerMillion?.let { value ->
@@ -258,12 +269,24 @@ internal object ResourceUpdate {
         )
         ModelField.INPUT_MODALITIES -> {
             val now = Modalities.normalize(model.inputModalities, Modalities.INPUT)
-            val after = when (entry.images) {
-                true -> Modalities.normalize(now + "image", Modalities.INPUT)
-                false -> now - "image"
-                null -> now
+            val after = when {
+                // 快照给了完整清单就照抄（D209）：它比"加一个 image"更准，
+                // 也能把 audio / video / pdf 一起补上。
+                entry.inputModalities != null ->
+                    Modalities.normalize(entry.inputModalities, Modalities.INPUT)
+                entry.images == true -> Modalities.normalize(now + "image", Modalities.INPUT)
+                // 明确写了"不收图"的聊天模型：至少收文本。写空等于把"知道"退回"不知道"。
+                entry.images == false -> Modalities.normalize(now + "text", Modalities.INPUT)
+                else -> now
             }
             model.copy(inputModalities = after)
+        }
+        ModelField.OUTPUT_MODALITIES -> {
+            val now = Modalities.normalize(model.outputModalities, Modalities.OUTPUT)
+            val after = entry.outputModalities?.let {
+                Modalities.normalize(it, Modalities.OUTPUT)
+            } ?: now
+            model.copy(outputModalities = after)
         }
         ModelField.INPUT_PRICE -> model.copy(
             inputPrice = entry.inputPerMillion ?: model.inputPrice,
@@ -294,12 +317,15 @@ internal object ResourceUpdate {
         return if (normalized.isEmpty()) "没填" else normalized.joinToString("·") { Efforts.label(it) }
     }
 
-    private fun modalitiesText(values: List<String>): String {
-        val normalized = Modalities.normalize(values, Modalities.INPUT)
+    private fun modalitiesText(
+        values: List<String>,
+        choices: List<Kind> = Modalities.INPUT,
+    ): String {
+        val normalized = Modalities.normalize(values, choices)
         return if (normalized.isEmpty()) {
             "没填"
         } else {
-            normalized.joinToString("·") { Modalities.label(it, Modalities.INPUT) }
+            normalized.joinToString("·") { Modalities.label(it, choices) }
         }
     }
 

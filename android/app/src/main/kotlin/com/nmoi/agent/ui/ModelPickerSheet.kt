@@ -1,7 +1,9 @@
 package com.nmoi.agent.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -87,6 +89,15 @@ internal fun ModelPickerSheet(
     onPick: (ModelChoice) -> Unit,
     onNotice: (String) -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * 长按一行模型 = 直接改这个模型（D209）。
+     *
+     * 为什么是长按：这一行短按已经占了"选它"。改模型是低频动作，
+     * 再挂一个铅笔图标会把"选哪个"这件事挤散。
+     */
+    onEditModel: ((ModelChoice) -> Unit)? = null,
+    /** 长按供应商组头 = 改这个供应商（同上）。 */
+    onEditProvider: ((String) -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     var providerFilter by remember { mutableStateOf<String?>(null) }
@@ -156,7 +167,11 @@ internal fun ModelPickerSheet(
             ) {
                 groups.forEach { (provider, rows) ->
                     item(key = "group:${provider.id}") {
-                        GroupHeader(provider = provider, count = rows.size)
+                        GroupHeader(
+                            provider = provider,
+                            count = rows.size,
+                            onLongPress = onEditProvider?.let { edit -> { edit(provider.id) } },
+                        )
                     }
                     items(rows, key = { it.key }) { choice ->
                         ModelRow(
@@ -168,6 +183,7 @@ internal fun ModelPickerSheet(
                                 onDismiss()
                             },
                             onFavorite = { toggleFavorite(choice) },
+                            onLongPress = onEditModel?.let { edit -> { edit(choice) } },
                         )
                     }
                 }
@@ -289,10 +305,18 @@ private fun SearchRow(value: String, onChange: (String) -> Unit) {
 
 /** 组标题：`供应商名 · 兼容 · 3`。第二段是 wire 形态——模型一样、端点不同，价钱就不一样。 */
 @Composable
-private fun GroupHeader(provider: ProviderEntry, count: Int) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun GroupHeader(provider: ProviderEntry, count: Int, onLongPress: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (onLongPress != null) {
+                    Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress)
+                } else {
+                    Modifier
+                },
+            )
             .padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -320,18 +344,26 @@ private fun GroupHeader(provider: ProviderEntry, count: Int) {
  * 放在拇指容易落到的边上（行本身也是可点的，两者靠 36dp 的独立热区分开）。
  */
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun ModelRow(
     choice: ModelChoice,
     current: Boolean,
     favorite: Boolean,
     onPick: () -> Unit,
     onFavorite: () -> Unit,
+    onLongPress: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
-            .clickable(onClick = onPick)
+            .then(
+                if (onLongPress != null) {
+                    Modifier.combinedClickable(onClick = onPick, onLongClick = onLongPress)
+                } else {
+                    Modifier.clickable(onClick = onPick)
+                },
+            )
             .padding(start = 20.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

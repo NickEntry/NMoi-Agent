@@ -94,6 +94,34 @@ def as_int(value) -> int | None:
     return None
 
 
+def modalities_split(entry: dict) -> tuple[set[str], set[str]]:
+    """(输入模态, 输出模态)。三个源的写法不同，这里统一成同一对集合。
+
+    为什么要分开：`images` 那个布尔只回答"能不能收图"，而界面上的能力位
+    需要的是"它收什么、吐什么"（D209）。models.dev 的 `modalities` 本来就分了
+    input/output，之前只取了并集，等于把这个事实丢了。
+    """
+    inputs: set[str] = set()
+    outputs: set[str] = set()
+    modalities = entry.get("modalities")
+    if isinstance(modalities, dict):
+        for key, bucket in (("input", inputs), ("output", outputs)):
+            values = modalities.get(key)
+            if isinstance(values, list):
+                bucket.update(str(v).lower() for v in values)
+    architecture = entry.get("architecture")
+    if isinstance(architecture, dict):
+        for key, bucket in (("input_modalities", inputs), ("output_modalities", outputs)):
+            values = architecture.get(key)
+            if isinstance(values, list):
+                bucket.update(str(v).lower() for v in values)
+    for key, bucket in (("input_modalities", inputs), ("output_modalities", outputs)):
+        values = entry.get(key)
+        if isinstance(values, list):
+            bucket.update(str(v).lower() for v in values)
+    return inputs, outputs
+
+
 def modalities_of(entry: dict) -> set[str]:
     result: set[str] = set()
     # models.dev: modalities: {input: [...], output: [...]}
@@ -261,7 +289,7 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
     merged: dict[tuple[str, tuple[int, ...] | None], dict] = {}
     aliases: dict[tuple[str, tuple[int, ...] | None], set[str]] = defaultdict(set)
 
-    def bump(key, *, context=None, max_output=None, modalities=None,
+    def bump(key, *, context=None, max_output=None, modalities=None, output_modalities=None,
              reasoning=False, tools=False, structured=False, cost=None, raw_id=None,
              efforts=None, toggle=False, native=False):
         slot = merged.setdefault(
@@ -272,6 +300,8 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
                 "images": False,
                 "audio_in": False,
                 "video_in": False,
+                "input_modalities": set(),
+                "output_modalities": set(),
                 "reasoning": False,
                 "tools": False,
                 "structured_output": False,
@@ -286,12 +316,15 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
         if max_output:
             slot["max_output"] = max(slot["max_output"], max_output)
         for modality in modalities or ():
+            slot["input_modalities"].add(modality)
             if modality == "image" or modality == "images":
                 slot["images"] = True
             elif modality == "audio":
                 slot["audio_in"] = True
             elif modality == "video":
                 slot["video_in"] = True
+        for modality in output_modalities or ():
+            slot["output_modalities"].add(modality)
         slot["reasoning"] = slot["reasoning"] or bool(reasoning)
         slot["tools"] = slot["tools"] or bool(tools)
         slot["structured_output"] = slot["structured_output"] or bool(structured)
@@ -330,7 +363,8 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
             (family, tuple(version) if version else None),
             context=as_int(limit.get("context")),
             max_output=as_int(limit.get("output")),
-            modalities=modalities_of(model),
+            modalities=modalities_split(model)[0],
+            output_modalities=modalities_split(model)[1],
             reasoning=bool(model.get("reasoning")),
             tools=bool(model.get("tool_call")),
             structured=model.get("structured_output") is True,
@@ -355,7 +389,8 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
             (family, tuple(version) if version else None),
             context=as_int(entry.get("context_length")),
             max_output=as_int(top_provider.get("max_completion_tokens")),
-            modalities=modalities_of(entry),
+            modalities=modalities_split(entry)[0],
+            output_modalities=modalities_split(entry)[1],
             reasoning=bool(entry.get("reasoning")) or "reasoning" in params,
             tools="tools" in params,
             structured={"response_format", "structured_outputs", "structured_output"} & params != set(),
@@ -374,7 +409,8 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
             (family, tuple(version) if version else None),
             context=as_int(entry.get("context_length")),
             max_output=as_int(entry.get("max_output")),
-            modalities=modalities_of(entry),
+            modalities=modalities_split(entry)[0],
+            output_modalities=modalities_split(entry)[1],
             reasoning=bool(entry.get("reasoning")),
             tools=bool(entry.get("tool_call")),
             cost=cost_of(entry),
@@ -431,6 +467,12 @@ def build_snapshot(merged: dict, aliases: dict, fetched_at: str) -> dict:
                         "budget_tokens": None,
                         "custom": None,
                     },
+                    "input_modalities": sorted(
+                        profile["input_modalities"] or {"text"}
+                    ),
+                    "output_modalities": sorted(
+                        profile["output_modalities"] or {"text"}
+                    ),
                     "reasoning": profile["reasoning"],
                     "supported_efforts": profile["supported_efforts"],
                     "supports_toggle": profile["supports_toggle"],

@@ -5038,3 +5038,35 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Kotlin 单测 **11/11 绿**
 （`ConversationSelectionTest` 7 + `ModelCapabilitiesTest` 4）。
 真机路径见 `docs/verification.md` **V42**（未实测；实际发图必须真机走）。
+
+## D209 真机反馈六条（2026-11-02）
+
+1. **「仅保存」之后再也发不出去（提示"先写点什么"）**：`NativeEditText` 清空时用的是
+   `setText("")`——那会把 `Editable` 换成一个新对象，而输入法还连着旧的；之后敲的字
+   进不了这个框，`afterTextChanged` 也不再触发。界面看着有字，`draft` 一直是空串。
+   两处一起改：① 清空改成 `editText.text?.clear()`（原地改，InputConnection 还活着）；
+   ② 发送 / 仅保存读的是**屏幕上那一份**（`composerText()`：原生框优先，`draft` 兜底）——
+   这也是铁律 ① 在输入框上的那一半。
+2. **删除确认时抽屉列表整片消失**：确认卡原来是 `DrawerPanel` 里 `Column` 的孩子，
+   `fillMaxSize` 只拿到剩余高度；更糟的是它把带 `weight(1f)` 的列表挤成 0 高。
+   现在浮层（动作菜单 / 改名 / 删除 / 移动 / 多选）是 **Column 的兄弟**，遮罩盖整屏，
+   列表还在底下看得见。
+3. **重试永远失败**（`bad_argument：配置字段 user_text 是必填的`）：`turn_regen` 与
+   `turn_run` 共用 `parse_config`，而重试不发新消息、不带 `user_text`。
+   现在 `user_text` 在解析层可选，**由 `turn_run` 自己校验非空**；重试那条路不再被它挡住。
+4. **模态默认值**：快照脚本开始保存 `input_modalities` / `output_modalities`（models.dev 的
+   MIT 数据，原本只取了并集里的 `images` 布尔）。数据源不变（`docs/model-data.md` 那三家），
+   只是把"收什么/吐什么"这个事实留下来。快照刷新时**保留旧条目**：上游下架的模型还在用户的
+   配置里，删掉就等于匹配不到。添加模型时：命中快照就按清单写；没命中就给
+   「text 进 / text 出」的默认（记成「推断」），不再留一格空白。
+5. **浮层不吃返回键**：`SheetFrame` 里加 `BackHandler`——模型选择、动作菜单、＋面板、
+   发送队列全都一次返回关掉；聊天页那条 `overlayOpen` 也补上了这四个浮层。
+   以前按返回会直接退到聊天页、再按一次退出应用，而面板还挂在上面。
+6. **模型选择里的长按快捷**：长按一行模型 → 直接打开这个模型的编辑页；长按供应商组头 →
+   打开这个供应商。落点是 `Route.ProviderEdit(id, focusModel)` + `ProviderEditScreen`
+   读到模型后自动展开那一页（只开一次）。模型仍然是**供应商草稿的一部分**，不另开路由。
+
+**验证**：Rust `cargo test` 全绿（`user_text` 那条用例改成"解析层放行、turn_run 校验"）；
+本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Kotlin 单测新增四条模态用例
+（完整清单 / 明确不收图 / 输出模态 / 已填不覆盖），由 CI 的 `testDebugUnitTest` 跑。
+真机路径见 `docs/verification.md` **V43**。

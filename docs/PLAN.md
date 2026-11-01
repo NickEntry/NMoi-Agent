@@ -1357,3 +1357,9 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 已接；界面「＋ → 图片 → 发送 → 气泡里看得见」已通；能力位三态（`ModelCapabilities`）已接。
 **未实测**：全部界面与真发图要真机走（V42）。**没做**：文件/音频附件、图片压缩与裁剪、
 Anthropic / Gemini / Responses 三个端口的图片、图片在"编辑消息"页里的增删。
+
+**0.15aa 真机反馈六条（2026-11-02，D209）**：输入框清空改成原地 `clear()` + 发送读屏幕上那一份；
+抽屉浮层移出 Column（删除时列表不再消失）；`user_text` 在解析层可选、由 `turn_run` 校验；
+快照开始带 `input_modalities` / `output_modalities`（models.dev，MIT）并保留旧条目；
+`SheetFrame` 统一吃返回键；模型选择里长按模型/供应商直达编辑页。
+**未实测**：全部界面行为（V43）。

@@ -21,6 +21,14 @@ internal data class SnapshotEntry(
     val efforts: List<String>,
     /** 快照只能说"能不能收图"，其余模态它没有。 */
     val images: Boolean?,
+    /**
+     * 输入 / 输出模态（D209，来自 models.dev 的 MIT 数据）。
+     *
+     * `null` = 这条快照没有这个字段（老条目，或者上游没给）——**不等于"只收文本"**。
+     * 空列表也按"没数据"处理，免得把一条真能收图的模型写成只收文本。
+     */
+    val inputModalities: List<String>? = null,
+    val outputModalities: List<String>? = null,
     /** 别名（上游自己给的对应关系）：`raccoon/sn-deepseek-...` 这类写法常在别名里。 */
     val aliases: List<String> = emptyList(),
     val inputPerMillion: Double?,
@@ -229,9 +237,18 @@ internal object ModelSnapshot {
             reasoning = boolOrNull(profile, "reasoning"),
             efforts = Efforts.normalize(strings(profile?.optJSONArray("supported_efforts"))),
             images = boolOrNull(caps, "images"),
+            inputModalities = modalities(profile, "input_modalities"),
+            outputModalities = modalities(profile, "output_modalities"),
             inputPerMillion = doubleOrNull(cost, "input_per_million"),
             outputPerMillion = doubleOrNull(cost, "output_per_million"),
         )
+    }
+
+    /** 模态数组：缺字段 / 空数组都返回 `null`（"没数据"，不是"只收文本"）。 */
+    private fun modalities(doc: JSONObject?, key: String): List<String>? {
+        val array = doc?.optJSONArray(key) ?: return null
+        val values = strings(array).map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        return values.takeIf { it.isNotEmpty() }
     }
 
     private fun boolOrNull(doc: JSONObject?, key: String): Boolean? =

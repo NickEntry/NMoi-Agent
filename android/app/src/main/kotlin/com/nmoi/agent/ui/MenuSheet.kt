@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -85,6 +86,9 @@ internal fun SheetFrame(
     onDismiss: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // 返回键先收这一层（D209）。以前只有点遮罩能关：真机上按返回会直接退到聊天页、
+    // 再按一次退出应用，而面板还挂在上面——"这一层根本没被算进返回链"。
+    BackHandler(enabled = true) { onDismiss() }
     Box(modifier = Modifier.fillMaxSize()) {
         // 遮罩：比抽屉那层淡，面板本身是"临时的一层"，不该看着像换了页面。
         Box(

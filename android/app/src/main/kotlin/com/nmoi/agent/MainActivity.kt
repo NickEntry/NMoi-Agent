@@ -96,7 +96,13 @@ private sealed interface Route {
     data object Provider : Route
 
     /** 供应商编辑页。`id == null` = 新建（页面自己先定下 id，保存两次也只会有一份）。 */
-    data class ProviderEdit(val id: String?) : Route
+    /**
+     * 供应商编辑页。`focusModel`（D209）：从模型选择器长按进来时，直接打开这个模型的编辑页。
+     *
+     * 为什么不单独开一条"模型编辑"路由：模型是**供应商草稿的一部分**，
+     * 拆成路由就有两个写者（模型页直接落库 / 供应商页按「保存」），谁后按谁赢。
+     */
+    data class ProviderEdit(val id: String?, val focusModel: String? = null) : Route
 
     data object Prompts : Route
 
@@ -474,6 +480,14 @@ class MainActivity : ComponentActivity() {
                                     backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
                                 }
                             },
+                            // 长按模型 / 供应商组头 → 去改它（D209）。
+                            // 页面压在抽屉之上（contentAboveDrawer），返回一次就回到聊天页。
+                            onEditModel = { providerId, modelId ->
+                                backStack = backStack + Route.ProviderEdit(providerId, modelId)
+                            },
+                            onEditProvider = { providerId ->
+                                backStack = backStack + Route.ProviderEdit(providerId)
+                            },
                         )
 
                         Route.Provider -> ProviderListScreen(
@@ -484,6 +498,7 @@ class MainActivity : ComponentActivity() {
 
                         is Route.ProviderEdit -> ProviderEditScreen(
                             providerId = route.id,
+                            focusModelId = route.focusModel,
                             onBack = { backStack = backStack.dropLast(1) },
                             // 删掉了就退回列表：留在编辑页会编辑一份已经不存在的配置。
                             onDeleted = { backStack = backStack.dropLast(1) },

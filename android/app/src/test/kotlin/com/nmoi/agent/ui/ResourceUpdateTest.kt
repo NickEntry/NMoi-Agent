@@ -27,6 +27,8 @@ class ResourceUpdateTest {
         reasoning: Boolean? = null,
         efforts: List<String> = emptyList(),
         images: Boolean? = null,
+        inputModalities: List<String>? = null,
+        outputModalities: List<String>? = null,
         inputPrice: Double? = null,
         outputPrice: Double? = null,
     ) = SnapshotEntry(
@@ -41,6 +43,8 @@ class ResourceUpdateTest {
         reasoning = reasoning,
         efforts = efforts,
         images = images,
+        inputModalities = inputModalities,
+        outputModalities = outputModalities,
         inputPerMillion = inputPrice,
         outputPerMillion = outputPrice,
     )
@@ -340,4 +344,43 @@ class ResourceUpdateTest {
         // 别的空格照填。
         assertEquals(8192, kept.maxTokens)
     }
+
+    /// D209：快照给了完整模态清单就照抄，别只加一个 image。
+    @Test
+    fun `输入模态按快照的完整清单写`() {
+        val entry = snapshot(inputModalities = listOf("text", "image", "audio"))
+        val (filled, written) = ResourceUpdate.fill(model(), entry)
+        assertEquals(listOf("text", "image", "audio"), filled.inputModalities)
+        assertTrue(written.containsKey(ModelField.INPUT_MODALITIES))
+    }
+
+    /// 明确写了"不收图"的聊天模型：至少写 text，别留空（空 = 不知道）。
+    @Test
+    fun `明确不收图时输入模态至少有文本`() {
+        val entry = snapshot(images = false)
+        val (filled, _) = ResourceUpdate.fill(model(), entry)
+        assertEquals(listOf("text"), filled.inputModalities)
+    }
+
+    /// 输出模态也要自动填（以前这一格永远是空的）。
+    @Test
+    fun `输出模态也按快照填`() {
+        val entry = snapshot(outputModalities = listOf("text", "image"))
+        val (filled, written) = ResourceUpdate.fill(model(), entry)
+        assertEquals(listOf("text", "image"), filled.outputModalities)
+        assertTrue(written.containsKey(ModelField.OUTPUT_MODALITIES))
+    }
+
+    /// 用户自己填过就不动。
+    @Test
+    fun `已经填过的模态不会被覆盖`() {
+        val entry = snapshot(inputModalities = listOf("text", "image"))
+        val (filled, written) = ResourceUpdate.fill(
+            model().copy(inputModalities = listOf("text", "pdf")),
+            entry,
+        )
+        assertEquals(listOf("text", "pdf"), filled.inputModalities)
+        assertFalse(written.containsKey(ModelField.INPUT_MODALITIES))
+    }
+
 }

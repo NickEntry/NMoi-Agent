@@ -179,6 +179,13 @@ internal fun ProviderEditScreen(
     providerId: String?,
     onBack: () -> Unit,
     onDeleted: () -> Unit,
+    /**
+     * 从模型选择器长按进来时直接打开这个模型（D209）。
+     *
+     * 只在**读到模型之后**开一次：先用空模型打开会立刻被"重名/空 id"挡住，
+     * 用户还以为自己点错了。
+     */
+    focusModelId: String? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -253,7 +260,18 @@ internal fun ProviderEditScreen(
         val (model, written) = if (match != null && !match.how.guessed) {
             ResourceUpdate.fill(bare, match.entry)
         } else {
-            bare to emptyMap()
+            // 快照里没有这一条：**至少给聊天模型一个默认**（D209）。
+            // 空着等于"不知道它收什么"，图片入口就永远是灰的/不确定的；
+            // 而"文本进、文本出"是绝大多数对话模型的常态，写下来比留空更有用。
+            // 记成「推断」，用户改一格就变「自定义」。
+            val seeded = bare.copy(
+                inputModalities = listOf("text"),
+                outputModalities = listOf("text"),
+            )
+            seeded to mapOf(
+                ModelField.INPUT_MODALITIES to ModelField.valueOf(seeded, ModelField.INPUT_MODALITIES),
+                ModelField.OUTPUT_MODALITIES to ModelField.valueOf(seeded, ModelField.OUTPUT_MODALITIES),
+            )
         }
         if (written.isNotEmpty()) {
             pendingInferred = pendingInferred.toMutableMap().apply { put(id, written) }
@@ -277,6 +295,12 @@ internal fun ProviderEditScreen(
                     models = entry.models
                     activeModel = entry.activeModel
                     sources = entry.fieldSources
+                    // 长按进来的那一条：读到就直接开它的编辑页（只开一次）。
+                    if (focusModelId != null) {
+                        entry.models.firstOrNull { it.id == focusModelId }?.let { model ->
+                            modelDraft = ModelDraft(stored = model, model = model)
+                        }
+                    }
                 },
                 onFailure = { notice = "读不到这份配置：${it.message}" },
             )
