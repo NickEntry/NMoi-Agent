@@ -39,6 +39,45 @@ AIHUBMIX = "https://aihubmix.com/api/v1/models"
 
 USER_AGENT = "NMoi-Agent-model-snapshot/0.1 (+https://codeberg.org/nickentry/NMoi-Agent)"
 
+# 每个字段的源优先级（D211）：数字越小越可信。**同一条模型**被多个源写过时，
+# 只认排名最高的那个源，其余只在"高优先源没给"时补位——不再做并集。
+# 为什么：并集会把"聚合站抄错的纯文本"和"厂商自己写的能收图"混成两条互不相干的记录，
+# 用户加模型时命中哪一条全看名字写法（真机上 deepseek-v4.1-flash 就这么丢了图片）。
+SOURCE_RANK = {
+    "models_dev": 0,   # 厂商自述 + 社区校验，字段最全
+    "openrouter": 1,   # 端点自己的声明，模态通常最新
+    "aihubmix": 2,     # 覆盖面补充
+}
+
+# 合写同一模型的别名空间：`deepseek/deepseek-v4.1-flash` 与 `deepseek-v4.1-flash`
+# 是同一条模型的两个写法，模态要按"家族并集"算——同一家族里有一版能收图，就按能收处理。
+VENDOR_TOKENS = {
+    "deepseek", "openai", "anthropic", "google", "qwen", "alibaba", "meta", "meta-llama",
+    "mistralai", "mistral", "x-ai", "xai", "nvidia", "amazon", "cohere", "ai21",
+    "perplexity", "moonshotai", "moonshot", "z-ai", "minimax", "baidu", "bytedance",
+    "tencent", "stepfun", "01-ai", "thudm", "internlm", "upstage", "nousresearch",
+    "microsoft", "apple", "ibm", "sberbank", "tii", "liquid", "inclusionai", "abacusai",
+    "empiriolabs", "openrouter",
+}
+
+
+def core_key(entry_id: str) -> str:
+    """去掉一层厂商前缀后的"同一条模型"键（D211）。
+
+    `deepseek-deepseek-v4-1-flash` → `deepseek-v4-1-flash`
+    `openai-gpt-4o` → `gpt-4o`；`gpt-4o` 原样返回。
+    """
+    current = entry_id
+    # 反复剥：`deepseek-deepseek-v4-1-flash` 要剥两次才和 `deepseek-v4-1-flash` 对齐。
+    while True:
+        parts = current.split("-")
+        if len(parts) > 1 and parts[0] in VENDOR_TOKENS:
+            rest = "-".join(parts[1:])
+            if len(rest) >= 3:
+                current = rest
+                continue
+        return current
+
 # 每个 entry 最多保留多少个别名，防止快照膨胀
 MAX_ALIASES = 8
 
@@ -289,9 +328,11 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
     merged: dict[tuple[str, tuple[int, ...] | None], dict] = {}
     aliases: dict[tuple[str, tuple[int, ...] | None], set[str]] = defaultdict(set)
 
-    def bump(key, *, context=None, max_output=None, modalities=None, output_modalities=None,
-             reasoning=False, tools=False, structured=False, cost=None, raw_id=None,
-             efforts=None, toggle=False, native=False):
+    def bump(key, *, source="models_dev", context=None, max_output=None, modalities=None,
+             output_modalities=None, reasoning=False, tools=False, structured=False,
+             cost=None, raw_id=None, efforts=None, toggle=False, native=False):
+        # 厂商自己的条目（provider 就是这家）优先于聚合站抄来的同一份数据。
+        rank = SOURCE_RANK.get(source, 9) - (1 if native else 0)
         slot = merged.setdefault(
             key,
             {
@@ -309,27 +350,29 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
                 "supported_efforts": [],
                 "supports_toggle": False,
                 "efforts_locked": False,
+                # 字段 → 写它的那个源的排名（D211）：只有更可信的源才能覆盖。
+                "ranks": {},
             },
         )
-        if context:
-            slot["context_window"] = max(slot["context_window"], context)
-        if max_output:
-            slot["max_output"] = max(slot["max_output"], max_output)
-        for modality in modalities or ():
-            slot["input_modalities"].add(modality)
-            if modality == "image" or modality == "images":
-                slot["images"] = True
-            elif modality == "audio":
-                slot["audio_in"] = True
-            elif modality == "video":
-                slot["video_in"] = True
-        for modality in output_modalities or ():
-            slot["output_modalities"].add(modality)
+
+        def take(field, value, *, numeric=False):
+            if value is None or value == 0 or value == [] or value == set():
+                return
+            current = slot["ranks"].get(field)
+            if current is None or rank < current:
+                slot[field] = value
+                slot["ranks"][field] = rank
+            elif rank == current and numeric:
+                slot[field] = max(slot[field], value)
+        take("context_window", context, numeric=True)
+        take("max_output", max_output, numeric=True)
+        take("input_modalities", set(modalities or ()), numeric=True)
+        take("output_modalities", set(output_modalities or ()), numeric=True)
         slot["reasoning"] = slot["reasoning"] or bool(reasoning)
         slot["tools"] = slot["tools"] or bool(tools)
         slot["structured_output"] = slot["structured_output"] or bool(structured)
-        if cost and not slot["cost"]:
-            slot["cost"] = cost
+        if cost:
+            take("cost", cost)
         # 档位优先信厂商自己的数据：provider 是"转卖"的（聚合站）不覆盖已锁定的值，
         # 否则跨 provider 求并集会把 low/high/max 撑成 none…max，等于没有约束。
         if efforts:
@@ -361,6 +404,7 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
         efforts, toggle = efforts_of(model)
         bump(
             (family, tuple(version) if version else None),
+            source="models_dev",
             context=as_int(limit.get("context")),
             max_output=as_int(limit.get("output")),
             modalities=modalities_split(model)[0],
@@ -387,6 +431,7 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
         top_provider = entry.get("top_provider") if isinstance(entry.get("top_provider"), dict) else {}
         bump(
             (family, tuple(version) if version else None),
+            source="openrouter",
             context=as_int(entry.get("context_length")),
             max_output=as_int(top_provider.get("max_completion_tokens")),
             modalities=modalities_split(entry)[0],
@@ -407,6 +452,7 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
         family, version = split_trailing_version(normalized)
         bump(
             (family, tuple(version) if version else None),
+            source="aihubmix",
             context=as_int(entry.get("context_length")),
             max_output=as_int(entry.get("max_output")),
             modalities=modalities_split(entry)[0],
@@ -434,7 +480,42 @@ def has_any_fact(profile: dict) -> bool:
     )
 
 
+def settle_modalities(merged: dict) -> None:
+    """同一条模型的两个命名空间（`deepseek/…` 与裸名）模态取并集（D211）。
+
+    为什么必须并：真机上 `deepseek-v4.1-flash` 命中"纯文本"那一条，
+    而同一模型的 `deepseek/deepseek-v4.1-flash` 写的是"文本 + 图片"。
+    两条是同一个模型的两种写法，用户加哪个名字都该得到同一份能力。
+    """
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for (family, version), profile in merged.items():
+        entry_id = family if version is None else f"{family}-" + "-".join(str(p) for p in version)
+        groups[core_key(entry_id)].append(profile)
+    for profiles in groups.values():
+        if len(profiles) < 2:
+            continue
+        inputs: set[str] = set()
+        outputs: set[str] = set()
+        for profile in profiles:
+            inputs |= profile["input_modalities"]
+            outputs |= profile["output_modalities"]
+        for profile in profiles:
+            profile["input_modalities"] |= inputs
+            profile["output_modalities"] |= outputs
+
+
+def settle_capabilities(profile: dict) -> None:
+    """能力位从模态推出来，而不是各源各写一个布尔（D211）。"""
+    inputs = profile["input_modalities"]
+    profile["images"] = "image" in inputs or "images" in inputs
+    profile["audio_in"] = "audio" in inputs
+    profile["video_in"] = "video" in inputs
+
+
 def build_snapshot(merged: dict, aliases: dict, fetched_at: str) -> dict:
+    settle_modalities(merged)
+    for profile in merged.values():
+        settle_capabilities(profile)
     entries = []
     for (family, version), profile in sorted(
         merged.items(), key=lambda item: (item[0][0], item[0][1] or ())

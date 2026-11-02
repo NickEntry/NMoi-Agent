@@ -234,9 +234,26 @@ pub fn run_turn<T: Transport>(
         };
         report.rounds += 1;
         report.finish = Some(completion.finish);
-        report.text = completion.text.clone();
+        // 行内思考标签（D212）：有些端点把思考塞进正文（`<think>…</think>`，
+        // 还会重复收尾、留空块）。先切出来，再决定用哪一份思考。
+        let inline = crate::thinkparse::split(&completion.text);
+        // 正文里的工具调用（D212）：端点没给结构化 `tool_calls` 时才认，
+        // 认不出就原样留在正文里（见 `toolparse` 的文档）。
+        let mut visible = inline.text.clone();
+        let mut inline_calls = Vec::new();
+        if completion.tool_calls.is_empty() {
+            let (rest, calls) = crate::toolparse::extract(&visible);
+            if !calls.is_empty() {
+                visible = rest;
+                inline_calls = calls;
+            }
+        }
+        report.text = visible.clone();
         if !completion.reasoning.trim().is_empty() {
+            // 端点自己给了 `reasoning_content`：以它为准（结构化的那份更可信）。
             report.reasoning = completion.reasoning.clone();
+        } else if !inline.thinking.is_empty() {
+            report.reasoning = inline.thinking.clone();
         }
         report.usage = completion.usage;
 
@@ -257,23 +274,38 @@ pub fn run_turn<T: Transport>(
             return Ok(report);
         }
 
-        if completion.tool_calls.is_empty() {
+        if completion.tool_calls.is_empty() && inline_calls.is_empty() {
             report.finished = true;
             return Ok(report);
         }
 
-        let outgoing: Vec<OutgoingToolCall> = completion
-            .tool_calls
-            .iter()
-            .enumerate()
-            .map(|(index, call)| {
-                OutgoingToolCall::new(
-                    call.id.clone().unwrap_or_else(|| format!("call_{index}")),
-                    call.name.clone(),
-                    call.arguments.clone(),
-                )
-            })
-            .collect();
+        let outgoing: Vec<OutgoingToolCall> = if completion.tool_calls.is_empty() {
+            inline_calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    // 正文里的调用没有 id：给一个**这一轮唯一**的，工具结果才能配对。
+                    OutgoingToolCall::new(
+                        format!("call_{}_{index}", report.rounds),
+                        call.name.clone(),
+                        call.arguments.clone(),
+                    )
+                })
+                .collect()
+        } else {
+            completion
+                .tool_calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    OutgoingToolCall::new(
+                        call.id.clone().unwrap_or_else(|| format!("call_{index}")),
+                        call.name.clone(),
+                        call.arguments.clone(),
+                    )
+                })
+                .collect()
+        };
 
         let mut assistant = Message::tool_call_message(
             MessageId::new(session, seq),
@@ -282,7 +314,9 @@ pub fn run_turn<T: Transport>(
             base.messages.first().map(|m| m.created_at).unwrap_or(0),
             LogicalClock::new(seq),
         );
-        assistant.content = completion.text.clone();
+        // 落库的是**切掉标签之后**的正文：历史里再出现 `<tool_call>` 会让下一轮模型
+        // 以为上一轮没执行，重复调用。
+        assistant.content = visible.clone();
         messages.push(assistant);
         seq += 1;
 

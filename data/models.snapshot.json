@@ -1,8 +1,8 @@
 {
  "provenance": {
   "generated_by": "scripts/fetch_models.py",
-  "fetched_at": "2026-11-01T18:40:21Z",
-  "note": "只保存事实字段（上下文长度 / 输出上限 / 模态 / 能力开关 / 价格数字），不复制任何描述文本、基准或链接。刷新请重跑脚本。2026-11-02 起多带 input_modalities / output_modalities（models.dev 的 MIT 数据），并保留旧快照里上游已经下架的条目（它们还在用户的配置里，删了就等于匹配不到）。",
+  "fetched_at": "2026-11-02T05:12:03Z",
+  "note": "只保存事实字段（上下文长度 / 输出上限 / 模态 / 能力开关 / 价格数字），不复制任何描述文本、基准或链接。刷新请重跑脚本。2026-11-02 起：按字段的源优先级合并（models.dev > OpenRouter > aihubmix，厂商自述再提一档），同一模型的两个命名空间模态取并集；保留旧快照里上游已下架的条目。",
   "sources": [
    {
     "name": "models.dev",
@@ -956,7 +956,7 @@
     "reasoning": true,
     "supported_efforts": [],
     "supports_toggle": true,
-    "context_window": 524288,
+    "context_window": 512000,
     "max_output": 65536,
     "cost": {
      "input_per_million": 0.0,
@@ -1199,8 +1199,8 @@
     "context_window": 131072,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 3.75,
-     "output_per_million": 7.5
+     "input_per_million": 3.0,
+     "output_per_million": 6.0
     }
    }
   },
@@ -1241,8 +1241,8 @@
     "context_window": 131072,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.875,
-     "output_per_million": 1.75
+     "input_per_million": 0.7,
+     "output_per_million": 1.4
     }
    }
   },
@@ -1288,8 +1288,8 @@
     "context_window": 262144,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 3.75,
-     "output_per_million": 7.5
+     "input_per_million": 3.0,
+     "output_per_million": 6.0
     }
    }
   },
@@ -1332,8 +1332,8 @@
     "context_window": 262144,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.875,
-     "output_per_million": 1.75
+     "input_per_million": 0.7,
+     "output_per_million": 1.4
     }
    }
   },
@@ -1419,8 +1419,8 @@
     "context_window": 1048576,
     "max_output": 943718,
     "cost": {
-     "input_per_million": 0.13,
-     "output_per_million": 0.51
+     "input_per_million": 0.16,
+     "output_per_million": 0.56
     }
    }
   },
@@ -1815,8 +1815,8 @@
     "context_window": 8000,
     "max_output": 6000,
     "cost": {
-     "input_per_million": 0.7935,
-     "output_per_million": 1.058
+     "input_per_million": 0.4,
+     "output_per_million": 0.75
     }
    }
   },
@@ -2152,8 +2152,8 @@
     "context_window": 32768,
     "max_output": 16384,
     "cost": {
-     "input_per_million": 3.174,
-     "output_per_million": 5.29
+     "input_per_million": 2.5,
+     "output_per_million": 5.0
     }
    }
   },
@@ -2257,6 +2257,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2302,6 +2303,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2431,6 +2433,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2518,6 +2521,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2645,6 +2649,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2732,6 +2737,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2819,6 +2825,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2906,6 +2913,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -2993,6 +3001,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -3079,6 +3088,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -3124,6 +3134,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -3293,6 +3304,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -3380,6 +3392,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -3466,6 +3479,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -3511,6 +3525,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -4184,6 +4199,7 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "minimal",
      "low",
      "medium",
      "high",
@@ -4194,8 +4210,8 @@
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 0.4,
-     "output_per_million": 1.2
+     "input_per_million": 0.25,
+     "output_per_million": 1.0
     }
    }
   },
@@ -4604,7 +4620,7 @@
     "context_window": 8192,
     "max_output": 1024,
     "cost": {
-     "input_per_million": 0.02,
+     "input_per_million": 0.01,
      "output_per_million": 0.0
     }
    }
@@ -6600,6 +6616,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -6658,6 +6675,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -6722,18 +6740,18 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
      "high",
-     "xhigh",
      "max"
     ],
     "supports_toggle": true,
     "context_window": 1000000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 0.1,
-     "output_per_million": 0.5
+     "input_per_million": 1.1,
+     "output_per_million": 5.5
     }
    }
   },
@@ -6783,8 +6801,8 @@
     "context_window": 200000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 1.1,
-     "output_per_million": 5.5
+     "input_per_million": 1.0,
+     "output_per_million": 5.0
     }
    }
   },
@@ -6998,6 +7016,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -7013,7 +7032,7 @@
     ],
     "supports_toggle": true,
     "context_window": 200000,
-    "max_output": 128000,
+    "max_output": 64000,
     "cost": {
      "input_per_million": 1.0,
      "output_per_million": 5.0
@@ -7107,6 +7126,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -7218,6 +7238,7 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
      "high",
@@ -7227,8 +7248,8 @@
     "context_window": 1000000,
     "max_output": 200000,
     "cost": {
-     "input_per_million": 5.0,
-     "output_per_million": 25.0
+     "input_per_million": 5.5,
+     "output_per_million": 27.5
     }
    }
   },
@@ -7280,8 +7301,8 @@
     "context_window": 1000000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 5.5,
-     "output_per_million": 27.5
+     "input_per_million": 5.0,
+     "output_per_million": 25.0
     }
    }
   },
@@ -7334,8 +7355,8 @@
     "context_window": 200000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 15.0,
-     "output_per_million": 75.0
+     "input_per_million": 5.5,
+     "output_per_million": 27.5
     }
    }
   },
@@ -7602,8 +7623,8 @@
     "context_window": 200000,
     "max_output": 32000,
     "cost": {
-     "input_per_million": 13.0,
-     "output_per_million": 64.0
+     "input_per_million": 15.0,
+     "output_per_million": 75.0
     }
    }
   },
@@ -7635,6 +7656,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -7644,9 +7666,11 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": true,
     "context_window": 200000,
@@ -7810,6 +7834,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -7877,7 +7902,7 @@
     ],
     "supports_toggle": true,
     "context_window": 200000,
-    "max_output": 65536,
+    "max_output": 64000,
     "cost": {
      "input_per_million": 5.0,
      "output_per_million": 25.0
@@ -7953,6 +7978,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -8045,6 +8071,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -8061,7 +8088,7 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1048576,
+    "context_window": 1000000,
     "max_output": 128000,
     "cost": {
      "input_per_million": 5.0,
@@ -8138,6 +8165,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -8154,7 +8182,7 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1048576,
+    "context_window": 1000000,
     "max_output": 128000,
     "cost": {
      "input_per_million": 5.0,
@@ -8230,6 +8258,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -8288,6 +8317,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -8440,15 +8470,14 @@
     "supported_efforts": [
      "low",
      "medium",
-     "high",
-     "xhigh"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 1000000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 2.0,
-     "output_per_million": 10.0
+     "input_per_million": 3.196,
+     "output_per_million": 15.94
     }
    }
   },
@@ -8499,8 +8528,8 @@
     "context_window": 200000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 3.3,
-     "output_per_million": 16.5
+     "input_per_million": 3.0,
+     "output_per_million": 15.0
     }
    }
   },
@@ -8809,8 +8838,8 @@
     "context_window": 1000000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 2.6,
-     "output_per_million": 13.0
+     "input_per_million": 3.0,
+     "output_per_million": 15.0
     }
    }
   },
@@ -8889,6 +8918,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -8903,11 +8933,11 @@
      "high"
     ],
     "supports_toggle": true,
-    "context_window": 1000000,
+    "context_window": 200000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 3.3,
-     "output_per_million": 16.5
+     "input_per_million": 3.0,
+     "output_per_million": 15.0
     }
    }
   },
@@ -9065,6 +9095,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -9188,6 +9219,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -9205,7 +9237,7 @@
     ],
     "supports_toggle": true,
     "context_window": 1000000,
-    "max_output": 1000000,
+    "max_output": 128000,
     "cost": {
      "input_per_million": 2.0,
      "output_per_million": 10.0
@@ -9246,6 +9278,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -9828,6 +9861,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "pdf",
      "text"
     ],
@@ -9840,8 +9874,8 @@
     "context_window": 256000,
     "max_output": 256000,
     "cost": {
-     "input_per_million": 0.3,
-     "output_per_million": 0.9
+     "input_per_million": 0.368,
+     "output_per_million": 1.103
     }
    }
   },
@@ -11300,7 +11334,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": true
     },
@@ -11311,6 +11345,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -11920,17 +11955,14 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
-     "minimal",
-     "low",
-     "medium",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 256000,
     "max_output": 256000,
     "cost": {
-     "input_per_million": 2.5,
-     "output_per_million": 10.0
+     "input_per_million": 0.3,
+     "output_per_million": 1.5
     }
    }
   },
@@ -12189,8 +12221,8 @@
     "context_window": 132000,
     "max_output": 4000,
     "cost": {
-     "input_per_million": 0.039675,
-     "output_per_million": 0.1587
+     "input_per_million": 0.0375,
+     "output_per_million": 0.15
     }
    }
   },
@@ -12278,8 +12310,8 @@
     "context_window": 128000,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 0.1587,
-     "output_per_million": 0.6348
+     "input_per_million": 2.5,
+     "output_per_million": 10.0
     }
    }
   },
@@ -12795,7 +12827,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -12812,8 +12843,8 @@
     "context_window": 1048576,
     "max_output": 1040000,
     "cost": {
-     "input_per_million": 0.27,
-     "output_per_million": 1.0
+     "input_per_million": 0.287,
+     "output_per_million": 0.431
     }
    }
   },
@@ -12987,8 +13018,8 @@
     "context_window": 164000,
     "max_output": 164000,
     "cost": {
-     "input_per_million": 0.4,
-     "output_per_million": 1.3
+     "input_per_million": 0.287,
+     "output_per_million": 1.147
     }
    }
   },
@@ -13034,16 +13065,14 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
-     "low",
-     "medium",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 164000,
     "max_output": 164000,
     "cost": {
-     "input_per_million": 0.19,
-     "output_per_million": 0.71
+     "input_per_million": 0.574,
+     "output_per_million": 1.721
     }
    }
   },
@@ -13082,7 +13111,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -13099,8 +13127,8 @@
     "context_window": 164000,
     "max_output": 164000,
     "cost": {
-     "input_per_million": 0.2174,
-     "output_per_million": 0.326
+     "input_per_million": 0.28,
+     "output_per_million": 0.42
     }
    }
   },
@@ -13191,8 +13219,8 @@
     "context_window": 163840,
     "max_output": 163840,
     "cost": {
-     "input_per_million": 0.27,
-     "output_per_million": 1.12
+     "input_per_million": 0.25,
+     "output_per_million": 1.0
     }
    }
   },
@@ -13673,8 +13701,8 @@
     "reasoning": true,
     "supported_efforts": [],
     "supports_toggle": false,
-    "context_window": 163840,
-    "max_output": 147456,
+    "context_window": 128000,
+    "max_output": 32000,
     "cost": {
      "input_per_million": 0.57971,
      "output_per_million": 1.73913
@@ -13753,11 +13781,11 @@
     "reasoning": true,
     "supported_efforts": [],
     "supports_toggle": true,
-    "context_window": 163840,
-    "max_output": 147456,
+    "context_window": 163000,
+    "max_output": 64000,
     "cost": {
-     "input_per_million": 0.22,
-     "output_per_million": 0.33
+     "input_per_million": 0.289855,
+     "output_per_million": 0.434783
     }
    }
   },
@@ -14163,7 +14191,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -14176,11 +14203,11 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 5000000,
-    "max_output": 1048576,
+    "context_window": 1048576,
+    "max_output": 393216,
     "cost": {
-     "input_per_million": 0.098,
-     "output_per_million": 0.196
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -14228,15 +14255,14 @@
     "supported_efforts": [
      "low",
      "high",
-     "xhigh",
      "max"
     ],
     "supports_toggle": true,
     "context_window": 1050000,
     "max_output": 1050000,
     "cost": {
-     "input_per_million": 0.3,
-     "output_per_million": 1.2
+     "input_per_million": 0.03,
+     "output_per_million": 0.12
     }
    }
   },
@@ -14463,15 +14489,15 @@
     "reasoning": true,
     "supported_efforts": [
      "low",
-     "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": true,
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 0.14,
-     "output_per_million": 0.28
+     "input_per_million": 0.045,
+     "output_per_million": 0.09
     }
    }
   },
@@ -14735,11 +14761,11 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1050000,
-    "max_output": 1048576,
+    "context_window": 1048576,
+    "max_output": 393216,
     "cost": {
-     "input_per_million": 0.435,
-     "output_per_million": 0.87
+     "input_per_million": 0.66,
+     "output_per_million": 1.98
     }
    }
   },
@@ -14785,8 +14811,8 @@
     "context_window": 1000000,
     "max_output": 384000,
     "cost": {
-     "input_per_million": 3.0,
-     "output_per_million": 7.0
+     "input_per_million": 0.574,
+     "output_per_million": 2.294
     }
    }
   },
@@ -14873,19 +14899,14 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "minimal",
-     "low",
-     "medium",
-     "high",
-     "xhigh",
-     "max"
+     "high"
     ],
     "supports_toggle": false,
     "context_window": 164000,
     "max_output": 163840,
     "cost": {
-     "input_per_million": 3.0,
-     "output_per_million": 5.0
+     "input_per_million": 0.574,
+     "output_per_million": 2.294
     }
    }
   },
@@ -15021,8 +15042,6 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
-     "low",
      "high",
      "max"
     ],
@@ -15030,8 +15049,8 @@
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 1.32,
-     "output_per_million": 3.96
+     "input_per_million": 1.35,
+     "output_per_million": 3.0
     }
    }
   },
@@ -15261,7 +15280,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -15272,6 +15291,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -15300,7 +15320,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -15311,6 +15331,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -15444,7 +15465,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -15455,6 +15476,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -15744,8 +15766,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -15757,8 +15779,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.57,
-     "output_per_million": 2.736
+     "input_per_million": 0.478,
+     "output_per_million": 2.392
     }
    }
   },
@@ -16904,9 +16926,8 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "low",
-     "medium",
-     "xhigh"
+     "none",
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 262144,
@@ -17421,7 +17442,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -17432,7 +17453,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -17481,7 +17504,7 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 119000,
-    "max_output": 65536,
+    "max_output": 64000,
     "cost": {
      "input_per_million": 0.75,
      "output_per_million": 3.0
@@ -18395,8 +18418,7 @@
      "video"
     ],
     "output_modalities": [
-     "image",
-     "video"
+     "image"
     ],
     "reasoning": false,
     "supported_efforts": [],
@@ -18485,16 +18507,18 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
+     "low",
+     "medium",
      "high",
-     "xhigh",
      "max"
     ],
     "supports_toggle": false,
     "context_window": 1048576,
     "max_output": 1000000,
     "cost": {
-     "input_per_million": 2.0,
-     "output_per_million": 6.0
+     "input_per_million": 5.0,
+     "output_per_million": 30.0
     }
    }
   },
@@ -18630,14 +18654,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "high"
+     "high",
+     "xhigh",
+     "max"
     ],
     "supports_toggle": false,
     "context_window": 1000000,
     "max_output": 1000000,
     "cost": {
-     "input_per_million": 5.29,
-     "output_per_million": 31.74
+     "input_per_million": 5.0,
+     "output_per_million": 30.0
     }
    }
   },
@@ -18812,8 +18838,7 @@
      "video"
     ],
     "output_modalities": [
-     "text",
-     "video"
+     "text"
     ],
     "reasoning": true,
     "supported_efforts": [
@@ -18823,7 +18848,7 @@
     ],
     "supports_toggle": true,
     "context_window": 1048576,
-    "max_output": 1048576,
+    "max_output": 65536,
     "cost": {
      "input_per_million": 2.0,
      "output_per_million": 10.0
@@ -18866,7 +18891,7 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 2048,
-    "max_output": 4096,
+    "max_output": 1,
     "cost": {
      "input_per_million": 0.15,
      "output_per_million": 0.0
@@ -18957,7 +18982,7 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 8192,
-    "max_output": 8192,
+    "max_output": 1,
     "cost": {
      "input_per_million": 0.2,
      "output_per_million": 0.0
@@ -19115,7 +19140,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -19126,9 +19151,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": false,
@@ -19512,7 +19539,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -19523,7 +19550,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -19950,7 +19981,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -19961,9 +19992,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": true,
@@ -19987,7 +20020,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -19998,9 +20031,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": true,
@@ -20024,7 +20059,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20035,7 +20070,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20061,7 +20100,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -20072,9 +20111,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": true,
@@ -20135,7 +20176,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20146,7 +20187,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20172,7 +20217,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20183,7 +20228,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20296,7 +20345,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20307,7 +20356,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20333,7 +20386,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20344,7 +20397,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20370,7 +20427,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20381,7 +20438,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20407,7 +20468,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20418,7 +20479,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20444,7 +20509,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20455,7 +20520,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20553,7 +20622,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -20564,7 +20633,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20623,7 +20696,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -20634,9 +20707,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": true,
@@ -20658,7 +20733,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -20669,9 +20744,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": true,
@@ -20774,7 +20851,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -20785,7 +20862,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -20962,7 +21043,6 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "low",
      "medium",
      "high"
@@ -20971,8 +21051,8 @@
     "context_window": 1048576,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 1.1875,
-     "output_per_million": 9.5
+     "input_per_million": 2.5,
+     "output_per_million": 10.0
     }
    }
   },
@@ -21065,7 +21145,6 @@
     ],
     "output_modalities": [
      "audio",
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -21075,11 +21154,11 @@
      "high"
     ],
     "supports_toggle": true,
-    "context_window": 1065535,
-    "max_output": 1048576,
+    "context_window": 1048576,
+    "max_output": 65536,
     "cost": {
-     "input_per_million": 0.3,
-     "output_per_million": 2.5
+     "input_per_million": 1.0,
+     "output_per_million": 20.0
     }
    }
   },
@@ -21169,8 +21248,8 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "minimal",
-     "medium",
      "high"
     ],
     "supports_toggle": true,
@@ -21228,8 +21307,8 @@
     "context_window": 1048576,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 0.1425,
-     "output_per_million": 3.325
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -21271,7 +21350,6 @@
      "video"
     ],
     "output_modalities": [
-     "audio",
      "image",
      "text"
     ],
@@ -21283,11 +21361,11 @@
      "high"
     ],
     "supports_toggle": true,
-    "context_window": 2000000,
+    "context_window": 1048576,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 0.25,
-     "output_per_million": 1.5
+     "input_per_million": 0.3,
+     "output_per_million": 2.5
     }
    }
   },
@@ -21328,7 +21406,6 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "low",
      "medium",
      "high"
@@ -21337,8 +21414,8 @@
     "context_window": 1048576,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 0.09,
-     "output_per_million": 0.36
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -21372,15 +21449,13 @@
      "audio",
      "image",
      "pdf",
-     "text",
-     "video"
+     "text"
     ],
     "output_modalities": [
      "text"
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "low",
      "medium",
      "high"
@@ -21389,8 +21464,8 @@
     "context_window": 1048576,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 0.09,
-     "output_per_million": 0.36
+     "input_per_million": 0.1,
+     "output_per_million": 0.4
     }
    }
   },
@@ -21410,7 +21485,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -21421,9 +21496,11 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": false,
@@ -21472,22 +21549,20 @@
      "video"
     ],
     "output_modalities": [
-     "audio",
      "image",
      "text"
     ],
     "reasoning": true,
     "supported_efforts": [
      "low",
-     "medium",
      "high"
     ],
     "supports_toggle": false,
-    "context_window": 1065535,
-    "max_output": 943718,
+    "context_window": 1048576,
+    "max_output": 65536,
     "cost": {
      "input_per_million": 2.0,
-     "output_per_million": 12.0
+     "output_per_million": 120.0
     }
    }
   },
@@ -21579,7 +21654,7 @@
     "reasoning": true,
     "supported_efforts": [],
     "supports_toggle": false,
-    "context_window": 1048576,
+    "context_window": 131072,
     "max_output": 65536,
     "cost": {
      "input_per_million": 2.0,
@@ -21700,11 +21775,8 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
-     "pdf",
-     "text",
-     "video"
+     "text"
     ],
     "output_modalities": [
      "text"
@@ -21712,14 +21784,16 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
+     "low",
+     "medium",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 262144,
-    "max_output": 262144,
+    "max_output": 32768,
     "cost": {
-     "input_per_million": 0.18,
-     "output_per_million": 0.5
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -21859,8 +21933,8 @@
     "context_window": 262144,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.1,
-     "output_per_million": 0.45
+     "input_per_million": 0.306,
+     "output_per_million": 0.306
     }
    }
   },
@@ -21908,6 +21982,114 @@
    }
   },
   {
+   "id": "gemma-3-12b-it",
+   "family": "gemma-3-12b-it",
+   "version": null,
+   "aliases": [],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
+   }
+  },
+  {
+   "id": "gemma-3-27b-it",
+   "family": "gemma-3-27b-it",
+   "version": null,
+   "aliases": [],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
+   }
+  },
+  {
+   "id": "gemma-3-4b-it",
+   "family": "gemma-3-4b-it",
+   "version": null,
+   "aliases": [],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
+   }
+  },
+  {
    "id": "gemma-4",
    "family": "gemma",
    "version": [
@@ -21951,8 +22133,8 @@
     "context_window": 262144,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.57,
-     "output_per_million": 1.71
+     "input_per_million": 2.0,
+     "output_per_million": 5.0
     }
    }
   },
@@ -21967,7 +22149,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -21978,7 +22160,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -22002,7 +22186,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -22013,7 +22197,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -22037,7 +22223,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -22048,7 +22234,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -22072,7 +22260,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -22083,7 +22271,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -22216,7 +22406,6 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
      "pdf",
      "text",
@@ -22227,16 +22416,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "low",
+     "none",
      "high",
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 5000000,
-    "max_output": 1048576,
+    "context_window": 200000,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.8,
-     "output_per_million": 2.4
+     "input_per_million": 0.74698,
+     "output_per_million": 3.28669
     }
    }
   },
@@ -22537,9 +22726,9 @@
     ],
     "supports_toggle": true,
     "context_window": 204800,
-    "max_output": 200000,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.55,
+     "input_per_million": 0.6,
      "output_per_million": 2.2
     }
    }
@@ -22627,11 +22816,11 @@
      "high"
     ],
     "supports_toggle": true,
-    "context_window": 205000,
-    "max_output": 200000,
+    "context_window": 204800,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.6,
-     "output_per_million": 2.2
+     "input_per_million": 0.44819,
+     "output_per_million": 2.09153
     }
    }
   },
@@ -22750,16 +22939,19 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
+     "minimal",
      "low",
      "medium",
-     "high"
+     "high",
+     "xhigh",
+     "max"
     ],
     "supports_toggle": true,
-    "context_window": 205000,
-    "max_output": 205000,
+    "context_window": 204800,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.89,
-     "output_per_million": 3.2647
+     "input_per_million": 0.59758,
+     "output_per_million": 2.68911
     }
    }
   },
@@ -22811,11 +23003,11 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 205000,
-    "max_output": 205000,
+    "context_window": 200000,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 1.4,
-     "output_per_million": 4.4
+     "input_per_million": 0.89637,
+     "output_per_million": 3.58548
     }
    }
   },
@@ -22842,7 +23034,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": true,
+     "images": false,
      "tools": true,
      "structured_output": true
     },
@@ -22853,7 +23045,6 @@
      "custom": null
     },
     "input_modalities": [
-     "image",
      "text"
     ],
     "output_modalities": [
@@ -22865,11 +23056,11 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1049000,
-    "max_output": 1048576,
+    "context_window": 1000000,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 1.4,
-     "output_per_million": 4.4
+     "input_per_million": 1.19516,
+     "output_per_million": 4.18306
     }
    }
   },
@@ -22980,7 +23171,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": true,
+     "images": false,
      "tools": true,
      "structured_output": true
     },
@@ -22991,7 +23182,6 @@
      "custom": null
     },
     "input_modalities": [
-     "image",
      "text"
     ],
     "output_modalities": [
@@ -23004,11 +23194,11 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1049000,
-    "max_output": 1048576,
+    "context_window": 1000000,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 1.4,
-     "output_per_million": 4.4
+     "input_per_million": 1.19516,
+     "output_per_million": 4.18306
     }
    }
   },
@@ -23246,10 +23436,10 @@
     ],
     "supports_toggle": true,
     "context_window": 131072,
-    "max_output": 131072,
+    "max_output": 98304,
     "cost": {
-     "input_per_million": 0.13,
-     "output_per_million": 0.85
+     "input_per_million": 0.11952,
+     "output_per_million": 0.89637
     }
    }
   },
@@ -23299,11 +23489,11 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1049000,
-    "max_output": 1048576,
+    "context_window": 1000000,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.15,
-     "output_per_million": 0.5
+     "input_per_million": 0.0747,
+     "output_per_million": 0.44819
     }
    }
   },
@@ -25507,10 +25697,10 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 262144,
-    "max_output": 235929,
+    "max_output": 32768,
     "cost": {
-     "input_per_million": 0.0675,
-     "output_per_million": 0.225
+     "input_per_million": 0.029,
+     "output_per_million": 0.088
     }
    }
   },
@@ -25818,14 +26008,11 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
      "pdf",
      "text"
     ],
     "output_modalities": [
-     "audio",
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -25838,7 +26025,7 @@
      "max"
     ],
     "supports_toggle": false,
-    "context_window": 1050000,
+    "context_window": 400000,
     "max_output": 128000,
     "cost": {
      "input_per_million": 2.5,
@@ -26043,28 +26230,28 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
      "pdf",
      "text"
     ],
     "output_modalities": [
-     "audio",
      "image",
      "text"
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "xhigh"
     ],
     "supports_toggle": false,
     "context_window": 272000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 8.464,
-     "output_per_million": 15.87
+     "input_per_million": 8.0,
+     "output_per_million": 15.0
     }
    }
   },
@@ -26152,7 +26339,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -26199,7 +26385,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -26209,10 +26394,10 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 128000,
-    "max_output": 16384,
+    "max_output": 4096,
     "cost": {
-     "input_per_million": 5.29,
-     "output_per_million": 15.87
+     "input_per_million": 5.0,
+     "output_per_million": 15.0
     }
    }
   },
@@ -26284,7 +26469,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -26364,7 +26548,6 @@
      "custom": null
     },
     "input_modalities": [
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -26412,6 +26595,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -26443,7 +26627,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -26454,6 +26638,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -26480,7 +26666,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -26491,6 +26677,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -26515,7 +26703,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -26526,6 +26714,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -26554,7 +26744,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -26565,6 +26755,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -26595,7 +26787,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -26606,6 +26798,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -26620,17 +26814,23 @@
    }
   },
   {
-   "id": "gpt-4o-mini",
-   "family": "gpt-4o-mini",
-   "version": null,
-   "aliases": [],
+   "id": "gpt-4o-2024-8-6",
+   "family": "gpt-4o",
+   "version": [
+    2024,
+    8,
+    6
+   ],
+   "aliases": [
+    "gpt-4o-2024-08-06"
+   ],
    "profile": {
     "capabilities": {
      "streaming": true,
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -26641,6 +26841,45 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
+   }
+  },
+  {
+   "id": "gpt-4o-mini",
+   "family": "gpt-4o-mini",
+   "version": null,
+   "aliases": [],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -26651,6 +26890,49 @@
     "supports_toggle": false,
     "context_window": 128000,
     "max_output": 16384,
+    "cost": null
+   }
+  },
+  {
+   "id": "gpt-4o-mini-2024-7-18",
+   "family": "gpt-4o-mini",
+   "version": [
+    2024,
+    7,
+    18
+   ],
+   "aliases": [
+    "gpt-4o-mini-2024-07-18"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
     "cost": null
    }
   },
@@ -26824,8 +27106,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -26880,8 +27162,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -27004,7 +27286,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27015,6 +27297,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27041,7 +27324,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27052,6 +27335,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27078,7 +27362,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27089,6 +27373,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27136,8 +27421,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -27210,7 +27495,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27221,6 +27506,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27321,7 +27607,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27332,6 +27618,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27395,7 +27683,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27406,6 +27694,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27453,12 +27743,12 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
     ],
     "output_modalities": [
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -27565,7 +27855,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27576,6 +27866,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27602,7 +27894,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27613,6 +27905,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27639,7 +27933,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27650,6 +27944,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27697,12 +27993,12 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
     ],
     "output_modalities": [
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -27735,7 +28031,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27746,6 +28042,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27772,7 +28070,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27783,6 +28081,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27809,7 +28109,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27820,6 +28120,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27883,7 +28185,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -27894,6 +28196,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -27920,7 +28224,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -27931,6 +28235,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28025,7 +28331,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -28036,6 +28342,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28060,7 +28368,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -28071,6 +28379,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28095,7 +28405,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -28106,6 +28416,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28310,7 +28622,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -28321,6 +28633,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28335,6 +28649,45 @@
    }
   },
   {
+   "id": "gpt-6-1-terra",
+   "family": "gpt-6-1-terra",
+   "version": null,
+   "aliases": [
+    "gpt-6.1-terra"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
+   }
+  },
+  {
    "id": "gpt-6-astra",
    "family": "gpt-6-astra",
    "version": null,
@@ -28345,7 +28698,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -28356,6 +28709,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28380,7 +28735,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -28391,6 +28746,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28415,7 +28772,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -28426,6 +28783,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -28530,7 +28889,7 @@
     ],
     "supports_toggle": false,
     "context_window": 1050000,
-    "max_output": 1050000,
+    "max_output": 128000,
     "cost": {
      "input_per_million": 10.0,
      "output_per_million": 50.0
@@ -28599,6 +28958,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -28667,7 +29027,7 @@
     ],
     "supports_toggle": false,
     "context_window": 400000,
-    "max_output": 272000,
+    "max_output": 128000,
     "cost": {
      "input_per_million": 1.75,
      "output_per_million": 14.0
@@ -28762,10 +29122,10 @@
     ],
     "supports_toggle": false,
     "context_window": 128000,
-    "max_output": 128000,
+    "max_output": 32000,
     "cost": {
-     "input_per_million": 0.0,
-     "output_per_million": 0.0
+     "input_per_million": 1.75,
+     "output_per_million": 14.0
     }
    }
   },
@@ -28904,7 +29264,7 @@
     "max_output": 16384,
     "cost": {
      "input_per_million": 5.0,
-     "output_per_million": 10.0
+     "output_per_million": 32.0
     }
    }
   },
@@ -28939,8 +29299,7 @@
      "text"
     ],
     "output_modalities": [
-     "image",
-     "text"
+     "image"
     ],
     "reasoning": false,
     "supported_efforts": [],
@@ -28948,7 +29307,7 @@
     "context_window": 272000,
     "max_output": 16384,
     "cost": {
-     "input_per_million": 8.0,
+     "input_per_million": 5.0,
      "output_per_million": 30.0
     }
    }
@@ -29040,29 +29399,27 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
      "pdf",
      "text"
     ],
     "output_modalities": [
-     "audio",
-     "image",
      "text"
     ],
     "reasoning": true,
     "supported_efforts": [
-     "minimal",
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "xhigh"
     ],
     "supports_toggle": false,
     "context_window": 1047576,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 0.15,
-     "output_per_million": 0.6
+     "input_per_million": 0.4,
+     "output_per_million": 1.6
     }
    }
   },
@@ -29190,11 +29547,9 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -29207,10 +29562,10 @@
     ],
     "supports_toggle": false,
     "context_window": 1047576,
-    "max_output": 942818,
+    "max_output": 128000,
     "cost": {
-     "input_per_million": 0.05,
-     "output_per_million": 0.4
+     "input_per_million": 0.2,
+     "output_per_million": 1.25
     }
    }
   },
@@ -29261,8 +29616,8 @@
     "context_window": 131072,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.15,
-     "output_per_million": 0.6
+     "input_per_million": 0.178,
+     "output_per_million": 0.68
     }
    }
   },
@@ -29311,8 +29666,8 @@
     "context_window": 131072,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 0.07,
-     "output_per_million": 0.3
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -29466,7 +29821,6 @@
      "text"
     ],
     "output_modalities": [
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -29479,8 +29833,8 @@
     "context_window": 1050000,
     "max_output": 272000,
     "cost": {
-     "input_per_million": 21.0,
-     "output_per_million": 168.0
+     "input_per_million": 30.0,
+     "output_per_million": 180.0
     }
    }
   },
@@ -29564,7 +29918,6 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "low",
      "medium",
      "high",
@@ -29575,8 +29928,8 @@
     "context_window": 1050000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 4.0,
-     "output_per_million": 20.0
+     "input_per_million": 2.0,
+     "output_per_million": 10.0
     }
    }
   },
@@ -29627,8 +29980,8 @@
     "context_window": 1050000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 1.5,
-     "output_per_million": 12.0
+     "input_per_million": 4.0,
+     "output_per_million": 20.0
     }
    }
   },
@@ -29767,15 +30120,14 @@
     "supported_efforts": [
      "none",
      "low",
-     "medium",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 131072,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.0636,
-     "output_per_million": 0.265
+     "input_per_million": 0.06,
+     "output_per_million": 0.15
     }
    }
   },
@@ -29920,26 +30272,23 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
-     "pdf",
      "text",
      "video"
     ],
     "output_modalities": [
-     "image",
-     "text",
      "video"
     ],
     "reasoning": true,
     "supported_efforts": [
      "low",
      "medium",
-     "high"
+     "high",
+     "xhigh"
     ],
     "supports_toggle": false,
-    "context_window": 20000000,
-    "max_output": 2000000,
+    "context_window": 1000000,
+    "max_output": 30000,
     "cost": {
      "input_per_million": 1.25,
      "output_per_million": 2.5
@@ -30103,14 +30452,11 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
      "text"
     ],
     "output_modalities": [
-     "audio",
-     "image",
-     "text"
+     "image"
     ],
     "reasoning": false,
     "supported_efforts": [],
@@ -30405,15 +30751,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
+     "low",
+     "medium",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 2000000,
     "max_output": 1800000,
     "cost": {
-     "input_per_million": 4.0,
-     "output_per_million": 12.0
+     "input_per_million": 1.25,
+     "output_per_million": 2.5
     }
    }
   },
@@ -30675,8 +31022,7 @@
     "input_modalities": [
      "image",
      "pdf",
-     "text",
-     "video"
+     "text"
     ],
     "output_modalities": [
      "text"
@@ -30691,7 +31037,7 @@
     ],
     "supports_toggle": true,
     "context_window": 1000000,
-    "max_output": 1000000,
+    "max_output": 30000,
     "cost": {
      "input_per_million": 1.25,
      "output_per_million": 2.5
@@ -30746,7 +31092,7 @@
     ],
     "supports_toggle": false,
     "context_window": 500000,
-    "max_output": 1000000,
+    "max_output": 500000,
     "cost": {
      "input_per_million": 2.0,
      "output_per_million": 6.0
@@ -30802,8 +31148,8 @@
      "xhigh"
     ],
     "supports_toggle": false,
-    "context_window": 524288,
-    "max_output": 524288,
+    "context_window": 500000,
+    "max_output": 500000,
     "cost": {
      "input_per_million": 2.0,
      "output_per_million": 6.0
@@ -30859,8 +31205,8 @@
      "xhigh"
     ],
     "supports_toggle": false,
-    "context_window": 524288,
-    "max_output": 524288,
+    "context_window": 500000,
+    "max_output": 500000,
     "cost": {
      "input_per_million": 2.0,
      "output_per_million": 6.0
@@ -31173,8 +31519,8 @@
     "context_window": 8192,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 0.09,
-     "output_per_million": 0.09
+     "input_per_million": 0.08,
+     "output_per_million": 0.11
     }
    }
   },
@@ -31383,15 +31729,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
-     "high"
+     "low",
+     "high",
+     "max"
     ],
     "supports_toggle": true,
     "context_window": 1048576,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.14,
-     "output_per_million": 0.14
+     "input_per_million": 1.0,
+     "output_per_million": 3.0
     }
    }
   },
@@ -31722,14 +32069,15 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
+     "low",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.0,
-     "output_per_million": 0.0
+     "input_per_million": 0.14,
+     "output_per_million": 0.58
     }
    }
   },
@@ -31844,16 +32192,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "low",
+     "medium",
      "high"
     ],
     "supports_toggle": true,
     "context_window": 256000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 0.17,
-     "output_per_million": 0.566661
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -32763,8 +33111,8 @@
     "context_window": 128000,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 0.0529,
-     "output_per_million": 0.24334
+     "input_per_million": 0.05,
+     "output_per_million": 0.23
     }
    }
   },
@@ -32803,8 +33151,8 @@
     "context_window": 128000,
     "max_output": 8192,
     "cost": {
-     "input_per_million": 0.03174,
-     "output_per_million": 0.1587
+     "input_per_million": 0.03,
+     "output_per_million": 0.15
     }
    }
   },
@@ -32963,8 +33311,8 @@
     "context_window": 256000,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 2.0,
-     "output_per_million": 8.0
+     "input_per_million": 0.2,
+     "output_per_million": 0.4
     }
    }
   },
@@ -33576,8 +33924,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.57971,
-     "output_per_million": 2.318841
+     "input_per_million": 0.4,
+     "output_per_million": 2.5
     }
    }
   },
@@ -33597,7 +33945,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -33608,6 +33956,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -33637,7 +33986,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -33648,6 +33997,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -33723,7 +34073,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text",
      "video"
     ],
@@ -33737,7 +34086,7 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1113088,
+    "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
      "input_per_million": 3.0,
@@ -33777,7 +34126,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text",
      "video"
     ],
@@ -33786,15 +34134,17 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": true,
-    "context_window": 1048576,
-    "max_output": 1000000,
+    "context_window": 262144,
+    "max_output": 262144,
     "cost": {
-     "input_per_million": 0.15,
+     "input_per_million": 1.9,
      "output_per_million": 8.0
     }
    }
@@ -33970,8 +34320,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.45,
-     "output_per_million": 2.25
+     "input_per_million": 0.574,
+     "output_per_million": 3.011
     }
    }
   },
@@ -34010,7 +34360,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text",
      "video"
     ],
@@ -34019,6 +34368,8 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
+     "minimal",
      "low",
      "medium",
      "high",
@@ -34116,8 +34467,8 @@
     "context_window": 262144,
     "max_output": 100352,
     "cost": {
-     "input_per_million": 0.6,
-     "output_per_million": 2.5
+     "input_per_million": 0.5,
+     "output_per_million": 2.0
     }
    }
   },
@@ -34176,7 +34527,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -34187,6 +34538,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -34458,7 +34810,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text",
      "video"
     ],
@@ -34476,8 +34827,84 @@
     "max_output": 1048576,
     "cost": {
      "input_per_million": 2.0,
-     "output_per_million": 11.0
+     "output_per_million": 10.0
     }
+   }
+  },
+  {
+   "id": "kimi-k3-1-pro",
+   "family": "kimi-k3-1-pro",
+   "version": null,
+   "aliases": [
+    "kimi-k3.1-pro"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": true,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 1048576,
+    "max_output": 1048576,
+    "cost": null
+   }
+  },
+  {
+   "id": "kimi-k3-1-pro-highspeed",
+   "family": "kimi-k3-1-pro-highspeed",
+   "version": null,
+   "aliases": [
+    "kimi-k3.1-pro-highspeed"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": false,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": true,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 1048576,
+    "max_output": 1048576,
+    "cost": null
    }
   },
   {
@@ -34514,7 +34941,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text",
      "video"
     ],
@@ -34531,8 +34957,8 @@
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 3.0,
-     "output_per_million": 15.0
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -34873,8 +35299,7 @@
    "family": "laguna",
    "version": null,
    "aliases": [
-    "laguna-s-2.1-free",
-    "poolside/laguna-s-2.1:thinking"
+    "laguna-s-2.1-free"
    ],
    "profile": {
     "capabilities": {
@@ -34905,8 +35330,8 @@
      "high"
     ],
     "supports_toggle": false,
-    "context_window": 1048576,
-    "max_output": 131072,
+    "context_window": 256000,
+    "max_output": 32000,
     "cost": {
      "input_per_million": 0.0,
      "output_per_million": 0.0
@@ -35490,13 +35915,10 @@
     "input_modalities": [
      "audio",
      "image",
-     "pdf",
-     "text",
-     "video"
+     "text"
     ],
     "output_modalities": [
-     "text",
-     "video"
+     "text"
     ],
     "reasoning": true,
     "supported_efforts": [
@@ -35508,8 +35930,8 @@
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 3.74,
-     "output_per_million": 9.36
+     "input_per_million": 1.0888,
+     "output_per_million": 4.40964
     }
    }
   },
@@ -35598,8 +36020,8 @@
     "context_window": 131000,
     "max_output": 131000,
     "cost": {
-     "input_per_million": 0.14,
-     "output_per_million": 0.57
+     "input_per_million": 0.149447,
+     "output_per_million": 0.59779
     }
    }
   },
@@ -35799,8 +36221,8 @@
     "context_window": 1048576,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 1.2,
-     "output_per_million": 5.0
+     "input_per_million": 1.0,
+     "output_per_million": 4.05
     }
    }
   },
@@ -35883,15 +36305,14 @@
      "low",
      "medium",
      "high",
-     "xhigh",
-     "max"
+     "xhigh"
     ],
     "supports_toggle": false,
     "context_window": 128000,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.05,
-     "output_per_million": 0.7
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -36088,7 +36509,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -36100,8 +36520,8 @@
     "context_window": 1310720,
     "max_output": 163840,
     "cost": {
-     "input_per_million": 0.72,
-     "output_per_million": 0.72
+     "input_per_million": 1.00935,
+     "output_per_million": 1.00935
     }
    }
   },
@@ -36279,8 +36699,8 @@
     "context_window": 10000000,
     "max_output": 8192,
     "cost": {
-     "input_per_million": 0.72,
-     "output_per_million": 0.72
+     "input_per_million": 0.24,
+     "output_per_million": 0.97
     }
    }
   },
@@ -36815,8 +37235,8 @@
     "context_window": 1048576,
     "max_output": 32000,
     "cost": {
-     "input_per_million": 0.72,
-     "output_per_million": 0.72
+     "input_per_million": 0.27,
+     "output_per_million": 0.85
     }
    }
   },
@@ -36860,8 +37280,8 @@
     "context_window": 1048576,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.0,
-     "output_per_million": 0.0
+     "input_per_million": 0.3,
+     "output_per_million": 1.2
     }
    }
   },
@@ -36906,11 +37326,11 @@
      "high"
     ],
     "supports_toggle": true,
-    "context_window": 1049000,
-    "max_output": 262144,
+    "context_window": 1048576,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.7746,
-     "output_per_million": 3.0984
+     "input_per_million": 0.3,
+     "output_per_million": 1.2
     }
    }
   },
@@ -36943,7 +37363,6 @@
      "text"
     ],
     "output_modalities": [
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -37241,14 +37660,11 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "image",
      "pdf",
      "text"
     ],
     "output_modalities": [
-     "audio",
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -37261,8 +37677,8 @@
     "context_window": 256000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 1.75,
-     "output_per_million": 19.0
+     "input_per_million": 0.2,
+     "output_per_million": 1.2
     }
    }
   },
@@ -37713,8 +38129,8 @@
     "context_window": 128000,
     "max_output": 50000,
     "cost": {
-     "input_per_million": 0.3125,
-     "output_per_million": 0.9375
+     "input_per_million": 0.25,
+     "output_per_million": 0.75
     }
    }
   },
@@ -37762,8 +38178,8 @@
     "context_window": 260000,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 0.25,
-     "output_per_million": 0.9375
+     "input_per_million": 0.04,
+     "output_per_million": 0.15
     }
    }
   },
@@ -38242,10 +38658,10 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 131072,
-    "max_output": 117964,
+    "max_output": 72000,
     "cost": {
-     "input_per_million": 0.05,
-     "output_per_million": 0.33
+     "input_per_million": 0.0509,
+     "output_per_million": 0.335
     }
    }
   },
@@ -38915,25 +39331,26 @@
     "input_modalities": [
      "audio",
      "image",
-     "pdf",
      "text",
      "video"
     ],
     "output_modalities": [
-     "audio",
      "text"
     ],
     "reasoning": true,
     "supported_efforts": [
      "none",
-     "high"
+     "low",
+     "medium",
+     "high",
+     "max"
     ],
     "supports_toggle": true,
     "context_window": 1050000,
     "max_output": 393216,
     "cost": {
-     "input_per_million": 0.8,
-     "output_per_million": 3.0
+     "input_per_million": 5.0769,
+     "output_per_million": 10.1538
     }
    }
   },
@@ -38984,15 +39401,14 @@
      "none",
      "low",
      "medium",
-     "high",
-     "xhigh"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 1050000,
     "max_output": 131100,
     "cost": {
-     "input_per_million": 0.155,
-     "output_per_million": 0.31
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -39274,8 +39690,8 @@
     "context_window": 1048576,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.44,
-     "output_per_million": 2.2
+     "input_per_million": 0.08,
+     "output_per_million": 0.16
     }
    }
   },
@@ -39351,8 +39767,8 @@
     "context_window": 1048576,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.2,
-     "output_per_million": 0.4
+     "input_per_million": 0.435,
+     "output_per_million": 0.87
     }
    }
   },
@@ -39877,8 +40293,7 @@
      "video"
     ],
     "output_modalities": [
-     "text",
-     "video"
+     "text"
     ],
     "reasoning": true,
     "supported_efforts": [
@@ -39889,8 +40304,8 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 1048576,
-    "max_output": 1048576,
+    "context_window": 1000000,
+    "max_output": 524288,
     "cost": {
      "input_per_million": 0.6,
      "output_per_million": 2.4
@@ -39928,7 +40343,6 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -39943,8 +40357,8 @@
     "context_window": 1000192,
     "max_output": 900172,
     "cost": {
-     "input_per_million": 0.57971,
-     "output_per_million": 2.318841
+     "input_per_million": 0.2,
+     "output_per_million": 1.1
     }
    }
   },
@@ -39993,8 +40407,8 @@
      "max"
     ],
     "supports_toggle": false,
-    "context_window": 1000000,
-    "max_output": 196608,
+    "context_window": 204800,
+    "max_output": 131072,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40037,6 +40451,7 @@
      "text"
     ],
     "output_modalities": [
+     "image",
      "text"
     ],
     "reasoning": true,
@@ -40048,8 +40463,8 @@
      "max"
     ],
     "supports_toggle": true,
-    "context_window": 205000,
-    "max_output": 196000,
+    "context_window": 204800,
+    "max_output": 131072,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40097,15 +40512,15 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
-     "minimal",
      "low",
      "medium",
-     "high"
+     "high",
+     "xhigh",
+     "max"
     ],
     "supports_toggle": false,
-    "context_window": 228700,
-    "max_output": 196000,
+    "context_window": 204800,
+    "max_output": 131072,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40160,8 +40575,8 @@
      "max"
     ],
     "supports_toggle": false,
-    "context_window": 262100,
-    "max_output": 196608,
+    "context_window": 204800,
+    "max_output": 131072,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40210,8 +40625,8 @@
     "context_window": 204800,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.27,
-     "output_per_million": 0.95
+     "input_per_million": 0.29,
+     "output_per_million": 1.16
     }
    }
   },
@@ -40296,13 +40711,11 @@
     },
     "input_modalities": [
      "image",
-     "pdf",
      "text",
      "video"
     ],
     "output_modalities": [
-     "text",
-     "video"
+     "text"
     ],
     "reasoning": true,
     "supported_efforts": [
@@ -40311,8 +40724,8 @@
      "high"
     ],
     "supports_toggle": true,
-    "context_window": 1048576,
-    "max_output": 1048576,
+    "context_window": 1000000,
+    "max_output": 524288,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40542,8 +40955,8 @@
      "high"
     ],
     "supports_toggle": false,
-    "context_window": 204800,
-    "max_output": 204800,
+    "context_window": 65536,
+    "max_output": 65536,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40627,7 +41040,7 @@
     "supported_efforts": [],
     "supports_toggle": true,
     "context_window": 1000000,
-    "max_output": 524288,
+    "max_output": 131072,
     "cost": {
      "input_per_million": 0.3,
      "output_per_million": 1.2
@@ -40782,6 +41195,45 @@
      "input_per_million": 0.3,
      "output_per_million": 1.2
     }
+   }
+  },
+  {
+   "id": "minimax-m3-1-flash",
+   "family": "minimax-m3-1-flash",
+   "version": null,
+   "aliases": [
+    "minimax-m3.1-flash"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
    }
   },
   {
@@ -41328,8 +41780,8 @@
     "context_window": 1048576,
     "max_output": 524288,
     "cost": {
-     "input_per_million": 0.075,
-     "output_per_million": 0.3
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -41408,8 +41860,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.2,
-     "output_per_million": 0.2
+     "input_per_million": 0.15,
+     "output_per_million": 0.15
     }
    }
   },
@@ -41529,8 +41981,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.37,
-     "output_per_million": 0.5
+     "input_per_million": 0.179,
+     "output_per_million": 0.179
     }
    }
   },
@@ -41576,8 +42028,8 @@
     "context_window": 262144,
     "max_output": 52428,
     "cost": {
-     "input_per_million": 2.116,
-     "output_per_million": 6.348
+     "input_per_million": 0.2,
+     "output_per_million": 0.9
     }
    }
   },
@@ -41622,8 +42074,8 @@
     "context_window": 65536,
     "max_output": 52428,
     "cost": {
-     "input_per_million": 0.4,
-     "output_per_million": 0.4
+     "input_per_million": 0.488,
+     "output_per_million": 0.758
     }
    }
   },
@@ -41932,6 +42384,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -41948,7 +42401,7 @@
      "max"
     ],
     "supports_toggle": false,
-    "context_window": 524288,
+    "context_window": 262144,
     "max_output": 262144,
     "cost": {
      "input_per_million": 0.5,
@@ -42067,6 +42520,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "pdf",
      "text"
     ],
@@ -42079,8 +42533,8 @@
     "context_window": 131072,
     "max_output": 104857,
     "cost": {
-     "input_per_million": 2.116,
-     "output_per_million": 6.348
+     "input_per_million": 2.0,
+     "output_per_million": 6.0
     }
    }
   },
@@ -42154,6 +42608,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -42260,8 +42715,8 @@
     "context_window": 1048576,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.68,
-     "output_per_million": 2.09
+     "input_per_million": 0.7,
+     "output_per_million": 2.1
     }
    }
   },
@@ -42300,16 +42755,15 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "low",
-     "medium",
+     "none",
      "high"
     ],
     "supports_toggle": false,
     "context_window": 1048576,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.7,
-     "output_per_million": 2.1
+     "input_per_million": 0.765,
+     "output_per_million": 2.351
     }
    }
   },
@@ -42408,8 +42862,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.4,
-     "output_per_million": 2.0
+     "input_per_million": 1.5,
+     "output_per_million": 7.5
     }
    }
   },
@@ -42571,6 +43025,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -42584,8 +43039,8 @@
     "context_window": 262144,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.4232,
-     "output_per_million": 2.116
+     "input_per_million": 0.4,
+     "output_per_million": 2.0
     }
    }
   },
@@ -42616,6 +43071,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -42629,8 +43085,8 @@
     "context_window": 131072,
     "max_output": 104857,
     "cost": {
-     "input_per_million": 0.4232,
-     "output_per_million": 2.116
+     "input_per_million": 0.4,
+     "output_per_million": 2.0
     }
    }
   },
@@ -42666,6 +43122,7 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
      "image",
      "pdf",
      "text"
@@ -42685,8 +43142,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 1.65,
-     "output_per_million": 8.25
+     "input_per_million": 1.532,
+     "output_per_million": 7.843
     }
    }
   },
@@ -42726,8 +43183,8 @@
     "reasoning": false,
     "supported_efforts": [],
     "supports_toggle": false,
-    "context_window": 131072,
-    "max_output": 131072,
+    "context_window": 128000,
+    "max_output": 128000,
     "cost": {
      "input_per_million": 0.15,
      "output_per_million": 0.15
@@ -42859,8 +43316,8 @@
     "context_window": 131072,
     "max_output": 118000,
     "cost": {
-     "input_per_million": 0.14,
-     "output_per_million": 0.14
+     "input_per_million": 0.145,
+     "output_per_million": 0.145
     }
    }
   },
@@ -42989,8 +43446,8 @@
     "context_window": 32768,
     "max_output": 16384,
     "cost": {
-     "input_per_million": 0.0529,
-     "output_per_million": 0.08464
+     "input_per_million": 0.05,
+     "output_per_million": 0.08
     }
    }
   },
@@ -43032,8 +43489,8 @@
     "context_window": 131072,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 0.106,
-     "output_per_million": 0.318
+     "input_per_million": 0.111,
+     "output_per_million": 0.334
     }
    }
   },
@@ -43074,11 +43531,11 @@
     "reasoning": true,
     "supported_efforts": [],
     "supports_toggle": false,
-    "context_window": 131072,
-    "max_output": 131072,
+    "context_window": 128000,
+    "max_output": 16384,
     "cost": {
-     "input_per_million": 0.228,
-     "output_per_million": 0.456
+     "input_per_million": 0.1,
+     "output_per_million": 0.3
     }
    }
   },
@@ -43128,8 +43585,8 @@
     "context_window": 262144,
     "max_output": 256000,
     "cost": {
-     "input_per_million": 0.25,
-     "output_per_million": 0.93
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -43237,6 +43694,7 @@
     },
     "input_modalities": [
      "file",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -43302,7 +43760,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": true
     },
@@ -43314,6 +43772,7 @@
     },
     "input_modalities": [
      "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -43584,7 +44043,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": true
     },
@@ -43596,6 +44055,8 @@
     },
     "input_modalities": [
      "file",
+     "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -43639,6 +44100,7 @@
     },
     "input_modalities": [
      "file",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -43683,6 +44145,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -43805,6 +44268,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -43850,6 +44314,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -43929,6 +44394,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -44137,6 +44603,7 @@
     },
     "input_modalities": [
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -45213,8 +45680,8 @@
     "context_window": 262144,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.9522,
-     "output_per_million": 2.0102
+     "input_per_million": 0.9,
+     "output_per_million": 1.9
     }
    }
   },
@@ -45428,6 +45895,7 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
+     "minimal",
      "low",
      "medium",
      "high",
@@ -45437,8 +45905,8 @@
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 0.2,
-     "output_per_million": 0.8
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -45478,7 +45946,6 @@
      "video"
     ],
     "output_modalities": [
-     "image",
      "text"
     ],
     "reasoning": true,
@@ -45653,14 +46120,15 @@
      "low",
      "medium",
      "high",
-     "xhigh"
+     "xhigh",
+     "max"
     ],
     "supports_toggle": false,
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 1.375,
-     "output_per_million": 4.675
+     "input_per_million": 1.25,
+     "output_per_million": 4.25
     }
    }
   },
@@ -45721,7 +46189,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -45732,7 +46200,10 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -45761,7 +46232,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -45772,7 +46243,10 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -45801,7 +46275,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -45812,7 +46286,10 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -45836,7 +46313,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -45847,7 +46324,11 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "file",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -46137,17 +46618,15 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
-     "low",
      "medium",
-     "high",
-     "max"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 1048576,
     "max_output": 1048576,
     "cost": {
-     "input_per_million": 0.5,
-     "output_per_million": 0.9
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -46336,8 +46815,8 @@
     "context_window": 131072,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.06,
-     "output_per_million": 0.23
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -46382,8 +46861,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.184,
-     "output_per_million": 0.495
+     "input_per_million": 1.8,
+     "output_per_million": 6.225
     }
    }
   },
@@ -46442,7 +46921,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -46453,6 +46932,7 @@
      "custom": null
     },
     "input_modalities": [
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -46504,6 +46984,45 @@
    }
   },
   {
+   "id": "nemotron-3-5-super-vl-free",
+   "family": "nemotron-3-5-super-vl-free",
+   "version": null,
+   "aliases": [
+    "nemotron-3.5-super-vl-free"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
+   }
+  },
+  {
    "id": "nemotron-3-nano-30b-a3b-free",
    "family": "nemotron-3-nano-30b-a3b-free",
    "version": null,
@@ -46543,7 +47062,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -46554,7 +47073,10 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -46672,14 +47194,15 @@
      "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": true,
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.3,
-     "output_per_million": 1.0
+     "input_per_million": 0.6,
+     "output_per_million": 2.4
     }
    }
   },
@@ -47429,8 +47952,8 @@
     "context_window": 131072,
     "max_output": 16384,
     "cost": {
-     "input_per_million": 1.1,
-     "output_per_million": 3.0
+     "input_per_million": 0.7,
+     "output_per_million": 0.7
     }
    }
   },
@@ -47617,8 +48140,7 @@
     "input_modalities": [
      "image",
      "pdf",
-     "text",
-     "video"
+     "text"
     ],
     "output_modalities": [
      "text"
@@ -47682,10 +48204,10 @@
     ],
     "supports_toggle": true,
     "context_window": 1000000,
-    "max_output": 65535,
+    "max_output": 64000,
     "cost": {
-     "input_per_million": 2.5,
-     "output_per_million": 12.5
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -47741,8 +48263,8 @@
     "context_window": 1000000,
     "max_output": 65535,
     "cost": {
-     "input_per_million": 0.33,
-     "output_per_million": 2.75
+     "input_per_million": 0.374,
+     "output_per_million": 3.157
     }
    }
   },
@@ -47830,8 +48352,8 @@
     "context_window": 300000,
     "max_output": 10000,
     "cost": {
-     "input_per_million": 0.06348,
-     "output_per_million": 0.25392
+     "input_per_million": 0.069,
+     "output_per_million": 0.275
     }
    }
   },
@@ -47881,8 +48403,8 @@
     "context_window": 300000,
     "max_output": 10000,
     "cost": {
-     "input_per_million": 0.069,
-     "output_per_million": 0.276
+     "input_per_million": 0.06,
+     "output_per_million": 0.24
     }
    }
   },
@@ -47967,8 +48489,8 @@
     "context_window": 128000,
     "max_output": 10000,
     "cost": {
-     "input_per_million": 0.03703,
-     "output_per_million": 0.14812
+     "input_per_million": 0.04,
+     "output_per_million": 0.159
     }
    }
   },
@@ -48014,8 +48536,8 @@
     "context_window": 128000,
     "max_output": 10000,
     "cost": {
-     "input_per_million": 0.037,
-     "output_per_million": 0.148
+     "input_per_million": 0.035,
+     "output_per_million": 0.14
     }
    }
   },
@@ -48106,8 +48628,8 @@
     "context_window": 1000000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 0.8464,
-     "output_per_million": 3.3856
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -50128,16 +50650,18 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": false,
     "context_window": 200000,
     "max_output": 100000,
     "cost": {
-     "input_per_million": 1.1,
-     "output_per_million": 4.4
+     "input_per_million": 1.21,
+     "output_per_million": 4.84
     }
    }
   },
@@ -50354,7 +50878,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -50365,6 +50889,8 @@
      "custom": null
     },
     "input_modalities": [
+     "file",
+     "image",
      "text"
     ],
     "output_modalities": [
@@ -50714,6 +51240,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -52116,6 +52643,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -52500,6 +53028,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -54552,6 +55081,7 @@
     "input_modalities": [
      "file",
      "image",
+     "pdf",
      "text"
     ],
     "output_modalities": [
@@ -54673,8 +55203,8 @@
     "context_window": 131072,
     "max_output": 65536,
     "cost": {
-     "input_per_million": 0.015,
-     "output_per_million": 0.055
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -54914,7 +55444,6 @@
      "custom": null
     },
     "input_modalities": [
-     "file",
      "image",
      "pdf",
      "text"
@@ -55389,7 +55918,6 @@
     },
     "input_modalities": [
      "audio",
-     "file",
      "image",
      "pdf",
      "text",
@@ -55529,7 +56057,7 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 200000,
-    "max_output": 32768,
+    "max_output": 8000,
     "cost": {
      "input_per_million": 0.0,
      "output_per_million": 0.0
@@ -56189,6 +56717,7 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "minimal",
      "low",
      "medium",
@@ -56198,8 +56727,8 @@
     "context_window": 36864,
     "max_output": 8192,
     "cost": {
-     "input_per_million": 0.1587,
-     "output_per_million": 1.587
+     "input_per_million": 0.15,
+     "output_per_million": 1.5
     }
    }
   },
@@ -56524,8 +57053,8 @@
     "context_window": 128000,
     "max_output": 16384,
     "cost": {
-     "input_per_million": 0.125,
-     "output_per_million": 0.5
+     "input_per_million": 0.075,
+     "output_per_million": 0.3
     }
    }
   },
@@ -57448,27 +57977,26 @@
     "input_modalities": [
      "audio",
      "image",
-     "pdf",
      "text",
      "video"
     ],
     "output_modalities": [
      "audio",
-     "image",
      "text"
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
      "xhigh"
     ],
     "supports_toggle": true,
-    "context_window": 10000000,
-    "max_output": 1020000,
+    "context_window": 1048576,
+    "max_output": 131072,
     "cost": {
-     "input_per_million": 0.4,
-     "output_per_million": 2.65
+     "input_per_million": 1.3,
+     "output_per_million": 7.8
     }
    }
   },
@@ -57635,7 +58163,8 @@
      "text"
     ],
     "output_modalities": [
-     "image"
+     "image",
+     "text"
     ],
     "reasoning": false,
     "supported_efforts": [],
@@ -57962,8 +58491,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.13,
-     "output_per_million": 0.6
+     "input_per_million": 0.09,
+     "output_per_million": 0.3
     }
    }
   },
@@ -58008,8 +58537,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.33,
-     "output_per_million": 1.005
+     "input_per_million": 0.45,
+     "output_per_million": 1.335
     }
    }
   },
@@ -58199,8 +58728,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.99,
-     "output_per_million": 4.46
+     "input_per_million": 0.46,
+     "output_per_million": 3.48
     }
    }
   },
@@ -58244,11 +58773,11 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
+     "minimal",
      "low",
      "medium",
      "high",
-     "max"
+     "xhigh"
     ],
     "supports_toggle": true,
     "context_window": 1000000,
@@ -58257,6 +58786,42 @@
      "input_per_million": 2.0,
      "output_per_million": 6.0
     }
+   }
+  },
+  {
+   "id": "qwen-flash",
+   "family": "qwen-flash",
+   "version": null,
+   "aliases": [],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
    }
   },
   {
@@ -59728,7 +60293,8 @@
     },
     "input_modalities": [
      "image",
-     "text"
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -60113,8 +60679,8 @@
     "context_window": 262144,
     "max_output": 235929,
     "cost": {
-     "input_per_million": 0.07,
-     "output_per_million": 0.28
+     "input_per_million": 0.15,
+     "output_per_million": 0.6
     }
    }
   },
@@ -60447,7 +61013,8 @@
     },
     "input_modalities": [
      "image",
-     "text"
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -60672,8 +61239,8 @@
      "assistant_prefill": false,
      "reasoning_replay_required": false,
      "images": true,
-     "tools": true,
-     "structured_output": true
+     "tools": false,
+     "structured_output": false
     },
     "thinking": {
      "field": "none",
@@ -60681,15 +61248,19 @@
      "budget_tokens": null,
      "custom": null
     },
-    "reasoning": true,
+    "input_modalities": [
+     "image",
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
     "supported_efforts": [],
     "supports_toggle": false,
-    "context_window": 128000,
-    "max_output": 32000,
-    "cost": {
-     "input_per_million": 1.014,
-     "output_per_million": 1.014
-    }
+    "context_window": 0,
+    "max_output": 0,
+    "cost": null
    }
   },
   {
@@ -61100,7 +61671,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61111,7 +61682,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61280,7 +61853,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61291,7 +61864,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61317,7 +61892,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61328,7 +61903,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61354,7 +61931,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61365,7 +61942,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61529,17 +62108,19 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
+     "minimal",
      "low",
      "medium",
      "high",
+     "xhigh",
      "max"
     ],
     "supports_toggle": true,
     "context_window": 1000000,
-    "max_output": 250000,
+    "max_output": 65536,
     "cost": {
-     "input_per_million": 0.169,
-     "output_per_million": 1.014
+     "input_per_million": 0.25,
+     "output_per_million": 1.5
     }
    }
   },
@@ -61556,7 +62137,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61567,7 +62148,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61593,7 +62176,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61604,7 +62187,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61630,7 +62215,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61641,7 +62226,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61667,7 +62254,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61678,7 +62265,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61741,7 +62330,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61752,7 +62341,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61837,7 +62428,7 @@
     "supported_efforts": [],
     "supports_toggle": true,
     "context_window": 1000000,
-    "max_output": 131072,
+    "max_output": 65536,
     "cost": {
      "input_per_million": 0.4,
      "output_per_million": 1.6
@@ -61894,7 +62485,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -61905,7 +62496,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -61931,7 +62524,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": true,
      "structured_output": false
     },
@@ -61942,7 +62535,9 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -62021,18 +62616,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "minimal",
      "low",
      "medium",
-     "high",
      "xhigh"
     ],
     "supports_toggle": true,
     "context_window": 1000000,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 4.232,
-     "output_per_million": 12.696
+     "input_per_million": 2.0,
+     "output_per_million": 6.0
     }
    }
   },
@@ -62074,6 +62667,47 @@
     "supports_toggle": false,
     "context_window": 1000000,
     "max_output": 131072,
+    "cost": null
+   }
+  },
+  {
+   "id": "qwen3-8-max-902",
+   "family": "qwen3-8-max",
+   "version": [
+    902
+   ],
+   "aliases": [
+    "Qwen/Qwen3.8-Max-0902"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": true,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "image",
+     "text",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": false,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 0,
+    "max_output": 0,
     "cost": null
    }
   },
@@ -62152,7 +62786,7 @@
      "streaming_usage": false,
      "assistant_prefill": false,
      "reasoning_replay_required": false,
-     "images": false,
+     "images": true,
      "tools": false,
      "structured_output": false
     },
@@ -62163,7 +62797,10 @@
      "custom": null
     },
     "input_modalities": [
-     "text"
+     "audio",
+     "image",
+     "text",
+     "video"
     ],
     "output_modalities": [
      "text"
@@ -63234,8 +63871,8 @@
     "context_window": 16384,
     "max_output": 16384,
     "cost": {
-     "input_per_million": 0.1058,
-     "output_per_million": 0.1058
+     "input_per_million": 0.1,
+     "output_per_million": 0.1
     }
    }
   },
@@ -63450,8 +64087,8 @@
     "context_window": 256000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 0.8993,
-     "output_per_million": 1.3225
+     "input_per_million": 0.85,
+     "output_per_million": 1.25
     }
    }
   },
@@ -63490,8 +64127,8 @@
     "context_window": 256000,
     "max_output": 128000,
     "cost": {
-     "input_per_million": 1.058,
-     "output_per_million": 3.174
+     "input_per_million": 1.0,
+     "output_per_million": 3.0
     }
    }
   },
@@ -63823,16 +64460,11 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
-     "minimal",
-     "low",
-     "medium",
-     "high",
-     "xhigh",
-     "max"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 262144,
-    "max_output": 256000,
+    "max_output": 65536,
     "cost": {
      "input_per_million": 0.95,
      "output_per_million": 4.0
@@ -64107,8 +64739,8 @@
     "context_window": 131072,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.04,
-     "output_per_million": 0.16
+     "input_per_million": 0.157903,
+     "output_per_million": 0.631611
     }
    }
   },
@@ -64170,7 +64802,6 @@
      "custom": null
     },
     "input_modalities": [
-     "file",
      "image",
      "pdf",
      "text"
@@ -64297,7 +64928,6 @@
      "custom": null
     },
     "input_modalities": [
-     "file",
      "image",
      "pdf",
      "text"
@@ -64349,31 +64979,24 @@
     "input_modalities": [
      "audio",
      "image",
-     "pdf",
      "text",
      "video"
     ],
     "output_modalities": [
-     "image",
-     "text",
-     "video"
+     "text"
     ],
     "reasoning": true,
     "supported_efforts": [
      "none",
-     "minimal",
      "low",
-     "medium",
-     "high",
-     "xhigh",
-     "max"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.8906,
-     "output_per_million": 4.45301
+     "input_per_million": 0.0,
+     "output_per_million": 0.0
     }
    }
   },
@@ -64422,8 +65045,8 @@
     "context_window": 262144,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.115942,
-     "output_per_million": 1.15942
+     "input_per_million": 0.25,
+     "output_per_million": 2.0
     }
    }
   },
@@ -64617,16 +65240,18 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": true,
     "context_window": 256000,
     "max_output": 64000,
     "cost": {
-     "input_per_million": 0.11,
-     "output_per_million": 0.28
+     "input_per_million": 0.25,
+     "output_per_million": 2.0
     }
    }
   },
@@ -64712,20 +65337,17 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "minimal",
      "low",
      "medium",
-     "high",
-     "xhigh",
-     "max"
+     "high"
     ],
     "supports_toggle": false,
     "context_window": 256000,
     "max_output": 256000,
     "cost": {
-     "input_per_million": 0.11875,
-     "output_per_million": 1.18747
+     "input_per_million": 0.25,
+     "output_per_million": 2.0
     }
    }
   },
@@ -64897,8 +65519,8 @@
     "context_window": 256000,
     "max_output": 32000,
     "cost": {
-     "input_per_million": 0.11875,
-     "output_per_million": 1.18747
+     "input_per_million": 0.114,
+     "output_per_million": 1.143
     }
    }
   },
@@ -64996,8 +65618,8 @@
     "context_window": 262144,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.47499,
-     "output_per_million": 2.37494
+     "input_per_million": 0.782,
+     "output_per_million": 3.893
     }
    }
   },
@@ -65094,20 +65716,17 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "minimal",
      "low",
      "medium",
-     "high",
-     "xhigh",
-     "max"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.02969,
-     "output_per_million": 0.29687
+     "input_per_million": 0.1,
+     "output_per_million": 0.4
     }
    }
   },
@@ -65148,20 +65767,16 @@
     ],
     "reasoning": true,
     "supported_efforts": [
-     "none",
      "minimal",
      "low",
-     "medium",
-     "high",
-     "xhigh",
-     "max"
+     "high"
     ],
     "supports_toggle": true,
     "context_window": 256000,
     "max_output": 256000,
     "cost": {
-     "input_per_million": 0.4453,
-     "output_per_million": 2.22651
+     "input_per_million": 0.11875,
+     "output_per_million": 0.29687
     }
    }
   },
@@ -65475,8 +66090,8 @@
     "context_window": 65536,
     "max_output": 8192,
     "cost": {
-     "input_per_million": 0.15,
-     "output_per_million": 0.6
+     "input_per_million": 0.25,
+     "output_per_million": 0.25
     }
    }
   },
@@ -65523,8 +66138,8 @@
     "context_window": 131072,
     "max_output": 117964,
     "cost": {
-     "input_per_million": 0.15,
-     "output_per_million": 0.6
+     "input_per_million": 0.1587,
+     "output_per_million": 0.6348
     }
    }
   },
@@ -66128,11 +66743,9 @@
      "custom": null
     },
     "input_modalities": [
-     "audio",
      "text"
     ],
     "output_modalities": [
-     "audio",
      "text"
     ],
     "reasoning": true,
@@ -66369,16 +66982,18 @@
     ],
     "reasoning": true,
     "supported_efforts": [
+     "none",
      "low",
      "medium",
-     "high"
+     "high",
+     "max"
     ],
     "supports_toggle": false,
     "context_window": 262144,
     "max_output": 256000,
     "cost": {
-     "input_per_million": 0.22,
-     "output_per_million": 1.32
+     "input_per_million": 0.2,
+     "output_per_million": 1.15
     }
    }
   },
@@ -66451,6 +67066,7 @@
      "custom": null
     },
     "input_modalities": [
+     "audio",
      "image",
      "text",
      "video"
@@ -66468,8 +67084,8 @@
     "context_window": 1048576,
     "max_output": 1000000,
     "cost": {
-     "input_per_million": 1.08,
-     "output_per_million": 3.0888
+     "input_per_million": 1.0,
+     "output_per_million": 2.7
     }
    }
   },
@@ -67003,6 +67619,7 @@
      "custom": null
     },
     "input_modalities": [
+     "audio",
      "image",
      "text",
      "video"
@@ -67267,8 +67884,8 @@
     "context_window": 262144,
     "max_output": 262144,
     "cost": {
-     "input_per_million": 0.14,
-     "output_per_million": 0.58
+     "input_per_million": 0.132,
+     "output_per_million": 0.528
     }
    }
   },
@@ -67307,8 +67924,8 @@
     "context_window": 8192,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 0.046552,
-     "output_per_million": 0.187266
+     "input_per_million": 0.044,
+     "output_per_million": 0.177
     }
    }
   },
@@ -67347,8 +67964,8 @@
     "context_window": 8192,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 0.078292,
-     "output_per_million": 0.31211
+     "input_per_million": 0.074,
+     "output_per_million": 0.295
     }
    }
   },
@@ -67387,8 +68004,8 @@
     "context_window": 8192,
     "max_output": 4096,
     "cost": {
-     "input_per_million": 0.078292,
-     "output_per_million": 0.31211
+     "input_per_million": 0.074,
+     "output_per_million": 0.295
     }
    }
   },
@@ -67676,6 +68293,7 @@
     "reasoning": true,
     "supported_efforts": [
      "none",
+     "low",
      "high"
     ],
     "supports_toggle": false,
@@ -67774,7 +68392,7 @@
     "context_window": 8192,
     "max_output": 3072,
     "cost": {
-     "input_per_million": 0.04,
+     "input_per_million": 0.13,
      "output_per_million": 0.0
     }
    }
@@ -67899,7 +68517,7 @@
     "context_window": 8192,
     "max_output": 3584,
     "cost": {
-     "input_per_million": 0.0,
+     "input_per_million": 0.1,
      "output_per_million": 0.0
     }
    }
@@ -68379,8 +68997,8 @@
     "context_window": 131072,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 0.3174,
-     "output_per_million": 0.529
+     "input_per_million": 0.3,
+     "output_per_million": 0.5
     }
    }
   },
@@ -68592,8 +69210,8 @@
     "context_window": 32768,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.5819,
-     "output_per_million": 0.8464
+     "input_per_million": 0.55,
+     "output_per_million": 0.8
     }
    }
   },
@@ -68632,8 +69250,8 @@
     "context_window": 1024000,
     "max_output": 819200,
     "cost": {
-     "input_per_million": 0.4232,
-     "output_per_million": 0.4232
+     "input_per_million": 0.4,
+     "output_per_million": 0.4
     }
    }
   },
@@ -69187,7 +69805,7 @@
     "max_output": 131072,
     "cost": {
      "input_per_million": 0.25,
-     "output_per_million": 0.9
+     "output_per_million": 0.8
     }
    }
   },
@@ -69579,8 +70197,8 @@
     "context_window": 262144,
     "max_output": 131072,
     "cost": {
-     "input_per_million": 2.5,
-     "output_per_million": 7.5
+     "input_per_million": 2.645,
+     "output_per_million": 7.935
     }
    }
   },
@@ -69708,8 +70326,8 @@
     "context_window": 6144,
     "max_output": 5529,
     "cost": {
-     "input_per_million": 0.529,
-     "output_per_million": 0.7935
+     "input_per_million": 0.35,
+     "output_per_million": 0.65
     }
    }
   },
@@ -70009,7 +70627,7 @@
     "supported_efforts": [],
     "supports_toggle": false,
     "context_window": 128000,
-    "max_output": 8192,
+    "max_output": 4096,
     "cost": {
      "input_per_million": 0.5,
      "output_per_million": 2.0
@@ -70711,7 +71329,6 @@
      "text"
     ],
     "output_modalities": [
-     "audio",
      "text"
     ],
     "reasoning": false,
@@ -70721,7 +71338,7 @@
     "max_output": 32768,
     "cost": {
      "input_per_million": 0.1,
-     "output_per_million": 0.3
+     "output_per_million": 0.4
     }
    }
   },
@@ -70771,8 +71388,8 @@
     "context_window": 32768,
     "max_output": 32768,
     "cost": {
-     "input_per_million": 0.1,
-     "output_per_million": 0.3
+     "input_per_million": 0.123,
+     "output_per_million": 0.368
     }
    }
   },
@@ -72535,6 +73152,43 @@
     "supports_toggle": false,
     "context_window": 1048576,
     "max_output": 131072,
+    "cost": null
+   }
+  },
+  {
+   "id": "xing4-0-29b-a4b-free",
+   "family": "xing4-0-29b-a4b-free",
+   "version": null,
+   "aliases": [
+    "xing4.0-29b-a4b-free"
+   ],
+   "profile": {
+    "capabilities": {
+     "streaming": true,
+     "streaming_usage": false,
+     "assistant_prefill": false,
+     "reasoning_replay_required": false,
+     "images": false,
+     "tools": false,
+     "structured_output": false
+    },
+    "thinking": {
+     "field": "none",
+     "effort": null,
+     "budget_tokens": null,
+     "custom": null
+    },
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "reasoning": true,
+    "supported_efforts": [],
+    "supports_toggle": false,
+    "context_window": 262144,
+    "max_output": 0,
     "cost": null
    }
   },

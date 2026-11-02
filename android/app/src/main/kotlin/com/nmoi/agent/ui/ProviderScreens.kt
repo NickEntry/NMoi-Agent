@@ -265,7 +265,10 @@ internal fun ProviderEditScreen(
             // 而"文本进、文本出"是绝大多数对话模型的常态，写下来比留空更有用。
             // 记成「推断」，用户改一格就变「自定义」。
             val seeded = bare.copy(
-                inputModalities = listOf("text"),
+                // 未知模型默认「文本 + 图片」（D211）：目录里没有它，谁也不知道它收不收图；
+                // 默认能收，至少不会让用户以为"这个模型不能发图"。发错了是上游拒，
+                // 而默认不能收，用户连试都试不了。
+                inputModalities = listOf("text", "image"),
                 outputModalities = listOf("text"),
             )
             seeded to mapOf(

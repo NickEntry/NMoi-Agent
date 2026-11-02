@@ -954,22 +954,20 @@ internal fun ChatScreen(
             MenuSheet(
                 title = "添加",
                 items = listOf(
-                    if (imageCapability == false) {
-                        SheetItem(
-                            label = "图片（这个模型不收）",
-                            icon = ActionIcons.Cpu,
-                            hint = ModelCapabilities.refusal(currentModel?.inputModalities.orEmpty()),
-                        )
-                    } else {
-                        SheetItem(
-                            label = "图片",
-                            icon = ActionIcons.Cpu,
-                            onClick = {
-                                plusMenu = false
-                                pickImage.launch("image/*")
-                            },
-                        )
-                    },
+                    // 图片**永远能选**（D211）：计划里有视觉覆盖，模型自己收不收图
+                    // 不该在这里拦人。已知不收图时只提示一句，让上游去判。
+                    SheetItem(
+                        label = "图片",
+                        icon = ActionIcons.Cpu,
+                        onClick = {
+                            plusMenu = false
+                            if (imageCapability == false) {
+                                notice = ModelCapabilities.refusal(currentModel?.inputModalities.orEmpty()) +
+                                    "（仍会发出去；要换模型再说）"
+                            }
+                            pickImage.launch("image/*")
+                        },
+                    ),
                     SheetItem(
                         label = "文件",
                         icon = ActionIcons.Wrench,
