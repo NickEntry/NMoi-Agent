@@ -45,8 +45,11 @@ struct Endpoint {
     pass: String,
 }
 
-fn config_slot() -> &'static Mutex<Option<(Option<SystemTime>, Option<Endpoint>)>> {
-    static SLOT: OnceLock<Mutex<Option<(Option<SystemTime>, Option<Endpoint>)>>> = OnceLock::new();
+/// `(文件的 mtime, 解析结果)`。mtime 没变就不重读文件。
+type ConfigCache = Option<(Option<SystemTime>, Option<Endpoint>)>;
+
+fn config_slot() -> &'static Mutex<ConfigCache> {
+    static SLOT: OnceLock<Mutex<ConfigCache>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
