@@ -1902,14 +1902,37 @@ mod tests {
         use std::net::TcpListener;
         use std::time::Duration;
 
+        /// 读完整条请求（头 + `content-length` 指定的正文）。
+        ///
+        /// 只读到 `\r\n\r\n` 就回包、然后关连接，在 Windows 上会让还在写正文的客户端
+        /// 撞上 RST——第一轮就此失败，第二轮永远不会来（2026-11-02 CI 上就是这么红的）。
         fn read_request(stream: &mut std::net::TcpStream) {
             let mut buffer = Vec::new();
             let mut chunk = [0u8; 1024];
             while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
                 match stream.read(&mut chunk) {
-                    Ok(0) => break,
+                    Ok(0) => return,
                     Ok(read) => buffer.extend_from_slice(&chunk[..read]),
-                    Err(_) => break,
+                    Err(_) => return,
+                }
+            }
+            let head_end = buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|at| at + 4)
+                .unwrap_or(buffer.len());
+            let head = String::from_utf8_lossy(&buffer[..head_end]).to_ascii_lowercase();
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let mut body = buffer.len().saturating_sub(head_end);
+            while body < length {
+                match stream.read(&mut chunk) {
+                    Ok(0) => return,
+                    Ok(read) => body += read,
+                    Err(_) => return,
                 }
             }
         }
