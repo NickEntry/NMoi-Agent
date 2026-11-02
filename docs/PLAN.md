@@ -1387,3 +1387,7 @@ core 新增 `thinkparse`（`<think>`/`<thinking>`/`<reasoning>`，容忍重复�
 拉取模型页加「已加入 N / 共 M · 全选 · 反选」（只作用在当前过滤结果）；
 `buildModel` 抽成纯函数 + `addModels` / `removeModels` 批量路径；多条删除先上膛。
 **未实测**：V47。
+
+**0.15ag 模型行左滑修复（2026-11-02，D215）**：红底铺到整个 Box（不再依赖背后那层
+`matchParentSize` 的高度），删除区加垃圾桶图标；`clipToBounds` 防画到卡片外；进多选自动收回。
+**未实测**：V48。

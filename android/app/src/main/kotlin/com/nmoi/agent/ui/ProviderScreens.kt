@@ -48,6 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -1197,30 +1198,46 @@ private fun ModelRow(
     val reveal = with(LocalDensity.current) { 88.dp.toPx() }
     val offset = remember(model.id) { Animatable(0f) }
 
-    Box(modifier = Modifier.fillMaxWidth()) {
-        // 背后那颗删除：只有滑开才露出来。
+    // 进多选就把滑开的那一行收回去：多选时这一行不吃滑动（D204）。
+    LaunchedEffect(selecting) {
+        if (selecting) offset.snapTo(0f)
+    }
+
+    // **红底铺在整个 Box 上**，而不是铺在"背后那一层"里（D215）。
+    // 真机上就是这里出的问题：滑开之后行确实动了，但露出来的是卡片底色——
+    // 背后那层 `matchParentSize` 的 Row 在某些测量顺序下高度是 0，红色根本没画出来。
+    // 铺在 Box 上就没有"量不出来"这回事；行自己不透明，盖住的部分看不见。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clipToBounds()
+            .background(MaterialTheme.colorScheme.error),
+    ) {
+        // 删除区固定在右端，不跟着行移动；图标 + 文字两个信号，色弱也分得出来。
         Row(
-            modifier = Modifier.matchParentSize(),
-            horizontalArrangement = Arrangement.End,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(88.dp)
+                .fillMaxHeight()
+                .clickable {
+                    scope.launch { offset.snapTo(0f) }
+                    onDelete()
+                },
+            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .width(88.dp)
-                    .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.error)
-                    .clickable {
-                        scope.launch { offset.snapTo(0f) }
-                        onDelete()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "删除",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onError,
-                )
-            }
+            androidx.compose.material3.Icon(
+                imageVector = ActionIcons.Trash2,
+                contentDescription = "删除这个模型",
+                tint = MaterialTheme.colorScheme.onError,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = "删除",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onError,
+                modifier = Modifier.padding(start = 6.dp),
+            )
         }
 
         Row(

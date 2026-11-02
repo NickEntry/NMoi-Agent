@@ -5196,3 +5196,22 @@ Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（�
 
 **验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `compileDebugKotlin` 与 `testDebugUnitTest` 会跑。
 真机路径见 `docs/verification.md` **V47**。
+
+## D215 模型行左滑：红底铺在 Box 上 + 删除图标（2026-11-02）
+
+用户报"左滑没显示删除图标按钮"，截图里那一行**确实滑开了**（文字被卡片的左边裁掉），
+但露出来的是卡片底色，不是红色删除区。
+
+原因：红底铺在"背后那一层"——`Row(Modifier.matchParentSize())` 里的一个
+`Box(fillMaxHeight())`。这一层在某些测量顺序下高度是 0，红色根本没画出来。
+修法两条：
+
+1. **红底铺在整个 Box 上**（`Modifier.background(error)`），行自己不透明、盖住的部分看不见；
+   删除区只是一个右对齐的 88dp 可点区域。这样不存在"量不出来"的可能。
+2. **删除区给图标 + 文字**（`Trash2` + 「删除」）：两个信号，色弱也分得出来；
+   光靠一块红，用户还得猜它是不是按钮。
+
+顺带：`clipToBounds()` 让滑开的行不会画到卡片左边距外面；进多选时把滑开的那一行收回去。
+
+**验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `compileDebugKotlin` 会跑。
+真机路径见 `docs/verification.md` **V48**。
