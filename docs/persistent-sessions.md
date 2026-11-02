@@ -40,7 +40,16 @@
 
 - `command` 必填；`args` 是数组（**不拼字符串**，带空格的参数不会被拆开）。
 - `cwd` 相对工作区根，词法校验同 `WorkSpace-EnvirShell`（不许绝对路径、不许 `..`）。
-- `block_ms`：0–30000，默认 0。0 = 不阻塞，立刻返回。
+- `block_ms`：**这次调用愿意站着等多久**，0–30000，默认 **1000**。
+  - 它**不是超时**：到点不会杀进程，也不算失败；进程照跑，只是这次调用先回去。
+  - 规则是**等满这个窗口再回**（不是"见到第一个字就回"）：这段时间收到的输出一起给。
+    唯一的提前返回是**进程自己退出**——它已经结束了，没必要再站。
+  - `Session-Read` 的 `wait_ms` 是另一条规则：**一有新输出就回**，到点没新东西才空手回。
+    两者不一样是故意的：`Open/Write` 问的是"我做完之后它有什么反应"（给一个稳定窗口），
+    `Read` 问的是"有消息了吗"（有就立刻给）。
+  - `0` = 不等，立刻把 `session_id` 交出去（适合"起个服务，我待会儿再来看"）。
+    代价是**快命令会抢跑**：`echo hi` 可能在返回之后才写完，这次拿到空的 `stdout`、
+    `state: "running"`，下一次 `Session-Read` 才看到 `hi` 和 `exited`。这是竞态，不是 bug。
 - 返回：
 
 ```json
@@ -92,6 +101,17 @@
 - 临时会话：允许。
 - 服务会话：**拒绝**，返回 `{"refused": "service", "message": "这是用户启动的服务，去 设置 → 持久会话 里关"}`。
   理由就是用户那句「持久性不能在会话的调用块点取消」。
+
+## 2.5 三个数字不是一回事
+
+| 数字 | 管什么 | 到点了会怎样 | 谁有 |
+|---|---|---|---|
+| `timeout_ms` | 这个**进程**总共能活多久 | 杀掉整个进程组，`timed_out: true` | 只有非持久的 `System-Shell` / `WorkSpace-EnvirShell` |
+| `block_ms` | 这次**工具调用**愿意等多久输出 | 不杀、不报错，带着已有输出和 `cursor` 返回；进程继续跑 | `Session-Open` / `Session-Write` |
+| `wait_ms` | 这次**读**愿意等多久新输出 | 同上：返回 `{"stdout": "", "cursor": 原值}` | `Session-Read` |
+
+一句话：`timeout_ms` 决定「它还能不能活」，`block_ms` 决定「这次调用站多久」。
+持久会话**没有** `timeout_ms`——它的寿命由用户（管理页）或应用进程决定，不由时间决定。
 
 ## 3. 阻塞与游标
 
@@ -247,6 +267,9 @@ CREATE TABLE shell_services (
 
 1. `Session-Open` 起 `python3 -m http.server`，`block_ms=1500`：第一次返回里就有
    `Serving HTTP on ...`，并给出 `session_id`。
+1b. 同一条命令用 `block_ms=0`：调用立刻返回（几十毫秒内），`stdout` 可能是空的、
+   `state: "running"`；紧接着 `Session-Read` 能读到 `Serving HTTP on ...`。
+   **进程没有被杀**，`Session-List` 里还在。
 2. 下一轮（新的一次 `turn_run`）用同一个 `session_id` 调 `Session-Read`：能读到新请求的日志。
 3. `Session-Write` 给 `bc` 发 `2+2\n`：返回 `4`。
 4. `Session-List` 在上下文被压缩之后仍能列出活着的会话。
