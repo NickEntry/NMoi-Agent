@@ -5435,7 +5435,10 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
 - 已落地：`crates/core/src/proxy.rs`（握手、绕过匹配、TLS 到代理、`ProxyHandle`）+
   `crates/core/src/proxy_server.rs`（本地 SOCKS5 端点，随机凭证，上游热改）+ 两个 transport 的
   `proxy` 字段，15 条单测用本机假代理/假端点跑真 socket。
-  未接线：FFI / 探测缓存 / 设置页 / Vault / 供应商级覆盖 / 垫片（需 NDK 构建）。
+- 已接线：FFI 四条（`nmoi_proxy_apply/status/server_start/server_stop`）+ 设置页
+  （工具与工作区 → 网络代理：开关 / 类型 / 地址 / 端口 / 用户名 / 密码 / 绕过 / HTTPS 凭据来源），
+  密码进 Vault，保存即 apply，**启动时也 apply 一次**（否则重启后是直连）。
+  未做：探测与 60 秒缓存、供应商级覆盖、垫片（需 NDK 构建）、「本地凭据」档。
 
 ### D226 补记：垫片用真 IP + 映射，不用假 IP
 

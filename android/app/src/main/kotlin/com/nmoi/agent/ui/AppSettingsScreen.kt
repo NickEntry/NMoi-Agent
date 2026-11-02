@@ -161,11 +161,13 @@ internal fun AppSettingsScreen(
  * 与项目里其它输入框同形：填色小框、没有下划线、空值时显示占位。
  */
 @Composable
-private fun SettingField(
+internal fun SettingField(
     value: String,
     onChange: (String) -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
+    /** 密码这类：掩码显示。 */
+    secret: Boolean = false,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -177,6 +179,11 @@ private fun SettingField(
                 value = value,
                 onValueChange = onChange,
                 singleLine = true,
+                visualTransformation = if (secret) {
+                    androidx.compose.ui.text.input.PasswordVisualTransformation()
+                } else {
+                    androidx.compose.ui.text.input.VisualTransformation.None
+                },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 14.sp,
@@ -197,7 +204,7 @@ private fun SettingField(
 
 /** 这一页自己的分组卡。`GroupCard` 是 ProviderScreens 的文件私有件，跨文件用不了。 */
 @Composable
-private fun SettingsCard(
+internal fun SettingsCard(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -212,7 +219,7 @@ private fun SettingsCard(
 
 /** 行内小胶囊：这一页的两个动作都同形（ui-taste：控件用行内 chip，不用 Material Switch）。 */
 @Composable
-private fun SettingChip(
+internal fun SettingChip(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,

@@ -32,6 +32,7 @@ mod icons;
 mod jni_bridge;
 mod json;
 pub mod preset;
+mod proxy;
 mod settings;
 // `pub`：集成测试（crates/ffi/tests/versions_abi.rs）要走真实 C ABI 调这一组动词，
 // 模块私有的话外部 crate 拿不到路径。函数本身早就是 `pub extern "C"`。

@@ -122,6 +122,18 @@ internal object NativeBridge {
     /** 这个会话现在有没有一轮在跑（0.15c）。「正在生成…」靠它复核，不信页面里的缓存。 */
     external fun turnBusyJson(session: String): String
 
+    /** 应用一份代理配置（`{"proxy": null}` = 关）。热句柄，下一次请求生效（D226）。 */
+    external fun proxyApplyJson(config: String): String
+
+    /** 现在生效的那一份（不回密码）。 */
+    external fun proxyStatusJson(): String
+
+    /** 起本地 SOCKS5 端点（给容器垫片用）。 */
+    external fun proxyServerStartJson(config: String): String
+
+    /** 停本地端点（幂等）。 */
+    external fun proxyServerStopJson(): String
+
     /**
      * 前缀重发：重试 / 续话（0.15h / D185）。
      *

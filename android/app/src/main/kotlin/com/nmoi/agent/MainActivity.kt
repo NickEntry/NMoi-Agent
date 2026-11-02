@@ -44,6 +44,8 @@ import com.nmoi.agent.ui.PresetEditScreen
 import com.nmoi.agent.ui.PresetScreen
 import com.nmoi.agent.ui.ProviderEditScreen
 import com.nmoi.agent.ui.ProviderListScreen
+import com.nmoi.agent.ui.ProxyRepository
+import com.nmoi.agent.ui.ProxyScreen
 import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
@@ -82,6 +84,9 @@ private sealed interface Route {
 
     /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
     data object Envir : Route
+
+    /** 网络代理（D226）：开关 / 类型 / 地址 / 凭证 / 绕过。入口在「工具与工作区」里。 */
+    data object Proxy : Route
 
     /** 助手列表页（D174）。点铅笔进编辑页。 */
     data object Assistant : Route
@@ -147,6 +152,12 @@ class MainActivity : ComponentActivity() {
             var themeMode by remember { mutableStateOf(ThemeStore.load(context)) }
             val dark = ThemeStore.isDark(themeMode)
             // 主题运行中切换时，系统栏图标要跟着改（浅底配深图标）。
+            // 代理配置要在第一次发请求之前推给原生层：重启后不推，请求就是直连的。
+            LaunchedEffect(Unit) {
+                ProxyRepository.apply(context).onFailure {
+                    NLog.w("Proxy", "启动时应用代理失败：${it.message}")
+                }
+            }
             SystemBarsForTheme(dark)
             NMoiTheme(dark = dark) {
                 // 路由栈：返回 = 回上一级。子页面以后（模型详情、世界书编辑…）同样只需 push，
@@ -581,6 +592,8 @@ class MainActivity : ComponentActivity() {
                             onChanged = { listReload += 1 },
                         )
 
+                        Route.Proxy -> ProxyScreen(onBack = { backStack = backStack.dropLast(1) })
+
                         Route.Settings -> SettingsIndexScreen(
                             iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                             logSummary = logSummary,
@@ -622,6 +635,7 @@ class MainActivity : ComponentActivity() {
                             SettingsGroup.Tools -> ToolsScreen(
                                 onBack = { backStack = backStack.dropLast(1) },
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
+                                onOpenProxy = { backStack = backStack + Route.Proxy },
                             )
 
                             SettingsGroup.Storage -> StorageScreen(

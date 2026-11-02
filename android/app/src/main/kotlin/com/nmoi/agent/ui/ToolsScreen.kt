@@ -49,7 +49,11 @@ import androidx.compose.ui.unit.sp
  *   而工作区是共享的）。
  */
 @Composable
-internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
+internal fun ToolsScreen(
+    onBack: () -> Unit,
+    onOpenEnvir: () -> Unit,
+    onOpenProxy: () -> Unit,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var nativeShell by remember { mutableStateOf(ToolingRepository.nativeShell(context)) }
     var confirmShell by remember { mutableStateOf(false) }
@@ -142,6 +146,37 @@ internal fun ToolsScreen(onBack: () -> Unit, onOpenEnvir: () -> Unit) {
                             }
                         },
                     )
+                }
+
+                SectionLabel("网络")
+                GroupCard {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenProxy)
+                            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "网络代理",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = ProxyRepository.load(context).summary(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 SectionLabel("隔离环境")

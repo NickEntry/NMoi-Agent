@@ -192,6 +192,19 @@ internal object NmoiFfi {
     suspend fun turnBusy(session: String): Result<JSONObject> =
         call("turn_busy") { NativeBridge.turnBusyJson(session) }
 
+    /** 应用代理配置。`proxy` 为 null 就是关。 */
+    suspend fun proxyApply(config: JSONObject): Result<JSONObject> =
+        call("proxy_apply") { NativeBridge.proxyApplyJson(config.toString()) }
+
+    suspend fun proxyStatus(): Result<JSONObject> =
+        call("proxy_status") { NativeBridge.proxyStatusJson() }
+
+    suspend fun proxyServerStart(config: JSONObject): Result<JSONObject> =
+        call("proxy_server_start") { NativeBridge.proxyServerStartJson(config.toString()) }
+
+    suspend fun proxyServerStop(): Result<JSONObject> =
+        call("proxy_server_stop") { NativeBridge.proxyServerStopJson() }
+
     /** 请求取消正在跑的那一轮。没在跑不算失败（`cancelled:false`）。 */
     suspend fun turnCancel(session: String): Result<JSONObject> =
         call("turn_cancel") { NativeBridge.turnCancelJson(session) }

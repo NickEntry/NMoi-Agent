@@ -1262,3 +1262,66 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_closeWorkspaceJson<'l
     let text = guarded(|| take_json(crate::workspace::nmoi_workspace_close_json(handle as u64)));
     to_jstring(&mut env, text)
 }
+
+// ---------------------------------------------------------------------------
+// 网络代理（0.15ar / D226）
+// ---------------------------------------------------------------------------
+
+/// `NativeBridge.proxyApplyJson(config)`：应用一份代理配置（`{"proxy": null}` = 关）。
+/// 热句柄，下一次请求生效。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyApplyJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::proxy::nmoi_proxy_apply_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.proxyStatusJson()`：现在生效的那一份（不回密码）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyStatusJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+) -> jstring {
+    let text = guarded(|| take_json(crate::proxy::nmoi_proxy_status_json()));
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.proxyServerStartJson(config)`：起本地端点（给容器垫片用）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyServerStartJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::proxy::nmoi_proxy_server_start_json(
+                c_config.as_ptr(),
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.proxyServerStopJson()`：停本地端点（幂等）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyServerStopJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+) -> jstring {
+    let text = guarded(|| take_json(crate::proxy::nmoi_proxy_server_stop_json()));
+    to_jstring(&mut env, text)
+}

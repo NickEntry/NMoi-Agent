@@ -37,13 +37,12 @@ use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::Role;
 use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
 use nmoi_core::provider::{ProviderConfig, ProviderKind, ThinkingEffort, ThinkingField};
-use nmoi_core::runtime::{ChatClient, ChatRequest};
+use nmoi_core::runtime::ChatRequest;
 use nmoi_core::session::{
     regenerate_turn, run_session_turn_with_images, SessionConfig, SessionError, SessionTurn,
 };
 use nmoi_core::shell::EnvirSpec;
 use nmoi_core::tools::ToolRegistry;
-use nmoi_core::transport::HttpsTransport;
 use nmoi_core::vars::SubAgentEntry;
 use nmoi_core::workspace::Workspace;
 use nmoi_storage::Storage;
@@ -1061,7 +1060,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             envir: input.envir.as_ref(),
         };
 
-        let client = ChatClient::new(HttpsTransport::default());
+        let client = crate::proxy::client();
         // 会话记住这一轮用的模型（D101）：上下文面板靠它选词表、按模型取校准。
         // 写失败不让这一轮失败——为了一个显示用的列把用户刚说的话丢掉不值（同 D98 的校准写回）。
         let _ = storage.set_conversation_model(input.session, &input.model);
@@ -1302,7 +1301,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             envir: input.envir.as_ref(),
         };
 
-        let client = ChatClient::new(HttpsTransport::default());
+        let client = crate::proxy::client();
         let _ = storage.set_conversation_model(input.session, &input.model);
         let outcome = regenerate_turn(
             &client,
@@ -1400,7 +1399,7 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
             request = request.temperature(temperature);
         }
 
-        let client = ChatClient::new(HttpsTransport::default());
+        let client = crate::proxy::client();
         let done = client
             .complete(&request)
             .map_err(|error| FfiError::new("complete", error.to_string()))?;
