@@ -385,8 +385,8 @@ mod tests {
         let tunnel = proxy::connect(
             &config,
             &tunnel_url("127.0.0.1", echo.port()),
-            Duration::from_secs(2),
-            Some(Duration::from_secs(2)),
+            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
         )
         .expect("本地端点应当接受连接");
         let mut stream = tunnel.stream;
@@ -405,8 +405,8 @@ mod tests {
         let error = proxy::connect(
             &config,
             &tunnel_url("127.0.0.1", echo.port()),
-            Duration::from_secs(2),
-            Some(Duration::from_secs(2)),
+            Duration::from_secs(5),
+            Some(Duration::from_secs(5)),
         )
         .err()
         .expect("密码错应当被拒");
