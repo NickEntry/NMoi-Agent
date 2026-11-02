@@ -762,6 +762,22 @@ mod tests {
             .enable_container(true)
     }
 
+    /// 假 proot 刚写完就 `exec` 时，别的测试线程可能正好 `fork` 并把那个写句柄
+    /// 带进子进程——内核于是给 ETXTBSY（`Text file busy`，os error 26）。
+    /// 这不是被测代码的问题，也不是 `drop(file)` 能完全挡住的（别的线程已经复制了 fd）；
+    /// 重试几次即可。CI 上偶发过一次，2026-11-02 又偶发一次。
+    #[cfg(unix)]
+    fn retry_etxtbsy(mut run: impl FnMut() -> ToolOutcome) -> ToolOutcome {
+        for attempt in 0..40u64 {
+            let outcome = run();
+            if !format!("{outcome:?}").contains("Text file busy") {
+                return outcome;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1)));
+        }
+        run()
+    }
+
     #[cfg(unix)]
     #[test]
     fn envir_shell_runs_the_command_through_the_launcher() {
@@ -771,7 +787,8 @@ mod tests {
         let policy = container_policy();
         let ctx = ToolContext::new(&policy, Some(&workspace)).with_envir(&spec);
 
-        let outcome = EnvirShellTool.invoke(&json!({"command": "echo envir-ok"}), &ctx);
+        let outcome =
+            retry_etxtbsy(|| EnvirShellTool.invoke(&json!({"command": "echo envir-ok"}), &ctx));
         let text = match outcome {
             ToolOutcome::Ok { text, .. } => text,
             other => panic!("应当跑通：{other:?}"),
@@ -795,7 +812,9 @@ mod tests {
         let policy = container_policy();
         let ctx = ToolContext::new(&policy, Some(&workspace)).with_envir(&spec);
 
-        let outcome = EnvirShellTool.invoke(&json!({"command": "printf %s \"$PATH\""}), &ctx);
+        let outcome = retry_etxtbsy(|| {
+            EnvirShellTool.invoke(&json!({"command": "printf %s \"$PATH\""}), &ctx)
+        });
         let text = match outcome {
             ToolOutcome::Ok { text, .. } => text,
             other => panic!("应当跑通：{other:?}"),
@@ -813,8 +832,9 @@ mod tests {
         let policy = container_policy();
         let ctx = ToolContext::new(&policy, Some(&workspace)).with_envir(&spec);
 
-        let outcome =
-            EnvirShellTool.invoke(&json!({"command": "sleep 30", "timeout_ms": 1000}), &ctx);
+        let outcome = retry_etxtbsy(|| {
+            EnvirShellTool.invoke(&json!({"command": "sleep 30", "timeout_ms": 1000}), &ctx)
+        });
         let text = match outcome {
             ToolOutcome::Ok { text, .. } => text,
             other => panic!("超时也要给结果：{other:?}"),
