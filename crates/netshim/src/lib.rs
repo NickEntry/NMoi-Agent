@@ -1,3 +1,8 @@
+//! 只在 unix 上编译：Windows 没有 `dlsym` / `sockaddr_un`，也没有 proot 容器。
+#![cfg(unix)]
+// MSRV 1.75 还没有 `c"…"` 字面量（1.77 才稳定），clippy 的建议这条先关掉。
+#![allow(clippy::manual_c_str_literals)]
+
 //! 容器内的网络垫片（0.15ar-e / D226）。
 //!
 //! 这个 `.so` 被写进容器的 `/etc/ld.so.preload`，拦两个符号：
