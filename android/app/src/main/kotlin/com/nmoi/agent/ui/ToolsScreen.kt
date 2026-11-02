@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.sp
 
 /**
@@ -233,6 +234,12 @@ internal fun ToolsScreen(
                 confirmEnvirShell = false
                 ToolingRepository.setEnvirShell(context, true)
                 envirShell = true
+                // 刚打开容器：代理要是开着，把垫片与配置补上（失败只记日志）。
+                kotlinx.coroutines.MainScope().launch {
+                    ProxyContainer.sync(context).onFailure {
+                        NLog.w("Proxy", "容器接线没成功：${it.message}")
+                    }
+                }
             },
         )
     }

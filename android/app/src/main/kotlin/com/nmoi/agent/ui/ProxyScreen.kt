@@ -106,6 +106,11 @@ internal object ProxyRepository {
             Vault.save(context, VAULT_ID, password).getOrThrow()
         }
         apply(context).getOrThrow()
+        // 容器那一侧跟着走：开 → 起端点 + 写配置；关 → 只删配置。失败只记日志，
+        // 不让"容器没装"把"代理保存成功"这件事吞掉。
+        ProxyContainer.sync(context).onFailure {
+            NLog.w("Proxy", "容器接线没成功：${it.message}")
+        }
     }
 
     /** 把当前配置推给原生层。启动时也要调一次，否则重启后请求是直连的。 */
@@ -285,6 +290,17 @@ internal fun ProxyScreen(onBack: () -> Unit) {
                                     notice = "已应用：${config.summary()}"
                                 },
                                 onFailure = { notice = "保存失败：${it.message}" },
+                            )
+                        }
+                    }
+                }
+
+                Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    SettingChip("移除容器垫片", selected = false) {
+                        scope.launch {
+                            ProxyContainer.removeShim(context).fold(
+                                onSuccess = { notice = it },
+                                onFailure = { notice = "移除失败：${it.message}" },
                             )
                         }
                     }

@@ -44,6 +44,7 @@ import com.nmoi.agent.ui.PresetEditScreen
 import com.nmoi.agent.ui.PresetScreen
 import com.nmoi.agent.ui.ProviderEditScreen
 import com.nmoi.agent.ui.ProviderListScreen
+import com.nmoi.agent.ui.ProxyContainer
 import com.nmoi.agent.ui.ProxyRepository
 import com.nmoi.agent.ui.ProxyScreen
 import com.nmoi.agent.ui.PromptsScreen
@@ -156,6 +157,10 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 ProxyRepository.apply(context).onFailure {
                     NLog.w("Proxy", "启动时应用代理失败：${it.message}")
+                }
+                // 容器那一侧要跟着起来：端点不重启，容器里的新连接就直连了。
+                ProxyContainer.sync(context).onFailure {
+                    NLog.w("Proxy", "启动时容器接线失败：${it.message}")
                 }
             }
             SystemBarsForTheme(dark)
