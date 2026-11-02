@@ -239,6 +239,11 @@ internal fun ProviderEditScreen(
     /** 多选删模型（真机反馈：删除按钮待在每一行里不好看，也不好点）。 */
     var modelSelecting by remember { mutableStateOf(false) }
     var modelSelected by remember { mutableStateOf(setOf<String>()) }
+    /**
+     * 批量删除的"上膛"（D214）：勾了多条时第一下只是上膛，第二下才真删。
+     * 全选 + 删除一次就能清空整份配置，不给这一步留缓冲太危险。
+     */
+    var modelDeleteArmed by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { snapshot = ModelSnapshot.load(context) }
@@ -251,23 +256,24 @@ internal fun ProviderEditScreen(
      * 一律只加一个空模型——刚加就把别人的窗口写上去，是最伤信任的那种错。
      * 填进去的值记进 `pendingInferred`，保存时落成「推断」，界面会照实标出来。
      */
-    fun addModel(rawId: String): ProviderModel? {
+    /**
+     * 把一个 id 变成一份模型配置（**纯函数**，不改 state）。
+     *
+     * 抽出来是为了批量添加（D214）：拉模型一次进来几十条，逐条改 state 会触发几十次
+     * 重组；批量路径只改一次。
+     */
+    fun buildModel(rawId: String): Pair<ProviderModel, Map<String, String>>? {
         val id = rawId.trim()
         if (id.isEmpty()) return null
-        models.firstOrNull { it.id == id }?.let { return it }
         val bare = ProviderModel(id = id)
         val match = snapshot?.match(id)
         var (model, written) = if (match != null && !match.how.guessed) {
             ResourceUpdate.fill(bare, match.entry)
         } else {
             // 快照里没有这一条：**至少给聊天模型一个默认**（D209）。
-            // 空着等于"不知道它收什么"，图片入口就永远是灰的/不确定的；
-            // 而"文本进、文本出"是绝大多数对话模型的常态，写下来比留空更有用。
-            // 记成「推断」，用户改一格就变「自定义」。
+            // 未知模型默认「文本 + 图片」（D211）：目录里没有它，谁也不知道它收不收图；
+            // 默认能收，至少不会让用户以为"这个模型不能发图"。
             val seeded = bare.copy(
-                // 未知模型默认「文本 + 图片」（D211）：目录里没有它，谁也不知道它收不收图；
-                // 默认能收，至少不会让用户以为"这个模型不能发图"。发错了是上游拒，
-                // 而默认不能收，用户连试都试不了。
                 inputModalities = listOf("text", "image"),
                 outputModalities = listOf("text"),
             )
@@ -277,8 +283,6 @@ internal fun ProviderEditScreen(
             )
         }
         // 思考强度（D210）：快照没给就按"全开 + 允许关闭"落下来。
-        // 用户的原话是"默认所有强度都开启，允许关闭强制开启"——
-        // 留空会让模型编辑页一格都没勾、聊天页却列了一堆，看起来像两套配置。
         if (model.efforts.isEmpty()) {
             model = model.copy(efforts = Efforts.LEVELS.map { it.wire })
             written = written + (ModelField.EFFORTS to ModelField.valueOf(model, ModelField.EFFORTS))
@@ -287,12 +291,50 @@ internal fun ProviderEditScreen(
             model = model.copy(allowDisable = true)
             written = written + (ModelField.ALLOW_DISABLE to ModelField.valueOf(model, ModelField.ALLOW_DISABLE))
         }
+        return model to written
+    }
+
+    fun addModel(rawId: String): ProviderModel? {
+        val id = rawId.trim()
+        if (id.isEmpty()) return null
+        models.firstOrNull { it.id == id }?.let { return it }
+        val (model, written) = buildModel(id) ?: return null
         if (written.isNotEmpty()) {
             pendingInferred = pendingInferred.toMutableMap().apply { put(id, written) }
         }
         models = models + model
         if (activeModel.isBlank()) activeModel = id
         return model
+    }
+
+    /** 批量加（D214）：一次改 state，拉模型"全选"就靠它。 */
+    fun addModels(rawIds: List<String>) {
+        var next = models
+        var writtenAll = pendingInferred
+        val added = mutableListOf<ProviderModel>()
+        for (rawId in rawIds) {
+            val id = rawId.trim()
+            if (id.isEmpty() || next.any { it.id == id }) continue
+            val (model, written) = buildModel(id) ?: continue
+            if (written.isNotEmpty()) {
+                writtenAll = writtenAll.toMutableMap().apply { put(id, written) }
+            }
+            next = next + model
+            added += model
+        }
+        if (added.isEmpty()) return
+        models = next
+        pendingInferred = writtenAll
+        if (activeModel.isBlank()) activeModel = added.first().id
+    }
+
+    /** 批量删：与单条删除同一条口径（sources、activeModel 一起收拾）。 */
+    fun removeModels(ids: List<String>) {
+        if (ids.isEmpty()) return
+        val gone = ids.toSet()
+        models = models.filterNot { it.id in gone }
+        sources = sources - gone
+        if (activeModel in gone) activeModel = models.firstOrNull()?.id.orEmpty()
     }
 
     LaunchedEffect(providerId) {
@@ -564,22 +606,49 @@ internal fun ProviderEditScreen(
                                 color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.weight(1f),
                             )
+                            // 全选 / 反选（D214）：模型多的供应商一个个点太费事。
+                            // 语义按**当前列表**算，和"看到的即选到的"一致。
                             TextAction(
-                                label = "删除",
+                                label = "全选",
+                                onClick = {
+                                    modelDeleteArmed = false
+                                    modelSelected = models.map { it.id }.toSet()
+                                },
+                            )
+                            TextAction(
+                                label = "反选",
+                                onClick = {
+                                    modelDeleteArmed = false
+                                    modelSelected = models
+                                        .filterNot { it.id in modelSelected }
+                                        .map { it.id }
+                                        .toSet()
+                                },
+                            )
+                            TextAction(
+                                label = if (modelDeleteArmed) "确认删除" else "删除",
                                 danger = true,
                                 onClick = {
-                                    if (modelSelected.isEmpty()) {
-                                        notice = "先勾几个模型"
-                                    } else {
-                                        models = models.filterNot { it.id in modelSelected }
-                                        sources = sources - modelSelected
-                                        if (activeModel in modelSelected) {
-                                            activeModel = models.firstOrNull()?.id.orEmpty()
+                                    when {
+                                        modelSelected.isEmpty() -> notice = "先勾几个模型"
+                                        // 一条不用确认；多条先上膛，再点一次才删。
+                                        modelSelected.size > 1 && !modelDeleteArmed -> {
+                                            modelDeleteArmed = true
+                                            notice = "再点一次「确认删除」：会删掉 ${modelSelected.size} 个模型"
                                         }
-                                        notice = "删掉了 ${modelSelected.size} 个模型"
-                                        modelSelecting = false
-                                        modelSelected = emptySet()
-                                        persist()
+                                        else -> {
+                                            val count = modelSelected.size
+                                            models = models.filterNot { it.id in modelSelected }
+                                            sources = sources - modelSelected
+                                            if (activeModel in modelSelected) {
+                                                activeModel = models.firstOrNull()?.id.orEmpty()
+                                            }
+                                            notice = "删掉了 $count 个模型"
+                                            modelSelecting = false
+                                            modelSelected = emptySet()
+                                            modelDeleteArmed = false
+                                            persist()
+                                        }
                                     }
                                 },
                             )
@@ -604,6 +673,7 @@ internal fun ProviderEditScreen(
                                 selected = model.id in modelSelected,
                                 onSelect = {
                                     if (modelSelecting) {
+                                        modelDeleteArmed = false
                                         modelSelected = if (model.id in modelSelected) {
                                             modelSelected - model.id
                                         } else {
@@ -694,13 +764,10 @@ internal fun ProviderEditScreen(
             // **按 id 精确比对**（用户 2026-10-31 的口径）：列表里是 name1、本地存的是 name2 时
             // 不算同一条——既不会显示成"已添加"，删除也不会误删用户改过名字的那一行。
             isLocal = { id -> models.any { it.id == id } },
-            // 加进来时自动填快照里有的参数（同一个 `addModel`，两条入口一个行为）。
-            onAdd = { id -> addModel(id) },
-            onRemove = { id ->
-                models = models.filterNot { it.id == id }
-                sources = sources - id
-                if (activeModel == id) activeModel = models.firstOrNull()?.id.orEmpty()
-            },
+            // 加进来时自动填快照里有的参数（同一个 `buildModel`，两条入口一个行为）。
+            // 批量版（D214）：全选 / 反选一次改一次 state，不逐条重组。
+            onAdd = { ids -> addModels(ids) },
+            onRemove = { ids -> removeModels(ids) },
             onClose = {
                 remoteIds = null
                 remoteNote = null
@@ -1355,8 +1422,9 @@ private fun RemoteModelsPage(
     ids: List<String>,
     note: String?,
     isLocal: (String) -> Boolean,
-    onAdd: (String) -> Unit,
-    onRemove: (String) -> Unit,
+    /** 批量加 / 删（D214）：单行按钮传一个元素的列表，全选 / 反选传一批。 */
+    onAdd: (List<String>) -> Unit,
+    onRemove: (List<String>) -> Unit,
     onClose: () -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -1392,6 +1460,36 @@ private fun RemoteModelsPage(
                 onChange = { query = it },
                 placeholder = "按名称或 id 过滤",
             )
+
+            // 批量操作（D214）：拉回来的模型动辄几十上百条，一条条点加号不现实。
+            // 两颗动作都只作用在**当前过滤结果**上——看得到的就是会动的。
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "已加入 ${ids.count { isLocal(it) }} / ${ids.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextAction(
+                    label = "全选",
+                    onClick = {
+                        val missing = filtered.filterNot { isLocal(it) }
+                        if (missing.isNotEmpty()) onAdd(missing)
+                    },
+                )
+                TextAction(
+                    label = "反选",
+                    onClick = {
+                        val toAdd = filtered.filterNot { isLocal(it) }
+                        val toRemove = filtered.filter { isLocal(it) }
+                        if (toRemove.isNotEmpty()) onRemove(toRemove)
+                        if (toAdd.isNotEmpty()) onAdd(toAdd)
+                    },
+                )
+            }
 
             val hint = note
             if (hint != null) {
@@ -1439,7 +1537,7 @@ private fun RemoteModelsPage(
                             IconActionButton(
                                 image = if (local) ActionIcons.Minus else ActionIcons.Plus,
                                 description = if (local) "从这份配置里移除 $id" else "把 $id 加进这份配置",
-                                onClick = { if (local) onRemove(id) else onAdd(id) },
+                                onClick = { if (local) onRemove(listOf(id)) else onAdd(listOf(id)) },
                             )
                         }
                         RowDivider(leading = 24.dp)
