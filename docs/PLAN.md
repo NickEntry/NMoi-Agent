@@ -1363,3 +1363,8 @@ Anthropic / Gemini / Responses 三个端口的图片、图片在"编辑消息"�
 快照开始带 `input_modalities` / `output_modalities`（models.dev，MIT）并保留旧条目；
 `SheetFrame` 统一吃返回键；模型选择里长按模型/供应商直达编辑页。
 **未实测**：全部界面行为（V43）。
+
+**0.15ab 第二批真机反馈（2026-11-02，D210）**：`draft` 状态对象跨会话稳定（发送键不再变灰）；
+推断模态不再拦图片入口，来源与置信度写进模型编辑页与 `docs/model-data.md`；
+新建模型默认全档位 + 允许关闭；模型选择器去掉「全部」、供应商 chip 可长按进编辑。
+**未实测**：V44。

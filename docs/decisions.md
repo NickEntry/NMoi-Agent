@@ -5080,3 +5080,26 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 这一版从 `7039570` 的抽屉文件恢复，再按**成对标记**搬浮层：
 `Box { Column { 顶部 / 列表 / 提示行 / 底部栏 } 浮层 }`。
 判据：`grep -c "LazyColumn"` ≥ 2（import + 使用），且四个块都在 Column 里、浮层在 Column 外。
+
+## D210 真机反馈第二批（2026-11-02）
+
+1. **「仅保存一次后发送键变灰」**：真正的根因不是清空方式，而是**状态对象被换掉了**。
+   `var draft by remember(draftKey)` 在切会话（包括"第一次保存时新建会话"）时创建一个
+   新的 `MutableState`，而原生输入框的 `TextWatcher` 在 factory 里只绑过一次、写的是**旧对象**。
+   于是：界面上有字、"仅保存"能读屏幕上的那一份所以一直能存，但 `draft` 永远是空串，
+   发送键 `enabled = draft.isNotBlank()` 一直灰。现在状态对象跨会话稳定
+   （`remember { }` + `LaunchedEffect(draftKey)` 重新装载）。
+2. **模态目录不可靠**：真机上 `deepseek-v4.1-flash` 实际能收图，快照写的是纯文本。
+   目录（models.dev / OpenRouter）是社区维护的，滞后是常态。两条对策：
+   ① 只有**用户自己勾的**（`FieldSource.Custom`）模态才用来灰掉图片入口；
+   ② 模型编辑页「基本」页底部写清每个字段的来源与置信度（表在 `docs/model-data.md`）。
+3. **思考强度默认值**：新建模型时如果快照没给档位，落「全部档位 + 允许关闭」（标「推断」）；
+   聊天页在档位为空时也按全开处理、`allow_disable` 为空时按"可以关"处理。
+   档位数据的一手来源是 models.dev 的 `reasoning_options`（`toggle` / `effort.values`）——
+   公开数据里只有它给出"有哪些档"。
+4. **模型选择器**：去掉「全部」那一格（所有模型本来就在列表里，再给一颗"全部"像是"不点看不全"）；
+   再点同一个供应商 = 取消筛选；供应商 chip **长按进供应商编辑**；列表高度已经是半屏上限，
+   超出在列表内滚动。
+
+**验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `testDebugUnitTest` 跑 Kotlin 单测。
+真机路径见 `docs/verification.md` **V44**。

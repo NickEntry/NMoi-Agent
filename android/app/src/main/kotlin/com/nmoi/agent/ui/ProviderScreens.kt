@@ -257,7 +257,7 @@ internal fun ProviderEditScreen(
         models.firstOrNull { it.id == id }?.let { return it }
         val bare = ProviderModel(id = id)
         val match = snapshot?.match(id)
-        val (model, written) = if (match != null && !match.how.guessed) {
+        var (model, written) = if (match != null && !match.how.guessed) {
             ResourceUpdate.fill(bare, match.entry)
         } else {
             // 快照里没有这一条：**至少给聊天模型一个默认**（D209）。
@@ -272,6 +272,17 @@ internal fun ProviderEditScreen(
                 ModelField.INPUT_MODALITIES to ModelField.valueOf(seeded, ModelField.INPUT_MODALITIES),
                 ModelField.OUTPUT_MODALITIES to ModelField.valueOf(seeded, ModelField.OUTPUT_MODALITIES),
             )
+        }
+        // 思考强度（D210）：快照没给就按"全开 + 允许关闭"落下来。
+        // 用户的原话是"默认所有强度都开启，允许关闭强制开启"——
+        // 留空会让模型编辑页一格都没勾、聊天页却列了一堆，看起来像两套配置。
+        if (model.efforts.isEmpty()) {
+            model = model.copy(efforts = Efforts.LEVELS.map { it.wire })
+            written = written + (ModelField.EFFORTS to ModelField.valueOf(model, ModelField.EFFORTS))
+        }
+        if (model.allowDisable == null) {
+            model = model.copy(allowDisable = true)
+            written = written + (ModelField.ALLOW_DISABLE to ModelField.valueOf(model, ModelField.ALLOW_DISABLE))
         }
         if (written.isNotEmpty()) {
             pendingInferred = pendingInferred.toMutableMap().apply { put(id, written) }
@@ -1774,7 +1785,10 @@ private fun ModelEditPage(
                                     inputs = toggle(inputs, wire, Modalities.INPUT)
                                 },
                             )
-                            Hint("勾出来的是**这个模型收得下**的东西。空着 = 不知道，按纯文本处理。")
+                            Hint(
+                                "勾出来的是**这个模型收得下**的东西。空着 = 不知道——" +
+                                    "不知道的时候图片入口**不会**被拦（D210：拿推断值拦人比让上游报错更糟）。",
+                            )
                         }
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
@@ -1799,6 +1813,17 @@ private fun ModelEditPage(
                             Hint(
                                 "三个都是三态：「不知道」不是「不支持」——没数据时不要替模型说它能或不能。" +
                                     "勾成「不支持」的地方，界面上对应功能该置灰（现在还没有置灰的读取点）。",
+                            )
+                        }
+
+                        GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                            Hint(
+                                "这些数字从哪来（D210，都是公开事实字段，脚本 `scripts/fetch_models.py`）：\n" +
+                                    "· 上下文窗口 / 最大输出 / 价格 / 工具 / 推理 / 结构化输出 / 档位 → models.dev（MIT）为主，\n" +
+                                    "  OpenRouter 与 aihubmix 补覆盖；\n" +
+                                    "· 输入 / 输出模态 → models.dev 的 `modalities`，其次 OpenRouter 的 `architecture`；\n" +
+                                    "· 没有一手来源的格子一律标「推断」，改一格就变「自定义」。\n" +
+                                    "推断出来的模态**不会**用来灰掉图片入口——真机上见过快照写「纯文本」、实际能收图的模型。",
                             )
                         }
 
@@ -1908,13 +1933,19 @@ private fun ModelEditPage(
                                 onToggle = { wire -> efforts = toggle(efforts, wire, Efforts.LEVELS) },
                                 perRow = 3,
                             )
-                            Hint("只勾这个模型真接受的档。空着 = 没数据，界面上就只给「自动 / 关闭」。")
+                            Hint(
+                                "只勾这个模型真接受的档。空着 = 按**全开**处理（D210）；" +
+                                    "新建模型时默认就是全开 + 允许关闭，改过的格子会变成「自定义」。",
+                            )
                         }
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {
                             ModelFieldHead("允许关闭", source(ModelField.ALLOW_DISABLE), dirty(ModelField.ALLOW_DISABLE), top = true) { reset(ModelField.ALLOW_DISABLE) }
                             TriChoices(allowDisable, "可以关", "不能关") { allowDisable = it }
-                            Hint("有些模型只能开、不能关（传了 `none` 会 400）。不知道就留「不知道」。")
+                            Hint(
+                                "有些模型只能开、不能关（传了 `none` 会 400）。" +
+                                    "新建模型默认「可以关」；不知道就留「不知道」，聊天页按可以关处理。",
+                            )
                         }
 
                         GroupCard(modifier = Modifier.padding(top = 12.dp)) {

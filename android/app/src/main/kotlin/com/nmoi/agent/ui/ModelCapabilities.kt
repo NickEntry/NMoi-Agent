@@ -27,6 +27,16 @@ internal object ModelCapabilities {
         return normalized.any { it in IMAGE_ALIASES }
     }
 
+    /**
+     * 要不要因为"这个模型不收图"把入口灰掉（D210）。
+     *
+     * **只有用户自己勾的那一格算数**：快照 / 默认值都是推断，目录滞后是常态
+     * （真机见过 `deepseek-v4.1-flash` 实际能收图、快照写纯文本）。
+     * 拿推断值拦人，比让上游报错更糟——前者用户连试都试不了。
+     */
+    fun blocksImages(source: FieldSource?, modalities: List<String>): Boolean =
+        source == FieldSource.Custom && acceptsImages(modalities) == false
+
     /** 灰掉时那句话：说清"为什么灰"，而不是让用户猜。 */
     fun refusal(inputModalities: List<String>): String {
         val listed = inputModalities

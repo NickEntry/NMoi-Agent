@@ -134,7 +134,13 @@ internal fun ChatScreen(
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
     val draftKey = sessionId ?: DraftStore.NEW_DRAFT_KEY
-    var draft by remember(draftKey) { mutableStateOf(DraftStore.load(context, draftKey)) }
+    // **这个状态对象必须跨会话稳定**（D210）。原生输入框的 `TextWatcher` 在 factory 里
+    // 只绑一次，它写的就是这个 `MutableState`；以前写成 `remember(draftKey)`，切会话
+    // （包括"首次保存时新建会话"）会换一个新对象，之后敲的字全写进旧对象——
+    // 发送键永远是灰的，而"仅保存"因为读的是屏幕上那一份，照样能用。
+    var draft by remember { mutableStateOf(DraftStore.load(context, draftKey)) }
+    // 换会话时才重新装载草稿；状态对象本身不换。
+    LaunchedEffect(draftKey) { draft = DraftStore.load(context, draftKey) }
     // 打一个字存一次（`apply()` 是异步落盘，不卡输入）。空草稿会被 `save` 删键，
     // 抽屉里那一行"草稿"标记才不会一直亮着。
     LaunchedEffect(draft, draftKey) { DraftStore.save(context, draftKey, draft) }
@@ -281,8 +287,18 @@ internal fun ChatScreen(
      * 这个模型收不收图片（D208 的能力位）：`true` 收、`false` 明确不收、`null` 不知道。
      * 只有 `false` 才拦——没数据就当它能发，等上游报错也比冤枉它强。
      */
-    val imageCapability = remember(currentModel) {
-        ModelCapabilities.acceptsImages(currentModel?.inputModalities.orEmpty())
+    val imageCapability = remember(currentModel, choices) {
+        // 只有**用户自己勾的**模态才拿来拦（D210）。快照/默认值推断出来的不可靠：
+        // 真机上 `deepseek-v4.1-flash` 明明能收图，快照却写着纯文本——
+        // 拿这种数据把图片入口灰掉，比让上游报错更糟。
+        val source = choices
+            .firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
+            ?.first?.fieldSources?.get(assistant.modelId)?.get(ModelField.INPUT_MODALITIES)
+        if (ModelCapabilities.blocksImages(source, currentModel?.inputModalities.orEmpty())) {
+            false
+        } else {
+            null
+        }
     }
     /**
      * 「思考」那一张表：**只列这个模型真接受的档位**。

@@ -205,14 +205,8 @@ internal fun ModelPickerSheet(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            FilterChip(
-                label = "全部",
-                selected = providerFilter == null && !onlyFavorites,
-                onClick = {
-                    providerFilter = null
-                    onlyFavorites = false
-                },
-            )
+            // 没有「全部」这一格（D210）：所有模型本来就在列表里，再给一颗"全部"
+            // 等于让用户以为"不点它就看不全"。取消筛选的方式是再点一次同一个供应商。
             // 一个收藏都没有时不给这一格：点进去只会看到"没有匹配"，那是个死胡同。
             if (favorites.isNotEmpty()) {
                 FilterChip(
@@ -229,9 +223,11 @@ internal fun ModelPickerSheet(
                     label = provider.name.ifBlank { provider.id },
                     selected = providerFilter == provider.id,
                     onClick = {
-                        providerFilter = provider.id
+                        // 再点一次同一个供应商 = 取消筛选（没有「全部」那一格了）。
+                        providerFilter = if (providerFilter == provider.id) null else provider.id
                         onlyFavorites = false
                     },
+                    onLongClick = onEditProvider?.let { edit -> { edit(provider.id) } },
                 )
             }
         }
@@ -444,7 +440,13 @@ private fun Badge(text: String) {
 
 /** 底部那颗筛选 chip：选中用 `secondaryContainer`（与工具卡 stdout/stderr 页签同一套）。 */
 @Composable
-private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun FilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = if (selected) {
@@ -452,7 +454,11 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
         } else {
             MaterialTheme.colorScheme.surfaceContainerHigh
         },
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = if (onLongClick != null) {
+            Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+        } else {
+            Modifier.clickable(onClick = onClick)
+        },
     ) {
         Text(
             text = label,

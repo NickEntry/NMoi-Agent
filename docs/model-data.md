@@ -105,3 +105,26 @@ UI 这时只给"关闭 / 自动"两个位置。
 
 结论沉淀方式：谁有可用的多模态模型，就跑同一份脚本，把输出表贴进 issue 或本文件，
 标明日期、端点与模型名。**没有日期和模型的结论文档等于传闻。**
+
+## 每个字段的可信源（D210）
+
+用户 2026-11-02 的原话：「给模型编辑页里面不同数据找到不同可信源」。逐个字段写清楚，
+界面里也在「基本」页底部照这份表写了一遍（`ProviderScreens.kt` 的那段 `Hint`）。
+
+| 字段 | 一手/主源 | 补充源 | 置信度 | 界面徽标 |
+|---|---|---|---|---|
+| 上下文窗口 | models.dev `limit.context` | OpenRouter `context_length`、aihubmix `context_length` | 高（三家一致时） | 推断 |
+| 最大输出 | models.dev `limit.output` | OpenRouter `top_provider.max_completion_tokens`、aihubmix `max_output` | 高 | 推断 |
+| 输入 / 输出模态 | models.dev `modalities.input/output` | OpenRouter `architecture.input_modalities/output_modalities` | **中**：上游目录常滞后（真机见过 deepseek-v4.1-flash 实际能收图、目录写纯文本） | 推断 |
+| 工具 / 结构化输出 / 推理 | models.dev `tool_call` / `structured_output` / `reasoning` | OpenRouter `supported_parameters` | 中高 | 推断 |
+| 思考档位 | models.dev `reasoning_options`（`toggle` / `effort.values`） | — | 中高：这是唯一公开给出"档位清单"的源 | 推断 |
+| 价格 | models.dev `cost` | OpenRouter `pricing`、aihubmix | 中：转卖价与官方价会不同 | 推断 |
+| 显示名 / 类型 / 温度 / Headers / Body | 无公开源 | — | 用户自己填 | 自定义 |
+
+三条使用规矩（D210 定）：
+
+1. **推断值不拦人**：只有「自定义」的模态才用来灰掉图片入口。推断值再错，最多是提示，
+   不能替用户做决定——真机上拿错的目录数据把图片入口灰掉，比让上游报错更糟。
+2. **档位没数据 = 全开**：新建模型默认「所有档位 + 允许关闭」，写进配置（标「推断」），
+   不再让"模型页一格没勾、聊天页列一堆"看起来像两套配置。
+3. **目录会滞后**：`fetched_at` 是它唯一的有效期信息；界面上不把推断值说成事实。
