@@ -199,6 +199,10 @@ internal object NmoiFfi {
     suspend fun proxyStatus(): Result<JSONObject> =
         call("proxy_status") { NativeBridge.proxyStatusJson() }
 
+    /** 用表单里这一份探一次；不落库、不改全局。 */
+    suspend fun proxyProbe(config: JSONObject): Result<JSONObject> =
+        call("proxy_probe") { NativeBridge.proxyProbeJson(config.toString()) }
+
     suspend fun proxyServerStart(config: JSONObject): Result<JSONObject> =
         call("proxy_server_start") { NativeBridge.proxyServerStartJson(config.toString()) }
 

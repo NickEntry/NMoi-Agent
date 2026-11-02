@@ -118,6 +118,9 @@ internal object ProxyRepository {
         return NmoiFfi.proxyApply(body).map { }
     }
 
+    /** 测试按钮要用已存的密码（界面上那个框是空的）。 */
+    fun passwordForTest(context: Context): String? = password(context)
+
     private fun password(context: Context): String? =
         if (!Vault.has(context, VAULT_ID)) null else Vault.load(context, VAULT_ID)
 }
@@ -130,6 +133,8 @@ internal fun ProxyScreen(onBack: () -> Unit) {
     var config by remember { mutableStateOf(ProxyRepository.load(context)) }
     var password by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
+    var probeUrl by remember { mutableStateOf("https://www.google.com") }
+    var probeResult by remember { mutableStateOf<String?>(null) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -226,6 +231,47 @@ internal fun ProxyScreen(onBack: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 10.dp),
                         )
+                    }
+                }
+
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text("连接测试", style = MaterialTheme.typography.bodyLarge)
+                        ProxyField("测试地址", probeUrl, Modifier.padding(top = 8.dp)) {
+                            probeUrl = it
+                        }
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("测试", selected = false) {
+                                scope.launch {
+                                    val body = JSONObject()
+                                        .put("url", probeUrl.trim())
+                                        .put(
+                                            "proxy",
+                                            if (!config.enabled) JSONObject.NULL
+                                            else config.toJson(password.ifBlank { ProxyRepository.passwordForTest(context) }),
+                                        )
+                                    probeResult = "测试中…"
+                                    NmoiFfi.proxyProbe(body).fold(
+                                        onSuccess = { result ->
+                                            probeResult = if (result.optBoolean("ok", false)) {
+                                                "成功 · ${result.optInt("status", 0)} · ${result.optLong("ms", 0)} ms"
+                                            } else {
+                                                "失败：${result.optString("error", "原因不明")}"
+                                            }
+                                        },
+                                        onFailure = { probeResult = "失败：${it.message}" },
+                                    )
+                                }
+                            }
+                        }
+                        probeResult?.let { line ->
+                            Text(
+                                text = line,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
                     }
                 }
 

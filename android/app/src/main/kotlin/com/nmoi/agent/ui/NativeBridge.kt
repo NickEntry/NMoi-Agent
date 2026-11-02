@@ -128,6 +128,9 @@ internal object NativeBridge {
     /** 现在生效的那一份（不回密码）。 */
     external fun proxyStatusJson(): String
 
+    /** 用表单里这一份探一次（不落库、不改全局）：`{ok,status,ms}` 或 `{ok:false,error}`。 */
+    external fun proxyProbeJson(config: String): String
+
     /** 起本地 SOCKS5 端点（给容器垫片用）。 */
     external fun proxyServerStartJson(config: String): String
 

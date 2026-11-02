@@ -178,6 +178,61 @@ pub extern "C" fn nmoi_proxy_status_json() -> *mut c_char {
     })
 }
 
+/// 用**表单里这一份**配置探一次，不落库、不改全局状态。
+///
+/// 入参：`{"url":"https://example.com","proxy":{…}|null}`。
+/// 出参：`{"ok":true,"status":200,"ms":312}` 或 `{"ok":false,"ms":800,"error":"连不上代理 …"}`。
+///
+/// 为什么单独一条而不是复用 `apply`：测试按钮要测的是"表单里这一份"，
+/// 不能因为点一下测试就把全局代理换了。
+#[no_mangle]
+pub extern "C" fn nmoi_proxy_probe_json(config: *const c_char) -> *mut c_char {
+    use std::time::{Duration, Instant};
+
+    use nmoi_core::transport::{
+        HttpRequest, HttpsTransport, Method, PlainHttpTransport, Transport,
+    };
+
+    run_json(|| {
+        let text = read_str(config, "config")?;
+        let root: Value = serde_json::from_str(text)
+            .map_err(|error| FfiError::new("bad_json", format!("配置不是合法 JSON: {error}")))?;
+        let url = root
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| FfiError::new("bad_argument", "缺少 `url`"))?
+            .to_string();
+        let proxy = parse_proxy(root.get("proxy").unwrap_or(&Value::Null))?;
+        let handle = match proxy {
+            Some(config) => ProxyHandle::fixed(config),
+            None => ProxyHandle::empty(),
+        };
+        let transport = HttpsTransport {
+            plain: PlainHttpTransport {
+                proxy: handle,
+                ..Default::default()
+            },
+        };
+        let started = Instant::now();
+        let request = HttpRequest::new(Method::Get, url).with_read_timeout(Duration::from_secs(15));
+        let elapsed = |started: Instant| started.elapsed().as_millis() as u64;
+        match transport.execute(request) {
+            Ok(response) => Ok(json!({
+                "ok": true,
+                "status": response.status,
+                "ms": elapsed(started),
+            })),
+            Err(error) => Ok(json!({
+                "ok": false,
+                "ms": elapsed(started),
+                "error": error.to_string(),
+            })),
+        }
+    })
+}
+
 /// 起本地 SOCKS5 端点（给容器里的垫片用）。
 ///
 /// 入参：`{"user":"…","pass":"…"}`——**必须给**，loopback 同设备别的 App 也连得到。
@@ -286,6 +341,47 @@ mod tests {
     fn bad_port_is_rejected() {
         let error = apply(r#"{"proxy":{"kind":"http","host":"h","port":0}}"#);
         assert_eq!(error["ok"], json!(false));
+    }
+
+    /// 一个只回 200 的本地 HTTP 服务器。
+    fn spawn_ok_server() -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut scratch = [0u8; 2048];
+                let _ = stream.read(&mut scratch);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
+                );
+                let _ = stream.flush();
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn probe_reports_status_and_time() {
+        let port = spawn_ok_server();
+        let body = format!(r#"{{"url":"http://127.0.0.1:{port}/","proxy":null}}"#);
+        let text = CString::new(body).unwrap();
+        let result = call(nmoi_proxy_probe_json(text.as_ptr()));
+        assert_eq!(result["ok"], json!(true), "{result}");
+        assert_eq!(result["status"], json!(200));
+        assert!(result["ms"].as_u64().is_some());
+    }
+
+    #[test]
+    fn probe_failure_names_the_proxy() {
+        let body = r#"{"url":"http://example.com/","proxy":
+            {"kind":"socks5","host":"127.0.0.1","port":1}}"#;
+        let text = CString::new(body).unwrap();
+        let result = call(nmoi_proxy_probe_json(text.as_ptr()));
+        assert_eq!(result["ok"], json!(false), "{result}");
+        let error = result["error"].as_str().unwrap();
+        assert!(error.contains("代理"), "错误要点名代理：{error}");
     }
 
     #[test]

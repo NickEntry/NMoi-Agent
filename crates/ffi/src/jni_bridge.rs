@@ -1296,6 +1296,24 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyStatusJson<'loca
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.proxyProbeJson(config)`：用表单里这一份探一次，不落库。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyProbeJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::proxy::nmoi_proxy_probe_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `NativeBridge.proxyServerStartJson(config)`：起本地端点（给容器垫片用）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyServerStartJson<'local>(
