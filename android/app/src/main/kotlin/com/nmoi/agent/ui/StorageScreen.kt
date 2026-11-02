@@ -150,17 +150,44 @@ internal fun StorageScreen(onBack: () -> Unit) {
                     )
                 }
             } else {
+                // 按会话分组（D217）：用户找图时先想起的是"哪个会话里的那张"。
+                // 每组一行小标题（标题 · N 张 · 大小），下面才是条目。
+                val grouped = rows.groupBy { it.conversation }
                 LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    items(rows, key = { it.id }) { row ->
-                        StorageRow(
-                            row = row,
-                            databasePath = databasePath,
-                            onExport = {
-                                exporting = row
-                                exportLauncher.launch("nmoi-${row.id.take(8)}.${extensionOf(row.mime)}")
-                            },
-                            onDelete = { confirmDelete = row },
-                        )
+                    grouped.forEach { (_, itemsInGroup) ->
+                        item(key = "group:${itemsInGroup.first().conversation}") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 8.dp, end = 8.dp, top = 14.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = itemsInGroup.first().title.ifBlank { "（没有标题的会话）" },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = "${itemsInGroup.size} 张 · ${sizeText(itemsInGroup.sumOf { it.size })}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                                )
+                            }
+                        }
+                        items(itemsInGroup, key = { it.id }) { row ->
+                            StorageRow(
+                                row = row,
+                                databasePath = databasePath,
+                                onExport = {
+                                    exporting = row
+                                    exportLauncher.launch("nmoi-${row.id.take(8)}.${extensionOf(row.mime)}")
+                                },
+                                onDelete = { confirmDelete = row },
+                            )
+                        }
                     }
                 }
             }

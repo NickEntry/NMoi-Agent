@@ -62,7 +62,10 @@ internal object AttachmentStore {
                                 message = row.optString("message", ""),
                                 mime = row.optString("mime", ""),
                                 size = row.optLong("size", 0L),
-                                path = row.optString("path", "").ifEmpty { null },
+                                // `optString` 对 JSONObject.NULL 会返回字符串 "null"——
+                                // 真机上就是它让存储页写出 `sessions/null`（D217）。
+                                path = row.optString("path", "")
+                                    .takeUnless { it.isEmpty() || it == "null" },
                             ),
                         )
                     }
