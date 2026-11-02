@@ -5154,3 +5154,26 @@ Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（�
 
 **验证**：`thinkparse` 7 条、`toolparse` 5 条单测；全仓 770 项全绿。
 真机路径见 **V45**。
+
+## D213 工具调用被推断成"不支持"：family 提示当键用坏了（2026-11-02）
+
+用户报 `deepseek-v4.1-flash-1017` 的「工具调用」被填成「不支持」，而模型明明支持。
+
+1. **根因不在数据源，在合并键**：models.dev 的 `family` 字段是**粗分组**——
+   `deepseek-v4.1-flash-1017` 的 family 写的是 `deepseek-flash`。脚本拿这个提示覆盖了
+   从 id 切出来的家族名，于是几十家 provider 的同一条模型全被并进 `deepseek-flash-1017`，
+   而用户加的 id `deepseek-v4-1-flash-1017` 只剩 aihubmix 一家在写——那家没给 `tool_call`，
+   于是 `tools=false`。
+   修法：**family 提示只在"确实是这个 id 的前缀"时才采用**
+   （`normalized.startswith(hint + "-")`）。`gpt-4o-2024-08-06` → `gpt-4o` 仍然会合并，
+   `deepseek-v4.1-flash-1017` → `deepseek-flash` 不再合并。
+2. **数值字段改取众数，不取最大值**：同一模型几十家 provider 各写一个数，错的那个往往最大
+   （实测见过 `max_output=1050000`）。现在按"最低优先级组里出现最多的那个值"结算，
+   票数相同取大的。`deepseek-v4-1-flash-1017` 现在是 ctx 1048576 / out 384000。
+3. **同一模型的多种写法折成一条**：`deepseek-deepseek-v4.1-flash` 与 `deepseek-v4.1-flash`
+   折成后者，前者的 id 与别名并进 `aliases`——按别名匹配仍然找得到，快照也不再翻倍。
+4. 重新抓取后：**2949 条**（2538 条带价格），与旧快照合并 **3719 条**（保留 770 条已下架）。
+   `deepseek-v4-1-flash-1017`：`tools=true`、`input=["image","text"]`、ctx 1048576、out 384000。
+
+**验证**：`cargo test` 770 项全绿；本机 kotlinc 只剩 9 条 `R`；快照里那条数据已逐字核对。
+真机路径见 `docs/verification.md` **V46**。

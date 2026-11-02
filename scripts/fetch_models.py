@@ -352,6 +352,9 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
                 "efforts_locked": False,
                 # 字段 → 写它的那个源的排名（D211）：只有更可信的源才能覆盖。
                 "ranks": {},
+                # 数值字段的候选值（D213）：同一优先级里取**众数**，不取最大值。
+                # 取最大值会被个别聚合站的错数拉高（真机上见过 output=1050000）。
+                "candidates": {},
             },
         )
 
@@ -364,8 +367,10 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
                 slot["ranks"][field] = rank
             elif rank == current and numeric:
                 slot[field] = max(slot[field], value)
-        take("context_window", context, numeric=True)
-        take("max_output", max_output, numeric=True)
+        if context:
+            slot["candidates"].setdefault("context_window", []).append((rank, context))
+        if max_output:
+            slot["candidates"].setdefault("max_output", []).append((rank, max_output))
         take("input_modalities", set(modalities or ()), numeric=True)
         take("output_modalities", set(output_modalities or ()), numeric=True)
         slot["reasoning"] = slot["reasoning"] or bool(reasoning)
@@ -397,8 +402,17 @@ def collect(models_dev: dict, openrouter: dict, aihubmix: dict) -> dict:
         family, version = split_trailing_version(normalized)
         if isinstance(family_hint, str) and family_hint.strip():
             hint_norm, _ = normalize(family_hint)
-            # 只在提示确实像家族时采用（避免 "anthropic" 这种 provider 名盖掉真家族）
-            if hint_norm and hint_norm != normalized and len(hint_norm) >= 3:
+            # 只在提示**确实是这个 id 的前缀**时才采用（D213）。
+            # models.dev 的 `family` 有时是粗分组：`deepseek-v4.1-flash-1017` 的 family
+            # 写的是 `deepseek-flash`。拿它当键会把不同版本并成一条，
+            # 还会让用户加的 id（`deepseek-v4-1-flash-1017`）匹配不到——真机上
+            # "工具调用不支持"就是这么来的：那条记录只剩 aihubmix 一份、没有 tool_call。
+            if (
+                hint_norm
+                and hint_norm != normalized
+                and len(hint_norm) >= 3
+                and normalized.startswith(hint_norm + "-")
+            ):
                 family = hint_norm
         limit = model.get("limit") if isinstance(model.get("limit"), dict) else {}
         efforts, toggle = efforts_of(model)
@@ -480,6 +494,29 @@ def has_any_fact(profile: dict) -> bool:
     )
 
 
+def settle_numbers(merged: dict) -> None:
+    """数值字段：**最低优先级组里取众数**（D213）。
+
+    为什么不是最大值：同一模型几十家 provider 各写一个数，错的那个往往最大
+    （实测见过 `output=1050000`）。众数更接近"大家都这么写"的那个值；
+    票数相同取大的——宁可多给一点上下文，也不要让用户被一个偏小的数限死。
+    """
+    for profile in merged.values():
+        for field in ("context_window", "max_output"):
+            values = profile["candidates"].get(field) or []
+            if not values:
+                continue
+            best_rank = min(rank for rank, _ in values)
+            pool = [value for rank, value in values if rank == best_rank]
+            counts: dict[int, int] = {}
+            for value in pool:
+                counts[value] = counts.get(value, 0) + 1
+            top = max(counts.values())
+            winners = [value for value, count in counts.items() if count == top]
+            profile[field] = max(winners)
+            profile["ranks"][field] = best_rank
+
+
 def settle_modalities(merged: dict) -> None:
     """同一条模型的两个命名空间（`deepseek/…` 与裸名）模态取并集（D211）。
 
@@ -512,7 +549,39 @@ def settle_capabilities(profile: dict) -> None:
     profile["video_in"] = "video" in inputs
 
 
+def dedupe_by_core(entries: list[dict]) -> list[dict]:
+    """把"同一个模型的另一种命名空间写法"折成一条（D213）。
+
+    `deepseek-deepseek-v4.1-flash` 与 `deepseek-v4.1-flash` 是同一个模型；
+    两条都留着会让快照大一倍，也会让匹配结果看名字写法。折的时候把被折掉那条的
+    id 与别名并进保留那条的 `aliases`——按别名匹配仍然找得到。
+    """
+    by_id = {entry["id"]: entry for entry in entries}
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for entry in entries:
+        groups[core_key(entry["id"])].append(entry)
+
+    kept: list[dict] = []
+    for key, group in groups.items():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+        # 优先保留 id 正好等于 core key 的那条（最"裸"的名字），否则保留最短的。
+        group.sort(key=lambda e: (e["id"] != key, len(e["id"])))
+        canonical = group[0]
+        extra_aliases = set(canonical.get("aliases") or [])
+        for other in group[1:]:
+            extra_aliases.add(other["id"])
+            extra_aliases.update(other.get("aliases") or [])
+        extra_aliases.discard(canonical["id"])
+        canonical["aliases"] = sorted(extra_aliases)[:MAX_ALIASES]
+        kept.append(canonical)
+    kept.sort(key=lambda e: e["id"])
+    return kept
+
+
 def build_snapshot(merged: dict, aliases: dict, fetched_at: str) -> dict:
+    settle_numbers(merged)
     settle_modalities(merged)
     for profile in merged.values():
         settle_capabilities(profile)
@@ -564,6 +633,7 @@ def build_snapshot(merged: dict, aliases: dict, fetched_at: str) -> dict:
             }
         )
 
+    entries = dedupe_by_core(entries)
     return {
         "provenance": {
             "generated_by": "scripts/fetch_models.py",
