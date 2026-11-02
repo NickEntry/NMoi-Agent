@@ -6,7 +6,9 @@
 //!
 //! 用法只有两处：
 //! - 装钩子：`progress::scope(sink, || ...)`（FFI 那一层装，作用域结束自动还原）；
-//! - 吐字：`progress::emit(text, reasoning)`（`agent::run_turn` 的流式分支调）。
+//!   要跟着"换轮"清缓冲就用 `progress::scope_with_round(sink, round, || ...)`；
+//! - 吐字：`progress::emit(text, reasoning)`（`agent::run_turn` 的流式分支调）；
+//!   每轮开头 `progress::round_start()` 让听的人把上一轮那截清掉。
 //!
 //! 没装钩子时 `emit` 是空操作——测试与"还没接流式的地方"不用改一行。
 
@@ -16,8 +18,15 @@ use std::rc::Rc;
 /// 增量回调：`(正文增量, 思考增量)`，两个都是**片段**，可能有一个是空的。
 pub type Sink = Rc<dyn Fn(&str, &str)>;
 
+/// 换轮回调：工具往返之后模型会**重新开口**，上一轮那段话不属于这一轮。
+///
+/// 界面要是把两轮拼在一起，收尾落库时正文会突然缩掉一半（库里只存最后一轮），
+/// 看起来就是"气泡跳了一下"。所以每一轮开头先叫一声，让听的人把手里的缓冲清掉。
+pub type RoundHook = Rc<dyn Fn()>;
+
 thread_local! {
     static SINK: RefCell<Option<Sink>> = const { RefCell::new(None) };
+    static ROUND: RefCell<Option<RoundHook>> = const { RefCell::new(None) };
 }
 
 /// 在这个作用域里装一个增量钩子；**离开作用域自动还原**（panic 也还原）。
@@ -25,17 +34,37 @@ thread_local! {
 /// 不叠层：scope 里再 scope 会临时替换，退出时恢复外层的那个——
 /// 嵌套多半意味着"两个调用同时想往一个线程里吐字"，那本来就不该发生。
 pub fn scope<R>(sink: Sink, body: impl FnOnce() -> R) -> R {
-    struct Restore(Option<Sink>);
+    scope_with_round(sink, Rc::new(|| {}), body)
+}
+
+/// 同 [`scope`]，多一个"换轮了"的钩子（界面要清掉上一轮那截）。
+pub fn scope_with_round<R>(sink: Sink, round: RoundHook, body: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Sink>, Option<RoundHook>);
     impl Drop for Restore {
         fn drop(&mut self) {
             let previous = self.0.take();
             SINK.with(|slot| *slot.borrow_mut() = previous);
+            let previous = self.1.take();
+            ROUND.with(|slot| *slot.borrow_mut() = previous);
         }
     }
 
-    let previous = SINK.with(|slot| slot.replace(Some(sink)));
-    let _guard = Restore(previous);
+    let previous_sink = SINK.with(|slot| slot.replace(Some(sink)));
+    let previous_round = ROUND.with(|slot| slot.replace(Some(round)));
+    let _guard = Restore(previous_sink, previous_round);
     body()
+}
+
+/// 一轮模型请求开始（工具往返之后会再来一次）。没装钩子就是空操作。
+///
+/// 只在 [`scope`] 的作用域里有意义；回调里不要重入 `emit` / `round_start`。
+pub fn round_start() {
+    ROUND.with(|slot| {
+        let borrowed = slot.borrow();
+        if let Some(hook) = borrowed.as_ref() {
+            hook();
+        }
+    });
 }
 
 /// 吐一段增量。没装钩子就是空操作。
@@ -88,5 +117,23 @@ mod tests {
         let _ = &hits;
         emit("没装", "钩子");
         assert!(!installed());
+    }
+
+    #[test]
+    fn round_start_reaches_the_hook_and_is_restored() {
+        let rounds = Rc::new(RefCell::new(0));
+        let hook = {
+            let rounds = rounds.clone();
+            Rc::new(move || *rounds.borrow_mut() += 1) as RoundHook
+        };
+        let sink: Sink = Rc::new(|_: &str, _: &str| {});
+        scope_with_round(sink, hook, || {
+            round_start();
+            round_start();
+        });
+        assert_eq!(*rounds.borrow(), 2);
+        // 作用域外再叫一声不该有人听见，也不该 panic。
+        round_start();
+        assert_eq!(*rounds.borrow(), 2);
     }
 }

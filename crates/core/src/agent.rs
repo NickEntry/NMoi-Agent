@@ -181,6 +181,9 @@ pub fn run_turn<T: Transport>(
         if cancel.is_cancelled() {
             return Ok(stopped(report));
         }
+        // 换轮（0.15ah）：工具往返之后模型重新开口，上一轮那段话不算这一轮的正文。
+        // 界面靠这一声把手里的缓冲清掉——不清的话收尾落库时正文会突然缩掉一半。
+        crate::progress::round_start();
         let mut request = base.clone();
         request.stream = config.stream;
         request.messages = messages.clone();

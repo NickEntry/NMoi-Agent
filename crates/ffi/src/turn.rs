@@ -95,6 +95,8 @@ fn partials_lock() -> MutexGuard<'static, BTreeMap<String, PartialText>> {
 struct PartialText {
     text: String,
     reasoning: String,
+    /// 第几次模型请求（从 1 起）。工具往返之后会 +1，界面据此清掉上一轮那截。
+    round: u32,
 }
 
 const PARTIAL_KEEP: usize = 50_000;
@@ -102,6 +104,15 @@ const PARTIAL_TAIL: usize = 8_192;
 
 fn partial_reset(session: &str) {
     partials_lock().remove(session);
+}
+
+/// 换轮：清空正文/思考，但**留住轮号**（界面靠它判断该不该重画）。
+fn partial_new_round(session: &str) {
+    let mut table = partials_lock();
+    let slot = table.entry(session.to_string()).or_default();
+    slot.round += 1;
+    slot.text.clear();
+    slot.reasoning.clear();
 }
 
 fn partial_append(session: &str, text: &str, reasoning: &str) {
@@ -136,6 +147,14 @@ fn partial_tail(session: &str) -> (String, usize, String, usize) {
         tail(&slot.reasoning),
         slot.reasoning.chars().count(),
     )
+}
+
+/// 现在是第几轮（没开跑就是 0）。
+fn partial_round(session: &str) -> u32 {
+    partials_lock()
+        .get(session)
+        .map(|slot| slot.round)
+        .unwrap_or(0)
 }
 
 fn tail(text: &str) -> String {
@@ -1049,13 +1068,21 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         let session_key = input.session.to_string();
         // 流式：把增量写进 partial 表（界面轮询 `turn_busy` 拿尾部）。
         // 钩子是作用域内的——这一轮结束（含出错）自动撤掉，不会串到下一轮。
-        let sink: Option<nmoi_core::progress::Sink> = if stream {
+        // 换轮（0.15ah）：工具往返之后清空缓冲并 +1，界面据此重画而不是把两轮拼起来。
+        let (sink, round_hook): (
+            Option<nmoi_core::progress::Sink>,
+            Option<nmoi_core::progress::RoundHook>,
+        ) = if stream {
             let key = session_key.clone();
-            Some(std::rc::Rc::new(move |text: &str, reasoning: &str| {
-                partial_append(&key, text, reasoning);
-            }))
+            let round_key = session_key.clone();
+            (
+                Some(std::rc::Rc::new(move |text: &str, reasoning: &str| {
+                    partial_append(&key, text, reasoning);
+                })),
+                Some(std::rc::Rc::new(move || partial_new_round(&round_key))),
+            )
         } else {
-            None
+            (None, None)
         };
 
         let mut call = || {
@@ -1082,9 +1109,9 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
                 other => FfiError::new("turn", other.to_string()),
             })
         };
-        let turn = match sink {
-            Some(sink) => nmoi_core::progress::scope(sink, call)?,
-            None => call()?,
+        let turn = match (sink, round_hook) {
+            (Some(sink), Some(round)) => nmoi_core::progress::scope_with_round(sink, round, call)?,
+            _ => call()?,
         };
 
         // L2 校准：这一轮的真实用量反推出来的因子，落库给下一轮用（D95）。
@@ -1139,11 +1166,13 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
             .unwrap_or(false);
         drop(table);
         // 增量（0.15n）：只给**尾部**（≤8 KiB）+ 总量，界面拿它逐字画。
+        // 轮号（0.15ah）：工具往返之后 +1，界面看到它变了就清掉上一轮那截。
         let (text, text_len, reasoning, reasoning_len) = partial_tail(session);
         Ok(json!({
             "session": session,
             "running": running,
             "cancelled": cancelled,
+            "round": partial_round(session),
             "text": text,
             "text_len": text_len,
             "reasoning": reasoning,
@@ -2101,6 +2130,25 @@ mod partial_tests {
         partial_reset(key);
         let (text, len, _, _) = partial_tail(key);
         assert!(text.is_empty() && len == 0);
+    }
+
+    #[test]
+    fn a_new_round_clears_the_text_but_keeps_counting() {
+        let key = "partial-test-c";
+        partial_reset(key);
+        assert_eq!(partial_round(key), 0, "没开跑就没有轮号");
+        partial_new_round(key);
+        partial_append(key, "第一轮", "");
+        assert_eq!(partial_round(key), 1);
+        // 工具往返之后换轮：正文清掉，轮号 +1（界面靠它重画）。
+        partial_new_round(key);
+        assert_eq!(partial_round(key), 2);
+        let (text, len, _, _) = partial_tail(key);
+        assert!(text.is_empty() && len == 0, "上一轮那段话不该留在这一轮里");
+        partial_append(key, "第二轮", "");
+        assert_eq!(partial_tail(key).0, "第二轮");
+        partial_reset(key);
+        assert_eq!(partial_round(key), 0);
     }
 
     /// 图片参数（D208）：能挡的都在这里挡掉，别等上游 400 才让用户猜。

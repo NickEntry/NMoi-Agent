@@ -14,7 +14,12 @@ import kotlinx.coroutines.launch
 internal sealed interface TurnEvent {
     val sessionId: String
 
-    data class Started(override val sessionId: String, val text: String) : TurnEvent
+    data class Started(
+        override val sessionId: String,
+        val text: String,
+        /** 随这一条一起发的图（还没从库里读回来，界面只能给数量）。 */
+        val imageCount: Int = 0,
+    ) : TurnEvent
 
     data class Finished(
         override val sessionId: String,
@@ -97,7 +102,7 @@ internal object TurnRunner {
         text: String,
         images: List<PendingImage> = emptyList(),
     ) {
-        _events.emit(TurnEvent.Started(sessionId, text))
+        _events.emit(TurnEvent.Started(sessionId, text, images.size))
         val result = runCatching {
             TurnRepository.send(context, databasePath, sessionId, text, images)
         }

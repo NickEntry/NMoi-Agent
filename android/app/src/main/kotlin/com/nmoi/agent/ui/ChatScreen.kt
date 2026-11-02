@@ -161,12 +161,11 @@ internal fun ChatScreen(
     //
     // 初值从 `GeneratingTracker` 取（0.15c）：切走再切回来时，那一轮其实还在跑，
     // 而这里的 state 已经随重组回到初值了。写成 `remember(sessionId)` 才跟着会话换。
-    // 这一轮已经收到的正文/思考（0.15n）。**只用于画**：一轮结束以落库结果为准，
+    // 这一轮已经收到的正文/思考（0.15ah）。**只用于画**：一轮结束以落库结果为准，
     // 免得"流里画的和库里存的"两套东西对不上（铁律①）。
-    var partialText by remember(sessionId) { mutableStateOf("") }
-    var waiting by remember(sessionId) {
-        mutableStateOf(sessionId != null && GeneratingTracker.isRunning(sessionId))
-    }
+    var live by remember(sessionId) { mutableStateOf<LiveReply?>(null) }
+    // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
+    var settling by remember(sessionId) { mutableStateOf(false) }
     // 正在跑的那一轮挂在哪个会话上——点"停止"要的就是这个 id。
     // 单独存一份而不是直接读 `sessionId`：跑的过程中用户可能切了会话。
     var runningSession by remember(sessionId) {
@@ -361,19 +360,49 @@ internal fun ChatScreen(
         }
     }
 
-    // 边收边画（0.15n）：等的时候每 ~120 ms 问一次 `turn_busy`，拿尾部增量。
-    // 没在跑就收手；一轮结束（`waiting` 变 false）时清空，让落库结果接管。
-    LaunchedEffect(waiting, sessionId) {
-        if (!waiting || sessionId == null) {
-            partialText = ""
-            return@LaunchedEffect
-        }
+    // 边收边画（0.15ah）：等的时候每 ~100 ms 问一次 `turn_busy`。
+    //
+    // 拿的是**尾部 + 总量**：尾部只有 8 KiB，所以这里自己往上接——
+    // 只把新长出来的那一段补到手里已有的正文后面。直接显示尾部的话，
+    // 回答一过 8 KiB 开头就会凭空消失（看着像"前面被吞了"）。
+    //
+    // 轮号变了就是工具往返之后模型重新开口：清掉上一轮那截，别把两轮拼成一段。
+    LaunchedEffect(sessionId, live?.running) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (live?.running != true) return@LaunchedEffect
         while (true) {
-            val info = withContext(Dispatchers.IO) { NmoiFfi.turnBusy(sessionId).getOrNull() }
-            if (info == null) break
-            partialText = info.optString("text", "")
-            if (!info.optBoolean("running", false)) break
-            delay(120)
+            val info = withContext(Dispatchers.IO) { NmoiFfi.turnBusy(sid).getOrNull() } ?: break
+            val round = info.optInt("round", 0)
+            val totalText = info.optInt("text_len", 0)
+            val totalReasoning = info.optInt("reasoning_len", 0)
+            val tailText = info.optString("text", "")
+            val tailReasoning = info.optString("reasoning", "")
+            val running = info.optBoolean("running", false)
+            val current = live ?: break
+            val base = if (round != current.round) {
+                current.copy(text = "", reasoning = "", round = round)
+            } else {
+                current
+            }
+            live = base.copy(
+                text = growText(base.text, totalText, tailText),
+                reasoning = growText(base.reasoning, totalReasoning, tailReasoning),
+                running = running,
+            )
+            if (!running) break
+            delay(100)
+        }
+    }
+
+    // 收尾之后等一次重读：`reloadKey` 变了 → `snapshot` 换了新对象 → 这里把内存里
+    // 那条换成库里那份。等不到（内容没变）就 1.2 秒后收掉，别让"正在生成"一直挂着。
+    LaunchedEffect(settling) {
+        if (!settling) return@LaunchedEffect
+        delay(1_200)
+        if (settling) {
+            settling = false
+            live = null
+            pending = null
         }
     }
 
@@ -400,6 +429,15 @@ internal fun ChatScreen(
     }
 
     val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()
+
+    // 库里那份到了：收尾（0.15ah）。放在 `snapshot` 之后——它要等这个值换过才动。
+    LaunchedEffect(snapshot) {
+        if (settling) {
+            settling = false
+            live = null
+            pending = null
+        }
+    }
 
     // 上下文占用：**和压缩判据同一个数字**（`TurnRepository` 把窗口交给 core 算绝对线）。
     // 窗口没填就不显示——显示一个猜出来的百分比比不显示更糟。
@@ -599,9 +637,12 @@ internal fun ChatScreen(
     val runRegen: (String, String, String?, Boolean) -> Unit = { sid, upTo, target, append ->
         scope.launch {
             busy = true
-            waiting = true
             notice = null
             runningSession = sid
+            // 重试/续话走的是**非流式**（FFI 那条路 `stream:false`），所以这里只立一个
+            // "正在生成"的壳：轮询拿不到增量，但停止键和"在跑"的形态要跟发送一致。
+            live = LiveReply(round = 0, running = true)
+            settling = false
             // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
             GeneratingTracker.mark(sid, true)
             val result = TurnRepository.regen(
@@ -616,8 +657,10 @@ internal fun ChatScreen(
             )
             runningSession = null
             GeneratingTracker.mark(sid, false)
-            waiting = false
             busy = false
+            // 非流式：没有残文要留，直接收掉，让库里那份接管。
+            live = null
+            settling = false
             reloadKey += 1
             result.fold(
                 onSuccess = { outcome ->
@@ -718,12 +761,12 @@ internal fun ChatScreen(
             NmoiFfi.turnBusy(sid).getOrNull()?.optBoolean("running") ?: true
         }
         if (GeneratingTracker.reconcile(sid, alive)) {
-            waiting = false
             runningSession = null
             notice = "上一轮没收尾（原生那边已经没有它了），已接管"
         } else if (alive) {
-            waiting = true
             runningSession = sid
+            // 切走再切回来：这一轮还在跑，把流式气泡重新立起来，轮询才会开始。
+            if (live == null) live = LiveReply(round = 0, running = true)
         }
     }
 
@@ -776,6 +819,16 @@ internal fun ChatScreen(
                         // 抢跑（刚好在这一瞬间被别的入口起来了）：退一步排队，不丢字。
                         SendQueue.enqueue(sid, text)
                         notice = "已排队：这一轮马上结束，等它收尾就继续"
+                    } else {
+                        // 立刻上屏（0.15ah）：**不等 Started 事件**。
+                        // 新建会话时页面要先换到新 id，事件可能赶在那之前到、随后被
+                        // `remember(sessionId)` 清掉——那样第一句话就看不见了。
+                        pending = PendingSend(
+                            session = sid,
+                            text = body,
+                            at = System.currentTimeMillis(),
+                            imageCount = images.size,
+                        )
                     }
                 }
             }
@@ -790,14 +843,25 @@ internal fun ChatScreen(
             if (event.sessionId != watching) return@collect
             when (event) {
                 is TurnEvent.Started -> {
-                    pending = PendingSend(text = event.text, at = System.currentTimeMillis())
-                    waiting = true
+                    pending = PendingSend(
+                        session = event.sessionId,
+                        text = event.text,
+                        at = System.currentTimeMillis(),
+                        // 图已经交给 core 了，界面上得留个痕：不然发完那一刻图凭空消失，
+                        // 看着像"图被吞了"。
+                        imageCount = event.imageCount,
+                    )
+                    // 空壳先立起来：正文与思考各自从零开始长。
+                    live = LiveReply(round = 0, running = true)
+                    settling = false
                     busy = true
                 }
 
                 is TurnEvent.Finished -> {
-                    pending = null
-                    waiting = false
+                    // **不立刻清**：库里那份还没读回来，先清会让气泡闪一下。
+                    // 保持"正在生成"的形态，等 `snapshot` 换过再收（见上面那条 effect）。
+                    live = live?.copy(running = false)
+                    settling = true
                     busy = false
                     reloadKey += 1
                     val left = SendQueue.count(watching)
@@ -805,8 +869,15 @@ internal fun ChatScreen(
                 }
 
                 is TurnEvent.Failed -> {
+                    // 断在中途：已经收到的部分**留在屏幕上**（用户要能看见它写到哪儿断的），
+                    // 但不假装它落库了——库里没有，所以标一句、点一下收掉。
+                    val cut = live?.let { reply ->
+                        if (reply.text.isBlank() && reply.reasoning.isBlank()) null
+                        else reply.copy(running = false, cut = true)
+                    }
+                    live = cut
+                    settling = false
                     pending = null
-                    waiting = false
                     busy = false
                     reloadKey += 1
                     // 没存进去就把字还回输入框：宁可让他看到重复的一句，也不要静默丢字。
@@ -856,9 +927,10 @@ internal fun ChatScreen(
                 } else {
                     MessageArea(
                         snapshot = snapshot,
-                        pending = pending,
-                        pendingAssistant = waiting,
-                        pendingPartial = partialText,
+                        // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
+                        pending = pending?.takeIf { it.session == sessionId },
+                        live = live,
+                        onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
                         onLongPressMessage = { id ->
@@ -1035,8 +1107,13 @@ internal fun ChatScreen(
                     running = TurnRunner.isRunning(sid),
                     onSendNow = { text ->
                         // 手动发队首：只在"这个会话没在请求"时允许（用户 2026-10-31 的口径）。
-                        pending = PendingSend(text = text, at = System.currentTimeMillis())
-                        waiting = true
+                        pending = PendingSend(
+                            session = sid,
+                            text = text,
+                            at = System.currentTimeMillis(),
+                        )
+                        live = LiveReply(round = 0, running = true)
+                        settling = false
                         busy = true
                         TurnRunner.start(context, databasePath, sid, text)
                         queueSheet = false
@@ -1507,9 +1584,10 @@ private fun MessageArea(
     snapshot: ChatSnapshot?,
     /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
     pending: PendingSend?,
-    pendingAssistant: Boolean,
-    /** 这一轮已经收到的正文（0.15n）。空 = 还没收到第一个增量。 */
-    pendingPartial: String = "",
+    /** 这一轮正在长的回复（0.15ah）。`null` = 没有在跑，也没留残文。 */
+    live: LiveReply?,
+    /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
+    onDismissCut: () -> Unit,
     selecting: Boolean,
     selected: Set<String>,
     onLongPressMessage: (String) -> Unit,
@@ -1531,7 +1609,7 @@ private fun MessageArea(
     }
 
     val page = snapshot.page
-    if ((page == null || page.isEmpty) && pending == null) {
+    if ((page == null || page.isEmpty) && pending == null && live == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -1561,9 +1639,19 @@ private fun MessageArea(
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
     // 发出去那一刻 `pending` 会插在末尾，所以它也要进 key——否则新气泡在屏幕外面。
-    LaunchedEffect(units.size, truncated, pending, pendingAssistant) {
+    LaunchedEffect(units.size, truncated, pending, live != null) {
         val target = headerCount + units.size + if (pending != null) 1 else 0 +
-            if (pendingAssistant) 1 else 0
+            if (live != null) 1 else 0
+        if (target - 1 >= 0) listState.scrollToItem(target - 1)
+    }
+
+    // 边写边跟（0.15ah）：只在**已经在底部**时跟。用户往上翻看旧消息时不抢他的位置——
+    // 判断用的是这一帧的 `canScrollForward`：能往前滚就说明底下还有东西没看到。
+    LaunchedEffect(live?.text?.length ?: 0, live?.reasoning?.length ?: 0) {
+        if (live == null) return@LaunchedEffect
+        if (listState.canScrollForward) return@LaunchedEffect
+        val target = headerCount + units.size + if (pending != null) 1 else 0 +
+            if (live != null) 1 else 0
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
@@ -1637,52 +1725,72 @@ private fun MessageArea(
                     onShare = {},
                     onMore = {},
                     onVersion = { _, _ -> },
+                    // 「发送中」不是一个装饰：它说明这条**还没进库**，
+                    // 失败时会退回输入框而不是留在这里（TurnEvent.Failed 那条）。
+                    sending = true,
+                    pendingImageCount = outbox.imageCount,
                 )
             }
         }
-        if (pendingAssistant) {
-            item(key = "pending-assistant") {
-                PendingAssistantRow(partial = pendingPartial)
+        val streaming = live
+        if (streaming != null) {
+            item(key = "live-assistant") {
+                LiveReplyRow(reply = streaming, onDismissCut = onDismissCut)
             }
         }
     }
 }
 
 /**
- * "模型还没回"的占位。**它不落库**，只是一个呼吸中的小字——
- * 用户要能看出"发出去了、在等"，而不是盯着输入框猜。
+ * 这一轮正在长出来的回复（0.15ah）。
+ *
+ * 三件事必须**同时**成立，否则真机上看着就像坏了：
+ *
+ * 1. 形状与落库那条一致（抬头、思考卡、正文的字体与边距）——收尾换成库里那份时不跳；
+ * 2. 思考块只显示字数、默认收起——几百字的思考铺开会把正文挤到屏幕外；
+ * 3. 断在中途要**留着**并说清楚（它没落库），点一下才收掉。
  */
 @Composable
-private fun PendingAssistantRow(partial: String = "") {
-    val transition = rememberInfiniteTransition(label = "pending")
+private fun LiveReplyRow(reply: LiveReply, onDismissCut: () -> Unit) {
+    val transition = rememberInfiniteTransition(label = "live")
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(durationMillis = 900), RepeatMode.Reverse),
-        label = "pending-alpha",
+        label = "live-alpha",
     )
-    // 居中（用户 2026-10-29）：以前前面垫了 42dp 去对齐头像列，看起来像"贴在左边"。
-    // 收到增量就把那一段画出来（逐字长出来），"正在生成…"退成上面一行小字；
-    // 还没收到第一个字时保持原来那个居中的呼吸字——那是"发出去了、在等"的信号。
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 8.dp, end = 8.dp),
-        horizontalAlignment = if (partial.isEmpty()) Alignment.CenterHorizontally else Alignment.Start,
-    ) {
-        Text(
-            text = "正在生成…",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
-        )
-        if (partial.isNotEmpty()) {
-            Text(
-                text = partial,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
-                modifier = Modifier.padding(top = 4.dp),
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        // 抬头没有时间：这一条还没落库，写一个假时间比空着更糟。
+        AssistantHeader(createdAt = 0L)
+        if (reply.reasoning.isNotBlank()) {
+            LiveReasoningCard(text = reply.reasoning)
+        }
+        if (reply.text.isNotBlank()) {
+            MarkdownBody(
+                text = reply.text,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             )
         }
+        val note = when {
+            reply.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里，点一下收掉）"
+            reply.text.isBlank() && reply.reasoning.isBlank() -> "正在生成…"
+            else -> "正在生成…（停止键随时可用）"
+        }
+        Text(
+            text = note,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (reply.cut) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)
+            },
+            modifier = Modifier
+                .padding(top = 6.dp)
+                .then(if (reply.cut) Modifier.clickable(onClick = onDismissCut) else Modifier),
+        )
     }
 }
+
 
 /**
  * 抬头该用哪个时间：优先这一段里**正文**那条的时间（用户看到的就是它），
@@ -1778,7 +1886,14 @@ private fun UnitBlock(
  * 它**不是**一条"看不见的存了的数据"（铁律 ② 管的是库里）：这一条只活在内存里，
  * 屏幕上看得见，`turn_run` 收尾后就用库里那份替换掉它。
  */
-private data class PendingSend(val text: String, val at: Long)
+private data class PendingSend(
+    /** 它属于哪个会话：切到别的会话时这一条不该跟过去。 */
+    val session: String,
+    val text: String,
+    val at: Long,
+    /** 随这一条一起发出去的图（还没从库里读回来，所以只能给数量）。 */
+    val imageCount: Int = 0,
+)
 
 private const val USER_NAME = "我"
 
@@ -1975,6 +2090,10 @@ private fun UserMessage(
     onShare: () -> Unit,
     onMore: () -> Unit,
     onVersion: (Long, String) -> Unit,
+    /** 还没落库的那一条（0.15ah）：动作行换成「发送中」，别给一排点了没反应的按钮。 */
+    sending: Boolean = false,
+    /** 随这一条一起发出去、还没从库里读回来的图。 */
+    pendingImageCount: Int = 0,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -2033,6 +2152,16 @@ private fun UserMessage(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
                     MessageImages(images = message.images)
+                    if (sending && pendingImageCount > 0) {
+                        // 图已经随这一轮交出去了，库里那份要等收尾才读得回来。
+                        // 这里留一句，免得发出去那一刻缩略图凭空消失、看着像被吞了。
+                        Text(
+                            text = "带 $pendingImageCount 张图（发送中）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                    }
                     Text(
                         text = message.content.ifEmpty { "（空消息）" },
                         style = MaterialTheme.typography.bodyMedium,
@@ -2052,17 +2181,27 @@ private fun UserMessage(
             }
         }
 
-        MessageActionRow(
-            mine = true,
-            onCopy = {
-                putClipboard(context, "消息", message.content)
-                onCopied()
-            },
-            onShare = onShare,
-            onSelect = onLongPress,
-            onMore = onMore,
-            versionControl = { VersionControl(message = message, onPick = onVersion) },
-        )
+        if (sending) {
+            // 动作行在这里没有意义：这条还没 id，复制/更多都指不到库里的东西。
+            Text(
+                text = "发送中…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
+        } else {
+            MessageActionRow(
+                mine = true,
+                onCopy = {
+                    putClipboard(context, "消息", message.content)
+                    onCopied()
+                },
+                onShare = onShare,
+                onSelect = onLongPress,
+                onMore = onMore,
+                versionControl = { VersionControl(message = message, onPick = onVersion) },
+            )
+        }
     }
 }
 
@@ -3262,12 +3401,35 @@ private val THINKING_LEVELS = listOf(
 @Composable
 private fun ReasoningCard(text: String) {
     var expanded by remember(text) { mutableStateOf(false) }
+    ReasoningShell(text = text, expanded = expanded, writing = false) { expanded = !expanded }
+}
+
+/**
+ * 流式期间的思考块（0.15ah）：**展开状态不能跟着增量重置**。
+ *
+ * `ReasoningCard` 的 `remember(text)` 在正文每长一个字时就换一次键，展开会被收回——
+ * 100 ms 一次，等于永远打不开。所以这里用不带键的 `remember`，只有换会话才复位。
+ */
+@Composable
+private fun LiveReasoningCard(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    ReasoningShell(text = text, expanded = expanded, writing = true) { expanded = !expanded }
+}
+
+@Composable
+private fun ReasoningShell(
+    text: String,
+    expanded: Boolean,
+    /** 还在写：标题里说清楚，别让人以为这就是全部思考。 */
+    writing: Boolean,
+    onToggle: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { expanded = !expanded },
+            .clickable(onClick = onToggle),
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3278,7 +3440,11 @@ private fun ReasoningCard(text: String) {
                     modifier = Modifier.size(12.dp),
                 )
                 Text(
-                    text = if (expanded) "思考（点一下收起）" else "思考 · ${text.length} 字",
+                    text = when {
+                        expanded -> "思考（点一下收起）"
+                        writing -> "思考 · ${text.length} 字（还在写）"
+                        else -> "思考 · ${text.length} 字"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 6.dp),
