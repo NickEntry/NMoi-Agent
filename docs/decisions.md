@@ -5409,3 +5409,20 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
   再接档位 2；3/4 等有实现再说。
 
 细节在 `docs/context-modes.md`。
+
+## D226 代理：默认不碰容器，透明要走 VpnService（设计已定，core 已落地）
+
+用户 2026-11-02：发请求前检查连通性，不通就试着连，连不上报错停下；四种类型照截图。
+补的一条更要紧：**容器内不映射系统代理，要像 TUN，别留检测痕迹**。
+
+- 四种类型：SOCKS5 / HTTP / HTTPS / HTTPS（本地凭据）。前三种的差别只在"到代理那一段"，
+  到目标都是 CONNECT；明文 http 走 HTTP 代理时用绝对 URI（不 CONNECT，兼容性最好）。
+- **「本地凭据」= 本机信任库**（系统根 + 用户装的 CA），另一档是内置 Mozilla 根。
+  Android 7 起 App 默认不信任用户 CA，所以这一档要 `network_security_config` + 平台 TrustManager；
+  这一版**明确报 `Unsupported`**，不假装能验。
+- **容器内不注入 `http_proxy`/`all_proxy`**：那是最好检测的痕迹（`env`、`/proc/self/environ`）。
+  proot 没有 netns、没有 root，起不了 TUN 也做不了 iptables；真透明只能落在 Android
+  `VpnService` + tun2socks（容器共享同一网络栈，自动跟着走）。`LD_PRELOAD` 垫片是备选，
+  但必须写明可被检测，不能当隐蔽方案。
+- 已落地：`crates/core/src/proxy.rs`（握手、绕过匹配、TLS 到代理）+ 两个 transport 的 `proxy` 字段，
+  9 条单测用本机假代理跑真 socket。未接线：FFI / 探测缓存 / 设置页 / Vault / 供应商级覆盖。

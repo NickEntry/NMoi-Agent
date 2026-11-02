@@ -195,6 +195,8 @@ pub struct PlainHttpTransport {
     /// 默认读超时：每次 `read` 的上限，不是整轮上限。
     pub read_timeout: Duration,
     pub user_agent: String,
+    /// 走代理时用这一份；`None` = 直连。
+    pub proxy: Option<crate::proxy::ProxyConfig>,
 }
 
 impl Default for PlainHttpTransport {
@@ -203,6 +205,7 @@ impl Default for PlainHttpTransport {
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(120),
             user_agent: format!("{}/{}", crate::PRODUCT_NAME, crate::VERSION),
+            proxy: None,
         }
     }
 }
@@ -221,18 +224,46 @@ impl PlainHttpTransport {
         self.read_timeout = timeout;
         self
     }
+
+    /// 挂一份代理配置。`None` = 直连。
+    pub fn with_proxy(mut self, proxy: Option<crate::proxy::ProxyConfig>) -> Self {
+        self.proxy = proxy;
+        self
+    }
 }
 
 impl Transport for PlainHttpTransport {
     fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
         let target = Url::parse(&request.url)?;
 
+        // 代理开着、目标又不在绕过列表里，才走代理。这个判断在这里做一次，
+        // 后面 `build_head` 与 `connect` 都按同一份结果走——两处各判一次迟早会不一致。
+        let proxy = self
+            .proxy
+            .as_ref()
+            .filter(|proxy| !proxy.bypassed(&target.host));
+        let absolute_form = proxy.is_some() && target.scheme == "http";
+
         // 先把请求头校验完再开 socket：一个头部拼错的请求不该有机会去连别人的机器，
         // 而且校验先跑，失败原因就是"头部非法"而不是"连不上"（后者会让人查错方向）。
-        let head = build_head(&request, &target, &self.user_agent)?;
+        let head = build_head(&request, &target, &self.user_agent, absolute_form)?;
 
-        let mut stream = connect(&target, self.connect_timeout)?;
-        apply_read_timeout(&stream, request.read_timeout_ms, self.read_timeout)?;
+        let mut stream: Box<dyn crate::proxy::ReadWrite + Send> = match proxy {
+            Some(proxy) => {
+                let tunnel = crate::proxy::connect(
+                    proxy,
+                    &target,
+                    self.connect_timeout,
+                    read_timeout_of(request.read_timeout_ms, self.read_timeout),
+                )?;
+                tunnel.stream
+            }
+            None => {
+                let stream = connect(&target, self.connect_timeout)?;
+                apply_read_timeout(&stream, request.read_timeout_ms, self.read_timeout)?;
+                Box::new(stream)
+            }
+        };
 
         stream
             .write_all(head.as_bytes())
@@ -359,16 +390,20 @@ fn connect_tcp(target: &Url, connect_timeout: Duration) -> Result<TcpStream, Tra
     })
 }
 
+fn read_timeout_of(requested_ms: Option<u64>, fallback: Duration) -> Option<Duration> {
+    match requested_ms {
+        Some(0) => None,
+        Some(ms) => Some(Duration::from_millis(ms)),
+        None => Some(fallback),
+    }
+}
+
 fn apply_read_timeout(
     stream: &TcpStream,
     requested_ms: Option<u64>,
     fallback: Duration,
 ) -> Result<(), TransportError> {
-    let timeout = match requested_ms {
-        Some(0) => None,
-        Some(ms) => Some(Duration::from_millis(ms)),
-        None => Some(fallback),
-    };
+    let timeout = read_timeout_of(requested_ms, fallback);
     stream
         .set_read_timeout(timeout)
         .map_err(|error| TransportError::Io(format!("设置读超时失败: {error}")))
@@ -378,11 +413,20 @@ fn build_head(
     request: &HttpRequest,
     target: &Url,
     user_agent: &str,
+    // 走 HTTP 代理且目标是明文 http 时，请求行要写绝对 URI。
+    absolute_form: bool,
 ) -> Result<String, TransportError> {
     let mut head = String::with_capacity(256);
     head.push_str(request.method.as_str());
     head.push(' ');
-    head.push_str(&target.path);
+    if absolute_form {
+        head.push_str(&target.scheme);
+        head.push_str("://");
+        head.push_str(&authority_for_host_header(target));
+        head.push_str(&target.path);
+    } else {
+        head.push_str(&target.path);
+    }
     head.push_str(" HTTP/1.1\r\n");
 
     head.push_str("host: ");
@@ -776,9 +820,31 @@ impl Transport for HttpsTransport {
             return self.plain.execute(request);
         }
 
-        let head = build_head(&request, &target, &self.plain.user_agent)?;
-        let stream = connect_tcp(&target, self.plain.connect_timeout)?;
-        apply_read_timeout(&stream, request.read_timeout_ms, self.plain.read_timeout)?;
+        let proxy = self
+            .plain
+            .proxy
+            .as_ref()
+            .filter(|proxy| !proxy.bypassed(&target.host));
+        let head = build_head(&request, &target, &self.plain.user_agent, false)?;
+
+        // 走代理时，到目标的 TLS 套在隧道里；隧道可能是明文 TCP，也可能已经套了一层
+        // 到代理的 TLS（HTTPS 代理）。
+        let stream: Box<dyn crate::proxy::ReadWrite + Send> = match proxy {
+            Some(proxy) => {
+                crate::proxy::connect(
+                    proxy,
+                    &target,
+                    self.plain.connect_timeout,
+                    read_timeout_of(request.read_timeout_ms, self.plain.read_timeout),
+                )?
+                .stream
+            }
+            None => {
+                let stream = connect_tcp(&target, self.plain.connect_timeout)?;
+                apply_read_timeout(&stream, request.read_timeout_ms, self.plain.read_timeout)?;
+                Box::new(stream)
+            }
+        };
 
         let server_name =
             rustls::pki_types::ServerName::try_from(target.host.clone()).map_err(|error| {

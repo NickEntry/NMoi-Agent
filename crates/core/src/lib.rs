@@ -29,6 +29,7 @@ pub mod policy;
 pub mod preset;
 pub mod progress;
 pub mod provider;
+pub mod proxy;
 pub mod redact;
 pub mod repair;
 pub mod retry;
