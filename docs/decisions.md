@@ -5421,8 +5421,11 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
   Android 7 起 App 默认不信任用户 CA，所以这一档要 `network_security_config` + 平台 TrustManager；
   这一版**明确报 `Unsupported`**，不假装能验。
 - **容器内不注入 `http_proxy`/`all_proxy`**：那是最好检测的痕迹（`env`、`/proc/self/environ`）。
-  proot 没有 netns、没有 root，起不了 TUN 也做不了 iptables；真透明只能落在 Android
-  `VpnService` + tun2socks（容器共享同一网络栈，自动跟着走）。`LD_PRELOAD` 垫片是备选，
-  但必须写明可被检测，不能当隐蔽方案。
+- **容器内透明代理不做**（用户 2026-11-02 明确「VpnService 这种不行的，不能做就不做」）。
+  技术事实：proot 不是 namespace，容器与 App 共享网络栈，所以 App 的监听容器连得到；
+  但**没有任何机制会自动改道** `connect()`，除非环境变量 / 动态链接器垫片 / 内核层。
+  内核层在 Android 上只有 VpnService（排除），proot 里没 root 没 netns，iptables 与 DNS 改道都不成立。
+  所以无痕方案不存在。将来若要"少留痕"，只有垫片 + unix socket，且必须标注可被检测、
+  静态程序无效——默认状态是**什么都不注入**，容器命令直连。
 - 已落地：`crates/core/src/proxy.rs`（握手、绕过匹配、TLS 到代理）+ 两个 transport 的 `proxy` 字段，
   9 条单测用本机假代理跑真 socket。未接线：FFI / 探测缓存 / 设置页 / Vault / 供应商级覆盖。
