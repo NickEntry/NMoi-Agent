@@ -5340,3 +5340,23 @@ JNI 期望表含两条新符号；本机 kotlinc 全量只剩 9 条 `R`。真机
   就是假入口。模型那一行不写「未设置时用全局默认」——我们不回退（D161）。
 
 页面结构与逐行落地在 `docs/ui/assistant-settings.md`。
+
+## D222 工具批次并行：按车道跑，结果按调用顺序回填（设计已定，未动工）
+
+用户 2026-11-02 问「能不能并行调用和阻塞调用」。查完三家：**都支持模型一次吐多个调用**
+（OpenAI `parallel_tool_calls` 默认开；Anthropic 一条 assistant 消息里多个 `tool_use`；
+Gemini 文档里专门有一节 Parallel function calling）。卡住的是我们自己的循环：
+`agent::run_turn` 是 `for call in &outgoing`，一个跑完才跑下一个。
+
+- **批次**：一次 assistant 消息里的 N 个调用算一批，并发执行，结果按**调用顺序**回填
+  （不是完成顺序）；`seq` 收齐后再分配。
+- **车道**：`read` 4 / `workspace` 1 / `session:<id>` 1 / `process` 4；默认 `workspace`，
+  新工具不声明就串行——宁可慢，也不要两个写撞上。
+- **阻塞**：`Session-Open(block_ms=30000)` 只占一条车道，读的照常跑完；但**整轮仍要等它**，
+  因为下一轮请求必须带齐所有结果。所以工具描述里写「起服务用 block_ms=0」。
+- **取消**：每个调用一个 `call_id → AtomicBool`；整轮停止 = 全置上，单条关闭 = 只置一个。
+  结果里 `killed_by_user` / `timed_out` / `cancelled` 三件事分开写。
+- **Gemini 的坑**：老接口 `functionResponse` 只认函数名，同名并行配不上；
+  要等 Interactions 那套 `call_id`，在那之前 Gemini 上不并行同名工具。
+
+完整设计（车道表、撞车表、验收）在 `docs/tool-execution.md`。
