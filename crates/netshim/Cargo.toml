@@ -1,0 +1,12 @@
+[package]
+name = "nmoi-netshim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "容器内的网络垫片：拦 connect/getaddrinfo，经本地 SOCKS5 端点转发（D226）"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = { workspace = true }

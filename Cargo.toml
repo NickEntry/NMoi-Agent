@@ -4,6 +4,7 @@ members = [
     "crates/storage",
     "crates/ffi",
     "crates/cli",
+    "crates/netshim",
 ]
 resolver = "2"
 

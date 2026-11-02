@@ -113,6 +113,9 @@ jobs:
           # platform 只能写 `--platform`（写 `-p 26` 会变成"unknown package: 26"并 panic）。
           cargo ndk -t arm64-v8a --platform 26 -o android/app/src/main/jniLibs \
             build --release -p nmoi-ffi --features jni --locked
+          # 容器里的网络垫片（D226）：单独一个 .so，App 会把它复制进 rootfs。
+          cargo ndk -t arm64-v8a --platform 26 -o android/app/src/main/jniLibs \
+            build --release -p nmoi-netshim --locked
           find android/app/src/main/jniLibs -type f -exec ls -l {} \;
       # 符号对账：Kotlin 的 external fun 与 .so 里导出的 Java_* 必须一一对上。
       # 这一步是"真实机上第一版就踩了"换来的——编译能过、装包能过，
