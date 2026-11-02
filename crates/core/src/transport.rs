@@ -195,8 +195,8 @@ pub struct PlainHttpTransport {
     /// 默认读超时：每次 `read` 的上限，不是整轮上限。
     pub read_timeout: Duration,
     pub user_agent: String,
-    /// 走代理时用这一份；`None` = 直连。
-    pub proxy: Option<crate::proxy::ProxyConfig>,
+    /// 走代理时用这一份。句柄可热改：设置页一改，下一次请求就用新的。
+    pub proxy: crate::proxy::ProxyHandle,
 }
 
 impl Default for PlainHttpTransport {
@@ -205,7 +205,7 @@ impl Default for PlainHttpTransport {
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(120),
             user_agent: format!("{}/{}", crate::PRODUCT_NAME, crate::VERSION),
-            proxy: None,
+            proxy: crate::proxy::ProxyHandle::empty(),
         }
     }
 }
@@ -225,8 +225,17 @@ impl PlainHttpTransport {
         self
     }
 
-    /// 挂一份代理配置。`None` = 直连。
+    /// 挂一份固定的代理配置。`None` = 直连。
     pub fn with_proxy(mut self, proxy: Option<crate::proxy::ProxyConfig>) -> Self {
+        self.proxy = match proxy {
+            Some(config) => crate::proxy::ProxyHandle::fixed(config),
+            None => crate::proxy::ProxyHandle::empty(),
+        };
+        self
+    }
+
+    /// 挂一个可热改的句柄（FFI 那条路用它）。
+    pub fn with_proxy_handle(mut self, proxy: crate::proxy::ProxyHandle) -> Self {
         self.proxy = proxy;
         self
     }
@@ -240,7 +249,7 @@ impl Transport for PlainHttpTransport {
         // 后面 `build_head` 与 `connect` 都按同一份结果走——两处各判一次迟早会不一致。
         let proxy = self
             .proxy
-            .as_ref()
+            .current()
             .filter(|proxy| !proxy.bypassed(&target.host));
         let absolute_form = proxy.is_some() && target.scheme == "http";
 
@@ -248,7 +257,7 @@ impl Transport for PlainHttpTransport {
         // 而且校验先跑，失败原因就是"头部非法"而不是"连不上"（后者会让人查错方向）。
         let head = build_head(&request, &target, &self.user_agent, absolute_form)?;
 
-        let mut stream: Box<dyn crate::proxy::ReadWrite + Send> = match proxy {
+        let mut stream: Box<dyn crate::proxy::ReadWrite + Send> = match proxy.as_ref() {
             Some(proxy) => {
                 let tunnel = crate::proxy::connect(
                     proxy,
@@ -823,13 +832,13 @@ impl Transport for HttpsTransport {
         let proxy = self
             .plain
             .proxy
-            .as_ref()
+            .current()
             .filter(|proxy| !proxy.bypassed(&target.host));
         let head = build_head(&request, &target, &self.plain.user_agent, false)?;
 
         // 走代理时，到目标的 TLS 套在隧道里；隧道可能是明文 TCP，也可能已经套了一层
         // 到代理的 TLS（HTTPS 代理）。
-        let stream: Box<dyn crate::proxy::ReadWrite + Send> = match proxy {
+        let stream: Box<dyn crate::proxy::ReadWrite + Send> = match proxy.as_ref() {
             Some(proxy) => {
                 crate::proxy::connect(
                     proxy,

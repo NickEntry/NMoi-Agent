@@ -5427,5 +5427,12 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
   内核层在 Android 上只有 VpnService（排除），proot 里没 root 没 netns，iptables 与 DNS 改道都不成立。
   所以无痕方案不存在。将来若要"少留痕"，只有垫片 + unix socket，且必须标注可被检测、
   静态程序无效——默认状态是**什么都不注入**，容器命令直连。
-- 已落地：`crates/core/src/proxy.rs`（握手、绕过匹配、TLS 到代理）+ 两个 transport 的 `proxy` 字段，
-  9 条单测用本机假代理跑真 socket。未接线：FFI / 探测缓存 / 设置页 / Vault / 供应商级覆盖。
+- **实时生效**：`ProxyHandle`（Arc<RwLock<Option<ProxyConfig>>>）每次请求现读；
+  本地端点也拿同一个句柄，换上游不用重启。
+- **持久会话**：垫片必须**常驻**（`/etc/ld.so.preload` 与代理开关解耦），代理开关只写/删
+  `/etc/nmoi-net.conf` 与起停端点；垫片**每个新连接**读一次配置，所以关→开、开→关都即时，
+  已经建立的连接不重路由。垫片缺失时界面不显示"已开启"。
+- 已落地：`crates/core/src/proxy.rs`（握手、绕过匹配、TLS 到代理、`ProxyHandle`）+
+  `crates/core/src/proxy_server.rs`（本地 SOCKS5 端点，随机凭证，上游热改）+ 两个 transport 的
+  `proxy` 字段，15 条单测用本机假代理/假端点跑真 socket。
+  未接线：FFI / 探测缓存 / 设置页 / Vault / 供应商级覆盖 / 垫片（需 NDK 构建）。

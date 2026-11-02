@@ -141,6 +141,41 @@ fn cidr_contains(network: IpAddr, bits: u8, host: IpAddr) -> bool {
     }
 }
 
+/// 一份**可热改**的代理配置：设置页一改，下一次请求/下一次连接就用新的。
+///
+/// 为什么不是每次现读库：传输层在 core 里，读库是 FFI 的事；这里只认一个句柄。
+/// 正在跑的连接保持旧配置（换不了，也不该换），新连接用新的——这就是"实时生效"的边界。
+#[derive(Debug, Clone, Default)]
+pub struct ProxyHandle(std::sync::Arc<std::sync::RwLock<Option<ProxyConfig>>>);
+
+impl ProxyHandle {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn fixed(config: ProxyConfig) -> Self {
+        let handle = Self::default();
+        handle.set(Some(config));
+        handle
+    }
+
+    /// 换一份配置。`None` = 关掉代理（之后的新请求直连）。
+    pub fn set(&self, config: Option<ProxyConfig>) {
+        let mut slot = self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = config;
+    }
+
+    pub fn current(&self) -> Option<ProxyConfig> {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
 /// 一条已经打通到目标的隧道。`Box` 是因为 HTTPS 代理那条路上它可能已经套了一层 TLS。
 pub trait ReadWrite: Read + Write {}
 impl<T: Read + Write> ReadWrite for T {}
@@ -224,6 +259,35 @@ pub fn connect(
             }
         }
     }
+}
+
+/// 只要一条**裸 TCP 隧道**（不给绝对 URI 那种）。
+///
+/// 容器里的垫片要的是"把字节搬过去"，不是 HTTP 帧，所以这里不返回 [`Tunnel`]。
+/// HTTPS 代理那一条要套两层 TLS，拆不出两个方向，容器链路暂时不支持——明确报错。
+pub fn connect_raw(
+    proxy: &ProxyConfig,
+    host: &str,
+    port: u16,
+    connect_timeout: Duration,
+    read_timeout: Option<Duration>,
+) -> Result<TcpStream, TransportError> {
+    let mut stream = connect_tcp(&proxy.host, proxy.port, connect_timeout)?;
+    stream
+        .set_read_timeout(Some(connect_timeout))
+        .and_then(|_| stream.set_write_timeout(Some(connect_timeout)))
+        .map_err(|error| TransportError::Io(format!("设置代理握手超时: {error}")))?;
+    match proxy.kind {
+        ProxyKind::Socks5 => socks5_handshake(&mut stream, proxy, host, port)?,
+        ProxyKind::Http => http_connect(&mut stream, proxy, host, port)?,
+        ProxyKind::Https => {
+            return Err(TransportError::Unsupported(
+                "容器链路暂不支持 HTTPS 代理上游（两层 TLS 拆不出双向）".into(),
+            ))
+        }
+    }
+    set_timeouts(&stream, read_timeout)?;
+    Ok(stream)
 }
 
 fn set_timeouts(stream: &TcpStream, read_timeout: Option<Duration>) -> Result<(), TransportError> {
