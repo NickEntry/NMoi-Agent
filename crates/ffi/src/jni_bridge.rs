@@ -653,6 +653,50 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAttachmentsJson<'
     to_jstring(&mut env, text)
 }
 
+/// 全部附件（D216）：存储管理页。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAllAttachmentsJson<'local>(
+    _env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+) -> jstring {
+    let text = guarded(move || {
+        take_json(crate::storage::nmoi_storage_list_all_attachments_json(
+            handle as u64,
+        ))
+    });
+    // 这一条没有字符串参数，直接转。
+    let mut env = _env;
+    to_jstring(&mut env, text)
+}
+
+/// 删一张附件（D216）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteAttachmentJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    attachment: JString<'local>,
+) -> jstring {
+    let id = read_string(&mut env, &attachment);
+    let text = guarded(move || {
+        let Some(id) = id else {
+            return bad_string();
+        };
+        let Ok(c_id) = CString::new(id) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（attachment）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_delete_attachment_json(
+            handle as u64,
+            c_id.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 只改归属：消息、版本、摘要一个字节都不搬（搬就会有两份"同一个会话"）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_moveConversationJson<'local>(

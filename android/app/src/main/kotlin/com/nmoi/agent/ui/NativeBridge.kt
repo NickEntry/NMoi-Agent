@@ -91,6 +91,12 @@ internal object NativeBridge {
     /** 一个会话的附件清单（D208）：回 `{"session","items":[…]}`，不含字节。 */
     external fun listAttachmentsJson(handle: Long, session: String): String
 
+    /** 全部附件（D216，存储管理页）：回 `{"items":[…]}`，带会话标题与路径。 */
+    external fun listAllAttachmentsJson(handle: Long): String
+
+    /** 删一张附件（D216）：行与文件一起删。回 `{"deleted":bool}`。 */
+    external fun deleteAttachmentJson(handle: Long, attachment: String): String
+
     /** 校验子助手名单（D176）：`[{owner,id,description}]` → `{ok, problems:[{kind,message}]}`。 */
     external fun validateVarsJson(list: String): String
 

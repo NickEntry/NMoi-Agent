@@ -331,6 +331,47 @@ pub extern "C" fn nmoi_storage_list_attachments_json(
     })
 }
 
+/// 全部附件（D216）：存储管理页用，带会话标题与盘上路径。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_list_all_attachments_json(handle: u64) -> *mut c_char {
+    run_json(|| {
+        with_storage(handle, |storage| {
+            let items: Vec<Value> = storage
+                .all_attachments()
+                .map_err(storage_error)?
+                .into_iter()
+                .map(|item| {
+                    json!({
+                        "id": item.id,
+                        "conversation": item.conversation,
+                        "title": item.conversation_title,
+                        "message": item.message,
+                        "mime": item.mime,
+                        "size": item.size,
+                        "path": item.path,
+                    })
+                })
+                .collect();
+            Ok(json!({ "items": items }))
+        })
+    })
+}
+
+/// 删一张附件（D216）：行与文件一起删。`deleted=false` = 本来就没有。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_delete_attachment_json(
+    handle: u64,
+    attachment: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let id = read_str(attachment, "attachment")?;
+        let deleted = with_storage(handle, |storage| {
+            storage.delete_attachment(id).map_err(storage_error)
+        })?;
+        Ok(json!({ "deleted": deleted }))
+    })
+}
+
 /// 单独一条而不是塞进 `create_conversation`：用户常常先建会话、再挑模型，
 /// 而 `create` 的签名一动，C 侧所有调用点都得跟着改。
 ///

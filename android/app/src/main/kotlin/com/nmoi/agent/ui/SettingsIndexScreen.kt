@@ -117,6 +117,7 @@ private fun summaryFor(
         SettingsGroup.Context -> "75% / 92% · 未接"
         SettingsGroup.Models -> "供应商 · 助手 · 七条提示词"
         SettingsGroup.Tools -> toolsSummary
+        SettingsGroup.Storage -> "图片附件 · 查看 / 导出 / 删除"
         SettingsGroup.Debug -> logSummary
         SettingsGroup.About -> "GPL-3.0-only · 0.0.1-dev"
     }

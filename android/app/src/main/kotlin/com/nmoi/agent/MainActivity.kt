@@ -49,6 +49,7 @@ import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
+import com.nmoi.agent.ui.StorageScreen
 import com.nmoi.agent.ui.ToolsScreen
 import com.nmoi.agent.ui.TurnRunner
 import com.nmoi.agent.ui.theme.NMoiTheme
@@ -621,6 +622,10 @@ class MainActivity : ComponentActivity() {
                             SettingsGroup.Tools -> ToolsScreen(
                                 onBack = { backStack = backStack.dropLast(1) },
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
+                            )
+
+                            SettingsGroup.Storage -> StorageScreen(
+                                onBack = { backStack = backStack.dropLast(1) },
                             )
 
                             SettingsGroup.Debug -> DebugScreen(

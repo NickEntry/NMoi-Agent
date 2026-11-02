@@ -1391,3 +1391,9 @@ core 新增 `thinkparse`（`<think>`/`<thinking>`/`<reasoning>`，容忍重复�
 **0.15ag 模型行左滑修复（2026-11-02，D215）**：红底铺到整个 Box（不再依赖背后那层
 `matchParentSize` 的高度），删除区加垃圾桶图标；`clipToBounds` 防画到卡片外；进多选自动收回。
 **未实测**：V48。
+
+**0.15ad 第一批（2026-11-02，D216）**：schema **v11**（attachments 重建：bytes 可空 + path）；
+附件写到 `<库目录>/sessions/<会话>/images/`，老 BLOB 首次读时懒迁移；删会话清目录；
+FFI 加 `list_all_attachments` / `delete_attachment`；设置里新增「存储」页（按会话列出、
+缩略图、路径、导出、删除）。**未做**：`view_image` 工具（需要工具结果的多模态通道）。
+**未实测**：V49。

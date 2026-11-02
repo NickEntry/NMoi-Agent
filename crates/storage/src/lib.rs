@@ -713,6 +713,102 @@ mod tests {
         assert_eq!(left, 0);
     }
 
+    /// D216：字节落到会话私有目录，库里只留路径；删会话时目录一起清。
+    #[test]
+    fn attachments_live_on_disk_under_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        let bytes = vec![1u8, 2, 3, 4];
+
+        let id = storage
+            .put_attachment(session, &message, "image/png", &bytes)
+            .unwrap();
+
+        // 盘上有一份，库里 bytes 是 NULL、path 指过去。
+        let path: Option<String> = storage
+            .conn
+            .query_row("SELECT path FROM attachments WHERE id = ?1", [&id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let path = path.expect("新附件必须有路径");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let blob: Option<Vec<u8>> = storage
+            .conn
+            .query_row(
+                "SELECT bytes FROM attachments WHERE id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(blob.is_none(), "新附件不该再往库里塞字节");
+        assert!(path.contains(&session.to_string()), "{path}");
+
+        // 存储管理：一条，带会话标题。
+        let all = storage.all_attachments().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, id);
+        assert_eq!(all[0].conversation_title, "体检");
+
+        // 删附件：行与文件都没了。
+        assert!(storage.delete_attachment(&id).unwrap());
+        assert!(!std::path::Path::new(&path).exists());
+        assert!(storage.all_attachments().unwrap().is_empty());
+    }
+
+    /// 老库里的 BLOB 附件：第一次读的时候搬到盘上，之后走文件。
+    #[test]
+    fn legacy_blob_attachments_are_adopted_on_first_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+
+        // 手工塞一条 v10 形状的记录（有 bytes、没有 path）。
+        storage
+            .conn
+            .execute(
+                "INSERT INTO attachments(id, conv_id, message_id, mime, bytes, path, size, created_at)
+                 VALUES ('legacy-1', ?1, ?2, 'image/jpeg', ?3, NULL, 3, 1)",
+                rusqlite::params![session.to_string(), message.to_string(), vec![9u8, 8, 7]],
+            )
+            .unwrap();
+
+        let (mime, bytes) = storage.attachment("legacy-1").unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(bytes, vec![9u8, 8, 7]);
+
+        let path: Option<String> = storage
+            .conn
+            .query_row(
+                "SELECT path FROM attachments WHERE id = 'legacy-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let path = path.expect("读过一次之后应当搬到了盘上");
+        assert_eq!(std::fs::read(path).unwrap(), vec![9u8, 8, 7]);
+    }
+
+    /// 删会话：`sessions/<id>/` 整目录一起清。
+    #[test]
+    fn deleting_a_conversation_removes_its_attachment_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        storage
+            .put_attachment(session, &message, "image/png", b"abc")
+            .unwrap();
+        let folder = storage.attachment_dir(session);
+        assert!(folder.exists());
+
+        assert!(storage.delete_conversation(session).unwrap());
+        assert!(!folder.exists(), "会话目录应当被清掉");
+    }
+
     /// 四种拒绝：非图片、空字节、超上限、消息不属于这个会话。
     #[test]
     fn attachments_refuse_what_cannot_be_shown() {

@@ -286,3 +286,27 @@ CREATE TABLE attachments (
 CREATE INDEX attachments_by_conv ON attachments(conv_id, created_at);
 CREATE INDEX attachments_by_message ON attachments(message_id);
 "#;
+
+/// v11（D216）：附件改成"文件在盘上、库里只留路径"。
+///
+/// SQLite 不能直接去掉 `NOT NULL`，所以重建一次表：`bytes` 允许为空（老数据还在里面，
+/// 读的时候顺手搬到盘上），新数据只写 `path`。备份仍然是"一份 .db + 一个 sessions/ 目录"，
+/// 存储管理页会把两样都算进去。
+pub const SCHEMA_V11: &str = r#"
+CREATE TABLE attachments_v11 (
+    id         TEXT PRIMARY KEY,
+    conv_id    TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    mime       TEXT NOT NULL,
+    bytes      BLOB,
+    path       TEXT,
+    size       INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+INSERT INTO attachments_v11(id, conv_id, message_id, mime, bytes, path, size, created_at)
+    SELECT id, conv_id, message_id, mime, bytes, NULL, size, created_at FROM attachments;
+DROP TABLE attachments;
+ALTER TABLE attachments_v11 RENAME TO attachments;
+CREATE INDEX attachments_by_conv ON attachments(conv_id, created_at);
+CREATE INDEX attachments_by_message ON attachments(message_id);
+"#;

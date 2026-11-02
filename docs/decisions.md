@@ -5215,3 +5215,29 @@ Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（�
 
 **验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `compileDebugKotlin` 会跑。
 真机路径见 `docs/verification.md` **V48**。
+
+## D216 附件落到会话私有目录 + 存储管理（2026-11-02）
+
+用户 2026-11-02 的方向：图片放**每个会话的文件私有路径**，能在存储管理里查看/导出/删除。
+
+1. **schema v11**：`attachments` 重建一次（SQLite 去不掉 `NOT NULL`）：`bytes` 允许为空、
+   新增 `path`。老数据原样留着（还在 `bytes` 里），新数据只写 `path`。
+2. **落盘位置**：`<库目录>/sessions/<会话 id>/images/<附件 id>.<ext>`。
+   与库同级是刻意的——备份/导出只要带上库和 `sessions/` 就齐了；工作区的文件工具也能直接读它。
+   扩展名只用于文件名，类型判断始终看 `mime` 列。
+3. **老数据懒迁移**：第一次读一条"只有 BLOB"的附件时，把它写到盘上、`path` 填好、
+   `bytes` 清空；写不进去也照常返回字节（读图不该因为"整理"失败而失败）。
+4. **删会话带走目录**：`delete_conversation` 删完行之后 `remove_dir_all(sessions/<id>)`；
+   `delete_attachment` 行与文件一起删。库里干净、盘上也干净。
+5. **存储管理页**（设置 → 存储）：按会话列出附件，缩略图 + mime + 大小 + **盘上相对路径**
+   （`sessions/<会话>/images/<id>.jpg`，用户要能知道它到底在哪）；每条可「导出」（SAF
+   另存）与「删除」（先确认）。空态写"在聊天页「＋ → 图片」发一张，它就会出现在这里"。
+6. **FFI**：`list_all_attachments`（带会话标题与路径）、`delete_attachment`。
+
+**没做的**：`view_image` 工具。它需要**工具结果能回图像**——现在的工具结果只有文本，
+要么给工具结果加多模态通道（core 的 `ToolOutcome` + wire 都要动），要么先做视觉覆盖
+（另一个模型描述）。这条单独一批，不塞进这次。
+
+**验证**：storage lib **40 条**（新增：落盘/路径/删附件/懒迁移/删会话清目录）；
+全仓 **773 项全绿**；`fmt` / `clippy -D warnings` 干净；`ffi_smoke` 321 项 0 失败；
+JNI 期望表含两条新符号；本机 kotlinc 全量只剩 9 条 `R`。真机路径见 **V49**。

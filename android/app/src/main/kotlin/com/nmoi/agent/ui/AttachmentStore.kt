@@ -31,7 +31,62 @@ internal data class PendingImage(
  * 首屏会被拖死；而屏幕上真正要画的往往只有一两条。
  * 结果留在内存里（最多 24 张），滚回去不用再走一次 JNI。
  */
+/** 存储管理页的一行（D216）：带会话标题与盘上路径。 */
+internal data class StoredAttachment(
+    val id: String,
+    val conversation: String,
+    val title: String,
+    val message: String,
+    val mime: String,
+    val size: Long,
+    val path: String?,
+)
+
 internal object AttachmentStore {
+
+    /** 全部附件（存储管理页）。 */
+    suspend fun listAll(databasePath: String): Result<List<StoredAttachment>> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.listAllAttachments(handle).mapCatching { envelope ->
+                val items = envelope.optJSONArray("items") ?: org.json.JSONArray()
+                buildList {
+                    for (index in 0 until items.length()) {
+                        val row = items.optJSONObject(index) ?: continue
+                        val id = row.optString("id", "")
+                        if (id.isEmpty()) continue
+                        add(
+                            StoredAttachment(
+                                id = id,
+                                conversation = row.optString("conversation", ""),
+                                title = row.optString("title", ""),
+                                message = row.optString("message", ""),
+                                mime = row.optString("mime", ""),
+                                size = row.optLong("size", 0L),
+                                path = row.optString("path", "").ifEmpty { null },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+    /** 删一张附件：行与文件一起删。 */
+    suspend fun delete(databasePath: String, id: String): Result<Boolean> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.deleteAttachment(handle, id)
+                .map { envelope -> envelope.optBoolean("deleted", false) }
+        }
+
+    /** 原图字节（导出用）。 */
+    suspend fun bytes(databasePath: String, id: String): Result<ByteArray> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.attachment(handle, id).mapCatching { envelope ->
+                val data = envelope.optString("data", "")
+                if (data.isEmpty()) error("附件 $id 没有字节")
+                Base64.decode(data, Base64.NO_WRAP)
+            }
+        }
+
 
     private const val MAX_CACHED = 24
     private val cache = object : LinkedHashMap<String, Bitmap>(MAX_CACHED, 0.75f, true) {

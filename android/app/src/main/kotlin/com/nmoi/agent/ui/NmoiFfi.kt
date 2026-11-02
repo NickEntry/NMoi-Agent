@@ -96,6 +96,14 @@ internal object NmoiFfi {
     suspend fun listAttachments(handle: Long, session: String): Result<JSONObject> =
         call("list_attachments") { NativeBridge.listAttachmentsJson(handle, session) }
 
+    /** 全部附件（D216，存储管理页）。 */
+    suspend fun listAllAttachments(handle: Long): Result<JSONObject> =
+        call("list_all_attachments") { NativeBridge.listAllAttachmentsJson(handle) }
+
+    /** 删一张附件（D216）。 */
+    suspend fun deleteAttachment(handle: Long, id: String): Result<JSONObject> =
+        call("delete_attachment") { NativeBridge.deleteAttachmentJson(handle, id) }
+
     /**
      * 校验子助手名单（D176）。**不需要存储句柄**：它是一条纯检查，
      * 保存助手配置之前调它，撞名当场红字，而不是等发请求时才 400。

@@ -13,6 +13,7 @@ internal enum class SettingsGroup(val title: String, val hint: String) {
     Context("会话与上下文", "压缩两条线、视觉覆盖、上下文窗口默认值"),
     Models("模型与提示词", "供应商、助手、七条压缩提示词"),
     Tools("工具与工作区", "工作区根目录、技能、MCP、世界书"),
+    Storage("存储", "图片附件：查看 / 导出 / 删除"),
     Debug("调试", "日志（三种通道）、原生层状态、版本"),
     About("关于", "许可、第三方声明、构建号"),
 }
@@ -48,6 +49,8 @@ internal fun pendingRows(group: SettingsGroup): List<PendingRow> = when (group) 
         PendingRow("MCP", "两级门：设置级加载 + 会话级生效", "待接 P7"),
         PendingRow("世界书", "酒馆格式（D93），现在还没动工", "待接 P4.3"),
     )
+
+    SettingsGroup.Storage -> emptyList()
 
     SettingsGroup.Debug -> emptyList()
 
