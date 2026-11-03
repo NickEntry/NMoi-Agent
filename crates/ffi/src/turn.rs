@@ -1192,12 +1192,28 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
         drop(table);
         // 增量（0.15n）：只给**尾部**（≤8 KiB）+ 总量，界面拿它逐字画。
         // 轮号（0.15ah）：工具往返之后 +1，界面看到它变了就清掉上一轮那截。
-        let (text, text_len, reasoning, reasoning_len) = partial_tail(session);
+        //
+        // **没在跑就一律给空**（D236）：缓冲在上一轮结束后还留着上一份正文，
+        // 而界面是在 `Started` 事件里就开始轮询的——那一瞬 native 这边还没登记，
+        // 于是它读到的是上一轮的残字，屏幕上就成了"新消息里写着上一条的回答"。
+        // 没有登记 = 没有"这一轮"，那几个字段就没有意义。
+        let (text, text_len, reasoning, reasoning_len, round) = if running {
+            let (text, text_len, reasoning, reasoning_len) = partial_tail(session);
+            (
+                text,
+                text_len,
+                reasoning,
+                reasoning_len,
+                partial_round(session),
+            )
+        } else {
+            (String::new(), 0, String::new(), 0, 0)
+        };
         Ok(json!({
             "session": session,
             "running": running,
             "cancelled": cancelled,
-            "round": partial_round(session),
+            "round": round,
             "text": text,
             "text_len": text_len,
             "reasoning": reasoning,

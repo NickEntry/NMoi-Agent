@@ -13,7 +13,13 @@ import org.junit.Test
  */
 class ProcessRowsTest {
 
-    private fun unit(id: String, kind: String = "turn", source: String = "history", closed: Boolean = true): ChatUnit {
+    private fun unit(
+        id: String,
+        kind: String = "turn",
+        source: String = "history",
+        closed: Boolean = true,
+        reasoning: String? = null,
+    ): ChatUnit {
         val message = ChatMessage(
             id = "$id-m",
             seq = 0,
@@ -26,6 +32,7 @@ class ProcessRowsTest {
             locked = false,
             toolCalls = 0,
             toolCallId = null,
+            reasoning = reasoning,
         )
         return ChatUnit(
             id = id,
@@ -40,6 +47,7 @@ class ProcessRowsTest {
     private fun thinking(id: String, closed: Boolean = true) = unit(id, source = "model_thinking", closed = closed)
     private fun tool(id: String, closed: Boolean = true) = unit(id, kind = "tool_pair", closed = closed)
     private fun text(id: String) = unit(id)
+    private fun textWithReasoning(id: String) = unit(id, reasoning = "想了一会儿")
 
     @Test
     fun `连续的思考与工具合成一组`() {
@@ -102,6 +110,34 @@ class ProcessRowsTest {
         val items = listOf(thinking("a"), tool("b", closed = false)).mapNotNull { processItemOf(it) }
         assertTrue(items.last().running)
         assertTrue(!items.first().running)
+    }
+
+    /**
+     * 带工具调用的那一轮（0.15ax 起正文那条也存思考）。
+     *
+     * 用户 2026-11-04 报的就是这个：屏幕上是「工具调用」一张卡、「思考」一张卡，
+     * 明明是同一次回合。现在思考并进同一个大块，正文自己一行、思考不再画第二遍。
+     */
+    @Test
+    fun `工具后面那条带思考的正文-思考并进大块`() {
+        val rows = buildRows(listOf(tool("a"), textWithReasoning("b")))
+        assertEquals(2, rows.size)
+        val group = rows[0] as ChatRow.Process
+        assertEquals(listOf("a", "b#reasoning"), group.items.map { it.id })
+        assertEquals(ProcessItem.Kind.Thinking, group.items.last().kind)
+        val body = rows[1] as ChatRow.Single
+        assertEquals("b", body.unit.id)
+        assertTrue("思考已经在大块里了，正文这边不该再画", body.hideReasoning)
+    }
+
+    /** 只有正文、前面没有过程项：思考留在气泡里，不为了凑一组硬拆。 */
+    @Test
+    fun `没有过程项时思考留在气泡里`() {
+        val rows = buildRows(listOf(textWithReasoning("a")))
+        assertEquals(1, rows.size)
+        val only = rows.single() as ChatRow.Single
+        assertEquals("a", only.unit.id)
+        assertTrue(!only.hideReasoning)
     }
 
     @Test

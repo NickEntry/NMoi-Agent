@@ -448,6 +448,37 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                     .weight(1f),
                             )
                         }
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            DialogChip(
+                                label = "清容器垫片",
+                                enabled = current != null && !probing,
+                            ) {
+                                probing = true
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        ProxyContainer.removeShim(context)
+                                    }
+                                    // 清完立刻复检：用户点这一颗就是为了"容器能不能起来"这个答案。
+                                    val verify = withContext(Dispatchers.IO) {
+                                        EnvirRepository.recheck(context)
+                                    }
+                                    probe = verify.getOrNull()?.probe
+                                    installed = EnvirRepository.installed(context)
+                                    notice = result.getOrElse { "清除失败：${it.message}" }
+                                    probing = false
+                                }
+                            }
+                            Text(
+                                text = "容器起不来时先点这个：老版本往 /etc/ld.so.preload 写过一行，" +
+                                    "那会让每个程序都起不来（D237）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .align(Alignment.CenterVertically)
+                                    .padding(start = 10.dp)
+                                    .weight(1f),
+                            )
+                        }
                         probe?.let { result ->
                             Text(
                                 text = "退出码 ${result.exitCode ?: "无"} · ${result.durationMs} ms" +

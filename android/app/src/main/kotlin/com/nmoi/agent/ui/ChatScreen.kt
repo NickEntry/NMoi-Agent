@@ -382,6 +382,11 @@ internal fun ChatScreen(
     LaunchedEffect(sessionId, live?.running) {
         val sid = sessionId ?: return@LaunchedEffect
         if (live?.running != true) return@LaunchedEffect
+        // `Started` 是在**发请求之前**发的，而 native 那边要等 `turn_run` 进来才登记。
+        // 这一小段里 `turn_busy` 说"没在跑"——不能当成跑完了，否则轮询当场退出，
+        // 屏幕上就一直是空的（以前更糟：读到上一轮的残字，见 D236）。
+        var started = false
+        var waited = 0
         while (true) {
             val info = withContext(Dispatchers.IO) { NmoiFfi.turnBusy(sid).getOrNull() } ?: break
             val round = info.optInt("round", 0)
@@ -390,6 +395,7 @@ internal fun ChatScreen(
             val tailText = info.optString("text", "")
             val tailReasoning = info.optString("reasoning", "")
             val running = info.optBoolean("running", false)
+            if (running) started = true
             val current = live ?: break
             val have = current.text.codePointCount(0, current.text.length)
             val base = when {
@@ -403,15 +409,21 @@ internal fun ChatScreen(
                 )
                 // native 的缓冲有上限（50 KB，超了砍头）。这时总量比界面手里的还少，
                 // 再按差值算就永远"没有新字"——屏幕上会卡住不动。从尾部重来，不假装完整。
-                totalText < have -> current.copy(text = "")
+                totalText > 0 && totalText < have -> current.copy(text = "")
                 else -> current
             }
             live = base.copy(
                 text = growText(base.text, totalText, tailText),
                 reasoning = growText(base.reasoning, totalReasoning, tailReasoning),
-                running = running,
+                // 还没登记的那一小段里保持 true：这个值是上面那条 effect 的 key，
+                // 在这里写 false 会把它自己重启掉，轮询就断了。
+                running = if (started) running else true,
             )
-            if (!running) break
+            if (!running) {
+                if (started) break
+                waited += 100
+                if (waited > 15_000) break
+            }
             delay(100)
         }
     }
@@ -1820,6 +1832,7 @@ private fun MessageArea(
             UnitBlock(
                 unit = unit,
                 showHeader = showHeader,
+                hideReasoning = row.hideReasoning,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 live = live,
@@ -2036,6 +2049,8 @@ private fun UnitBlock(
     unit: ChatUnit,
     /** 这一段是不是"这一轮助手的头一块"。连续的工具卡/正文只画一次抬头。 */
     showHeader: Boolean,
+    /** 思考已经并进上面那个大块了：这里别再画一遍（见 `ProcessRows.buildRows`）。 */
+    hideReasoning: Boolean = false,
     maxBubble: Dp,
     gapAbove: Dp,
     /** 这一轮正在长的回复（就地渲染用，D227）。 */
@@ -2099,7 +2114,9 @@ private fun UnitBlock(
                     else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         // 思考块（D162）：以前 `reasoning` 只存不显示，界面上永远看不见——
                         // 那是铁律 ②（不许有存了但看不见的东西）直接踩线的一处。
-                        message.reasoning?.takeIf { it.isNotBlank() }?.let { ReasoningCard(it) }
+                        if (!hideReasoning) {
+                            message.reasoning?.takeIf { it.isNotBlank() }?.let { ReasoningCard(it) }
+                        }
                         AssistantMessage(
                             message = message,
                             showHeader = false,

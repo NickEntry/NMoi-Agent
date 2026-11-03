@@ -5,27 +5,28 @@ import java.io.File
 import java.security.SecureRandom
 
 /**
- * 容器里的代理接线（D226 / 0.15ar-e）。
+ * 容器里的代理接线（D226 / 0.15ar-e）。**注入这条路已经停了**（D237）。
  *
- * 四件事，顺序固定：
+ * 为什么停：`libnmoi_netshim.so` 是给 `aarch64-linux-android`（bionic）编的，
+ * 而容器里是 Ubuntu 的 glibc。bionic 的 `.so` 需要 bionic 的 `libdl.so`，
+ * 容器里只有 glibc 的 `libdl.so.2`——把它写进 `/etc/ld.so.preload`，
+ * **容器里每一个动态程序都起不来**，报的就是
+ * `/bin/sh: error while loading shared libraries: libdl.so: cannot open shared object file`。
+ * 真机上撞到了，覆盖安装也修不了：`ld.so.preload` 不在 rootfs 包里，
+ * 重解一遍它还在原处。
  *
- * 1. 把 `libnmoi_netshim.so` 从 `nativeLibraryDir` 复制进 rootfs 的 `/usr/local/lib/`；
- * 2. 写 `/etc/ld.so.preload`（**只在 .so 真的存在时写**，写之前备份原文件）；
- * 3. 起本地 SOCKS5 端点，把 `host/port/user/pass` 写进 `/etc/nmoi-net.conf`；
- * 4. 关代理时只删配置、停端点，**不删垫片**——垫片常驻，"开"才能对已经在跑的会话即时生效。
- *
- * 垫片写坏 = 容器里所有动态程序起不来。所以这里每一步都先检查再动手，
- * 失败就把原因交回去，不装作成功。
+ * 现在的行为：
+ * - [sync] 只起本地端点（App 自己的请求走它），**不往容器里写任何东西**；
+ * - [removeShim] 留着，专门清老版本留下的 preload 与垫片；
+ * - [cleanStale] 装在每次安装/覆盖安装之后跑一遍，把老版本留下的那一行摘掉。
  */
 internal object ProxyContainer {
-    private const val SHIM_NAME = "libnmoi_netshim.so"
     private const val GUEST_LIB = "usr/local/lib/nmoi-netshim.so"
     private const val PRELOAD = "etc/ld.so.preload"
     private const val CONF = "etc/nmoi-net.conf"
     private const val PREFS = "nmoi_proxy"
     private const val KEY_USER = "container_user"
     private const val KEY_PASS = "container_pass"
-    private const val KEY_CONF = "container_conf"
 
     /** 按当前代理开关同步一次。返回一句给人看的结果。 */
     suspend fun sync(context: Context): Result<String> = runCatching {
@@ -37,35 +38,20 @@ internal object ProxyContainer {
         if (!config.enabled) {
             NmoiFfi.proxyServerStop()
             File(rootfs, CONF).delete()
-            return@runCatching "代理关着：容器内直连（垫片仍在，下次打开即时生效）"
+            return@runCatching "代理关着：App 与容器都直连"
         }
 
-        installShim(context, rootfs).getOrThrow()
-
-        val started = NmoiFfi.proxyServerStart(
+        // 垫片不再注入（D237）：见文件头。容器那一侧就是直连，这里只把本地端点起起来。
+        NmoiFfi.proxyServerStart(
             org.json.JSONObject().put("user", credentials(context, KEY_USER))
                 .put("pass", credentials(context, KEY_PASS)),
-        )
-        val confText = started.fold(
-            onSuccess = { envelope ->
-                envelope.optString("config", "").also {
-                    prefs(context).edit().putString(KEY_CONF, it).apply()
-                }
-            },
-            onFailure = { error ->
-                // 已经在跑：用上次写下的那一份（端口和凭证都没变）。
-                if (error.message?.contains("已经起着") == true) {
-                    prefs(context).getString(KEY_CONF, "").orEmpty()
-                } else {
-                    throw error
-                }
-            },
-        )
-        if (confText.isBlank()) {
-            return@runCatching "端点起来了，但没有可写的配置：先点一次「保存并应用」"
+        ).onFailure { error ->
+            // 已经在跑：端口与凭证都没变，不用重启。
+            if (error.message?.contains("已经起着") != true) throw error
         }
-        File(rootfs, CONF).writeText(confText)
-        "容器内代理已接通：${config.summary()}"
+        // 配置文件只给垫片读；垫片不装了，就别留一个没人读的文件。
+        File(rootfs, CONF).delete()
+        "代理已生效（App 的请求走它）：${config.summary()}。容器里是直连——垫片那条路已经停了（D237）"
     }
 
     /** 删垫片与 preload。给"救命"用：容器起不来时先点这个。 */
@@ -73,34 +59,40 @@ internal object ProxyContainer {
         val installed = EnvirRepository.installed(context)
             ?: return@runCatching "隔离环境没装"
         val rootfs = File(installed.rootfs)
-        File(rootfs, PRELOAD).delete()
-        File(rootfs, GUEST_LIB).delete()
-        NmoiFfi.proxyServerStop()
+        val cleaned = cleanStale(rootfs)
         File(rootfs, CONF).delete()
-        "垫片已移除：容器里的程序恢复直连"
+        NmoiFfi.proxyServerStop()
+        if (cleaned == 0) "没有垫片残留：容器本来就是直连" else "垫片已移除：容器里的程序恢复直连"
     }
 
-    private fun installShim(context: Context, rootfs: File): Result<Unit> = runCatching {
-        val source = File(context.applicationInfo.nativeLibraryDir, SHIM_NAME)
-        if (!source.exists() || source.length() == 0L) {
-            error("APK 里没有 $SHIM_NAME（构建没带垫片），容器内代理用不了")
-        }
-        val target = File(rootfs, GUEST_LIB)
-        target.parentFile?.mkdirs()
-        if (!target.exists() || target.length() != source.length()) {
-            source.copyTo(target, overwrite = true)
-        }
-        // 只在复制成功之后写 preload：先写后复制，中间失败就是容器全挂。
+    /**
+     * 清老版本留下的东西：`/etc/ld.so.preload` 里我们那一行、以及垫片本身。
+     *
+     * 只动**我们写的**那一行（`/usr/local/lib/nmoi-netshim.so`）：别人写的 preload 原样留着。
+     * 摘完文件空了就把文件删掉——空 preload 也是文件，留着只会让下一个人以为这里配过什么。
+     *
+     * 返回摘掉了几处（0 = 本来就没有）。
+     */
+    fun cleanStale(rootfs: File): Int {
+        var cleaned = 0
         val preload = File(rootfs, PRELOAD)
-        val line = "/$GUEST_LIB"
-        val current = if (preload.exists()) preload.readText() else ""
-        if (!current.lineSequence().any { it.trim() == line }) {
-            if (current.isNotBlank()) {
-                // 别人（或上一个版本）写的 preload 先留一份，别直接覆盖掉。
-                File(rootfs, "$PRELOAD.nmoi-bak").writeText(current)
+        if (preload.isFile) {
+            val line = "/$GUEST_LIB"
+            val kept = preload.readText().lineSequence()
+                .filter { it.isNotBlank() && it.trim() != line }
+                .toList()
+            if (kept.size != preload.readText().lineSequence().count { it.isNotBlank() }) {
+                if (kept.isEmpty()) preload.delete() else preload.writeText(kept.joinToString("\n") + "\n")
+                cleaned += 1
             }
-            preload.writeText(current.trimEnd() + (if (current.isBlank()) "" else "\n") + line + "\n")
         }
+        val shim = File(rootfs, GUEST_LIB)
+        if (shim.isFile) {
+            shim.delete()
+            cleaned += 1
+        }
+        if (cleaned > 0) NLog.i("Proxy", "清掉老版本留下的容器垫片：$cleaned 处")
+        return cleaned
     }
 
     private fun prefs(context: Context) =

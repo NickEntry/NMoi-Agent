@@ -5810,3 +5810,75 @@ D231 那套（`conversations.workspace_mode` 两档：`chat` / `shared`）是**�
 `usr/bin/coreutils` 仍是普通文件、`cat`/`ls`/`sh` 的链都能走到底。
 `TarGzTest` 四条（首次解包、解第二遍不跟随已有链接、越界拒绝、目录挡住链接）进 CI 的
 `testDebugUnitTest`。真机复测见 V59 第 2 条。
+
+## D236 `turn_busy` 在没登记时给空：新消息里写着上一条回答（2026-11-04）
+
+真机（2026-11-04 02:49）发第二条消息时，屏幕上先出现的是**上一条**的回答，思考卡写着上一条的
+「219 字（还在写）」，整轮生成期间一个字都没长；收尾之后才换成新的。
+
+**原因**：`Started` 事件是在 `TurnRepository.send` **之前**发的，而 native 那边要等
+`turn_run` 进来才 `Registration::new`。这一小段里界面已经开始轮询 `turn_busy`，而它
+**不管有没有登记都读 partial 表**——表里还留着上一轮的正文（`Registration::new` 只在
+**开始**时清，结束时不清）。于是：
+
+1. 界面拿到上一轮的 `text_len` / `round`，`round != current.round` 被当成"换轮"，
+   把上一轮的残字当成这一轮的新内容铺上屏；
+2. `running:false` 让轮询循环**当场退出**（`if (!running) break`），
+   之后这一轮真的跑起来也没人再问——所以"流式不实时"和"串内容"是同一个根。
+
+**改法（两处都要）**：
+
+1. native：`running == false` 时 `round` / `text` / `text_len` / `reasoning*` 一律给空。
+   没有登记 = 没有"这一轮"，那几个字段没有意义。
+2. 界面：轮询循环在**见过一次 `running:true`** 之前不退出（15 秒兜底）；
+   而且这一小段里 `live.running` 保持 `true`——它是上面那条 effect 的 key，
+   在这里写 false 会把它自己重启掉。顺带把"缓冲砍头重来"那条分支加一道 `totalText > 0`。
+
+**验证**：`cargo clippy` 零告警；真机见 V61。
+
+## D237 容器起不来的真凶：我们自己注入的 bionic 垫片（2026-11-04）
+
+现象：容器里 `/bin/sh` 报
+`error while loading shared libraries: libdl.so: cannot open shared object file`；
+覆盖安装修不好，删掉重装才好。
+
+**原因**：`ProxyContainer` 把 `libnmoi_netshim.so` 复制进 rootfs 并写进 `/etc/ld.so.preload`。
+那个 `.so` 是 `cargo ndk` 按 **`aarch64-linux-android`（bionic）** 编的，而容器是 Ubuntu 的 glibc：
+bionic 的 `libdl.so` 在 glibc 里不存在（rootfs 只有 `usr/lib/aarch64-linux-gnu/libdl.so.2`，
+本机核对过包里没有 `libdl.so`）。preload 一写，**容器里每一个动态程序**都起不来。
+
+覆盖安装修不好，是因为 `etc/ld.so.preload` **不在 rootfs 包里**（本机核对：包里没有这个文件），
+重解一遍它还在原处。删掉整个 `files/envir` 才会把它一起带走——这就是"删了重装才好"。
+
+**改法**：
+
+- `ProxyContainer.sync` **不再注入**垫片、也不再写 `/etc/nmoi-net.conf`（没人读了）。
+  代理只作用于 App 自己的请求；容器里直连。`installShim` 整个删掉——留着就是个会再犯的入口。
+- `ProxyContainer.cleanStale(rootfs)`：只摘**我们写的那一行**，别人的 preload 原样留着；
+  摘空了就把文件删掉。装在每次安装/覆盖安装之后跑（`EnvirRepository.installBlocking`）。
+- 自检失败时把"容器里还有 /etc/ld.so.preload：<第一行>"写进原因，不再只留一句 loader 报错。
+- 环境页自检卡加一颗「清容器垫片」：不重下 33 MB 也能救。
+
+**没做**：把垫片改成按 glibc 交叉编译（要一套 aarch64-linux-gnu 工具链 + 与容器 glibc 版本对齐，
+是另一件事，而且设计稿本来就写着"默认不注入"）。`crates/netshim` 与 CI 里那条 `cargo ndk` 还在，
+只是没人再往里塞——下次动它时一起决定删不删。
+
+**验证**：`cargo clippy` 零告警；真机见 V62。
+
+## D238 过程块：正文那条身上的思考并进大块（2026-11-04）
+
+用户 2026-11-04：「这些小块要合并成大块，有计划做吗」。屏幕上是两张卡——「工具调用 ×1」
+和「思考 · 905 字」——明明是同一个回合。
+
+**为什么没合**：D229 的分组只认"思考单独成单元"那种。而 0.15ax 之后，带工具调用的那条 assistant
+消息**自己也存思考**（`messages.reasoning`），它跟着正文那个 `turn` 单元走，不是独立单元。
+于是 `buildRows` 看到的是 `[tool_pair, turn]`：工具是过程项、正文不是 → 组里只有一项 →
+按"单独一项不分组"退回成一张卡，思考则在气泡里单独画一张。两张卡都"对"，就是不在一个块里。
+
+**改法**：`reasoningItemOf(unit)` 把"正文那条的思考"也认成一个过程项（id 加 `#reasoning` 后缀，
+免得和独立思考单元的键撞上）。前面**已经**有过程项时，把它并进同一个组，正文单独一行、
+`Single(hideReasoning = true)` 不再画第二遍；前面没有过程项时（普通问答）思考仍留在气泡里——
+为了一条消息硬拆出一个"组"只是把简单的东西弄复杂。
+
+**判据**：`ProcessRowsTest` 两条新用例（工具 + 带思考的正文 → 一个大块 + 一行正文；
+只有正文 → 思考留在气泡里）。真机见 V61 第 3、4 条。

@@ -356,6 +356,11 @@ internal object EnvirRepository {
         val downloaded = part.length()
         runCatching { part.delete() }
 
+        // 老版本往 rootfs 里塞过网络垫片（D237）：那一行 `/etc/ld.so.preload` 会让容器里
+        // **每一个动态程序**都起不来，而它不在 rootfs 包里，重解一遍也不会消失。
+        // 所以每次装完都摘一次——只摘我们自己写的那一行，别人的 preload 不动。
+        ProxyContainer.cleanStale(rootfs)
+
         onPhase(Phase.Verify)
         val check = runSelfCheck(context, rootfs.absolutePath).check
         val previous = if (overlay) installed(context) else null
@@ -421,7 +426,17 @@ internal object EnvirRepository {
                 probe = failed,
             )
         }
-        return Verify(check = parseCheck(result, at), probe = result)
+        val verify = parseCheck(result, at)
+        if (verify.check.ok) return verify
+        // 失败时说清"容器里还有一份 preload"：那是老版本垫片的残留，
+        // 报错文本只会写 `libdl.so: cannot open shared object file`，看不出是谁写的。
+        val preload = File(rootfs, "etc/ld.so.preload")
+        val note = if (preload.isFile && preload.length() > 0) {
+            "（容器里有 /etc/ld.so.preload：" + firstLine(preload.readText()) + "）"
+        } else {
+            ""
+        }
+        return Verify(check = verify.check.copy(reason = verify.check.reason + note), probe = result)
     }
 
     private fun parseCheck(probe: Probe, at: Long): SelfCheck {
