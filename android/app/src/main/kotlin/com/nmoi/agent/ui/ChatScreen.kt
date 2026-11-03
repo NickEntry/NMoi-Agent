@@ -153,7 +153,6 @@ internal fun ChatScreen(
     // 存完一条要重读：`produceState` 只有 key 变了才会重跑，所以用它当"刷新一下"。
     var reloadKey by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
-    // **按会话记**（2026-10-31 真机报：在一个会话里聊过，切到新会话第一句发不出去，
     // 提示"上一轮还没结束"）。原来 `remember {}` 不带 key，切会话时这个状态跟着上一场
     // 留在原地，于是新会话一进来就是 busy。
     var busy by remember(sessionId) {
