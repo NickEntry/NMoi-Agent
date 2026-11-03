@@ -146,13 +146,11 @@ impl Tool for SystemShellTool {
 /// 于是 `head`/`uname`/`ls` 全 "not found"、退出码 127——真机上撞过。
 const GUEST_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// 容器里工作区的挂载点。模型看到的路径就是它，和宿主机那边是同一个目录。
-/// 容器里工作区的挂载点（D231 / 0.15ao：从 `/root/workspace` 挪到 `/chat`）。
+/// 容器里工作区的挂载点（D233：回到 `/workspace`）。
 ///
-/// 为什么改：每个会话有自己的 `sessions/<id>/chat`，"chat" 这个名字说的是它是什么，
-/// 而 `/root/workspace` 说的是它以前在哪。老会话（`shared`）挂的也还是这个点——
-/// 挂载点是**容器里的路径**，跟宿主上绑哪个目录是两件事。
-pub const GUEST_WORKSPACE: &str = "/chat";
+/// 这是**用户的工作区**——可复用、可绑给助手、天生共享。
+/// 会话自己的东西（附件、工具产物）不在这儿，那是 `/chat`（`sessions/<id>/chat`）。
+pub const GUEST_WORKSPACE: &str = "/workspace";
 
 /// 跑容器需要的那几样东西的**宿主机路径**。
 ///

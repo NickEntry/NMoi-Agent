@@ -186,11 +186,9 @@ internal object TurnRepository {
         // 工作区：先建目录再绑。绑不上不是这一轮的致命错误——文件工具与命令不可用而已，
         // 聊天本身还能继续（所以只记一条日志，不中断）。
         //
-        // 用哪个根由**这个会话的模式**决定（D231 / 0.15ao）：隔离的会话有自己的
-        // `sessions/<id>/chat`，老会话（shared）还是原来那个全局工作区。
-        // 读不出来按 shared——最保守的一档，文件都在老地方。
-        val mode = ChatRepository.workspaceMode(databasePath, sessionId)
-        val workspace = ToolingRepository.open(context, sessionId, mode)
+        // 工具根是**用户的工作区**（D233）：可复用、可绑给助手、天生共享。
+        // 会话自己的东西（附件、工具产物）在 `sessions/<id>/chat`，那是 `/chat`，不是这里。
+        val workspace = ToolingRepository.open(context)
         if (workspace.isFailure) {
             NLog.w("Turn", "工作区绑不上：${workspace.exceptionOrNull()?.message}")
         }

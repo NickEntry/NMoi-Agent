@@ -20,8 +20,6 @@ import com.nmoi.agent.ui.AssistantEditScreen
 import com.nmoi.agent.ui.AssistantEntry
 import com.nmoi.agent.ui.ChatRepository
 import com.nmoi.agent.ui.ConversationSelection
-import com.nmoi.agent.ui.WorkspaceMigration
-import com.nmoi.agent.ui.WorkspaceMigrationSheet
 import com.nmoi.agent.ui.AssistantList
 import com.nmoi.agent.ui.AssistantRepository
 import com.nmoi.agent.ui.AssistantScreen
@@ -279,34 +277,8 @@ class MainActivity : ComponentActivity() {
                 // 抽屉顶部（底部提示行）那一句话：复制这种"外面才算出条数"的动作要有回话，
                 // 不然用户只能翻列表自己确认，而列表里两条长得一样。
                 var drawerNotice by remember { mutableStateOf<String?>(null) }
-                // 老会话迁移（D232）：启动时判断一次，有东西可迁才问。
-                var migrationPlan by remember { mutableStateOf<WorkspaceMigration.Plan?>(null) }
-                var migrating by remember { mutableStateOf(false) }
-                LaunchedEffect(snapshot?.rows, listReload) {
-                    if (migrationPlan != null || migrating) return@LaunchedEffect
-                    if (WorkspaceMigration.decided(this@MainActivity)) return@LaunchedEffect
-                    val rows = snapshot?.rows.orEmpty()
-                    if (rows.isEmpty()) return@LaunchedEffect
-                    // 先看共享目录里有没有东西——空目录问了只是打扰，也省掉 N 次读模式。
-                    val (files, _) = withContext(Dispatchers.IO) {
-                        WorkspaceMigration.sharedStats(this@MainActivity)
-                    }
-                    if (files == 0) return@LaunchedEffect
-                    val shared = withContext(Dispatchers.IO) {
-                        rows.filter { row ->
-                            ChatRepository.workspaceMode(databasePath, row.id) == "shared"
-                        }.map { it.id }
-                    }
-                    migrationPlan = withContext(Dispatchers.IO) {
-                        WorkspaceMigration.plan(this@MainActivity, shared)
-                    }
-                }
-                LaunchedEffect(drawerOpen) {
-                    if (!drawerOpen) drawerNotice = null
-                }
                 ConversationDrawer(
                     open = drawerOpen,
-                    databasePath = databasePath,
                     rows = snapshot?.rows.orEmpty(),
                     currentId = (route as? Route.Chat)?.sessionId,
                     assistants = assistantList?.rows.orEmpty(),
@@ -357,22 +329,6 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     notice = drawerNotice,
-                    onSetWorkspaceMode = { row, mode ->
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                ChatRepository.setWorkspaceMode(databasePath, row.id, mode)
-                            }.onSuccess { applied ->
-                                drawerNotice = if (applied == "chat") {
-                                    "「${row.title.ifBlank { "这条会话" }}」改用独立工作区（新文件写到它自己的 sessions/${row.id}/chat；老文件不搬）"
-                                } else {
-                                    "「${row.title.ifBlank { "这条会话" }}」改用共享工作区（所有共享会话看到同一份文件）"
-                                }
-                            }.onFailure {
-                                drawerNotice = "工作区没改成功：${it.message}"
-                            }
-                            listReload += 1
-                        }
-                    },
                     onCopy = { row ->
                         scope.launch {
                             val title = row.title.ifBlank { "会话" }
@@ -708,41 +664,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // 老会话迁移（D232）：启动时判断，有东西可迁才问。
-                    // 压在页面之上，必须先处理——它要改库里的工作区模式。
-                    migrationPlan?.let { plan ->
-                        WorkspaceMigrationSheet(
-                            plan = plan,
-                            busy = migrating,
-                            onLater = {
-                                WorkspaceMigration.markDecided(this@MainActivity)
-                                migrationPlan = null
-                                drawerNotice = "老会话留在共享工作区；以后可以在会话菜单里单独切"
-                            },
-                            onMigrate = {
-                                val work = plan
-                                migrating = true
-                                scope.launch {
-                                    val result = WorkspaceMigration.apply(
-                                        this@MainActivity,
-                                        databasePath,
-                                        work,
-                                    )
-                                    migrating = false
-                                    migrationPlan = null
-                                    listReload += 1
-                                    result.fold(
-                                        onSuccess = { count ->
-                                            drawerNotice = "已迁移 $count 条会话到各自的 /chat"
-                                        },
-                                        onFailure = { error ->
-                                            drawerNotice = error.message ?: "迁移失败"
-                                        },
-                                    )
-                                }
-                            },
-                        )
-                    }
                 }
             }
         }

@@ -33,14 +33,6 @@ internal object ToolingRepository {
     fun chatRoot(context: Context, sessionId: String): File =
         File(File(File(context.filesDir, "sessions"), sessionId), "chat").apply { mkdirs() }
 
-    /** 这个会话的工作区根。`mode` 只认 `chat` / `shared`（认不出按 `shared`，最保守）。 */
-    fun workspaceRoot(context: Context, sessionId: String?, mode: String): File =
-        if (mode == "chat" && sessionId != null) {
-            chatRoot(context, sessionId)
-        } else {
-            sharedRoot(context)
-        }
-
     /**
      * 删掉这个会话自己的目录（`sessions/<id>/`，含 `chat/` 与 `images/`）。
      *
@@ -63,11 +55,11 @@ internal object ToolingRepository {
     fun workspaceRoot(context: Context): File = sharedRoot(context)
 
     /** 开一个句柄。失败给原因，不返回 0 顶数。 */
-    fun open(context: Context, sessionId: String? = null, mode: String = "shared"): Result<Long> {
+    fun open(context: Context): Result<Long> {
         if (!NativeBridge.loaded) {
             return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
         }
-        val root = workspaceRoot(context, sessionId, mode).absolutePath
+        val root = sharedRoot(context).absolutePath
         val envelope = runCatching { JSONObject(NativeBridge.openWorkspaceJson(root)) }
             .getOrElse {
                 return Result.failure(NmoiFfiException("native_call", "绑工作区时报错：${it.message}"))
