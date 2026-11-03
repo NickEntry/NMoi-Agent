@@ -1811,9 +1811,12 @@ mod tests {
     fn exhausted_turn_keeps_partial_text_and_marks_it_incomplete() {
         let (_dir, workspace, policy) = setup();
         // 两轮都在调工具、顺带说话；轮数到顶 → 没说完，但说过的话要留下
+        // 三条：2 轮工具 + 1 轮收尾（D244 之后到顶还会再给一轮不带工具的）。
+        // 收尾那轮它仍然只给工具调用 → 才算"没收尾"。
         let transport = Scripted::new(vec![
             calls_with_text("c1", "list_dir", "{}", "我看看目录"),
             calls_with_text("c2", "list_dir", "{}", "再看看"),
+            calls_with_text("c3", "list_dir", "{}", "还在看"),
         ]);
         let client = ChatClient::new(transport);
         let registry = ToolRegistry::workspace_defaults();
@@ -1842,7 +1845,7 @@ mod tests {
 
         assert!(!turn.report.finished, "轮数用尽不能装做完");
         let assistant = turn.assistant.expect("说过的话要留下");
-        assert_eq!(assistant.content, "再看看");
+        assert_eq!(assistant.content, "还在看");
         assert!(assistant.incomplete, "没收尾的回复要标 incomplete（D43）");
     }
 
@@ -1852,6 +1855,7 @@ mod tests {
         let transport = Scripted::new(vec![
             calls_body(&[("c1", "list_dir", "{}")]),
             calls_body(&[("c2", "list_dir", "{}")]),
+            calls_body(&[("c3", "list_dir", "{}")]),
         ]);
         let client = ChatClient::new(transport);
         let registry = ToolRegistry::workspace_defaults();
