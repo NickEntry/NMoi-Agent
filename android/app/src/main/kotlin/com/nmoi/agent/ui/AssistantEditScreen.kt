@@ -64,6 +64,7 @@ internal fun AssistantEditScreen(
 
     var name by remember(assistantId) { mutableStateOf("") }
     var subEnabled by remember(assistantId) { mutableStateOf(false) }
+    var streamOn by remember(assistantId) { mutableStateOf(true) }
     var subId by remember(assistantId) { mutableStateOf("") }
     var subDescription by remember(assistantId) { mutableStateOf("") }
     var subSession by remember(assistantId) { mutableStateOf("new") }
@@ -122,6 +123,7 @@ internal fun AssistantEditScreen(
         // 首次进来才把表单灌上：之后用户改到一半，重进不该把他的话冲掉。
         name = loaded.name
         subEnabled = loaded.subAgent.enabled
+        streamOn = loaded.stream
         subId = loaded.subAgent.callId
         subDescription = loaded.subAgent.description
         subSession = loaded.subAgent.session
@@ -133,6 +135,7 @@ internal fun AssistantEditScreen(
         val base = entry ?: return
         val next = base.copy(
             name = name.trim().ifEmpty { base.name },
+            stream = streamOn,
             subAgent = SubAgentSpec(
                 enabled = subEnabled,
                 callId = subId.trim(),
@@ -273,6 +276,32 @@ internal fun AssistantEditScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp),
                     )
+                }
+
+                Card {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "逐字输出",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = if (streamOn) {
+                                    "正文边写边画；思考块的字数实时变"
+                                } else {
+                                    "关着：等这一轮跑完，正文一次出现"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Chip(
+                            label = if (streamOn) "开" else "关",
+                            primary = streamOn,
+                            enabled = !busy,
+                        ) { streamOn = !streamOn }
+                    }
                 }
 
                 // —— 子 AGENT（D176）——
