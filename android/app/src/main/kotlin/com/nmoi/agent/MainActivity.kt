@@ -55,6 +55,7 @@ import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.StorageScreen
 import com.nmoi.agent.ui.ToolsScreen
+import com.nmoi.agent.ui.WorkspaceScreen
 import com.nmoi.agent.ui.TurnRunner
 import com.nmoi.agent.ui.theme.NMoiTheme
 import com.nmoi.agent.ui.theme.SystemBarsForTheme
