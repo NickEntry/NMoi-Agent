@@ -18,7 +18,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -39,6 +39,12 @@ pub struct ProxyServer {
     pass: String,
     stop: Arc<AtomicBool>,
     open: Arc<AtomicUsize>,
+    /// 最近一次连接为什么被关掉。
+    ///
+    /// 为什么要留这个：`handle_client` 的错误原本被 `let _ =` 丢掉了，于是 Windows 上
+    /// 那条测试红了两轮，只看到客户端读到 RST（os error 10054），不知道服务端为什么先关。
+    /// 排查一次要一轮 CI，太贵。
+    last_error: Arc<Mutex<Option<String>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -79,12 +85,16 @@ impl ProxyServer {
 
         let stop = Arc::new(AtomicBool::new(false));
         let open = Arc::new(AtomicUsize::new(0));
+        let last_error = Arc::new(Mutex::new(None));
         let handle = {
             let stop = stop.clone();
             let open = open.clone();
+            let last_error = last_error.clone();
             let user = user.clone();
             let pass = pass.clone();
-            thread::spawn(move || accept_loop(listener, stop, open, upstream, user, pass))
+            thread::spawn(move || {
+                accept_loop(listener, stop, open, last_error, upstream, user, pass)
+            })
         };
 
         Ok(Self {
@@ -93,6 +103,7 @@ impl ProxyServer {
             pass,
             stop,
             open,
+            last_error,
             handle: Some(handle),
         })
     }
@@ -108,6 +119,17 @@ impl ProxyServer {
     /// 现在有多少条连接开着（给界面显示）。
     pub fn open_connections(&self) -> usize {
         self.open.load(Ordering::SeqCst)
+    }
+
+    /// 最近一条连接为什么被关掉（`None` = 还没出过错）。
+    ///
+    /// 客户端只会看到"连接被重置"这种没有信息量的症状，原因在这一侧——
+    /// 所以它得能被读出来，而不是跟着线程一起消失。
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// 停掉：关监听、等它退出。已经在搬的连接随进程/线程结束而断。
@@ -132,6 +154,7 @@ fn accept_loop(
     listener: TcpListener,
     stop: Arc<AtomicBool>,
     open: Arc<AtomicUsize>,
+    last_error: Arc<Mutex<Option<String>>>,
     upstream: ProxyHandle,
     user: String,
     pass: String,
@@ -144,13 +167,25 @@ fn accept_loop(
                     drop(stream);
                     continue;
                 }
+                // **接受来的连接必须是阻塞的**。监听设了非阻塞（要靠它做 stop 轮询），
+                // 而 Windows 上 `accept` 出来的 socket 会**继承**这个状态：于是握手时
+                // 「读问候」能读到已经到达的那几个字节，紧接着「读认证」在数据还没到时
+                // 立刻返回 `WouldBlock`，服务端当场关连接，客户端那边就是
+                // `os error 10054`（RST）。Linux 不继承，所以这条只在 Windows 上红。
+                let _ = stream.set_nonblocking(false);
                 open.fetch_add(1, Ordering::SeqCst);
                 let upstream = upstream.clone();
                 let open = open.clone();
+                let errors = last_error.clone();
                 let user = user.clone();
                 let pass = pass.clone();
                 thread::spawn(move || {
-                    let _ = handle_client(stream, &upstream, &user, &pass);
+                    if let Err(error) = handle_client(stream, &upstream, &user, &pass) {
+                        *errors
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            Some(error.to_string());
+                    }
                     open.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -388,7 +423,12 @@ mod tests {
             Duration::from_secs(5),
             Some(Duration::from_secs(5)),
         )
-        .expect("本地端点应当接受连接");
+        .unwrap_or_else(|error| {
+            panic!(
+                "本地端点应当接受连接：{error}（服务端最后一条错误：{:?}）",
+                server.last_error()
+            )
+        });
         let mut stream = tunnel.stream;
         stream.write_all(b"ping").unwrap();
         let mut back = [0u8; 4];
