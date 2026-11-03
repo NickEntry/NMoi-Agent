@@ -426,8 +426,8 @@ internal object EnvirRepository {
                 probe = failed,
             )
         }
-        val verify = parseCheck(result, at)
-        if (verify.check.ok) return verify
+        val check = parseCheck(result, at)
+        if (check.ok) return Verify(check = check, probe = result)
         // 失败时说清"容器里还有一份 preload"：那是老版本垫片的残留，
         // 报错文本只会写 `libdl.so: cannot open shared object file`，看不出是谁写的。
         val preload = File(rootfs, "etc/ld.so.preload")
@@ -436,7 +436,7 @@ internal object EnvirRepository {
         } else {
             ""
         }
-        return Verify(check = verify.check.copy(reason = verify.check.reason + note), probe = result)
+        return Verify(check = check.copy(reason = check.reason + note), probe = result)
     }
 
     private fun parseCheck(probe: Probe, at: Long): SelfCheck {
