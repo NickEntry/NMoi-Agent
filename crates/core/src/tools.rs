@@ -266,6 +266,24 @@ impl ToolRegistry {
     /// 调一个工具。名字不认识、参数不是合法 JSON、工具内部失败，都变成 [`ToolOutcome`]。
     pub fn invoke(&self, name: &str, arguments: &str, ctx: &ToolContext<'_>) -> ToolOutcome {
         let Some(tool) = self.tools.get(name) else {
+            // 名字是空串时**把参数原文带上**：这是"上游把工具名丢了"的现场，
+            // 只报一句 `未知工具 ``` 什么也说明不了（2026-11-03 真机就卡在这儿）。
+            // 参数原文能看出它想调什么、也就知道是哪个字段没过来。
+            if name.trim().is_empty() {
+                let args = if arguments.trim().is_empty() {
+                    "（空）".to_string()
+                } else {
+                    let mut text = arguments.trim().to_string();
+                    if text.chars().count() > 200 {
+                        text = text.chars().take(200).collect::<String>() + "…";
+                    }
+                    text
+                };
+                return ToolOutcome::failed(format!(
+                    "工具名是空的（上游没给 name），参数是：{args}。可用的是：{}",
+                    self.names().join(" / ")
+                ));
+            }
             return ToolOutcome::failed(format!(
                 "未知工具 `{name}`。可用的是：{}",
                 self.names().join(" / ")

@@ -71,7 +71,12 @@ pub fn extract(input: &str) -> (String, Vec<InlineCall>) {
 fn parse_call(body: &str) -> Option<InlineCall> {
     let value: Value = serde_json::from_str(body).ok()?;
     let object = value.as_object()?;
+    // 空名字不算一次调用：放进去只会在执行端变成"未知工具 ``"，
+    // 而真正的原因（上游没给 name）会被那句报错盖住。
     let name = object.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
     if name.is_empty() {
         return None;
     }
