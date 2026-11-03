@@ -12,6 +12,7 @@ import android.widget.EditText
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.draw.drawBehind
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -56,6 +57,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -64,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
@@ -173,6 +176,9 @@ internal fun ChatScreen(
     var regenTarget by remember(sessionId) { mutableStateOf<String?>(null) }
     // 重试失败 → 三选一（D228）。它决定库里留下哪一版，所以是"必须处理"的那种，点外面不关。
     var regenFailure by remember { mutableStateOf<RegenFailure?>(null) }
+    // 过程块展开/收起（D229）：**只在本次浏览会话内记忆**——切到别的会话再回来，
+    // 恢复默认（最新两个 + 其余折叠）。所以键里带 sessionId，换会话就是一张新表。
+    val openGroups = remember(sessionId) { mutableStateMapOf<String, Boolean>() }
     // 正在跑的那一轮挂在哪个会话上——点"停止"要的就是这个 id。
     // 单独存一份而不是直接读 `sessionId`：跑的过程中用户可能切了会话。
     var runningSession by remember(sessionId) {
@@ -977,6 +983,9 @@ internal fun ChatScreen(
                         live = live,
                         // 重试就地渲染（D227）：这一轮的正文画在它身上，不在底部另起一块。
                         regenTarget = regenTarget,
+                        // 过程块（D229）：展开状态只活在这个会话的这次浏览里。
+                        openGroups = openGroups,
+                        onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
                         onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
@@ -1694,6 +1703,9 @@ private fun MessageArea(
      * 而是画在这条消息的正文位置——重试看着像"这条回答在重写"，不是"又开了一个气泡"。
      */
     regenTarget: String?,
+    /** 过程块（D229）展开状态：键是组的第一项 id。 */
+    openGroups: Map<String, Boolean> = emptyMap(),
+    onToggleGroup: (String) -> Unit = {},
     /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
     onDismissCut: () -> Unit,
     selecting: Boolean,
@@ -1743,6 +1755,8 @@ private fun MessageArea(
     }
 
     val units = page?.units.orEmpty()
+    // 连续的思考/工具合成一行（D229）。分组只影响渲染，数据一个字都不动。
+    val rows = remember(units) { buildRows(units) }
     val truncated = page?.truncated == true
     val listState = rememberLazyListState()
     val headerCount = if (truncated) 1 else 0
@@ -1751,8 +1765,8 @@ private fun MessageArea(
     // 打开会话应当看到最新的一条，而不是最早的一条。
     // 发出去那一刻 `pending` 会插在末尾，所以它也要进 key——否则新气泡在屏幕外面。
     val liveItem = if (live != null && regenTarget == null) 1 else 0
-    LaunchedEffect(units.size, truncated, pending, live != null, regenTarget) {
-        val target = headerCount + units.size + if (pending != null) 1 else 0 + liveItem
+    LaunchedEffect(rows.size, truncated, pending, live != null, regenTarget) {
+        val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
@@ -1761,7 +1775,7 @@ private fun MessageArea(
     LaunchedEffect(live?.text?.length ?: 0, live?.reasoning?.length ?: 0) {
         if (live == null) return@LaunchedEffect
         if (listState.canScrollForward) return@LaunchedEffect
-        val target = headerCount + units.size + if (pending != null) 1 else 0 + liveItem
+        val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
@@ -1784,16 +1798,28 @@ private fun MessageArea(
                 )
             }
         }
-        itemsIndexed(units) { index, unit ->
-            val previous = units.getOrNull(index - 1)
-            val gap = if (previous != null && previous.alignsRight() != unit.alignsRight()) 8.dp else 0.dp
+        itemsIndexed(rows) { index, row ->
+            val previous = rows.getOrNull(index - 1)
+            // 换人（用户 ↔ 助手）才加那 8dp；同一轮里的几个块贴在一起。
+            val gap = if (previous != null && previous.alignsRight() != row.alignsRight()) 8.dp else 0.dp
             // 一轮助手的话可能被拆成好几个单元（工具往返一段、正文一段），抬头只画一次。
-            val assistantSide = unit.isToolPair || unit.messages.none { it.isUser }
-            val previousAssistantSide = previous != null &&
-                (previous.isToolPair || previous.messages.none { it.isUser })
+            val assistantSide = !row.alignsRight()
+            val previousAssistantSide = previous != null && !previous.alignsRight()
+            val showHeader = assistantSide && !previousAssistantSide
+            if (row is ChatRow.Process) {
+                ProcessGroupRow(
+                    group = row,
+                    showHeader = showHeader,
+                    gapAbove = gap,
+                    expanded = openGroups[row.key] == true,
+                    onToggle = { onToggleGroup(row.key) },
+                )
+                return@itemsIndexed
+            }
+            val unit = (row as ChatRow.Single).unit
             UnitBlock(
                 unit = unit,
-                showHeader = assistantSide && !previousAssistantSide,
+                showHeader = showHeader,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 live = live,
@@ -1920,6 +1946,79 @@ private fun ChatUnit.headerAt(): Long =
 /** 这个单元整体靠哪边——只用来算"换人"的间距，不参与别的判断。 */
 private fun ChatUnit.alignsRight(): Boolean =
     !isToolPair && messages.isNotEmpty() && messages.all { it.isUser }
+
+/** 这一行整体靠哪边——只用来算"换人"的间距，不参与别的判断。 */
+private fun ChatRow.alignsRight(): Boolean = when (this) {
+    is ChatRow.Single -> unit.alignsRight()
+    // 过程块永远是助手那边的东西。
+    is ChatRow.Process -> false
+}
+
+/**
+ * 一次回合里连续的过程项（D229）：思考与工具合成一个大块，左侧一条竖线串起来。
+ *
+ * 三条规矩都在这一屏上：
+ *
+ * 1. **≥3 才折**，折起来保留最新两个——用户要的是"最近发生了什么"，最早那几步只是过程。
+ * 2. **正在跑的不折**：折起来就看不见它在动，而"它还在动"是此刻唯一想知道的事。
+ * 3. 折叠状态由调用方记（`openGroups`），**只活在本次浏览会话里**。
+ *
+ * 没有做的那一条（D229 第 6 条）：运行中的工具块显示最新 3 行输出。
+ * 现在没有"单条调用的实时输出"这条通道（0.15an 才有），所以只能显示标题行；
+ * 硬画三行空行等于假装有输出。
+ */
+@Composable
+private fun ProcessGroupRow(
+    group: ChatRow.Process,
+    showHeader: Boolean,
+    gapAbove: Dp,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val running = group.items.any { it.running }
+    val foldable = foldable(group.items) && !running
+    val open = expanded && foldable
+    val visible = visibleItems(group.items, open)
+    val hidden = hiddenCount(group.items, open)
+    val line = MaterialTheme.colorScheme.outlineVariant
+
+    Column(modifier = Modifier.fillMaxWidth().padding(top = gapAbove)) {
+        if (showHeader) AssistantHeader(createdAt = group.items.first().unit.createdAt)
+        // 头部：折叠时「展开更多 N 步」，展开时「收起」；不够三个就没有这一行。
+        if (foldable) {
+            Text(
+                text = if (expanded) "收起" else "展开更多 $hidden 步",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .padding(start = 18.dp, top = 6.dp, bottom = 2.dp)
+                    .clickable(onClick = onToggle),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .drawBehind {
+                    val x = 6.dp.toPx()
+                    drawLine(
+                        color = line,
+                        start = Offset(x, 0f),
+                        end = Offset(x, size.height),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                },
+        ) {
+            visible.forEach { item ->
+                Box(modifier = Modifier.fillMaxWidth().padding(start = 18.dp, top = 4.dp)) {
+                    when (item.kind) {
+                        ProcessItem.Kind.Thinking -> item.thinking?.let { ThinkingBlock(it) }
+                        ProcessItem.Kind.Tool -> ToolPairCard(item.unit)
+                    }
+                }
+            }
+        }
+    }
+}
 
 /** 一个原子单元：`turn`（一条文本）或 `tool_pair`（assistant(tool_calls) + 全部 tool_result）。 */
 @Composable
