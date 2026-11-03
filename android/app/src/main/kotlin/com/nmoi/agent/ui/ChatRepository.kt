@@ -260,26 +260,6 @@ internal object ChatRepository {
      * 实现搬到 [withStorageHandle]（D156）：模型服务那页也要同一套 open/close，
      * 两处各抄一遍的话迟早有一处漏 `finally`，然后句柄泄漏到"库被锁住"。
      */
-    /**
-     * 这个会话的工作区模式（D231 / 0.15ao）：`chat` = 自己的 `sessions/<id>/chat`；`shared` = 全局工作区。
-     *
-     * 读不出来时**返回 `shared`**——那是最保守的一档（文件都在老地方，不会凭空消失）。
-     * 宁可让一个该隔离的会话暂时共享，也不要让它绑到一个空目录上。
-     */
-    suspend fun workspaceMode(databasePath: String, sessionId: String): String =
-        withHandle(databasePath) { handle -> NmoiFfi.workspaceMode(handle, sessionId) }
-            .map { envelope -> envelope.optString("mode", "shared") }
-            .getOrDefault("shared")
-
-    /** 改这个会话的工作区模式。返回改完之后的值（库现读的那一份，不是我们以为的那一份）。 */
-    suspend fun setWorkspaceMode(
-        databasePath: String,
-        sessionId: String,
-        mode: String,
-    ): Result<String> = withHandle(databasePath) { handle ->
-        NmoiFfi.setWorkspaceMode(handle, sessionId, mode)
-    }.map { envelope -> envelope.optString("mode", mode) }
-
     private suspend fun <T> withHandle(
         databasePath: String,
         block: suspend (Long) -> Result<T>,

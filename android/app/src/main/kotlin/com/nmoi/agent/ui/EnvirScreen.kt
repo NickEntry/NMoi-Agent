@@ -550,7 +550,7 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                     }
                 }
 
-                PrimaryButton(
+                WideButton(
                     label = when {
                         running -> "正在装…"
                         installed == null -> "安装"
@@ -619,7 +619,7 @@ internal fun EnvirScreen(onBack: () -> Unit) {
 
     if (confirmDelete) {
         val size = installed?.let { "rootfs（约 110 MB）和运行时（约 300 KB）" } ?: "已装的东西"
-        ConfirmDeleteDialog(
+        ConfirmDialog(
             title = "删除“${installed?.label ?: "隔离环境"}”？",
             detail = "会删掉 $size，下次要重新下载 33.4 MB。工作区里的文件不受影响。",
             confirmLabel = "删除",
@@ -641,7 +641,7 @@ internal fun EnvirScreen(onBack: () -> Unit) {
     }
 
     if (confirmReinstall) {
-        ConfirmDeleteDialog(
+        ConfirmDialog(
             title = "重新安装“${installed?.label ?: "隔离环境"}”？",
             detail = "会先清空 rootfs（约 110 MB）再重解一遍：容器里你自己装的东西会没掉，" +
                 "工作区里的文件不受影响。只想修好容器的话，用「覆盖安装」。",
@@ -761,42 +761,6 @@ private fun SourceRow(
 }
 
 @Composable
-private fun PrimaryButton(
-    label: String,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = if (enabled) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(enabled = enabled, onClick = onClick)
-                .padding(vertical = 13.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                color = if (enabled) {
-                    MaterialTheme.colorScheme.onPrimary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-    }
-}
-
-@Composable
 private fun DialogChip(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(999.dp),
@@ -817,65 +781,6 @@ private fun DialogChip(label: String, enabled: Boolean = true, onClick: () -> Un
             },
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
         )
-    }
-}
-
-/** 破坏性动作的确认：红色实心 + 写清会没掉什么（ui-taste 2026-10-26 第三报）。 */
-@Composable
-private fun ConfirmDeleteDialog(
-    title: String,
-    detail: String,
-    confirmLabel: String,
-    onCancel: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(onClick = onCancel),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = detail,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        DialogChip("取消", onClick = onCancel)
-                        Spacer(Modifier.size(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.clickable(onClick = onConfirm),
-                        ) {
-                            Text(
-                                text = confirmLabel,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onError,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

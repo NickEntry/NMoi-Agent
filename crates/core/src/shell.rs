@@ -176,6 +176,18 @@ pub struct EnvirSpec {
     ///
     /// 可选：没有（离线、或设备当前没有 DNS）就不绑——容器照跑，只是解析不出域名。
     pub resolv: Option<PathBuf>,
+    /// 这个会话自己的暂存目录（`sessions/<id>/chat`），绑到容器里的 `/chat`（D234）。
+    ///
+    /// 与工作区是两件事：工作区是用户建的、可复用、天生共享，挂在 `/workspace`；
+    /// `/chat` 只属于这一条会话，工具产物与附件落在这儿。模型要看就自己用命令读。
+    ///
+    /// 可选：没有会话上下文（或目录建不出来）就不绑，容器照跑。
+    pub chat: Option<PathBuf>,
+    /// 这个会话的附件目录（`sessions/<id>/images`），绑到 `/chat/images`。
+    ///
+    /// 单独一条是因为附件不挪地方（D216 的路径写进了库，也写进了存储页），
+    /// 而模型要能在容器里读到它——两条绑定比一次数据迁移便宜得多。
+    pub chat_images: Option<PathBuf>,
 }
 
 impl EnvirSpec {
@@ -204,6 +216,15 @@ impl EnvirSpec {
         if let Some(resolv) = &self.resolv {
             cmd.arg("-b")
                 .arg(format!("{}:/etc/resolv.conf", resolv.display()));
+        }
+        // 会话自己的暂存目录（D234）：`/chat`，附件在 `/chat/images`。
+        // 顺序要紧：先绑 `/chat` 再绑它里面的 `images`，否则第二条的目标路径在 guest 里还不存在。
+        if let Some(chat) = &self.chat {
+            cmd.arg("-b").arg(format!("{}:/chat", chat.display()));
+            if let Some(images) = &self.chat_images {
+                cmd.arg("-b")
+                    .arg(format!("{}:/chat/images", images.display()));
+            }
         }
         // 工作目录：`-w` 只认一个，模型给的相对目录就接在后面（已经过词法校验，不含 `..`）。
         let cwd = match guest_cwd {
@@ -254,9 +275,10 @@ impl Tool for EnvirShellTool {
 
     fn description(&self) -> &str {
         concat!(
-            "在隔离环境（容器里的 Ubuntu）里跑一条命令，起点是工作区。",
+            "在隔离环境（容器里的 Ubuntu）里跑一条命令，起点是工作区（容器里是 /workspace）。",
             "**没有用户明确允许时不要调用**；读写文件优先用 read_file / write_file / edit_file。\n",
-            "容器里只有工作区是共享的：宿主机上别的地方它碰不到，容器里装的东西也不影响宿主。\n",
+            "容器里只有工作区（/workspace）和这个会话自己的 /chat 是共享的：宿主机上别的地方它碰不到，",
+            "容器里装的东西也不影响宿主。附件在 /chat/images 下，要看就自己用命令读。\n",
             "容器里**没有内核**：uname -r 显示的是手机内核，systemd / docker / iptables / 内核模块都用不了；",
             "proot 是 ptrace 模拟，比原生慢。\n",
             "返回 JSON：exit_code（被信号杀掉时是 null）、stdout、stderr、truncated、duration_ms、timed_out。",
@@ -274,7 +296,7 @@ impl Tool for EnvirShellTool {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "相对工作区的目录（容器里就是 /chat 下），默认工作区根；不许写绝对路径或 .."
+                    "description": "相对工作区的目录（容器里就是 /workspace 下），默认工作区根；不许写绝对路径或 .."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -709,6 +731,8 @@ mod tests {
             rootfs: dir.join("rootfs"),
             tmp: dir.join("tmp"),
             resolv: None,
+            chat: None,
+            chat_images: None,
         }
     }
 
@@ -728,6 +752,8 @@ mod tests {
             rootfs: dir.join("rootfs"),
             tmp: dir.join("tmp"),
             resolv: None,
+            chat: None,
+            chat_images: None,
         };
 
         let plain: Vec<String> = base
@@ -754,6 +780,63 @@ mod tests {
             .position(|arg| arg == &expected)
             .unwrap_or_else(|| panic!("应当绑 resolv.conf：{bound:?}"));
         assert_eq!(bound[at - 1], "-b", "{bound:?}");
+    }
+
+    /// 会话自己的 `/chat`（D234）：**先 `/chat` 再 `/chat/images`**，两条都要有 `-b`。
+    ///
+    /// 顺序反了的话第二条的目标路径在 guest 里还不存在；这条测试就是钉住那个顺序的。
+    /// 没给的时候一条都不该出现——绑一个不存在的宿主目录，proot 会直接起不来。
+    #[test]
+    fn envir_binds_chat_before_its_images() {
+        let dir = Path::new("/tmp/nmoi-envir-chat");
+        let workspace = Path::new("/tmp/nmoi-envir-ws");
+        let chat = dir.join("chat");
+        let images = dir.join("images");
+        let base = EnvirSpec {
+            proot: dir.join("proot"),
+            loader: dir.join("loader"),
+            lib_dir: dir.join("lib"),
+            rootfs: dir.join("rootfs"),
+            tmp: dir.join("tmp"),
+            resolv: None,
+            chat: None,
+            chat_images: None,
+        };
+
+        let plain: Vec<String> = base
+            .command(workspace, None, "true")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !plain.iter().any(|arg| arg.contains(":/chat")),
+            "没给会话目录时不该出现 /chat：{plain:?}"
+        );
+
+        let mut with_chat = base.clone();
+        with_chat.chat = Some(chat.clone());
+        with_chat.chat_images = Some(images.clone());
+        let bound: Vec<String> = with_chat
+            .command(workspace, None, "true")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let chat_arg = format!("{}:/chat", chat.display());
+        let images_arg = format!("{}:/chat/images", images.display());
+        let chat_at = bound
+            .iter()
+            .position(|arg| arg == &chat_arg)
+            .unwrap_or_else(|| panic!("应当绑 /chat：{bound:?}"));
+        let images_at = bound
+            .iter()
+            .position(|arg| arg == &images_arg)
+            .unwrap_or_else(|| panic!("应当绑 /chat/images：{bound:?}"));
+        assert_eq!(bound[chat_at - 1], "-b", "{bound:?}");
+        assert_eq!(bound[images_at - 1], "-b", "{bound:?}");
+        assert!(
+            chat_at < images_at,
+            "/chat 必须先于 /chat/images：{bound:?}"
+        );
     }
 
     /// **不加 `#[cfg(unix)]`**：`envir_shell_without_a_runtime_spec…` 与门控那条在 Windows 上也跑，

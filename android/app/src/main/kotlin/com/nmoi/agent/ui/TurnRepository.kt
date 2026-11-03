@@ -186,9 +186,11 @@ internal object TurnRepository {
         // 工作区：先建目录再绑。绑不上不是这一轮的致命错误——文件工具与命令不可用而已，
         // 聊天本身还能继续（所以只记一条日志，不中断）。
         //
-        // 工具根是**用户的工作区**（D233）：可复用、可绑给助手、天生共享。
-        // 会话自己的东西（附件、工具产物）在 `sessions/<id>/chat`，那是 `/chat`，不是这里。
-        val workspace = ToolingRepository.open(context)
+        // 工具根是**助手绑的那个工作区**（D234）：用户建的、可复用、天生共享。
+        // 会话自己的东西（附件、工具产物）在 `sessions/<id>/chat`，容器里是 `/chat`，
+        // 由 `envir` 那段单独绑进去——它不是工具根。
+        val bound = WorkspaceRepository.resolve(context, assistant.workspaceId)
+        val workspace = ToolingRepository.open(context, bound.dir)
         if (workspace.isFailure) {
             NLog.w("Turn", "工作区绑不上：${workspace.exceptionOrNull()?.message}")
         }
@@ -221,7 +223,9 @@ internal object TurnRepository {
                     .put("workspace", workspace.getOrNull() ?: 0L)
                     .put("native_shell", nativeShell)
                     .put("thinking", assistant.thinking)
-                    .also { row -> envir?.let { row.put("envir", envirJson(context, it)) } }
+                    .also { row ->
+                        envir?.let { row.put("envir", envirJson(context, it, sessionId)) }
+                    }
                     // 预设（0.14t / D178）：原文从包里读，用户改过的那份由 core 从库里读。
                     // 过滤按"这一轮真的声明了哪些工具"算，**由 core 算**——
                     // 界面这边只负责把原文递进去。
@@ -339,6 +343,7 @@ internal object TurnRepository {
     private fun envirJson(
         context: Context,
         installed: EnvirRepository.Installed,
+        sessionId: String,
     ): JSONObject = JSONObject()
         .put("proot", EnvirRepository.prootPath(context).absolutePath)
         .put("loader", File(EnvirRepository.runtimeDir(context), "libnmoi_proot_loader.so").absolutePath)
@@ -349,6 +354,11 @@ internal object TurnRepository {
             // DNS（D173）：**现取现写**，写在容器起来之前。没有 DNS 就干脆不给这个字段，
             // core 那边（`parse_envir`）把它当可选——离线也能跑，只是解析不出域名。
             EnvirRepository.writeResolvConf(context)?.let { file -> row.put("resolv", file.absolutePath) }
+            // 会话自己的 `/chat`（D234）：工具产物与附件落在那儿，模型要看就自己用命令读。
+            // 附件目录单独一条绑定，是因为它不挪地方（D216 的路径写进了库与存储页）。
+            row.put("chat", ToolingRepository.chatRoot(context, sessionId).absolutePath)
+            val images = ToolingRepository.sessionImagesRoot(context, sessionId)
+            if (images.isDirectory) row.put("chat_images", images.absolutePath)
         }
 
     /** 点"停止"。没在跑不算失败：`cancelled:false` 只说明它已经收尾了。 */

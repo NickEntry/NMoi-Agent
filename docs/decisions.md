@@ -5729,3 +5729,54 @@ M 条没成（原因在日志）"——不假装全成了。
 
 **验证**：本机 `kotlinc` 不可用（这台机器没装，本轮没下载），Kotlin 只做了括号/引用自查；
 真机判据见 `docs/verification.md` V59。**未实测**。
+
+## D234 工作区：用户建的目录 + 助手绑定（v13 / 0.15az，2026-11-03）
+
+D231 那套（`conversations.workspace_mode` 两档：`chat` / `shared`）是**错的模型**，用户
+2026-11-03 纠正过：工作区不是"每个会话一个开关"，而是**用户建的、可复用的、天生共享的目录**；
+会话自己的东西（附件、工具产物）另有一处，叫 `/chat`。这一轮按纠正后的模型重做。
+
+**1. 工作区是目录，不是表。**
+
+`files/workspaces/<id>/`，每个目录里一个 `.nmoi-workspace.json`（只有 `name`）。
+不建 `workspaces` 表，理由三条：
+
+- 它除了名字没有第二个字段（创建时间没人读、大小要现算）；一张表会变成一个 `name` 列加一串空列。
+- id 一旦生成就不再变，改名只改那个文件——**助手文档里存的是 id，改名不用去改任何助手**。
+  要是 id 跟着名字走，改一次名就有一批助手指向不存在的目录，看起来就是"文件没了"。
+- 名字跟着目录走（不是另存一份索引）：目录在、名字就在，删目录不会留下一条"看着有、点进去是空的"记录。
+
+默认工作区是老的 `files/workspace`（id 固定 `default`）：升级上来文件还在老地方，谁都不用搬。
+它不能改名、不能删——老会话最后的落脚点。
+
+**2. 绑定在助手身上，不在会话身上。**
+
+`assistants.workspace_id`（settings 文档里的字段，不占 schema）。一个助手一个工作区，
+会话通过它的助手拿到；换工作区**不搬文件**。入口只有一处：助手编辑页那一格。
+工作区页只做列 / 新建 / 改名 / 删除——同一件事不给两个入口。
+
+**3. 容器里两个挂载点，各管各的。**
+
+- `<工作区>:/workspace`，`-w /workspace`（工具根也是它）；
+- `<sessions/<id>/chat>:/chat`，附件目录再单独一条 `/chat/images`。
+
+为什么附件不搬进 `chat/`：D216 的路径（`sessions/<id>/images/`）已经写进了库、写进了存储页，
+搬一次要做数据迁移；两条 `-b` 比一次迁移便宜。顺序要紧：先 `/chat` 再 `/chat/images`，
+否则第二条的目标在 guest 里还不存在（`shell.rs` 有一条测试钉住这个顺序）。
+
+**4. schema v13 把 `workspace_mode` 删掉。**
+
+它和"助手绑哪个工作区"回答的是同一个问题（这一轮的工具根在哪）。两份答案摆在一起，
+下一个读代码的人得先猜哪一份算数。删的时候顺手把它带来的 FFI（`workspace_mode_json` /
+`set_workspace_mode_json`）与 Kotlin 桥一起删了——JNI 符号 48 → 46。
+
+**顺带清掉的**：D231 的 `ChatRepository.workspaceMode` / `setWorkspaceMode`（从来没有界面调用点，
+属于"有代码没入口"）、D232 的迁移提示（新模型下不需要迁移：老会话本来就看得见 `files/workspace`）。
+
+**没做**：备份带上 `sessions/` 与 `workspaces/`（0.15ai）；工作区里"打开文件夹"（没有文件选择器）；
+`/chat` 的清理入口（0.15ai 的存储分类一起做）。
+
+**验证**：`cargo clippy --workspace --all-targets -D warnings` 本地零告警；
+`workspace_v13` 两条（v12 库升上来列没了、行还在；新库没有那一列）本地通过；
+`shell.rs` 新增 `envir_binds_chat_before_its_images`。Kotlin 只过了 clippy 那一轮的类型检查之外的
+括号自查，真正编译看 CI。真机 V60 未走。

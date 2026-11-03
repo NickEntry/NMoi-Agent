@@ -23,6 +23,12 @@ internal data class AssistantEntry(
     val subAgent: SubAgentSpec = SubAgentSpec(),
     /** 逐字输出。关掉之后正文不边写边画，收尾一次出现。 */
     val stream: Boolean = true,
+    /**
+     * 这个助手用哪个工作区（D234）。空/认不出 = 默认那个（`files/workspace`）。
+     *
+     * 工具根与容器里的 `/workspace` 都跟着它走；会话自己的 `/chat` 与它无关。
+     */
+    val workspaceId: String = WorkspaceRepository.DEFAULT_ID,
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
@@ -204,6 +210,7 @@ internal object AssistantRepository {
                         .put("model_id", entry.subAgent.modelId.trim()),
                 )
                 .put("stream", entry.stream)
+                .put("workspace_id", entry.workspaceId.ifBlank { WorkspaceRepository.DEFAULT_ID })
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
@@ -340,6 +347,8 @@ internal object AssistantRepository {
             thinking = safe.optString("thinking", "auto").ifBlank { "auto" },
             subAgent = parseSubAgent(safe.optJSONObject("sub_agent")),
             stream = safe.optBoolean("stream", true),
+            workspaceId = safe.optString("workspace_id", WorkspaceRepository.DEFAULT_ID)
+                .ifBlank { WorkspaceRepository.DEFAULT_ID },
         )
     }
 

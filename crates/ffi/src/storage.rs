@@ -21,7 +21,6 @@ use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::{AtomicUnit, Message, Role};
 use nmoi_core::source::SourceTag;
 use nmoi_core::{Estimator, Level};
-use nmoi_storage::repo::WorkspaceMode;
 use nmoi_storage::versions::VersionView;
 use nmoi_storage::{OpenOutcome, Storage};
 use serde_json::{json, Value};
@@ -398,56 +397,6 @@ pub extern "C" fn nmoi_storage_set_conversation_model_json(
                 .set_conversation_model(session_id, model)
                 .map_err(storage_error)?;
             Ok(json!({ "session": session_id.to_string(), "model": model }))
-        })
-    })
-}
-
-/// 读一个会话的工作区模式（D231 / 0.15ao）：`{"session":"…","mode":"chat"|"shared"}`。
-///
-/// `chat` = 这个会话自己的 `files/sessions/<id>/chat`（容器里挂在 `/chat`）；
-/// `shared` = 全局那个 `files/workspace`（老会话升级上来就是这个）。
-#[no_mangle]
-pub extern "C" fn nmoi_storage_workspace_mode_json(
-    handle: u64,
-    session: *const c_char,
-) -> *mut c_char {
-    run_json(|| {
-        let session_id = parse_session(read_str(session, "session")?)?;
-        with_storage(handle, |storage| {
-            let mode = storage.workspace_mode(session_id).map_err(storage_error)?;
-            Ok(json!({ "session": session_id.to_string(), "mode": mode.as_str() }))
-        })
-    })
-}
-
-/// 改一个会话的工作区模式。
-///
-/// **只改以后怎么走**，盘上已有的文件一个都不搬：搬文件做不好就是
-/// "我明明切回来了，文件却没了"。要搬是另一件事（导出/导入那一套）。
-#[no_mangle]
-pub extern "C" fn nmoi_storage_set_workspace_mode_json(
-    handle: u64,
-    session: *const c_char,
-    mode: *const c_char,
-) -> *mut c_char {
-    run_json(|| {
-        let session_id = parse_session(read_str(session, "session")?)?;
-        let raw = read_str(mode, "mode")?;
-        let mode = match raw {
-            "chat" => WorkspaceMode::Chat,
-            "shared" => WorkspaceMode::Shared,
-            other => {
-                return Err(FfiError::new(
-                    "bad_argument",
-                    format!("mode 只能是 chat / shared，收到 `{other}`"),
-                ))
-            }
-        };
-        with_storage(handle, |storage| {
-            storage
-                .set_workspace_mode(session_id, mode)
-                .map_err(storage_error)?;
-            Ok(json!({ "session": session_id.to_string(), "mode": mode.as_str() }))
         })
     })
 }

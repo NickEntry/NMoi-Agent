@@ -320,3 +320,14 @@ CREATE INDEX attachments_by_message ON attachments(message_id);
 pub const SCHEMA_V12: &str = r#"
 ALTER TABLE conversations ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'shared';
 "#;
+
+/// v13：工作区改成"用户建的目录 + 助手绑定"（D234），`workspace_mode` 这一列退场。
+///
+/// 为什么删而不是留着不用：它和 `workspaces` 回答的是同一个问题（"这一轮的工具根在哪"）。
+/// 两份答案摆在一起，下一个读代码的人得先猜哪一份算数——那正是"存了但看不见"的另一种形状。
+///
+/// `DROP COLUMN` 在这个库上是安全的：这一列没有索引、没有视图、没有生成列依赖它，
+/// 而且整条迁移在一个事务里，失败就整体回滚（`migrate` 那道闸）。
+pub const SCHEMA_V13: &str = r#"
+ALTER TABLE conversations DROP COLUMN workspace_mode;
+"#;

@@ -20,9 +20,8 @@ internal object ToolingRepository {
     private const val KEY_NATIVE_SHELL = "tool.native_shell"
     private const val KEY_ENVIR_SHELL = "tool.envir_shell"
 
-    /** 全局工作区（老会话 / 显式绑定共享的会话）。**先建好再绑**：FFI 那边不替用户建目录。 */
-    fun sharedRoot(context: Context): File =
-        File(context.filesDir, "workspace").apply { mkdirs() }
+    /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
+    fun sharedRoot(context: Context): File = WorkspaceRepository.defaultRoot(context)
 
     /**
      * 一个会话自己的工作区（D231 / 0.15ao）：`files/sessions/<会话>/chat`。
@@ -32,6 +31,15 @@ internal object ToolingRepository {
      */
     fun chatRoot(context: Context, sessionId: String): File =
         File(File(File(context.filesDir, "sessions"), sessionId), "chat").apply { mkdirs() }
+
+    /**
+     * 这个会话的附件目录（`sessions/<id>/images`，D216）。
+     *
+     * 路径由 Rust 侧 `attachment_dir` 决定，这里只是**同一个位置**的另一处引用：
+     * 容器里要把它绑到 `/chat/images`（D234），模型才读得到自己的附件。
+     */
+    fun sessionImagesRoot(context: Context, sessionId: String): File =
+        File(File(File(context.filesDir, "sessions"), sessionId), "images")
 
     /**
      * 删掉这个会话自己的目录（`sessions/<id>/`，含 `chat/` 与 `images/`）。
@@ -51,16 +59,21 @@ internal object ToolingRepository {
         }
     }
 
-    /** 老入口（没有会话上下文的地方用）：全局工作区。 */
+    /** 没有会话上下文的地方（设置页显示路径）用：默认工作区。 */
     fun workspaceRoot(context: Context): File = sharedRoot(context)
 
-    /** 开一个句柄。失败给原因，不返回 0 顶数。 */
-    fun open(context: Context): Result<Long> {
+    /**
+     * 开一个句柄，根目录由调用方给（D234：助手绑哪个工作区就用哪个）。
+     *
+     * 失败给原因，不返回 0 顶数。
+     */
+    fun open(context: Context, root: File = sharedRoot(context)): Result<Long> {
         if (!NativeBridge.loaded) {
             return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
         }
-        val root = sharedRoot(context).absolutePath
-        val envelope = runCatching { JSONObject(NativeBridge.openWorkspaceJson(root)) }
+        root.mkdirs()
+        val path = root.absolutePath
+        val envelope = runCatching { JSONObject(NativeBridge.openWorkspaceJson(path)) }
             .getOrElse {
                 return Result.failure(NmoiFfiException("native_call", "绑工作区时报错：${it.message}"))
             }
@@ -71,7 +84,7 @@ internal object ToolingRepository {
         return if (handle == 0L) {
             Result.failure(NmoiFfiException("bad_envelope", "绑工作区没拿到句柄"))
         } else {
-            NLog.i("Tools", "工作区已绑定：${envelope.optString("root", root)}（handle=$handle）")
+            NLog.i("Tools", "工作区已绑定：${envelope.optString("root", path)}（handle=$handle）")
             Result.success(handle)
         }
     }

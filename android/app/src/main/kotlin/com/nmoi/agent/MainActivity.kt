@@ -87,6 +87,9 @@ private sealed interface Route {
     /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
     data object Envir : Route
 
+    /** 工作区（D234）：列 / 新建 / 改名 / 删除。入口在「工具与工作区」里。 */
+    data object Workspace : Route
+
     /** 网络代理（D226）：开关 / 类型 / 地址 / 凭证 / 绕过。入口在「工具与工作区」里。 */
     data object Proxy : Route
 
@@ -576,6 +579,11 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Workspace -> WorkspaceScreen(
+                            databasePath = databasePath,
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         Route.Assistant -> AssistantScreen(
                             databasePath = databasePath,
                             onBack = { backStack = backStack.dropLast(1) },
@@ -645,6 +653,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = { backStack = backStack.dropLast(1) },
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
                                 onOpenProxy = { backStack = backStack + Route.Proxy },
+                                onOpenWorkspace = { backStack = backStack + Route.Workspace },
                             )
 
                             SettingsGroup.Storage -> StorageScreen(

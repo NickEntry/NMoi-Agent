@@ -1667,3 +1667,28 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
    **它拿不到这个工具**（不是拿到一个每次都失败的工具）。
 8. 老版本装的环境（`state.json` 里没有 `self_check`）升级上来。**判据**：状态行写
    「装完之后没自检过（这一版之前装的）」；`WorkSpace-EnvirShell` 仍然可用（没自检 ≠ 坏）。
+
+### V60 工作区与 `/chat`（D234 / 0.15az）
+
+1. 装新版本覆盖旧版本（库里有一批老会话、`files/workspace` 里有文件）。**判据**：应用起得来；
+   抽屉里的会话一条不少；打开一条老会话让它 `list_dir`，看到的是原来那些文件。
+2. 设置 → 工具与工作区 →「工作区」。**判据**：第一行是「共享工作区（默认）」，
+   副标题写着文件数与大小，路径是 `…/files/workspace`。
+3. 点它。**判据**：弹出的面板里「改名」「删除」**都点不动**，点了给一句话
+   「默认工作区不能改名/不能删（老会话还指着它）」。
+4. 「新建工作区」→ 输入 `论文` → 确定。**判据**：列表里多一行；磁盘上出现
+   `files/workspaces/<id>/` 与里面的 `.nmoi-workspace.json`。
+5. 助手页 → 某个助手 →「工作区」→ 选 `论文` → 右上「保存」。**判据**：那一格显示 `论文`。
+6. 用这个助手新建一条会话，让它 `write_file` 写 `a.txt`。**判据**：文件落在
+   `files/workspaces/<id>/a.txt`（**不是** `files/workspace/`）。
+7. 换一个助手（绑默认工作区）再让它 `list_dir`。**判据**：**看不到** `a.txt`。
+8. 开 `WorkSpace-EnvirShell`，让模型在容器里跑 `pwd; ls /workspace; ls /chat`。
+   **判据**：`pwd` 是 `/workspace`；`/workspace` 里是工作区那些文件；`/chat` 是这条会话自己的
+   （第一次是空的）。**再发一张图**，然后 `ls /chat/images`。**判据**：能看到那张图
+   （这一条同时验证 `/chat/images` 那条嵌套绑定在 proot 上成立；不成立就报出来，要改绑定方式）。
+9. 让模型在容器里写 `/chat/notes.md`。**判据**：宿主机上是
+   `files/sessions/<会话>/chat/notes.md`；换一条会话看不到它。
+10. 回工作区页，长按/点 `论文` →「删除」。**判据**：确认卡里写着会删掉多少、哪个目录，
+    以及"还绑着它的助手：…"；确认后目录没了，那个助手再发消息时退回默认工作区（日志有一行）。
+11. 升级前后的 `schema_version`。**判据**：`PRAGMA user_version` 是 13；
+    `PRAGMA table_info(conversations)` 里**没有** `workspace_mode`。

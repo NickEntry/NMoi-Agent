@@ -54,11 +54,14 @@ internal fun ToolsScreen(
     onBack: () -> Unit,
     onOpenEnvir: () -> Unit,
     onOpenProxy: () -> Unit,
+    onOpenWorkspace: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var nativeShell by remember { mutableStateOf(ToolingRepository.nativeShell(context)) }
     var confirmShell by remember { mutableStateOf(false) }
     val root = remember { ToolingRepository.workspaceRoot(context).absolutePath }
+    // 工作区有几个、默认那个在哪儿：这一行要能回答"文件工具的根到底在哪"，不能为了知道点进去。
+    val workspaces = remember { WorkspaceRepository.list(context) }
     // 从安装页回来时这个 composable 会重新组合，所以每次读到的都是当下的状态。
     val envir = remember { EnvirRepository.installed(context) }
     // 容器里的命令（D172）：开关是"用户允不允许"，能不能跑由 `envir` 说话。
@@ -83,25 +86,41 @@ internal fun ToolsScreen(
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 SectionLabel("工作区")
                 GroupCard {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenWorkspace)
+                            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "工作区（${workspaces.size} 个）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "默认：$root",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                            Text(
+                                text = "每个助手指向一个工作区：AI 只能在里面读写文件，命令的起点也是它" +
+                                    "（容器里是 /workspace）。新建 / 改名 / 删除在那一页。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
                         Text(
-                            text = "文件工具的根目录",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = root,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Text(
-                            text = "AI 只能在这个目录里读写文件；命令的起点也在这里。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp),
+                            modifier = Modifier.padding(start = 8.dp),
                         )
                     }
                 }
@@ -136,8 +155,9 @@ internal fun ToolsScreen(
                             "容器现在起不来（${envir.selfCheck?.reason ?: "自检没过"}）：" +
                                 "去下面那一页点「覆盖安装」，修好之前这一行不发工具给模型。"
                         } else {
-                            "在容器里的 Ubuntu 里跑命令，起点是工作区（容器里看到的是 /chat）。" +
-                                "容器里动什么都不影响这台手机；工作区是唯一共享的地方。默认关。"
+                            "在容器里的 Ubuntu 里跑命令，起点是工作区（容器里是 /workspace；" +
+                                "这个会话自己的东西在 /chat）。" +
+                                "容器里动什么都不影响这台手机；共享的只有工作区与这个会话的 /chat。默认关。"
                         },
                         checked = envir != null && envirShell,
                         enabled = envir != null,

@@ -7,11 +7,6 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.file.FileVisitResult
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -329,7 +324,7 @@ internal object EnvirRepository {
         }
         // 老版本（≤ D165）把运行时复制到 files/envir/bin 并 chmod，D166 起不再用；
         // 留着它只会让人以为"proot 在那儿"，顺手清掉。
-        runCatching { deleteTree(File(envirDir(context), "bin")) }
+        runCatching { deleteTreeNoFollow(File(envirDir(context), "bin")) }
 
         val archive = archiveFile(context)
         val part = File(archive.parentFile, archive.name + ".part")
@@ -343,7 +338,7 @@ internal object EnvirRepository {
         val rootfs = rootfsDir(context)
         onPhase(Phase.Extract(0))
         val report = runCatching {
-            if (!overlay) deleteTree(rootfs)
+            if (!overlay) deleteTreeNoFollow(rootfs)
             TarGz.extract(
                 archive = part,
                 dest = rootfs,
@@ -351,7 +346,7 @@ internal object EnvirRepository {
                 onEntries = { seen -> onPhase(Phase.Extract(seen)) },
             )
         }.getOrElse { error ->
-            if (!overlay) runCatching { deleteTree(rootfs) }
+            if (!overlay) runCatching { deleteTreeNoFollow(rootfs) }
             part.delete()
             NLog.w("Envir", "解包失败：${error.message}")
             return Result.failure(IOException("解包失败：${error.message}", error))
@@ -737,41 +732,9 @@ internal object EnvirRepository {
     /** 连运行时一起删。留一半的"已装"最坑人，所以这里就是**全清**。 */
     suspend fun delete(context: Context): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            deleteTree(envirDir(context))
+            deleteTreeNoFollow(envirDir(context))
             NLog.i("Envir", "隔离环境已删除（含运行时）")
         }.onFailure { NLog.w("Envir", "删除隔离环境失败：${it.message}") }
-    }
-
-    /**
-     * 递归删除，**不跟随符号链接**。
-     *
-     * `File.deleteRecursively()` 会跟随：rootfs 里有 `var/run -> /run`、`etc/alternatives/awk -> /usr/bin/mawk`
-     * 这种绝对链接，跟随一下就是在删容器外面的东西（真机上 `/run` 有没有东西不好说，
-     * 但"删 rootfs 顺手删了别处"这种事一次都不该发生）。`walkFileTree` 默认不跟随。
-     */
-    private fun deleteTree(root: File) {
-        if (!root.exists()) return
-        Files.walkFileTree(
-            root.toPath(),
-            object : SimpleFileVisitor<Path>() {
-                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    Files.deleteIfExists(file)
-                    return FileVisitResult.CONTINUE
-                }
-
-                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
-                    // 删不掉的（权限、正被占用）记一笔但继续：留一个半截目录，
-                    // 下一次 install 会先清空再解，不需要这里死磕。
-                    NLog.w("Envir", "删除失败：$file（${exc.message}）")
-                    return FileVisitResult.CONTINUE
-                }
-
-                override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
-                    Files.deleteIfExists(dir)
-                    return FileVisitResult.CONTINUE
-                }
-            },
-        )
     }
 
     /** 给界面用：解包器是同一份，但"能不能真的跑起来"只有真机能回答——这句话要写在界面上。 */

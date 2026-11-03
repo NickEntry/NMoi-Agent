@@ -300,6 +300,17 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
         None | Some(Value::Null) => None,
         Some(_) => Some(PathBuf::from(envir_path(value, "resolv")?)),
     };
+    // 会话自己的 `/chat`（D234）：同样是可选的。给了 `chat` 才看 `chat_images`——
+    // 没有 `/chat` 的话，`/chat/images` 这条绑定在 guest 里没有落脚点。
+    let chat = match value.get("chat") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(PathBuf::from(envir_path(value, "chat")?)),
+    };
+    let chat_images = match value.get("chat_images") {
+        None | Some(Value::Null) => None,
+        Some(_) if chat.is_none() => None,
+        Some(_) => Some(PathBuf::from(envir_path(value, "chat_images")?)),
+    };
     Ok(Some(EnvirSpec {
         proot: paths[0].clone(),
         loader: paths[1].clone(),
@@ -307,6 +318,8 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
         rootfs: paths[3].clone(),
         tmp: paths[4].clone(),
         resolv,
+        chat,
+        chat_images,
     }))
 }
 

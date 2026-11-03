@@ -47,11 +47,6 @@ internal object NativeBridge {
     external fun switchVersionJson(handle: Long, message: String, versionNo: Long, view: String): String
 
     external fun deleteVersionJson(handle: Long, message: String, versionNo: Long): String
-    /** 读一个会话的工作区模式（D231）：`{"session":"…","mode":"chat"|"shared"}`。 */
-    external fun workspaceModeJson(handle: Long, session: String): String
-    /** 改一个会话的工作区模式（D231）。**只改以后怎么走**，盘上的文件不搬。 */
-    external fun setWorkspaceModeJson(handle: Long, session: String, mode: String): String
-
     /** 删掉这条消息本身（连正文带版本，D152）。 */
     external fun deleteMessageJson(handle: Long, message: String): String
 

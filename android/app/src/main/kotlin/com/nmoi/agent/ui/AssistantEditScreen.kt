@@ -31,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,6 +58,7 @@ internal fun AssistantEditScreen(
     /** 存好了 / 删掉了：外层要重读抽屉与列表。 */
     onChanged: () -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var entry by remember(assistantId) { mutableStateOf<AssistantEntry?>(null) }
     var isCurrent by remember(assistantId) { mutableStateOf(false) }
@@ -65,6 +67,9 @@ internal fun AssistantEditScreen(
     var name by remember(assistantId) { mutableStateOf("") }
     var subEnabled by remember(assistantId) { mutableStateOf(false) }
     var streamOn by remember(assistantId) { mutableStateOf(true) }
+    // 工作区（D234）：工具根 + 容器里的 /workspace。空/认不出 = 默认那个。
+    var workspaceId by remember(assistantId) { mutableStateOf(WorkspaceRepository.DEFAULT_ID) }
+    var workspaceSheet by remember(assistantId) { mutableStateOf(false) }
     var subId by remember(assistantId) { mutableStateOf("") }
     var subDescription by remember(assistantId) { mutableStateOf("") }
     var subSession by remember(assistantId) { mutableStateOf("new") }
@@ -95,6 +100,9 @@ internal fun AssistantEditScreen(
             AssistantRepository.choices(databasePath).getOrElse { emptyList() }
         }
     }
+    val workspaces by produceState(initialValue = emptyList<Workspace>(), assistantId) {
+        value = withContext(Dispatchers.IO) { WorkspaceRepository.list(context) }
+    }
     LaunchedEffect(assistantId) {
         providerNames = withContext(Dispatchers.IO) {
             ProviderRepository.list(databasePath).getOrNull()
@@ -124,6 +132,7 @@ internal fun AssistantEditScreen(
         name = loaded.name
         subEnabled = loaded.subAgent.enabled
         streamOn = loaded.stream
+        workspaceId = loaded.workspaceId
         subId = loaded.subAgent.callId
         subDescription = loaded.subAgent.description
         subSession = loaded.subAgent.session
@@ -136,6 +145,7 @@ internal fun AssistantEditScreen(
         val next = base.copy(
             name = name.trim().ifEmpty { base.name },
             stream = streamOn,
+            workspaceId = workspaceId,
             subAgent = SubAgentSpec(
                 enabled = subEnabled,
                 callId = subId.trim(),
@@ -302,6 +312,62 @@ internal fun AssistantEditScreen(
                             enabled = !busy,
                         ) { streamOn = !streamOn }
                     }
+                }
+
+                // —— 工作区（D234）——
+                Card {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "工作区",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "文件工具的根，也是容器里的 /workspace；" +
+                                    "这个会话自己的 /chat 不受它影响",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(enabled = !busy) { workspaceSheet = true },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = workspaces.firstOrNull { it.id == workspaceId }?.name
+                                        ?: "共享工作区",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Icon(
+                                    imageVector = ActionIcons.ChevronDown,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 6.dp).size(14.dp),
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "换工作区**不搬文件**：之前写下的还在原来那个目录里；" +
+                            "新建 / 改名 / 删除在「工具与工作区 → 工作区」。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                 }
 
                 // —— 子 AGENT（D176）——
@@ -591,6 +657,25 @@ internal fun AssistantEditScreen(
                     noticeIsError = false
                 },
                 onDismiss = { modelSheet = false },
+            )
+        }
+
+        if (workspaceSheet) {
+            MenuSheet(
+                title = "工作区",
+                items = workspaces.map { workspace ->
+                    SheetItem(
+                        label = if (workspace.isDefault) "${workspace.name}（默认）" else workspace.name,
+                        icon = ActionIcons.Folder,
+                        trailing = if (workspace.id == workspaceId) ActionIcons.Check else null,
+                        onClick = { workspaceId = workspace.id },
+                    )
+                },
+                onHint = { text ->
+                    notice = text
+                    noticeIsError = false
+                },
+                onDismiss = { workspaceSheet = false },
             )
         }
     }
