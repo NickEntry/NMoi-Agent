@@ -301,8 +301,14 @@ pub fn run_turn<T: Transport>(
                 .iter()
                 .enumerate()
                 .map(|(index, call)| {
+                    // 空串也算"没给"：不少中转把 `id` 写成 `""`，
+                    // `unwrap_or_else` 只兜 `None`，兜不住它——于是这条调用带着空 id 进历史，
+                    // `Message::validate` 当场拒收，整轮输出全丢（2026-11-03 真机报的就是这个）。
                     OutgoingToolCall::new(
-                        call.id.clone().unwrap_or_else(|| format!("call_{index}")),
+                        call.id
+                            .clone()
+                            .filter(|id| !id.trim().is_empty())
+                            .unwrap_or_else(|| format!("call_{}_{index}", report.rounds)),
                         call.name.clone(),
                         call.arguments.clone(),
                     )

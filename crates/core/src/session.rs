@@ -746,10 +746,12 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         config.retry,
     )?;
 
-    if report.text.trim().is_empty() {
-        // 空正文落库会造出一条"什么都没有"的消息，下一轮就是噪声。
+    // 空正文 + 没有工具调用才是"什么都没有"。**只有工具调用、没有正文**是合法的：
+    // 模型这一轮就是去调工具了，`Message::validate` 也认（content 空但 tool_calls 非空）。
+    // 以前这里一刀切，重试一轮"只调工具不写字"的回答就整轮丢掉（2026-11-03 真机报的）。
+    if report.text.trim().is_empty() && report.tool_calls.is_empty() {
         return Err(SessionError::Save(
-            "这一轮模型没有给出正文，没有可落的东西".into(),
+            "这一轮模型没有给出正文，也没有工具调用，没有可落的东西".into(),
         ));
     }
 
