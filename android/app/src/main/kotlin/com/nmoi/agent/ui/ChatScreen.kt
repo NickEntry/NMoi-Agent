@@ -386,10 +386,15 @@ internal fun ChatScreen(
             val tailReasoning = info.optString("reasoning", "")
             val running = info.optBoolean("running", false)
             val current = live ?: break
-            val base = if (round != current.round) {
-                current.copy(text = "", reasoning = "", round = round)
-            } else {
-                current
+            val have = current.text.codePointCount(0, current.text.length)
+            val base = when {
+                // 换轮：native 那边缓冲清了、原正文会再垫一次（0.15av），
+                // 所以这里也回到 prefix——不然续话的正文会从"续文"重新开始。
+                round != current.round -> current.copy(text = current.prefix, reasoning = "", round = round)
+                // native 的缓冲有上限（50 KB，超了砍头）。这时总量比界面手里的还少，
+                // 再按差值算就永远"没有新字"——屏幕上会卡住不动。从尾部重来，不假装完整。
+                totalText < have -> current.copy(text = "")
+                else -> current
             }
             live = base.copy(
                 text = growText(base.text, totalText, tailText),
@@ -653,7 +658,14 @@ internal fun ChatScreen(
             // 目标为空（用户消息重试、下面没有回答可挂）时仍然在底部——结果会落成一条新消息，
             // 那个位置就是它要去的地方，提前摆一个气泡在那里不算撒谎。
             regenTarget = target
-            live = LiveReply(round = 0, running = true)
+            // 续话（0.15av）：落库那份是「原正文 + 续文」，流里只有续文那一截。
+            // 这里把原正文预置成起点——native 那边的缓冲也垫了同一段，两边的字数才对得上。
+            val before = if (append && target != null) {
+                allMessages.firstOrNull { it.id == target }?.content.orEmpty()
+            } else {
+                ""
+            }
+            live = LiveReply(round = 0, running = true, text = before, prefix = before)
             settling = false
             // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
             GeneratingTracker.mark(sid, true)
@@ -666,12 +678,11 @@ internal fun ChatScreen(
                 // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
                 allowNewVersion = AppSettings.allowNewVersion(context),
                 append = append,
-                // 重试走流式：不流式的话"就地渲染"只剩一行「正在生成…」，
+                // 重试与续话都走流式：不流式的话"就地渲染"只剩一行「正在生成…」，
                 // 而用户要的是看着它在那条消息里长出来。
-                // **续话不流式**：它的落库正文是"原正文 + 续文"，而流里只有续文那一截；
-                // 边写边画就得在 Kotlin 里再实现一遍拼接规则（中文不加空格、英文加一个），
-                // 两份规则迟早分叉。续话期间显示原正文 + 一行「正在生成…」，收尾再换。
-                stream = !append,
+                // 续话的拼接规则不在这里——native 用 core 的 `join_continuation` 垫字，
+                // 界面上看到的自始至终是"那一条消息的全文"（0.15av）。
+                stream = true,
             )
             // 残文要在清掉 `live` 之前取：失败三选一里「保留这一版」存的就是这一份。
             val partial = live?.text.orEmpty()
@@ -993,6 +1004,17 @@ internal fun ChatScreen(
                             moreForId = id
                         },
                         onVersionMessage = switchVersion,
+                        // 重试（0.15av）：动作行里那颗「刷新」不再是灰的。
+                        // 只传 id，点下去再按 id 现取——列表是快照，动作要用的是库里那一份。
+                        retryEnabled = sessionId != null,
+                        onRetryMessage = { id ->
+                            val target = allMessages.firstOrNull { it.id == id }
+                            if (target == null) {
+                                notice = "这条消息已经不在列表里了：先刷新再看"
+                            } else {
+                                retryTurn(target)
+                            }
+                        },
                         // 「更多 → 分享」= 选中这一条并直接打开分享面板：
                         // 分享本来就是"选几条再导"，让它从一条开始，少两步。
                         onShareMessage = { id ->
@@ -1682,6 +1704,9 @@ private fun MessageArea(
     onShareMessage: (String) -> Unit,
     onMoreMessage: (String) -> Unit,
     onVersionMessage: (String, Long, String) -> Unit,
+    /** 会话落库了没有（重试要写版本）。 */
+    retryEnabled: Boolean = false,
+    onRetryMessage: (String) -> Unit = {},
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1781,6 +1806,8 @@ private fun MessageArea(
                 onShareMessage = onShareMessage,
                 onMoreMessage = onMoreMessage,
                 onVersionMessage = onVersionMessage,
+                retryEnabled = retryEnabled,
+                onRetryMessage = onRetryMessage,
             )
         }
 
@@ -1914,6 +1941,10 @@ private fun UnitBlock(
     onShareMessage: (String) -> Unit,
     onMoreMessage: (String) -> Unit,
     onVersionMessage: (String, Long, String) -> Unit,
+    /** 会话落库了没有（重试要往库里写版本，没 id 就没有可写的地方）。 */
+    retryEnabled: Boolean = false,
+    /** 点重试（0.15av）：只传 id，动作发生时再按 id 现取。 */
+    onRetryMessage: (String) -> Unit = {},
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
@@ -1948,6 +1979,12 @@ private fun UnitBlock(
                         onShare = { onShareMessage(message.id) },
                         onMore = { onMoreMessage(message.id) },
                         onVersion = { no, view -> onVersionMessage(message.id, no, view) },
+                        // 灰的判据是"有没有东西可跑"：思考/工具片段、断块、会话还没落库都不给。
+                        onRetry = if (retryEnabled && message.canRetry) {
+                            { onRetryMessage(message.id) }
+                        } else {
+                            null
+                        },
                     )
 
                     else -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1967,6 +2004,11 @@ private fun UnitBlock(
                             onShare = { onShareMessage(message.id) },
                             onMore = { onMoreMessage(message.id) },
                             onVersion = { no, view -> onVersionMessage(message.id, no, view) },
+                            onRetry = if (retryEnabled && message.canRetry) {
+                                { onRetryMessage(message.id) }
+                            } else {
+                                null
+                            },
                         )
                     }
                 }
@@ -2185,6 +2227,8 @@ private fun UserMessage(
     onShare: () -> Unit,
     onMore: () -> Unit,
     onVersion: (Long, String) -> Unit,
+    /** 重试（0.15av）。`null` = 现在不能重试，按钮灰着。 */
+    onRetry: (() -> Unit)? = null,
     /** 还没落库的那一条（0.15ah）：动作行换成「发送中」，别给一排点了没反应的按钮。 */
     sending: Boolean = false,
     /** 随这一条一起发出去、还没从库里读回来的图。 */
@@ -2294,6 +2338,8 @@ private fun UserMessage(
                 onShare = onShare,
                 onSelect = onLongPress,
                 onMore = onMore,
+                onRetry = onRetry,
+                retryNote = "重试这条之后",
                 versionControl = { VersionControl(message = message, onPick = onVersion) },
             )
         }
@@ -2327,6 +2373,8 @@ private fun AssistantMessage(
     onShare: () -> Unit,
     onMore: () -> Unit,
     onVersion: (Long, String) -> Unit,
+    /** 重试（0.15av）。`null` = 现在不能重试，按钮灰着。 */
+    onRetry: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -2397,6 +2445,8 @@ private fun AssistantMessage(
             onShare = onShare,
             onSelect = onLongPress,
             onMore = onMore,
+            onRetry = onRetry,
+            retryNote = "重试这一轮",
             versionControl = { VersionControl(message = message, onPick = onVersion) },
         )
     }
@@ -2893,6 +2943,15 @@ private fun MessageActionRow(
     onShare: () -> Unit,
     onSelect: () -> Unit,
     onMore: () -> Unit,
+    /**
+     * 重试（0.15av）。`null` = 这一条现在不能重试，按钮灰着。
+     *
+     * 为什么放在这一排而不是只留在「⋯」里：重试是这一条消息上最常用的动作，
+     * 收进菜单等于每次多两下。菜单里那一项留着——两个入口打开的是同一个动作。
+     */
+    onRetry: (() -> Unit)? = null,
+    /** 读屏与长按提示念的那句。灰着的时候它就是"为什么灰"。 */
+    retryNote: String = "重试",
     versionControl: @Composable () -> Unit = {},
 ) {
     Row(
@@ -2911,10 +2970,10 @@ private fun MessageActionRow(
         )
         IconActionButton(
             image = ActionIcons.RotateCcw,
-            description = "刷新（重新生成，待接 turn_run）",
-            onClick = {},
+            description = if (onRetry != null) retryNote else "$retryNote（现在不可用）",
+            onClick = { onRetry?.invoke() },
             compact = true,
-            enabled = false,
+            enabled = onRetry != null,
         )
         IconActionButton(
             image = ActionIcons.Volume2,

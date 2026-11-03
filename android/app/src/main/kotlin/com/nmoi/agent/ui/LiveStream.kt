@@ -16,6 +16,14 @@ internal data class LiveReply(
     val running: Boolean = true,
     /** 断在中途：这段没落库，留着给他看写到哪儿。 */
     val cut: Boolean = false,
+    /**
+     * 续话时"原正文"这一截（0.15av）。
+     *
+     * native 那边的 partial 缓冲里垫了同一段（`seeded_delta`），所以总量算的是全文；
+     * 这里预置一份，`growText` 才能只补新长出来的那一段，而不是从尾部重来。
+     * 工具往返之后缓冲被清空、native 会再垫一次，所以换轮时这里也要回到 `prefix`。
+     */
+    val prefix: String = "",
 )
 
 /**

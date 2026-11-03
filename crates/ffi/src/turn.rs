@@ -156,6 +156,19 @@ fn partial_round(session: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// 续话的第一段增量：把「原正文 + 连接符」垫在前面（0.15av）。
+///
+/// 与落库用的是**同一个** [`nmoi_core::session::join_continuation`]——界面拿到的流
+/// 和最后写进库里的那份，连接符必然一致。不这么做就得在 Kotlin 里再实现一遍
+/// "中文不加空格、英文加一个"，两份规则迟早分叉。
+fn seeded_delta(prefix: &str, text: &str) -> String {
+    if prefix.is_empty() {
+        text.to_string()
+    } else {
+        nmoi_core::session::join_continuation(prefix, text)
+    }
+}
+
 fn tail(text: &str) -> String {
     if text.len() <= PARTIAL_TAIL {
         return text.to_string();
@@ -1192,6 +1205,8 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
 /// - `append`（可选，默认 `false`）：**续话**（D193）——落库的正文接在 `target` 现在的正文后面。
 /// - `stream`（可选，默认 `false`）：这一轮走 SSE，增量进 partial 表，界面轮询 `turn_busy`
 ///   把正文**就地**画在目标消息上（D227）。关着就是"空白到结果回来"。
+///   续话（`append`）也走这条路：partial 缓冲里先垫上「原正文 + 连接符」，
+///   所以界面看到的自始至终是"那一条消息的全文"，不必在 Kotlin 里重写拼接规则（0.15av）。
 ///
 /// 出参：`{text, reasoning, target, appended, rounds, tool_calls, finished}`
 ///
@@ -1310,16 +1325,39 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
         let _ = storage.set_conversation_model(input.session, &input.model);
         // 增量进 partial 表（同 `turn_run`）：界面拿 `turn_busy` 的尾部 + 总量逐字画。
         // 钩子是作用域内的——这一轮结束（含出错）自动撤掉，不会串到下一轮。
+        //
+        // 续话（0.15av）：落库那份是"原正文 + 续文"，而流里只有续文那一截。所以这里把
+        // **原正文 + 连接符**垫进缓冲（`seeded_delta`），界面那边把 `live.text` 预置成原正文，
+        // 两边的字数才对得上（`growText` 靠总量差算新长出来多少）。
+        // 连接符用的是 core 的 `join_continuation`——拼接规则只有一份，Kotlin 不重写。
+        let append_prefix = if append && stream {
+            match target.as_ref() {
+                Some(id) => storage.message_content(id).unwrap_or_default(),
+                None => String::new(),
+            }
+        } else {
+            String::new()
+        };
         let session_key = input.session.to_string();
         let (sink, round_hook) = if stream {
             let key = session_key.clone();
             let round_key = session_key;
+            // 每轮的第一段增量要垫一次：工具往返之后缓冲被清掉，这一轮同样是从"原正文"接着写。
+            let fresh = std::rc::Rc::new(std::cell::Cell::new(true));
+            let fresh_sink = fresh.clone();
+            let prefix = append_prefix.clone();
             (
                 Some(std::rc::Rc::new(move |text: &str, reasoning: &str| {
-                    partial_append(&key, text, reasoning);
+                    if !text.is_empty() && fresh_sink.replace(false) {
+                        partial_append(&key, &seeded_delta(&prefix, text), reasoning);
+                    } else {
+                        partial_append(&key, text, reasoning);
+                    }
                 }) as nmoi_core::progress::Sink),
-                Some(std::rc::Rc::new(move || partial_new_round(&round_key))
-                    as nmoi_core::progress::RoundHook),
+                Some(std::rc::Rc::new(move || {
+                    fresh.replace(true);
+                    partial_new_round(&round_key);
+                }) as nmoi_core::progress::RoundHook),
             )
         } else {
             (None, None)
@@ -1816,6 +1854,19 @@ mod tests {
         let error = parse(&broken).unwrap_err();
         assert!(error.message.contains("provider.kind"), "{}", error.message);
         assert!(error.message.contains("anthropic"), "{}", error.message);
+    }
+
+    /// 续话垫字（0.15av）：第一段增量必须带着原正文 + **与落库同一个**连接符。
+    ///
+    /// 这三条正好盖住三种接法：中文直接接、英文加一个空格、原文以空白结尾就不再加。
+    /// 判据是"界面上看到的那份"与"最后写进库里的那份"逐字一致。
+    #[test]
+    fn the_first_continuation_delta_carries_the_original_text() {
+        assert_eq!(seeded_delta("今天天气", "很好"), "今天天气很好");
+        assert_eq!(seeded_delta("hello", "world"), "hello world");
+        assert_eq!(seeded_delta("hello ", "world"), "hello world");
+        // 没有原正文（不是续话）：一个字都不该多。
+        assert_eq!(seeded_delta("", "world"), "world");
     }
 
     /// `user_text` 只在 `turn_run` 必填：重试/续话走 `up_to`，解析层不能再拦它。

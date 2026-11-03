@@ -643,7 +643,7 @@ pub struct RegenerateOutcome {
 /// - 原文以空白/换行结尾、或续文以空白开头 → 直接接（那边已经把分隔管好了）；
 /// - 两侧都是非 ASCII（中文与中文标点）→ 直接接，中文不加空格；
 /// - 其余情况加一个空格：英文断在词中间只能认了，加一个空格比连成一个怪词好。
-fn join_continuation(before: &str, next: &str) -> String {
+pub fn join_continuation(before: &str, next: &str) -> String {
     if before.is_empty() {
         return next.to_string();
     }

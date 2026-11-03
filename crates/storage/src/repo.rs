@@ -163,6 +163,21 @@ impl Storage {
         Ok(session)
     }
 
+    /// 一条消息**现在显示的正文**（`messages.content`）。
+    ///
+    /// 给续话的流式垫字用（0.15av）：落库那份是"原正文 + 续文"，而流里只有续文那一截，
+    /// 所以要在开跑前拿到原正文。走 `content` 而不是某一版：用户接的是他看见的那一段
+    /// （铁律①），和 `regenerate_turn` 里 `append` 取的是同一处。
+    pub fn message_content(&self, message: &MessageId) -> Result<String, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT content FROM messages WHERE id = ?1",
+                [message.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| StorageError::Inconsistent(format!("消息 {message} 不存在")))
+    }
+
     /// 改会话标题（0.15d）。**不动 `updated_at`**：改名不是"会话有活动"，
     /// 让它在列表里跳到最上面，用户会以为多了新消息。
     pub fn rename_conversation(&self, session: SessionId, title: &str) -> Result<(), StorageError> {
