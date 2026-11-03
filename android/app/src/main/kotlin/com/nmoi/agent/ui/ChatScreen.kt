@@ -1984,35 +1984,45 @@ private fun ProcessGroupRow(
 
     Column(modifier = Modifier.fillMaxWidth().padding(top = gapAbove)) {
         if (showHeader) AssistantHeader(createdAt = group.items.first().unit.createdAt)
-        // 头部：折叠时「展开更多 N 步」，展开时「收起」；不够三个就没有这一行。
-        if (foldable) {
-            Text(
-                text = if (expanded) "收起" else "展开更多 $hidden 步",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .padding(start = 18.dp, top = 6.dp, bottom = 2.dp)
-                    .clickable(onClick = onToggle),
-            )
-        }
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .drawBehind {
-                    val x = 6.dp.toPx()
-                    drawLine(
-                        color = line,
-                        start = Offset(x, 0f),
-                        end = Offset(x, size.height),
-                        strokeWidth = 1.dp.toPx(),
-                    )
-                },
+        // 一个块，不是一叠卡（用户 2026-11-03：块之间有空隙，看着是好几张）。
+        // 所以整组套**一层**底色 + 圆角，里面的项不再各自留白、也不再各画一张卡面——
+        // 头部（展开/收起）也在这层里，它属于这个块，不是块外面的一行字。
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         ) {
-            visible.forEach { item ->
-                Box(modifier = Modifier.fillMaxWidth().padding(start = 18.dp, top = 4.dp)) {
-                    when (item.kind) {
-                        ProcessItem.Kind.Thinking -> item.thinking?.let { ThinkingBlock(it) }
-                        ProcessItem.Kind.Tool -> ToolPairCard(item.unit)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .drawBehind {
+                        val x = 6.dp.toPx()
+                        drawLine(
+                            color = line,
+                            start = Offset(x, 0f),
+                            end = Offset(x, size.height),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    },
+            ) {
+                // 头部：折叠时「展开更多 N 步」，展开时「收起」；不够三个就没有这一行。
+                if (foldable) {
+                    Text(
+                        text = if (expanded) "收起" else "展开更多 $hidden 步",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onToggle)
+                            .padding(start = 18.dp, top = 8.dp, bottom = 2.dp),
+                    )
+                }
+                visible.forEach { item ->
+                    Box(modifier = Modifier.fillMaxWidth().padding(start = 18.dp, top = 2.dp, bottom = 2.dp)) {
+                        when (item.kind) {
+                            ProcessItem.Kind.Thinking -> item.thinking?.let { ThinkingBlock(it) }
+                            ProcessItem.Kind.Tool -> ToolPairCard(item.unit)
+                        }
                     }
                 }
             }
