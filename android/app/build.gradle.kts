@@ -100,6 +100,13 @@ android {
         }
     }
 
+    // 单测里 `android.util.Log` 是桩：默认会抛 "Stub!"，于是任何经过 `NLog` 的代码都测不了。
+    // 打开它之后桩返回默认值（0/null），日志调用变成空操作——测试要验的是文件与状态，
+    // 不是日志。这**只影响单测**，产物里的行为一个字都不变。
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     buildTypes {
         debug {
             // 不混淆：骨架阶段要能看懂堆栈，混淆留到 release 那一版再说。

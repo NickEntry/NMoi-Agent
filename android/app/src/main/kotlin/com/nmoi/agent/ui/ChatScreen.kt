@@ -383,44 +383,32 @@ internal fun ChatScreen(
         val sid = sessionId ?: return@LaunchedEffect
         if (live?.running != true) return@LaunchedEffect
         // `Started` 是在**发请求之前**发的，而 native 那边要等 `turn_run` 进来才登记。
-        // 这一小段里 `turn_busy` 说"没在跑"——不能当成跑完了，否则轮询当场退出，
-        // 屏幕上就一直是空的（以前更糟：读到上一轮的残字，见 D236）。
-        var started = false
+        // 这一小段里 `turn_busy` 说"没在跑"——不能当成跑完了（D236 / D240）。
+        var poll = LivePoll()
         var waited = 0
         while (true) {
             val info = withContext(Dispatchers.IO) { NmoiFfi.turnBusy(sid).getOrNull() } ?: break
-            val round = info.optInt("round", 0)
-            val totalText = info.optInt("text_len", 0)
-            val totalReasoning = info.optInt("reasoning_len", 0)
-            val tailText = info.optString("text", "")
-            val tailReasoning = info.optString("reasoning", "")
-            val running = info.optBoolean("running", false)
-            if (running) started = true
-            val current = live ?: break
-            val have = current.text.codePointCount(0, current.text.length)
-            val base = when {
-                // 换轮：native 那边缓冲清了、原正文会再垫一次（0.15av），
-                // 所以这里也回到 prefix——不然续话的正文会从"续文"重新开始。
-                round != current.round -> current.copy(
-                    finished = current.finished + FinishedRound(current.text, current.reasoning),
-                    text = current.prefix,
-                    reasoning = "",
-                    round = round,
-                )
-                // native 的缓冲有上限（50 KB，超了砍头）。这时总量比界面手里的还少，
-                // 再按差值算就永远"没有新字"——屏幕上会卡住不动。从尾部重来，不假装完整。
-                totalText > 0 && totalText < have -> current.copy(text = "")
-                else -> current
-            }
-            live = base.copy(
-                text = growText(base.text, totalText, tailText),
-                reasoning = growText(base.reasoning, totalReasoning, tailReasoning),
-                // 还没登记的那一小段里保持 true：这个值是上面那条 effect 的 key，
-                // 在这里写 false 会把它自己重启掉，轮询就断了。
-                running = if (started) running else true,
+            val reply = live ?: break
+            val snapshot = BusySnapshot(
+                running = info.optBoolean("running", false),
+                round = info.optInt("round", 0),
+                textLen = info.optInt("text_len", 0),
+                reasoningLen = info.optInt("reasoning_len", 0),
+                text = info.optString("text", ""),
+                reasoning = info.optString("reasoning", ""),
             )
-            if (!running) {
-                if (started) break
+            when (val step = advanceLive(reply, poll, snapshot)) {
+                is LiveStep.Update -> {
+                    live = step.reply
+                    poll = step.poll
+                }
+                is LiveStep.Stop -> {
+                    live = step.reply
+                    break
+                }
+            }
+            // 还没开始：给 native 一点时间登记，但别无限空转。
+            if (!poll.started) {
                 waited += 100
                 if (waited > 15_000) break
             }

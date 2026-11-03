@@ -5918,3 +5918,41 @@ partial 表的单元测试也看不见它。所以夹具搭在**最外层**（`c
 
 **还能往上加的**（每条大约三十行，同一个夹具）：工具往返的 `round` 递增、重试的 `seeded_delta`、
 带图的 `images` 落库。等对应的那一层再动时一起补。
+
+## D240 构建时能验的清单：把轮询状态机与垫片清理也变成单测（2026-11-04）
+
+用户 2026-11-04：「看看能弄哪些只在构建时验证、不带到产物的功能测试，感觉能节省大部分
+用户手动测试的时间成本」。这一轮把**还能在没有真机的情况下测**的那几块补齐，
+同时把"哪一条真机清单已经被哪条测试顶掉"写成表——以后加功能先看这张表，
+别再让用户去点那些机器能自己点的。
+
+**新拆出来的两个纯函数**（拆的理由都是"这段逻辑夹在 Compose 里，测不了"）：
+
+1. `advanceLive(reply, poll, snapshot)`（`LiveStream.kt`）：轮询拿到一份 `turn_busy` 快照之后
+   状态怎么变。`ChatScreen` 那条 `LaunchedEffect` 现在只剩"取快照 → 交给它 → 按结果更新"。
+   `LivePollTest` 六条：没登记的空快照不结束也不动正文、登记后按增量长、见过 running 之后
+   变 false 才算结束、换轮把上一轮收进 `finished`、缓冲砍头从尾部重来、收尾那一瞬的空快照
+   不清空正文。
+2. `ProxyContainer.cleanStale(rootfs)`：`ProxyContainerTest` 四条（只摘我们那一行、
+   摘空了删文件、没残留不动、没有文件也不报错）。
+
+**一个使能项**：`android { testOptions { unitTests.isReturnDefaultValues = true } }`。
+以前 `android.util.Log` 在单测里是抛 `Stub!` 的桩，任何经过 `NLog` 的代码都测不了
+（`cleanStale` 就卡在这）。打开之后桩返回默认值，日志调用变成空操作——**只影响单测**。
+
+**这条表是这一轮的重点**（真机清单 → 顶掉它的构建时测试）：
+
+| 真机条目 | 构建时已覆盖 | 还剩下的 |
+|---|---|---|
+| V51 发送即时显示 + 流式 | `stream_e2e`（native 那一半：中途有增量、收尾清空）、`LivePollTest` | 上屏 100 ms 内可见（纯 UI） |
+| V54 重试就地渲染 + 三选一 | 版本落点、`turn_regen` 出参（`stream_e2e` 的续话那条走的就是这条路） | 三选一对话框、失败后的库状态 |
+| V55 续话流式 | `continuation_seeds_the_original_text_and_lands_joined`：prefix 垫进缓冲、落库「原正文+续文」、两版可来回切 | 屏幕上"原正文 + 一行正在生成" |
+| V56 过程块合并/折叠 | `ProcessRowsTest` 10 条（含工具 + 思考并成一块） | 竖线与折叠的观感 |
+| V57 / V60 工作区与 `/chat` | `shell.rs` 的绑定顺序测试、`envirJson` 的字段 | 容器里真的挂没挂上（要 proot） |
+| V59 覆盖安装 | `TarGzTest` 4 条（解两遍不炸、越界拒绝、目录挡链接） | 真机上的下载与自检 |
+| V61 流式/串内容 | `stream_e2e` 3 条 + `LivePollTest` 6 条 | 手感（是否"看着在长"） |
+| V62 垫片 | `ProxyContainerTest` 4 条 | 容器里 `cat /etc/ld.so.preload` |
+
+**还没覆盖、也不打算硬凑的**：工作区目录逻辑（`WorkspaceRepository` 要 `Context`，
+要测得先把根目录参数化）；"发送后 100 ms 内上屏"（纯 Compose 状态）；容器里的实际挂载
+（只能真机）。这三条**不假装**被覆盖。

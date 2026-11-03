@@ -49,3 +49,71 @@ internal fun growText(current: String, total: Int, tail: String): String {
     val start = tail.offsetByCodePoints(0, tailPoints - need)
     return current + tail.substring(start)
 }
+
+/**
+ * 一次 `turn_busy` 的快照（D240）。
+ *
+ * 抽出来是为了**能单测**：轮询那段以前写在 `ChatScreen` 的 `LaunchedEffect` 里，
+ * 而两次真机事故都发生在它的时序上（见 D236）。Compose 里的循环测不了，
+ * 所以把"拿到一份快照之后状态怎么变"变成一个纯函数。
+ */
+internal data class BusySnapshot(
+    val running: Boolean,
+    val round: Int,
+    val textLen: Int,
+    val reasoningLen: Int,
+    val text: String,
+    val reasoning: String,
+)
+
+/** 轮询自己的状态：**见过一次 `running:true` 没有**。 */
+internal data class LivePoll(val started: Boolean = false)
+
+internal sealed interface LiveStep {
+    /** 还在跑（或者还没开始）：带着新的回复与轮询状态继续问。 */
+    data class Update(val reply: LiveReply, val poll: LivePoll) : LiveStep
+
+    /** 这一轮真的结束了（见过 `running:true` 之后又变成 false）。 */
+    data class Stop(val reply: LiveReply) : LiveStep
+}
+
+/**
+ * 拿到一份快照之后，屏幕上那份该变成什么。
+ *
+ * 三条规矩，每条都对应一次真机上撞到的东西：
+ *
+ * 1. **还没见过 `running:true` 时，`running:false` 不是终态**——`Started` 早于 native 登记，
+ *    这一小段里的 false 只说明"还没开始"。当终态处理的话，轮询当场退出、正文一个字都不长。
+ * 2. 这一小段里 `reply.running` 保持 `true`：它是外面那条 effect 的 key，写 false 会把它自己重启掉。
+ * 3. 快照里的增量一律按 [growText] 接，**不在"没在跑"时清空**：收尾那一瞬 native 给的是空，
+ *    照着清就会让气泡在换库之前闪一下白。
+ */
+internal fun advanceLive(reply: LiveReply, poll: LivePoll, snapshot: BusySnapshot): LiveStep {
+    val started = poll.started || snapshot.running
+    val have = reply.text.codePointCount(0, reply.text.length)
+    val base = when {
+        // 换轮：native 那边缓冲清了、原正文会再垫一次（0.15av），
+        // 所以这里也回到 prefix——不然续话的正文会从"续文"重新开始。
+        snapshot.round != reply.round -> reply.copy(
+            finished = reply.finished + FinishedRound(reply.text, reply.reasoning),
+            text = reply.prefix,
+            reasoning = "",
+            round = snapshot.round,
+        )
+        // native 的缓冲有上限（50 KB，超了砍头）。这时总量比界面手里的还少，
+        // 再按差值算就永远"没有新字"——屏幕上会卡住不动。从尾部重来，不假装完整。
+        snapshot.textLen > 0 && snapshot.textLen < have -> reply.copy(text = "")
+        else -> reply
+    }
+    val next = base.copy(
+        text = growText(base.text, snapshot.textLen, snapshot.text),
+        reasoning = growText(base.reasoning, snapshot.reasoningLen, snapshot.reasoning),
+        running = if (started) snapshot.running else true,
+    )
+    val nextPoll = LivePoll(started = started)
+    return if (started && !snapshot.running) {
+        LiveStep.Stop(next)
+    } else {
+        LiveStep.Update(next, nextPoll)
+    }
+}

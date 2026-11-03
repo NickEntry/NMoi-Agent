@@ -241,3 +241,189 @@ fn busy_without_a_turn_is_empty() {
     assert_eq!(0, info["round"].as_u64().unwrap_or(1), "{info}");
     assert_eq!("", info["text"].as_str().unwrap_or("x"));
 }
+
+/// 往会话里存一条消息，返回它的 id（`<session>:<seq>`）。
+fn append_message(handle: u64, session: &str, role: &str, text: &str) -> String {
+    let session_c = CString::new(session).unwrap();
+    let role_c = CString::new(role).unwrap();
+    let text_c = CString::new(text).unwrap();
+    let appended = take(nmoi_ffi::storage::nmoi_storage_append_text_json(
+        handle,
+        session_c.as_ptr(),
+        role_c.as_ptr(),
+        text_c.as_ptr(),
+        1_700_000_000_000,
+    ));
+    assert!(appended["ok"].as_bool().unwrap_or(false), "{appended}");
+    format!("{}:{}", session, appended["seq"].as_u64().expect("seq"))
+}
+
+/// 现读库里那条消息的正文（**铁律①**：判据一律现读，不用手里的快照）。
+fn message_text(handle: u64, session: &str, id: &str) -> String {
+    let session_c = CString::new(session).unwrap();
+    let units = take(nmoi_ffi::storage::nmoi_storage_load_units_json(
+        handle,
+        session_c.as_ptr(),
+        0,
+    ));
+    let items = units["items"].as_array().expect("items");
+    for unit in items {
+        for message in unit["messages"].as_array().into_iter().flatten() {
+            if message["id"].as_str() == Some(id) {
+                return message["content"].as_str().unwrap_or("").to_string();
+            }
+        }
+    }
+    panic!("库里找不到 {id}：{units}");
+}
+
+/// 续话（V55 的 native 那一半）：缓冲里**先垫上原正文**，落库是「原正文 + 续文」。
+///
+/// 这一条钉的是"界面不必在 Kotlin 里再实现一遍拼接规则"：屏幕上从头到尾是全文，
+/// 而库里那份与流里那份用的是同一个 `join_continuation`。
+#[test]
+fn continuation_seeds_the_original_text_and_lands_joined() {
+    const ORIGINAL: &str = "原来的回答";
+    const NEXT: &str = "接着写";
+
+    let gate: Arc<(Mutex<u8>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
+    let server_gate = gate.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("起监听");
+    let port = listener.local_addr().expect("取端口").port();
+
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        read_request(&mut stream);
+        write_sse_head(&mut stream);
+        write_delta(&mut stream, NEXT);
+
+        let (lock, ready) = &*server_gate;
+        let mut step = lock.lock().expect("gate");
+        *step = 1;
+        ready.notify_all();
+        while *step < 2 {
+            step = ready.wait(step).expect("gate");
+        }
+        drop(step);
+
+        let _ = stream.write_all(b"data: [DONE]\n\n");
+        let _ = stream.flush();
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, session) = open_session(dir.path());
+    let _user = append_message(handle, &session, "user", "开头");
+    let target = append_message(handle, &session, "assistant", ORIGINAL);
+
+    let config = json!({
+        "storage": handle,
+        "session": session,
+        "provider": {"kind": "openai_compatible",
+                      "base_url": format!("http://127.0.0.1:{port}/v1")},
+        "model": "test-model",
+        "up_to": target,
+        "target": target,
+        "append": true,
+        "stream": true,
+        "now_ms": 1_700_000_000_000i64,
+    })
+    .to_string();
+    let config = CString::new(config).unwrap();
+    let address = config.as_ptr() as usize;
+    let runner =
+        std::thread::spawn(move || take(nmoi_ffi::turn::nmoi_turn_regen_json(address as *const _)));
+
+    {
+        let (lock, ready) = &*gate;
+        let mut step = lock.lock().expect("gate");
+        while *step < 1 {
+            let (again, waited) = ready
+                .wait_timeout(step, Duration::from_secs(10))
+                .expect("gate");
+            step = again;
+            if waited.timed_out() && *step < 1 {
+                panic!("10 秒内没连上来：续话这一轮根本没发出去");
+            }
+        }
+    }
+
+    // 续文已经出去了：缓冲里必须是「原正文 + 续文」，不是只有续文那一截。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut partial = None;
+    while Instant::now() < deadline {
+        let info = busy(&session);
+        if info["text_len"].as_u64().unwrap_or(0) > 0 {
+            partial = Some(info);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let partial = partial.expect("10 秒内没看到增量");
+    let live_text = partial["text"].as_str().unwrap_or("");
+    assert!(
+        live_text.starts_with(ORIGINAL),
+        "屏幕上那份应当从原正文开始（垫过 prefix），实际：{live_text:?}"
+    );
+    assert!(
+        live_text.ends_with(NEXT),
+        "续文应当接在原正文后面，实际：{live_text:?}"
+    );
+
+    {
+        let (lock, ready) = &*gate;
+        let mut step = lock.lock().expect("gate");
+        *step = 2;
+        ready.notify_all();
+    }
+
+    let outcome = runner.join().expect("regen 线程没 panic");
+    assert!(outcome["ok"].as_bool().unwrap_or(false), "{outcome}");
+    // 出参里 `text` 是**模型这一次给的续文**，拼接发生在落库那一步。
+    assert_eq!(NEXT, outcome["text"].as_str().unwrap_or(""), "{outcome}");
+    assert_eq!(
+        target,
+        outcome["target"].as_str().unwrap_or(""),
+        "{outcome}"
+    );
+    // 中文接中文不加空格（`join_continuation`）：库里那份与流里那份是同一条规则。
+    assert_eq!(
+        format!("{ORIGINAL}{NEXT}"),
+        message_text(handle, &session, &target),
+        "库里那条消息应当是「原正文 + 续文」"
+    );
+    // 接之前那一版要留着（切回 `<1/2>` 能看见接之前长什么样）。
+    let target_c = CString::new(target.clone()).unwrap();
+    let versions = take(nmoi_ffi::storage::nmoi_storage_versions_json(
+        handle,
+        target_c.as_ptr(),
+    ));
+    assert_eq!(2, versions["count"].as_u64().unwrap_or(0), "{versions}");
+    assert_eq!(
+        format!("{ORIGINAL}{NEXT}"),
+        versions["shown"].as_str().unwrap_or(""),
+        "{versions}"
+    );
+    // 切回第 1 版：看见的是"接之前"那一份（续话不毁掉前一段，D193）。
+    let view = CString::new("raw").unwrap();
+    let switched = take(nmoi_ffi::storage::nmoi_storage_switch_version_json(
+        handle,
+        target_c.as_ptr(),
+        1,
+        view.as_ptr(),
+    ));
+    assert!(switched["ok"].as_bool().unwrap_or(false), "{switched}");
+    assert_eq!(ORIGINAL, message_text(handle, &session, &target));
+    // 再切回第 2 版：接完的那一份还在。
+    let back = take(nmoi_ffi::storage::nmoi_storage_switch_version_json(
+        handle,
+        target_c.as_ptr(),
+        2,
+        view.as_ptr(),
+    ));
+    assert!(back["ok"].as_bool().unwrap_or(false), "{back}");
+    assert_eq!(
+        format!("{ORIGINAL}{NEXT}"),
+        message_text(handle, &session, &target)
+    );
+    server.join().expect("服务端线程没 panic");
+}
