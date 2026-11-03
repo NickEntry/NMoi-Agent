@@ -144,18 +144,25 @@ type GetAddrInfoFn = unsafe extern "C" fn(
 type ConnectFn =
     unsafe extern "C" fn(libc::c_int, *const libc::sockaddr, libc::socklen_t) -> libc::c_int;
 
+/// `dlsym` 要的符号名。
+///
+/// 为什么不用 `c"getaddrinfo"` 字面量：那是 1.77 才稳定的，而工作区 MSRV 是 1.75；
+/// 也不用 `b"…\0".as_ptr()`——新 clippy 的 `manual_c_str_literals` 会拦（CI 上 `-D warnings`）。
+fn symbol(name: &'static [u8]) -> *const libc::c_char {
+    CStr::from_bytes_with_nul(name)
+        .expect("符号名自带结尾 NUL")
+        .as_ptr()
+}
+
 fn real_getaddrinfo() -> Option<GetAddrInfoFn> {
     static REAL: OnceLock<Option<GetAddrInfoFn>> = OnceLock::new();
     *REAL.get_or_init(|| unsafe {
-        let symbol = libc::dlsym(
-            libc::RTLD_NEXT,
-            b"getaddrinfo\0".as_ptr() as *const libc::c_char,
-        );
-        if symbol.is_null() {
+        let found = libc::dlsym(libc::RTLD_NEXT, symbol(b"getaddrinfo\0"));
+        if found.is_null() {
             None
         } else {
             Some(std::mem::transmute::<*mut libc::c_void, GetAddrInfoFn>(
-                symbol,
+                found,
             ))
         }
     })
@@ -164,14 +171,11 @@ fn real_getaddrinfo() -> Option<GetAddrInfoFn> {
 fn real_connect() -> Option<ConnectFn> {
     static REAL: OnceLock<Option<ConnectFn>> = OnceLock::new();
     *REAL.get_or_init(|| unsafe {
-        let symbol = libc::dlsym(
-            libc::RTLD_NEXT,
-            b"connect\0".as_ptr() as *const libc::c_char,
-        );
-        if symbol.is_null() {
+        let found = libc::dlsym(libc::RTLD_NEXT, symbol(b"connect\0"));
+        if found.is_null() {
             None
         } else {
-            Some(std::mem::transmute::<*mut libc::c_void, ConnectFn>(symbol))
+            Some(std::mem::transmute::<*mut libc::c_void, ConnectFn>(found))
         }
     })
 }
@@ -262,10 +266,7 @@ fn tunnel(
 
     // 1) 连端点。这个 fd 还没连过，所以这一步是真的 connect（走 real，不再进垫片）。
     let Some(real) = real_connect() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "拿不到 connect",
-        ));
+        return Err(std::io::Error::other("拿不到 connect"));
     };
     let (sockaddr, length) = to_sockaddr(endpoint.addr);
     let code = unsafe { real(fd, &sockaddr as *const _ as *const libc::sockaddr, length) };
@@ -278,20 +279,14 @@ fn tunnel(
     let mut choice = [0u8; 2];
     recv_exact(fd, &mut choice)?;
     if choice != [0x05, 0x02] {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "端点不接受用户名/密码认证",
-        ));
+        return Err(std::io::Error::other("端点不接受用户名/密码认证"));
     }
 
     // 3) 认证
     let user = endpoint.user.as_bytes();
     let pass = endpoint.pass.as_bytes();
     if user.len() > 255 || pass.len() > 255 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "用户名/密码超过 255 字节",
-        ));
+        return Err(std::io::Error::other("用户名/密码超过 255 字节"));
     }
     let mut auth = vec![0x01u8, user.len() as u8];
     auth.extend_from_slice(user);
@@ -309,10 +304,7 @@ fn tunnel(
 
     // 4) CONNECT：域名优先，让端点那边解析。
     if host.len() > 255 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "主机名超过 255 字节",
-        ));
+        return Err(std::io::Error::other("主机名超过 255 字节"));
     }
     let mut request = vec![0x05u8, 0x01, 0x00, 0x03, host.len() as u8];
     request.extend_from_slice(host.as_bytes());
