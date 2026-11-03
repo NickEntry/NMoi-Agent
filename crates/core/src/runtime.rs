@@ -1067,6 +1067,13 @@ fn openai_body(request: &ChatRequest) -> Result<Value, ChatError> {
             })
             .collect();
         body["tools"] = Value::Array(tools);
+        // `tool_choice` 必须显式给 `auto`（2026-11-03 真机定位）。
+        //
+        // 同一个端点、同一个模型，别的客户端带着 `"tool_choice":"auto"` 发，
+        // 回来的 `tool_calls` 第一片里 `name` 是正常的；我们不带，回来的 `name`
+        // 从头到尾都是空串——模型照样"调"了，但名字丢了，一个工具也跑不起来。
+        // 省略它按规范等于 auto，可这个网关显然不是这么实现的。
+        body["tool_choice"] = Value::String("auto".into());
     }
     if !request.stop.is_empty() {
         body["stop"] = json!(request.stop);
