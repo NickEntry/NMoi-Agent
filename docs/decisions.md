@@ -5887,3 +5887,34 @@ bionic 的 `libdl.so` 在 glibc 里不存在（rootfs 只有 `usr/lib/aarch64-li
 消息落库**之前**拼的——第一次带图时目录还不存在，于是永远绑不上（真机上模型 `ls /chat/images`
 就是 `No such file or directory`，然后它推断"图是内联给我的"）。改成**先 `mkdirs()` 再绑**：
 容器里 `/chat/images` 永远在，没附件时是空目录。
+
+## D239 用"固定输出的假模型服务"测流式（2026-11-04）
+
+用户 2026-11-04 提的：写一批测试，用一个会输出固定内容的模型服务，在构建时把各种功能走一遍，
+**不进产物**。
+
+这个主意对，而且对的不是"多几条用例"，是**测试该放在哪一层**。流式出过的两次事故——
+`turn_busy` 交了上一轮的残字、轮询在 `running:false` 那一下退出——都不是"某个函数算错了"，
+是**时序**：谁先谁后、中间那一瞬读到什么。`core` 里的 SSE 解析测试看不见它，
+partial 表的单元测试也看不见它。所以夹具搭在**最外层**（`crates/ffi/tests/stream_e2e.rs`），
+用真的库、真的 C ABI、真的 socket，中途停下来看一眼 `turn_busy` 到底给了什么。
+
+**怎么做到"不靠 sleep 猜"**：服务端发完第一段就举手（Condvar），测试看完再放行。
+靠 `sleep(200ms)` 断言"这时候应该还在跑"是两头竞态——慢 runner 上还没开始、快 runner 上已经跑完。
+
+**钉住的两条**：
+
+1. `streaming_grows_while_it_runs_and_clears_after`：中途 `text_len` 必须**等于第一段的长度**
+   （既不是 0 也不是全文）、`running` 为真、`text` 就是那一段；跑完 `report.text` 等于固定输出；
+   收尾之后 `turn_busy` 一律给空。
+2. `busy_without_a_turn_is_empty`：没有一轮在跑时，四个字段全空（D236 的直接回归）。
+
+**反向验证过**：把 `turn_busy` 改回"不管有没有登记都读 partial 表"，第 1 条当场红在
+`left: 0, right: 9`，报文里就是 `{"text":"第一段第二段第三段","text_len":9,"round":1,"running":false}`
+——真机上用户看到的那一幕。
+
+**代价**：`crates/ffi/src/lib.rs` 的 `mod turn` 改成 `pub mod turn`（集成测试要按 C ABI 调，
+模块私有拿不到路径；`storage` 那条早就是这么开的）。假服务只在测试二进制里，`tests/` 不参与打包。
+
+**还能往上加的**（每条大约三十行，同一个夹具）：工具往返的 `round` 递增、重试的 `seeded_delta`、
+带图的 `images` 落库。等对应的那一层再动时一起补。

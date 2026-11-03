@@ -39,7 +39,9 @@ mod settings;
 pub mod storage;
 mod text;
 mod tools;
-mod turn;
+// `pub` 的理由与 `storage` 那条一样：集成测试（`crates/ffi/tests/stream_e2e.rs`）要按真实 C ABI
+// 起一轮流式、中途问 `turn_busy`——那正是两次真机事故所在的那一层。
+pub mod turn;
 mod vision;
 mod workspace;
 
