@@ -325,6 +325,9 @@ pub fn run_turn<T: Transport>(
         // 落库的是**切掉标签之后**的正文：历史里再出现 `<tool_call>` 会让下一轮模型
         // 以为上一轮没执行，重复调用。
         assistant.content = visible.clone();
+        if !completion.reasoning.trim().is_empty() {
+            assistant = assistant.with_reasoning(&completion.reasoning);
+        }
         messages.push(assistant);
         seq += 1;
 
