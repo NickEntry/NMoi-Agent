@@ -1865,6 +1865,8 @@ private fun MessageArea(
                     expanded = openGroups[row.key] == true,
                     onToggle = { onToggleGroup(row.key) },
                     onOpenTool = onOpenTool,
+                    thinkingOpen = { id -> openGroups["think:$id"] == true },
+                    onToggleThinking = { id -> onToggleGroup("think:$id") },
                 )
                 return@itemsIndexed
             }
@@ -2029,6 +2031,9 @@ private fun ProcessGroupRow(
     expanded: Boolean,
     onToggle: () -> Unit,
     onOpenTool: (ChatUnit) -> Unit,
+    /** 某一项的思考展开没有。键由调用方加前缀（`think:`），这里只管问、只管翻。 */
+    thinkingOpen: (String) -> Boolean = { false },
+    onToggleThinking: (String) -> Unit = {},
 ) {
     val running = group.items.any { it.running }
     val foldable = foldable(group.items) && !running
@@ -2080,8 +2085,8 @@ private fun ProcessGroupRow(
                                 // 点开就地长出来，不弹窗——它属于这条回答的一部分。
                                 ThinkingProcessRow(
                                     message = thinking,
-                                    expanded = openGroups["think:${item.id}"] == true,
-                                    onToggle = { onToggleGroup("think:${item.id}") },
+                                    expanded = thinkingOpen(item.id),
+                                    onToggle = { onToggleThinking(item.id) },
                                 )
                             }
                             ProcessItem.Kind.Tool -> ToolProcessRow(
