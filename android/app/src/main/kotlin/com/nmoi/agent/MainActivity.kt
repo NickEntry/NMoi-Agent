@@ -177,8 +177,14 @@ class MainActivity : ComponentActivity() {
                 // 日志摘要给设置索引页那一行用；三种通道各自的开关在「日志 → 齿轮」里。
                 val logSummary = "3 通道 · 调试" + if (NLog.isEnabled(LogKind.Debug)) "开" else "关"
                 // 隔离环境装没装：设置索引页那一行要写实话，所以每次换页现读一次 state.json。
-                val envirInstalled by produceState(initialValue = false, route) {
-                    value = withContext(Dispatchers.IO) { EnvirRepository.installed(context) != null }
+                val envirStatus by produceState(initialValue = "", route) {
+                    value = withContext(Dispatchers.IO) {
+                        when (EnvirRepository.installed(context)?.health) {
+                            null -> ""
+                            EnvirRepository.Health.NeedsRepair -> "环境需修复"
+                            else -> "环境已装"
+                        }
+                    }
                 }
                 // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
                 var drawerOpen by remember { mutableStateOf(false) }
@@ -601,7 +607,7 @@ class MainActivity : ComponentActivity() {
                             iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                             logSummary = logSummary,
                             // 这一行要能回答"环境装没装"，不能为了知道点进去；route 变了就重读一次。
-                            toolsSummary = if (envirInstalled) "环境已装 · 原生命令" else "工作区 · 原生命令",
+                            toolsSummary = (if (envirStatus.isEmpty()) "工作区" else envirStatus) + " · 原生命令",
                             appSummary = AppSettings.summary(context),
                             onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
                             onBack = { backStack = backStack.dropLast(1) },

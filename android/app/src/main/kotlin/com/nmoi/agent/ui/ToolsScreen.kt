@@ -132,6 +132,9 @@ internal fun ToolsScreen(
                         subtitle = if (envir == null) {
                             "隔离环境里的命令。**先把下面那个环境装上**——没有 rootfs 就没有东西可跑，" +
                                 "所以这一行现在是灰的。"
+                        } else if (envir.health == EnvirRepository.Health.NeedsRepair) {
+                            "容器现在起不来（${envir.selfCheck?.reason ?: "自检没过"}）：" +
+                                "去下面那一页点「覆盖安装」，修好之前这一行不发工具给模型。"
                         } else {
                             "在容器里的 Ubuntu 里跑命令，起点是工作区（容器里看到的是 /chat）。" +
                                 "容器里动什么都不影响这台手机；工作区是唯一共享的地方。默认关。"
@@ -200,7 +203,11 @@ internal fun ToolsScreen(
                                 text = if (envir == null) {
                                     "未安装 · 33.4 MB 下载，装在 App 私有目录里"
                                 } else {
-                                    "${envir.label} · ${envir.files} 个文件 · 已装"
+                                    "${envir.label} · ${envir.files} 个文件 · " + when (envir.health) {
+                                        EnvirRepository.Health.Ok -> "已装 · 自检通过"
+                                        EnvirRepository.Health.NeedsRepair -> "已装 · 需要修复"
+                                        EnvirRepository.Health.Unchecked -> "已装 · 没自检过"
+                                    }
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -198,8 +198,10 @@ internal object TurnRepository {
                 // 隔离环境（D172）：**装好了 + 开关开着**才把坐标交给 core。
                 // 只给一半（开关开着但没装）会让模型看到一个"声明了但一调就失败"的工具，
                 // 所以这里两个条件都满足才发，界面上也照这个口径显示。
+                // 自检没过同样不发：容器起不来的话，每一条命令都只会带一句看不懂的错回来。
                 val envir = if (ToolingRepository.envirShell(context)) {
                     EnvirRepository.installed(context)
+                        ?.takeIf { it.health != EnvirRepository.Health.NeedsRepair }
                 } else {
                     null
                 }

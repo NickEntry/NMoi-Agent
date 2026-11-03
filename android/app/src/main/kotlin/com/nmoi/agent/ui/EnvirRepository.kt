@@ -77,6 +77,16 @@ internal object EnvirRepository {
 
     data class RuntimeFile(val packaged: String, val label: String, val version: String)
 
+    /** 装完那一次自检：`/bin/sh -c 'echo ok'` + `ldd /bin/sh`。 */
+    data class SelfCheck(
+        val ok: Boolean,
+        val at: Long,
+        val reason: String,
+        val detail: String,
+    )
+
+    enum class Health { Ok, NeedsRepair, Unchecked }
+
     /** 装好之后写在 `state.json` 里的东西：**界面上要能一条条指出来**，所以字段就是给界面用的。 */
     data class Installed(
         val label: String,
@@ -84,6 +94,7 @@ internal object EnvirRepository {
         val sha256: String?,
         val archiveBytes: Long,
         val installedAt: Long,
+        val repairedAt: Long = 0L,
         val rootfs: String,
         val files: Int,
         val dirs: Int,
@@ -91,7 +102,15 @@ internal object EnvirRepository {
         val hardLinks: Int,
         val linkFallbacks: Int,
         val skipped: Int,
+        val selfCheck: SelfCheck? = null,
     ) {
+        val health: Health
+            get() = when {
+                selfCheck == null -> Health.Unchecked
+                selfCheck.ok -> Health.Ok
+                else -> Health.NeedsRepair
+            }
+
         val skippedNote: String
             get() = if (skipped == 0) "没有跳过任何条目" else "跳过 $skipped 条（解包报告的清单在日志里）"
 
@@ -195,6 +214,7 @@ internal object EnvirRepository {
             sha256 = parsed.optString("sha256", "").ifEmpty { null },
             archiveBytes = parsed.optLong("archive_bytes", 0L),
             installedAt = parsed.optLong("installed_at", 0L),
+            repairedAt = parsed.optLong("repaired_at", 0L),
             rootfs = rootfs.absolutePath,
             files = parsed.optInt("files", 0),
             dirs = parsed.optInt("dirs", 0),
@@ -202,7 +222,22 @@ internal object EnvirRepository {
             hardLinks = parsed.optInt("hard_links", 0),
             linkFallbacks = parsed.optInt("link_fallbacks", 0),
             skipped = parsed.optInt("skipped", 0),
+            selfCheck = parsed.optJSONObject("self_check")?.let { check ->
+                val ok = check.optBoolean("ok", false)
+                SelfCheck(
+                    ok = ok,
+                    at = check.optLong("at", 0L),
+                    reason = check.text("reason").ifEmpty { if (ok) "" else "上次自检没过（没记下原因）" },
+                    detail = check.text("detail"),
+                )
+            },
         )
+    }
+
+    private fun JSONObject.text(key: String, fallback: String = ""): String {
+        if (isNull(key)) return fallback
+        val raw = optString(key, fallback)
+        return if (raw == "null") fallback else raw
     }
 
     /** 运行时三件的实际大小（界面用；缺文件时是 -1）。 */
@@ -223,6 +258,9 @@ internal object EnvirRepository {
         /** 解包。`entries` 是已处理的 tar 条目数（总量要读到结尾才知道，不假装知道）。 */
         data class Extract(val entries: Int) : Phase
 
+        /** 装完自检（`/bin/sh -c 'echo ok'` + `ldd /bin/sh`）。 */
+        data object Verify : Phase
+
         data object Cleanup : Phase
     }
 
@@ -236,7 +274,38 @@ internal object EnvirRepository {
         context: Context,
         source: Source,
         onPhase: (Phase) -> Unit,
-    ): Result<Installed> = withContext(Dispatchers.IO) { installBlocking(context, source, onPhase) }
+    ): Result<Installed> = withContext(Dispatchers.IO) {
+        installBlocking(context, source, onPhase, overlay = false)
+    }
+
+    /**
+     * 覆盖安装：**保留已装好的那一份**，只把基础层重新解一遍。
+     *
+     * 与 [install] 的两处不同：解包前不删 rootfs（用户装在容器里的东西留着），
+     * 解包失败也不删（把仅剩的一份也删了，就是从"需要修复"变成"什么都没了"）。
+     * 来源沿用 `state.json` 里那一条：修的是同一个镜像，不是换个系统。
+     */
+    suspend fun repair(
+        context: Context,
+        onPhase: (Phase) -> Unit,
+    ): Result<Installed> = withContext(Dispatchers.IO) {
+        val record = installed(context)
+            ?: return@withContext Result.failure<Installed>(
+                IOException("还没装过，没有可覆盖的东西——用「安装」"),
+            )
+        if (record.url.isBlank()) {
+            return@withContext Result.failure<Installed>(
+                IOException("state.json 里没有来源地址，只能「重新安装」"),
+            )
+        }
+        val source = Source(
+            label = record.label,
+            url = record.url,
+            sha256 = record.sha256,
+            bytes = record.archiveBytes,
+        )
+        installBlocking(context, source, onPhase, overlay = true)
+    }
 
     /**
      * 真正干活的那一半：**只在 IO 上跑**。包装成上面那个 `withContext`，是因为
@@ -247,9 +316,10 @@ internal object EnvirRepository {
         context: Context,
         source: Source,
         onPhase: (Phase) -> Unit,
+        overlay: Boolean,
     ): Result<Installed> {
         onPhase(Phase.Runtime)
-        NLog.i("Envir", "安装路径：${describePaths(context)}")
+        NLog.i("Envir", "${if (overlay) "覆盖安装" else "安装"}路径：${describePaths(context)}")
         // 运行时是随 APK 装好的（jniLibs → nativeLibraryDir），这里只核对它在不在。
         val missing = missingRuntime(context)
         if (missing.isNotEmpty()) {
@@ -273,7 +343,7 @@ internal object EnvirRepository {
         val rootfs = rootfsDir(context)
         onPhase(Phase.Extract(0))
         val report = runCatching {
-            deleteTree(rootfs)
+            if (!overlay) deleteTree(rootfs)
             TarGz.extract(
                 archive = part,
                 dest = rootfs,
@@ -281,7 +351,7 @@ internal object EnvirRepository {
                 onEntries = { seen -> onPhase(Phase.Extract(seen)) },
             )
         }.getOrElse { error ->
-            runCatching { deleteTree(rootfs) }
+            if (!overlay) runCatching { deleteTree(rootfs) }
             part.delete()
             NLog.w("Envir", "解包失败：${error.message}")
             return Result.failure(IOException("解包失败：${error.message}", error))
@@ -291,12 +361,17 @@ internal object EnvirRepository {
         val downloaded = part.length()
         runCatching { part.delete() }
 
+        onPhase(Phase.Verify)
+        val check = runSelfCheck(context, rootfs.absolutePath).check
+        val previous = if (overlay) installed(context) else null
+
         val installed = Installed(
             label = source.label,
             url = source.url,
             sha256 = source.sha256,
             archiveBytes = if (downloaded > 0) downloaded else source.bytes,
-            installedAt = System.currentTimeMillis(),
+            installedAt = previous?.installedAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            repairedAt = if (overlay) System.currentTimeMillis() else 0L,
             rootfs = rootfs.absolutePath,
             files = report.files,
             dirs = report.dirs,
@@ -304,6 +379,7 @@ internal object EnvirRepository {
             hardLinks = report.hardLinks,
             linkFallbacks = report.linkFallbacks,
             skipped = report.skipped.size,
+            selfCheck = check,
         )
         writeState(context, installed, report.skipped)
         // 归档本身不留：解完了就没用，留着白占 35 MB。
@@ -311,10 +387,68 @@ internal object EnvirRepository {
         NLog.i(
             "Envir",
             "隔离环境已装：${installed.label}，文件 ${report.files} / 目录 ${report.dirs} / " +
-                "链接 ${report.symlinks}+${report.hardLinks}，跳过 ${report.skipped.size}",
+                "链接 ${report.symlinks}+${report.hardLinks}，跳过 ${report.skipped.size}，" +
+                "自检 ${if (check.ok) "通过" else "没过：${check.reason}"}",
         )
         return Result.success(installed)
     }
+
+    /** 装完之后立刻自检一次，结果写进 state.json（界面拿它显示"已装 / 需要修复"）。 */
+    suspend fun recheck(context: Context): Result<Verify> = withContext(Dispatchers.IO) {
+        runCatching {
+            val record = installed(context) ?: throw IOException("还没装，没有可自检的 rootfs")
+            val verify = runSelfCheck(context, record.rootfs)
+            writeState(context, record.copy(selfCheck = verify.check), emptyList())
+            verify
+        }
+    }
+
+    data class Verify(val check: SelfCheck, val probe: Probe)
+
+    private suspend fun runSelfCheck(context: Context, rootfs: String): Verify {
+        val at = System.currentTimeMillis()
+        val result = probe(context, checkCommand(context, rootfs)).getOrElse { error ->
+            val failed = Probe(
+                command = "sh -c 'echo ok'; ldd /bin/sh",
+                exitCode = null,
+                stdout = "",
+                stderr = error.message ?: "起不来",
+                durationMs = 0,
+                timedOut = false,
+            )
+            return Verify(
+                check = SelfCheck(
+                    ok = false,
+                    at = at,
+                    reason = "自检起不来：${error.message ?: "未知原因"}",
+                    detail = "",
+                ),
+                probe = failed,
+            )
+        }
+        return Verify(check = parseCheck(result, at), probe = result)
+    }
+
+    private fun parseCheck(probe: Probe, at: Long): SelfCheck {
+        val out = probe.stdout
+        val err = probe.stderr
+        val echoed = out.lineSequence().any { it.trim() == "ok" }
+        val ldd = out.substringAfter("---", "")
+        val missingLibs = ldd.lineSequence().map { it.trim() }.filter { it.contains("not found") }.toList()
+        val lddMissing = (err + ldd).contains("/usr/bin/ldd: not found") || (err + ldd).contains("ldd: not found")
+        val ok = echoed && missingLibs.isEmpty() && (probe.exitCode == 0 || lddMissing)
+        val reason = when {
+            ok -> ""
+            probe.timedOut -> "自检超时：${probe.durationMs} ms 没返回"
+            !echoed -> "容器里的 /bin/sh 起不来：" + firstLine(err.ifBlank { out })
+            missingLibs.isNotEmpty() -> "缺库：" + missingLibs.joinToString("；").take(200)
+            else -> "ldd 退出码 ${probe.exitCode}：" + firstLine(err.ifBlank { ldd })
+        }
+        return SelfCheck(ok = ok, at = at, reason = reason, detail = (out + err).trim().take(1_500))
+    }
+
+    private fun firstLine(text: String): String =
+        text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }?.take(200) ?: "（没有输出）"
 
     private fun download(
         source: Source,
@@ -376,6 +510,7 @@ internal object EnvirRepository {
             put("sha256", installed.sha256.orEmpty())
             put("archive_bytes", installed.archiveBytes)
             put("installed_at", installed.installedAt)
+            put("repaired_at", installed.repairedAt)
             put("rootfs", installed.rootfs)
             put("files", installed.files)
             put("dirs", installed.dirs)
@@ -383,10 +518,18 @@ internal object EnvirRepository {
             put("hard_links", installed.hardLinks)
             put("link_fallbacks", installed.linkFallbacks)
             put("skipped", installed.skipped)
+            installed.selfCheck?.let { check ->
+                put("self_check", JSONObject().apply {
+                    put("ok", check.ok)
+                    put("at", check.at)
+                    put("reason", check.reason)
+                    put("detail", check.detail)
+                })
+            }
             put("runtime", JSONObject().apply {
                 for (file in Runtime) put(file.label, file.version)
             })
-            put("state_version", 1)
+            put("state_version", 2)
         }
         stateFile(context).writeText(json.toString(2))
         if (skipped.isNotEmpty()) {
@@ -556,6 +699,18 @@ internal object EnvirRepository {
             guestCwd = "/root",
             script = "/usr/bin/head -2 /etc/os-release; echo ---; /usr/bin/uname -r; " +
                 "echo ---; /usr/bin/ls /usr/bin | /usr/bin/wc -l",
+        ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}") }
+
+    /**
+     * 装完自检（0.15ay）：一句 `echo ok` 证明容器里的 `/bin/sh` 能被 exec，
+     * 一句 `ldd /bin/sh` 把缺的库点名。两条都要——只 echo 的话，"缺库"会在别的命令上才现形。
+     */
+    fun checkCommand(context: Context, rootfs: String): List<String> =
+        prootArgs(
+            context = context,
+            rootfs = rootfs,
+            guestCwd = "/root",
+            script = "/bin/sh -c 'echo ok'; echo ---; /usr/bin/ldd /bin/sh",
         ).also { NLog.i("Envir", "自检命令：${it.joinToString(" ")}") }
 
     /**

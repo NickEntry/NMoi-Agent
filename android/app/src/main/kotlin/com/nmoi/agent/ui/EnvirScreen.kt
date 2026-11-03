@@ -66,8 +66,84 @@ internal fun EnvirScreen(onBack: () -> Unit) {
     var progress by remember { mutableStateOf<Float?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var confirmReinstall by remember { mutableStateOf(false) }
     var probe by remember { mutableStateOf<EnvirRepository.Probe?>(null) }
     var probing by remember { mutableStateOf(false) }
+
+    fun onPhase(phase: EnvirRepository.Phase) {
+        when (phase) {
+            EnvirRepository.Phase.Runtime -> phaseText = "复制运行时…"
+            is EnvirRepository.Phase.Download -> {
+                phaseText = buildString {
+                    append("下载 rootfs ")
+                    append(mb(phase.bytes))
+                    if (phase.total > 0) {
+                        append(" / ")
+                        append(mb(phase.total))
+                        append("（")
+                        append(phase.bytes * 100 / phase.total)
+                        append("%）")
+                        progress = (phase.bytes.toFloat() / phase.total).coerceIn(0f, 1f)
+                    }
+                }
+            }
+            is EnvirRepository.Phase.Extract ->
+                phaseText = "解包中… 已处理 ${phase.entries} 条"
+            EnvirRepository.Phase.Verify -> phaseText = "自检中…（/bin/sh + ldd）"
+            EnvirRepository.Phase.Cleanup -> phaseText = "收尾…"
+        }
+    }
+
+    fun start(overlay: Boolean) {
+        val source = when {
+            overlay -> null
+            customSelected -> {
+                val url = customUrl.trim()
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    notice = "地址要以 http:// 或 https:// 开头"
+                    return
+                }
+                EnvirRepository.Source(
+                    label = "自定义来源",
+                    url = url,
+                    sha256 = null,
+                    bytes = 0L,
+                )
+            }
+            else -> EnvirRepository.UbuntuBase
+        }
+        notice = null
+        running = true
+        progress = null
+        phaseText = if (overlay) "覆盖安装：下载基础层…" else "复制运行时…"
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                if (overlay) {
+                    EnvirRepository.repair(context) { phase -> onPhase(phase) }
+                } else {
+                    EnvirRepository.install(context, source!!) { phase -> onPhase(phase) }
+                }
+            }
+            running = false
+            progress = null
+            result.fold(
+                onSuccess = { done ->
+                    installed = done
+                    phaseText = when (done.health) {
+                        EnvirRepository.Health.Ok -> "装好了，自检通过"
+                        EnvirRepository.Health.NeedsRepair -> "装完了，但自检没过"
+                        EnvirRepository.Health.Unchecked -> "装好了"
+                    }
+                    notice = null
+                },
+                onFailure = { error ->
+                    installed = EnvirRepository.installed(context)
+                    phaseText = ""
+                    notice = "没装成：${error.message}"
+                },
+            )
+        }
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -113,6 +189,41 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
+                            val check = current.selfCheck
+                            when {
+                                check == null -> Text(
+                                    text = "装完之后没自检过（这一版之前装的）：点「覆盖安装」会顺带自检",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                check.ok -> Text(
+                                    text = "自检通过 · ${time(check.at)} · /bin/sh 与 ldd 都正常",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                else -> {
+                                    Text(
+                                        text = "需要修复：${check.reason}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                    Text(
+                                        text = buildString {
+                                            append("点「覆盖安装」只重解基础层，已装的文件不删")
+                                            if (current.repairedAt > 0) {
+                                                append("；上次覆盖安装 ${time(current.repairedAt)}")
+                                            }
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
+                            }
                             MonoText(current.rootfs)
                             Text(
                                 text = buildString {
@@ -202,8 +313,9 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                 "装完再自检。`proot --version` 只证明三件套能被链接器拉起来；" +
                                     "进容器那句才会告诉你 rootfs 到底能不能跑。"
                             } else {
-                                "三份证据：① `proot --version`；② 进容器读 `os-release` + `uname -r`；" +
-                                    "③ 容器里的 DNS 与一次真的域名解析（`getent hosts archive.ubuntu.com`）。"
+                                "四份证据：① `proot --version`；② 进容器读 `os-release` + `uname -r`；" +
+                                    "③ 容器里的 DNS 与一次真的域名解析（`getent hosts archive.ubuntu.com`）；" +
+                                    "④ `/bin/sh -c 'echo ok'` + `ldd /bin/sh`（装完自动跑一次，结果记进 state.json）。"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -299,6 +411,43 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                     .weight(1f),
                             )
                         }
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            DialogChip(
+                                label = "sh + ldd",
+                                enabled = current != null && !probing,
+                            ) {
+                                probing = true
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        EnvirRepository.recheck(context)
+                                    }
+                                    result.fold(
+                                        onSuccess = { verify -> probe = verify.probe },
+                                        onFailure = { error ->
+                                            probe = EnvirRepository.Probe(
+                                                command = "sh -c 'echo ok'; ldd /bin/sh",
+                                                exitCode = null,
+                                                stdout = "",
+                                                stderr = error.message ?: "起不来",
+                                                durationMs = 0,
+                                                timedOut = false,
+                                            )
+                                        },
+                                    )
+                                    installed = EnvirRepository.installed(context)
+                                    probing = false
+                                }
+                            }
+                            Text(
+                                text = "装完自动跑；手动跑一次也会把结果写回 state.json",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .align(Alignment.CenterVertically)
+                                    .padding(start = 10.dp)
+                                    .weight(1f),
+                            )
+                        }
                         probe?.let { result ->
                             Text(
                                 text = "退出码 ${result.exitCode ?: "无"} · ${result.durationMs} ms" +
@@ -377,6 +526,9 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                         }
                     }
                     Hint("只认 `.tar.gz`：XZ 没有 JVM 自带解码器（`.deb` 那条路就是这么断的，见 D164 修正）。")
+                    if (installed != null) {
+                        Hint("「覆盖安装」用的是已装那一份的来源（state.json 里那条）；换来源要走「重新安装」。")
+                    }
                 }
 
                 if (running || phaseText.isNotEmpty()) {
@@ -401,69 +553,33 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                 PrimaryButton(
                     label = when {
                         running -> "正在装…"
-                        installed != null -> "重新安装"
-                        else -> "安装"
+                        installed == null -> "安装"
+                        else -> "覆盖安装"
                     },
                     enabled = !running,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                 ) {
-                    val source = if (customSelected) {
-                        val url = customUrl.trim()
-                        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                            notice = "地址要以 http:// 或 https:// 开头"
-                            return@PrimaryButton
-                        }
-                        EnvirRepository.Source(
-                            label = "自定义来源",
-                            url = url,
-                            sha256 = null,
-                            bytes = 0L,
-                        )
-                    } else {
-                        EnvirRepository.UbuntuBase
-                    }
-                    notice = null
-                    running = true
-                    progress = null
-                    phaseText = "复制运行时…"
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            EnvirRepository.install(context, source) { phase ->
-                                when (phase) {
-                                    EnvirRepository.Phase.Runtime -> phaseText = "复制运行时…"
-                                    is EnvirRepository.Phase.Download -> {
-                                        phaseText = buildString {
-                                            append("下载 rootfs ")
-                                            append(mb(phase.bytes))
-                                            if (phase.total > 0) {
-                                                append(" / ")
-                                                append(mb(phase.total))
-                                                append("（")
-                                                append(phase.bytes * 100 / phase.total)
-                                                append("%）")
-                                                progress = (phase.bytes.toFloat() / phase.total).coerceIn(0f, 1f)
-                                            }
-                                        }
-                                    }
-                                    is EnvirRepository.Phase.Extract ->
-                                        phaseText = "解包中… 已处理 ${phase.entries} 条"
-                                    EnvirRepository.Phase.Cleanup -> phaseText = "收尾…"
-                                }
-                            }
-                        }
-                        running = false
-                        progress = null
-                        result.fold(
-                            onSuccess = { done ->
-                                installed = done
-                                phaseText = "装好了"
-                                notice = null
-                            },
-                            onFailure = { error ->
-                                installed = EnvirRepository.installed(context)
-                                phaseText = ""
-                                notice = "没装成：${error.message}"
-                            },
+                    start(overlay = installed != null)
+                }
+
+                if (installed != null) {
+                    Text(
+                        text = "覆盖安装 = 保留已装的文件，只把基础层重解一遍，装完自动自检。" +
+                            "要重新下 33.4 MB（和装的时候一样）。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !running, onClick = { confirmReinstall = true })
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Text(
+                            text = "重新安装（清空后重解）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -504,8 +620,9 @@ internal fun EnvirScreen(onBack: () -> Unit) {
     if (confirmDelete) {
         val size = installed?.let { "rootfs（约 110 MB）和运行时（约 300 KB）" } ?: "已装的东西"
         ConfirmDeleteDialog(
-            name = installed?.label ?: "隔离环境",
+            title = "删除“${installed?.label ?: "隔离环境"}”？",
             detail = "会删掉 $size，下次要重新下载 33.4 MB。工作区里的文件不受影响。",
+            confirmLabel = "删除",
             onCancel = { confirmDelete = false },
             onConfirm = {
                 confirmDelete = false
@@ -519,6 +636,20 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                     installed = EnvirRepository.installed(context)
                     result.onFailure { notice = "删除失败：${it.message}" }
                 }
+            },
+        )
+    }
+
+    if (confirmReinstall) {
+        ConfirmDeleteDialog(
+            title = "重新安装“${installed?.label ?: "隔离环境"}”？",
+            detail = "会先清空 rootfs（约 110 MB）再重解一遍：容器里你自己装的东西会没掉，" +
+                "工作区里的文件不受影响。只想修好容器的话，用「覆盖安装」。",
+            confirmLabel = "清空重装",
+            onCancel = { confirmReinstall = false },
+            onConfirm = {
+                confirmReinstall = false
+                start(overlay = false)
             },
         )
     }
@@ -689,11 +820,12 @@ private fun DialogChip(label: String, enabled: Boolean = true, onClick: () -> Un
     }
 }
 
-/** 删除确认：红色实心 + 写清会没掉什么（ui-taste 2026-10-26 第三报）。 */
+/** 破坏性动作的确认：红色实心 + 写清会没掉什么（ui-taste 2026-10-26 第三报）。 */
 @Composable
 private fun ConfirmDeleteDialog(
-    name: String,
+    title: String,
     detail: String,
+    confirmLabel: String,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
 ) {
@@ -712,7 +844,7 @@ private fun ConfirmDeleteDialog(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "删除“$name”？",
+                        text = title,
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -734,7 +866,7 @@ private fun ConfirmDeleteDialog(
                             modifier = Modifier.clickable(onClick = onConfirm),
                         ) {
                             Text(
-                                text = "删除",
+                                text = confirmLabel,
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onError,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
