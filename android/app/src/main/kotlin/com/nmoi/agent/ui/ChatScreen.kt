@@ -30,6 +30,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -168,6 +170,8 @@ internal fun ChatScreen(
     // 这一轮已经收到的正文/思考（0.15ah）。**只用于画**：一轮结束以落库结果为准，
     // 免得"流里画的和库里存的"两套东西对不上（铁律①）。
     var live by remember(sessionId) { mutableStateOf<LiveReply?>(null) }
+    // 工具块点开的那一条（D243）：半屏弹窗，不在聊天页里就地展开。
+    var toolSheet by remember(sessionId) { mutableStateOf<ChatUnit?>(null) }
     // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
     var settling by remember(sessionId) { mutableStateOf(false) }
     // 重试落在哪条消息上（D227）：这一轮的部分正文**就地**画在它身上，不再在底部另起一个
@@ -255,20 +259,32 @@ internal fun ChatScreen(
                             val mime = context.contentResolver.getType(uri)
                                 ?.takeIf { it.startsWith("image/") }
                                 ?: "image/jpeg"
-                            val bytes = context.contentResolver.openInputStream(uri)
+                            val raw = context.contentResolver.openInputStream(uri)
                                 ?.use { it.readBytes() }
                                 ?: error("读不到这张图")
+                            if (raw.isEmpty()) error("这张图是空的")
+                            // 压缩在**选图这一刻**做（D241）：这张图后面还要落库、落盘、
+                            // base64 编进请求，三处都按同一份字节算，压得越早越省。
+                            val packed = ImageCompress.apply(raw, mime, ImageLimits.of(context))
                             when {
-                                bytes.isEmpty() -> error("这张图是空的")
-                                bytes.size > MAX_IMAGE_BYTES -> error(
-                                    "图片 ${bytes.size / 1024 / 1024} MB，超过 8 MB 上限",
+                                packed.bytes.isEmpty() -> error("压缩之后是空的")
+                                packed.bytes.size > MAX_IMAGE_BYTES -> error(
+                                    "图片 ${packed.bytes.size / 1024 / 1024} MB，超过 8 MB 上限",
                                 )
                             }
                             PendingImage(
-                                mime = mime,
-                                data = Base64.encodeToString(bytes, Base64.NO_WRAP),
-                                bytes = bytes.size,
-                            )
+                                mime = packed.mime,
+                                data = Base64.encodeToString(packed.bytes, Base64.NO_WRAP),
+                                bytes = packed.bytes.size,
+                            ).also {
+                                if (packed.reencoded) {
+                                    NLog.i(
+                                        "Chat",
+                                        "图片已压缩：${raw.size / 1024} KB → ${packed.bytes.size / 1024} KB" +
+                                            "（${packed.mime}）",
+                                    )
+                                }
+                            }
                         }
                     }
                     picked.fold(
@@ -812,12 +828,27 @@ internal fun ChatScreen(
             NmoiFfi.turnBusy(sid).getOrNull()?.optBoolean("running") ?: true
         }
         if (GeneratingTracker.reconcile(sid, alive)) {
+            // 这一轮在我们不在的时候结束了（或者根本没跑起来）。
+            // 三样都要收干净：`pending` 不清，那句「发送中…」会一直挂着（用户 2026-11-04 报的）。
             runningSession = null
-            notice = "上一轮没收尾（原生那边已经没有它了），已接管"
+            pending = null
+            live = null
+            settling = false
+            busy = false
+            reloadKey += 1
+            // 结果可能是在页面不在的时候到的：那时候事件没人收，从 `TurnRunner` 补领一次。
+            notice = when (val missed = TurnRunner.takeRecent(sid)) {
+                is TurnEvent.Finished -> missed.message
+                is TurnEvent.Failed -> missed.message
+                else -> "上一轮已经结束（原生那边没有在跑的了）：没有新消息就是它失败了，原因在 设置 → 调试 → 日志"
+            }
         } else if (alive) {
             runningSession = sid
             // 切走再切回来：这一轮还在跑，把流式气泡重新立起来，轮询才会开始。
             if (live == null) live = LiveReply(round = 0, running = true)
+            // 用户那条消息已经落库了（`turn_run` 先存再发），让库里那份顶掉乐观气泡。
+            pending = null
+            reloadKey += 1
         }
     }
 
@@ -911,12 +942,24 @@ internal fun ChatScreen(
                 is TurnEvent.Finished -> {
                     // **不立刻清**：库里那份还没读回来，先清会让气泡闪一下。
                     // 保持"正在生成"的形态，等 `snapshot` 换过再收（见上面那条 effect）。
+                    val streamed = live?.sawDelta == true
                     live = live?.copy(running = false)
                     settling = true
                     busy = false
                     reloadKey += 1
                     val left = SendQueue.count(watching)
-                    notice = if (left > 0) "${event.message}（队列还有 $left 条）" else event.message
+                    // 一个字都没逐字长出来：说清是哪一种原因（D242）。不说的话，
+                    // 用户只会看到"等半天一下全出来"，然后问"流式意义何在"。
+                    val why = when {
+                        streamed -> ""
+                        !assistant.stream -> "（助手的「逐字输出」关着：去助手设置里打开）"
+                        else -> "（这一轮没收到任何增量：端点可能不支持流式，已退回非流式一次性返回）"
+                    }
+                    notice = buildString {
+                        append(event.message)
+                        append(why)
+                        if (left > 0) append("（队列还有 $left 条）")
+                    }
                 }
 
                 is TurnEvent.Failed -> {
@@ -986,6 +1029,7 @@ internal fun ChatScreen(
                         // 过程块（D229）：展开状态只活在这个会话的这次浏览里。
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
+                        onOpenTool = { unit -> toolSheet = unit },
                         onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
@@ -1188,6 +1232,11 @@ internal fun ChatScreen(
                     onClose = { queueSheet = false },
                 )
             }
+        }
+
+        // 工具块点开的那一条（D243）：半屏弹窗，看完就收。
+        toolSheet?.let { unit ->
+            ToolSheet(unit = unit, onDismiss = { toolSheet = null })
         }
 
         if (thinkingSheet) {
@@ -1706,6 +1755,8 @@ private fun MessageArea(
     /** 过程块（D229）展开状态：键是组的第一项 id。 */
     openGroups: Map<String, Boolean> = emptyMap(),
     onToggleGroup: (String) -> Unit = {},
+    /** 工具块点开：在**半屏弹窗**里看细节（用户 2026-11-04 定），不在聊天页里就地展开。 */
+    onOpenTool: (ChatUnit) -> Unit = {},
     /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
     onDismissCut: () -> Unit,
     selecting: Boolean,
@@ -1813,6 +1864,7 @@ private fun MessageArea(
                     gapAbove = gap,
                     expanded = openGroups[row.key] == true,
                     onToggle = { onToggleGroup(row.key) },
+                    onOpenTool = onOpenTool,
                 )
                 return@itemsIndexed
             }
@@ -1821,6 +1873,7 @@ private fun MessageArea(
                 unit = unit,
                 showHeader = showHeader,
                 hideReasoning = row.hideReasoning,
+                onOpenTool = onOpenTool,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 live = live,
@@ -1975,6 +2028,7 @@ private fun ProcessGroupRow(
     gapAbove: Dp,
     expanded: Boolean,
     onToggle: () -> Unit,
+    onOpenTool: (ChatUnit) -> Unit,
 ) {
     val running = group.items.any { it.running }
     val foldable = foldable(group.items) && !running
@@ -2019,10 +2073,21 @@ private fun ProcessGroupRow(
                     )
                 }
                 visible.forEach { item ->
-                    Box(modifier = Modifier.fillMaxWidth().padding(start = 18.dp, top = 2.dp, bottom = 2.dp)) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 2.dp, bottom = 2.dp)) {
                         when (item.kind) {
-                            ProcessItem.Kind.Thinking -> item.thinking?.let { ThinkingBlock(it) }
-                            ProcessItem.Kind.Tool -> ToolPairCard(item.unit)
+                            ProcessItem.Kind.Thinking -> item.thinking?.let { thinking ->
+                                // 思考**在聊天页里**展开（用户 2026-11-04 定的）：一行标题 + 一个竖标，
+                                // 点开就地长出来，不弹窗——它属于这条回答的一部分。
+                                ThinkingProcessRow(
+                                    message = thinking,
+                                    expanded = openGroups["think:${item.id}"] == true,
+                                    onToggle = { onToggleGroup("think:${item.id}") },
+                                )
+                            }
+                            ProcessItem.Kind.Tool -> ToolProcessRow(
+                                unit = item.unit,
+                                onOpen = { onOpenTool(item.unit) },
+                            )
                         }
                     }
                 }
@@ -2039,6 +2104,8 @@ private fun UnitBlock(
     showHeader: Boolean,
     /** 思考已经并进上面那个大块了：这里别再画一遍（见 `ProcessRows.buildRows`）。 */
     hideReasoning: Boolean = false,
+    /** 单独一条工具单元：点开也是弹窗，不是就地展开。 */
+    onOpenTool: (ChatUnit) -> Unit = {},
     maxBubble: Dp,
     gapAbove: Dp,
     /** 这一轮正在长的回复（就地渲染用，D227）。 */
@@ -2074,7 +2141,7 @@ private fun UnitBlock(
             BrokenCard(declaration = broken.declaration, reason = broken.reason)
         }
         if (unit.isToolPair) {
-            ToolPairCard(unit)
+            ToolProcessRow(unit = unit, onOpen = { onOpenTool(unit) })
         } else {
             unit.messages.forEach { message ->
                 when {
@@ -2285,6 +2352,24 @@ private fun PendingImageStrip(images: List<PendingImage>, onRemove: (Int) -> Uni
  * 字节按 id 现取：一条消息可能带几张图，而首屏只画看得见的那几条。
  * 读不出来的**要说出来**——画一个空白框，用户会以为图被吞了。
  */
+/**
+ * 一张附件图在气泡里占多大：**等比塞进 240×200 的框**。
+ *
+ * 只给宽度上限是不够的——竖屏截图会按原始比例把高度顶到整屏（用户 2026-11-04 报的）。
+ * 这里直接算出宽高，`ContentScale.Fit` 就不会再留黑边。
+ */
+private fun imageBox(bitmap: android.graphics.Bitmap): Pair<Dp, Dp> {
+    val maxW = 240f
+    val maxH = 200f
+    if (bitmap.width <= 0 || bitmap.height <= 0) return maxW.dp to maxH.dp
+    val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
+    return if (ratio >= maxW / maxH) {
+        maxW.dp to (maxW / ratio).dp
+    } else {
+        (maxH * ratio).dp to maxH.dp
+    }
+}
+
 @Composable
 private fun MessageImages(images: List<ChatImage>) {
     if (images.isEmpty()) return
@@ -2309,12 +2394,15 @@ private fun MessageImages(images: List<ChatImage>) {
         } else {
             for ((image, bitmap) in rows) {
                 if (bitmap != null) {
+                    // 等比塞进一个框（用户 2026-11-04：太大，调小点）。
+                    // 只给 `widthIn` 的话高度不设限——一张竖屏截图能占满整屏。
+                    val box = imageBox(bitmap)
                     Image(
                         bitmap = bitmap.asImageBitmap(),
                         contentDescription = "图片附件",
-                        contentScale = ContentScale.FillWidth,
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .widthIn(max = 220.dp)
+                            .size(width = box.first, height = box.second)
                             .clip(RoundedCornerShape(12.dp)),
                     )
                 } else {
@@ -3174,82 +3262,212 @@ private fun ThinkingBlock(message: ChatMessage) {
 }
 
 /**
- * 工具调用单元：一张折叠卡。标题给"调用 N 次 / 结果 M 条"，
- * 展开后按消息列出（调用参数与结果原文，等宽字体）。
+ * 工具块的一行（D243，用户 2026-11-04 定的形状）。
  *
- * 为什么不逐条做成气泡：工具往返是**一条逻辑**——把参数和结果拆到两条气泡里，
- * 读的人要在两屏之间来回对 id。
+ * 以前是"点一下就地展开"，一展开就把整段命令输出铺在聊天页里，一条回答能顶三屏。
+ * 现在只留一行：图标 + 名字 + 结果摘要（`exit 0 · 202ms`）+ 右侧 `>`，
+ * 点开在**半屏弹窗**里看细节。
+ *
+ * 摘要从结果 JSON 里取（`exit_code` / `duration_ms`）：拿不到就不编，
+ * 只写"结果 N 条"。
  */
 @Composable
-private fun ToolPairCard(unit: ChatUnit) {
-    var expanded by remember(unit.id) { mutableStateOf(false) }
-    val calls = unit.messages.count { it.isToolCall || it.toolCalls > 0 }
-    val results = unit.messages.count { it.isToolResult }
+private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
+    val calls = unit.messages.flatMap { it.toolArgs }
+    val results = unit.messages.filter { it.isToolResult }
+    val name = calls.firstOrNull()?.name?.takeIf { it.isNotBlank() } ?: "工具调用"
+    val summary = toolSummary(results)
+    val preview = calls.firstOrNull()?.arguments?.let { toolArgumentPreview(it) }.orEmpty()
 
-    Row(modifier = Modifier.fillMaxWidth()) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(vertical = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = ActionIcons.Wrench,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = name,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            if (summary.isNotEmpty()) {
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = ActionIcons.ChevronRight,
+                contentDescription = "查看工具调用详情",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp).size(16.dp),
+            )
+        }
+        if (preview.isNotEmpty()) {
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 24.dp, top = 2.dp),
+            )
+        }
+    }
+}
+
+/** 结果摘要：`exit 0 · 202ms`。取不到就说"结果 N 条"，不编数字。 */
+private fun toolSummary(results: List<ChatMessage>): String {
+    val first = results.firstOrNull() ?: return ""
+    val text = first.content.trim()
+    if (!text.startsWith("{")) {
+        return if (results.size > 1) "结果 ${results.size} 条" else ""
+    }
+    val json = runCatching { org.json.JSONObject(text) }.getOrNull()
+    if (json == null) return if (results.size > 1) "结果 ${results.size} 条" else ""
+    val exit = if (json.has("exit_code")) "exit ${json.optInt("exit_code", 0)}" else ""
+    val ms = if (json.has("duration_ms")) "${json.optLong("duration_ms", 0)}ms" else ""
+    return listOf(exit, ms).filter { it.isNotEmpty() }.joinToString(" · ")
+}
+
+/** 参数里的"那一眼能认出来"的一句：`command` 优先，其次第一个字符串字段。 */
+private fun toolArgumentPreview(arguments: String): String {
+    val json = runCatching { org.json.JSONObject(arguments) }.getOrNull() ?: return arguments.take(80)
+    json.optString("command", "").takeIf { it.isNotBlank() }?.let { return it }
+    json.optString("path", "").takeIf { it.isNotBlank() }?.let { return it }
+    json.optString("query", "").takeIf { it.isNotBlank() }?.let { return it }
+    return json.keys().asSequence().firstOrNull()?.let { json.optString(it, "") }.orEmpty()
+}
+
+/**
+ * 思考块的一行（D243）：标题 + 竖标，**在聊天页里**展开。
+ *
+ * 为什么思考不弹窗、工具弹窗：思考是"这条回答怎么想出来的"，属于正文的一部分，
+ * 就地展开读起来是连着的；工具输出是"外部世界返回的一坨"，弹窗看更干净。
+ */
+@Composable
+private fun ThinkingProcessRow(message: ChatMessage, expanded: Boolean, onToggle: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded },
+                .clickable(onClick = onToggle)
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = ActionIcons.ChevronDown,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(
-                        text = buildString {
-                            append("工具调用")
-                            if (calls > 0) append(" × $calls")
-                            if (results > 0) append(" · 结果 $results 条")
-                            if (!unit.closed) append(" · 未收全")
-                            append(if (expanded) "（点一下收起）" else "（点一下展开）")
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 6.dp),
-                    )
-                }
-                if (expanded) {
-                    // 配对：`call_id` 是唯一能对上"这次调用"和"那条结果"的东西。
-                    // 配不上（断块、被取消的批）就照老样子单独列出来，别假装配上了。
-                    val results = unit.messages
-                        .filter { it.isToolResult }
-                        .associateBy { it.toolCallId.orEmpty() }
-                    val pairs = unit.messages.flatMap { message ->
-                        message.toolArgs.map { arg -> arg to results[arg.callId] }
-                    }
-                    if (pairs.isNotEmpty()) {
-                        pairs.forEach { (arg, result) ->
-                            ToolCallBlock(command = arg, result = result)
-                        }
-                    } else {
-                        unit.messages.forEach { message ->
-                            Text(
-                                text = buildString {
-                                    append(if (message.isToolResult) "← 结果" else "→ 调用")
-                                    message.toolCallId?.let { append(" [$it]") }
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 6.dp),
-                            )
-                            Text(
-                                text = message.content.ifEmpty { "（空）" },
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-                }
+            Icon(
+                imageVector = ActionIcons.Gauge,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = "深度思考 · ${message.content.length} 字",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            Icon(
+                imageVector = if (expanded) ActionIcons.ChevronUp else ActionIcons.ChevronDown,
+                contentDescription = if (expanded) "收起思考" else "展开思考",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (expanded) {
+            Text(
+                text = message.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 24.dp, bottom = 6.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 工具调用的详情弹窗（D243）：**初始最高半屏**，里面自己滚。
+ *
+ * 为什么半屏而不是整屏：它是"看一眼这次调用干了什么"，看完就收；
+ * 整屏会让人以为换了一页，还得再找回去。
+ */
+@Composable
+private fun ToolSheet(unit: ChatUnit, onDismiss: () -> Unit) {
+    val screen = LocalConfiguration.current.screenHeightDp
+    val maxHeight = (screen * 0.5f).dp
+    SheetFrame(title = "工具调用", onDismiss = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+        ) {
+            ToolPairBody(unit)
+        }
+    }
+}
+
+/**
+ * 工具调用的正文：按"调用 ↔ 结果"配对列出来（调用参数与结果原文，等宽字体）。
+ *
+ * 只在**弹窗**里画（D243）。以前它挂在聊天页的可折叠卡里，一展开就顶掉三屏。
+ * 配对靠 `call_id`——那是唯一能对上"这次调用"和"那条结果"的东西；
+ * 配不上（断块、被取消的批）就照老样子单独列，不假装配上了。
+ */
+@Composable
+private fun ToolPairBody(unit: ChatUnit) {
+    val results = unit.messages
+        .filter { it.isToolResult }
+        .associateBy { it.toolCallId.orEmpty() }
+    val pairs = unit.messages.flatMap { message ->
+        message.toolArgs.map { arg -> arg to results[arg.callId] }
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (!unit.closed) {
+            Text(
+                text = "这一批还没收全",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+        }
+        if (pairs.isNotEmpty()) {
+            pairs.forEach { (arg, result) ->
+                ToolCallBlock(command = arg, result = result)
+            }
+        } else {
+            unit.messages.forEach { message ->
+                Text(
+                    text = buildString {
+                        append(if (message.isToolResult) "← 结果" else "→ 调用")
+                        message.toolCallId?.let { append(" [$it]") }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Text(
+                    text = message.content.ifEmpty { "（空）" },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
     }

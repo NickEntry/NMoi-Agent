@@ -51,6 +51,11 @@ internal fun AppSettingsScreen(
         mutableStateOf(AppSettings.defaultContextWindow(context).toString())
     }
     var notice by remember { mutableStateOf<String?>(null) }
+    var compress by remember { mutableStateOf(AppSettings.imageCompress(context)) }
+    var longText by remember { mutableStateOf(AppSettings.imageLongEdge(context).toString()) }
+    var shortText by remember { mutableStateOf(AppSettings.imageShortEdge(context).toString()) }
+    var qualityText by remember { mutableStateOf(AppSettings.imageQuality(context).toString()) }
+    var roundsText by remember { mutableStateOf(AppSettings.maxRounds(context).toString()) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -136,6 +141,165 @@ internal fun AppSettingsScreen(
                                 AppSettings.setDefaultContextWindow(context, AppSettings.DEFAULT_WINDOW)
                                 windowText = AppSettings.DEFAULT_WINDOW.toString()
                                 notice = "默认窗口恢复成 ${AppSettings.DEFAULT_WINDOW}"
+                            }
+                        }
+                    }
+                }
+
+                // —— 工具轮数（D244）——
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "工具轮数上限",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "一轮里模型最多「调工具再开口」几次。到顶之后会再给它一轮（不带工具）" +
+                                "让它把话说完；那一轮还说不出话才算没收尾。" +
+                                "设太小会把长活截断，设太大遇上打转的模型会一直跑下去。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        SettingField(
+                            value = roundsText,
+                            onChange = { roundsText = it },
+                            placeholder = AppSettings.DEFAULT_MAX_ROUNDS.toString(),
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("用这个值", selected = false) {
+                                val parsed = roundsText.trim().toIntOrNull()
+                                if (parsed == null ||
+                                    parsed < AppSettings.MIN_MAX_ROUNDS ||
+                                    parsed > AppSettings.MAX_MAX_ROUNDS
+                                ) {
+                                    notice = "轮数要填 ${AppSettings.MIN_MAX_ROUNDS}–${AppSettings.MAX_MAX_ROUNDS}"
+                                } else {
+                                    AppSettings.setMaxRounds(context, parsed)
+                                    roundsText = AppSettings.maxRounds(context).toString()
+                                    notice = "工具轮数上限改成 ${AppSettings.maxRounds(context)}"
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复 ${AppSettings.DEFAULT_MAX_ROUNDS}", selected = false) {
+                                AppSettings.setMaxRounds(context, AppSettings.DEFAULT_MAX_ROUNDS)
+                                roundsText = AppSettings.DEFAULT_MAX_ROUNDS.toString()
+                                notice = "工具轮数上限恢复成 ${AppSettings.DEFAULT_MAX_ROUNDS}"
+                            }
+                        }
+                    }
+                }
+
+                // —— 图片压缩（D241）——
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "发图前压缩",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = "选图那一刻就压：按长边/短边等比缩，再按质量重编码。" +
+                                        if (compress) "" else "现在是关的：原图直发。",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            SettingChip("开", selected = compress) {
+                                compress = true
+                                AppSettings.setImageCompress(context, true)
+                                notice = "发图前会压缩"
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            SettingChip("关", selected = !compress) {
+                                compress = false
+                                AppSettings.setImageCompress(context, false)
+                                notice = "原图直发（大图会很慢，也占地方）"
+                            }
+                        }
+                        Text(
+                            text = "只缩不放：比上限小的图原样发。PNG 走 PNG（可能有透明），" +
+                                "其余走 JPEG——质量只对 JPEG 生效。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 10.dp)) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "长边像素",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                SettingField(
+                                    value = longText,
+                                    onChange = { longText = it },
+                                    placeholder = AppSettings.DEFAULT_IMAGE_LONG.toString(),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "短边像素",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                SettingField(
+                                    value = shortText,
+                                    onChange = { shortText = it },
+                                    placeholder = AppSettings.DEFAULT_IMAGE_SHORT.toString(),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "质量 %",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                SettingField(
+                                    value = qualityText,
+                                    onChange = { qualityText = it },
+                                    placeholder = AppSettings.DEFAULT_IMAGE_QUALITY.toString(),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                        }
+                        Row(modifier = Modifier.padding(top = 10.dp)) {
+                            SettingChip("用这三个值", selected = false) {
+                                val long = longText.trim().toIntOrNull()
+                                val short = shortText.trim().toIntOrNull()
+                                val quality = qualityText.trim().toIntOrNull()
+                                if (long == null || long <= 0 || short == null || short <= 0) {
+                                    notice = "长边/短边要填正整数"
+                                } else if (quality == null || quality !in 1..100) {
+                                    notice = "质量要填 1–100"
+                                } else {
+                                    AppSettings.setImageLongEdge(context, long)
+                                    AppSettings.setImageShortEdge(context, short)
+                                    AppSettings.setImageQuality(context, quality)
+                                    longText = long.toString()
+                                    shortText = short.toString()
+                                    qualityText = quality.toString()
+                                    notice = "以后发图按 长边 $long / 短边 $short / 质量 $quality%"
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setImageLongEdge(context, AppSettings.DEFAULT_IMAGE_LONG)
+                                AppSettings.setImageShortEdge(context, AppSettings.DEFAULT_IMAGE_SHORT)
+                                AppSettings.setImageQuality(context, AppSettings.DEFAULT_IMAGE_QUALITY)
+                                longText = AppSettings.DEFAULT_IMAGE_LONG.toString()
+                                shortText = AppSettings.DEFAULT_IMAGE_SHORT.toString()
+                                qualityText = AppSettings.DEFAULT_IMAGE_QUALITY.toString()
+                                notice = "恢复成 2048 / 2048 / 90%"
                             }
                         }
                     }

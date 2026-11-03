@@ -62,6 +62,19 @@ internal object TurnRunner {
     private val _events = MutableSharedFlow<TurnEvent>(extraBufferCapacity = 32)
     val events: SharedFlow<TurnEvent> = _events
 
+    /**
+     * 每个会话**最后一轮的结果**（D242）。
+     *
+     * 为什么要有：事件是发给"正看着这个会话的那一页"的。用户去设置里转一圈，
+     * 那一轮在这期间跑完/失败，事件就没人收——回来时只剩一句"已接管"，
+     * 他既看不到回答也看不到失败原因。所以结果在进程里留一份，页面回来时补领。
+     *
+     * 只留最后一个，`take` 之后清掉：这是"补领"，不是历史。
+     */
+    private val recent = mutableMapOf<String, TurnEvent>()
+
+    fun takeRecent(sessionId: String): TurnEvent? = synchronized(recent) { recent.remove(sessionId) }
+
     /** 哪些会话正在跑。抽屉里那几个点点、发送键的形态都订阅它。 */
     val running = MutableStateFlow<Set<String>>(emptySet())
 
@@ -111,6 +124,7 @@ internal object TurnRunner {
         // "正常结束" = 有结果且不是被停掉的。`cancelled=true` 也走下面那条（阻塞队列）：
         // 用户按下停止是**有意的中断**，自动接着往下发等于把他的"停"当成"继续"。
         if (outcome != null && !outcome.cancelled) {
+            remember(TurnEvent.Finished(sessionId, outcome.describe(), continued = false))
             _events.emit(TurnEvent.Finished(sessionId, outcome.describe(), continued = false))
             finish(sessionId)
             // 正常结束 → 队列往下走。**先清状态再发下一句**：下一句的 Started 会重新点亮按钮。
@@ -135,8 +149,13 @@ internal object TurnRunner {
                 append("。队列已暂停")
             }
         }
+        remember(TurnEvent.Failed(sessionId, text, saved, message))
         _events.emit(TurnEvent.Failed(sessionId, text, saved, message))
         finish(sessionId)
+    }
+
+    private fun remember(event: TurnEvent) {
+        synchronized(recent) { recent[event.sessionId] = event }
     }
 
     private fun finish(sessionId: String) {

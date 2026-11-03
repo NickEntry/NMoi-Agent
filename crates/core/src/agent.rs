@@ -58,7 +58,10 @@ impl Default for TurnConfig {
     fn default() -> Self {
         Self {
             // 一次任务里读几个文件、改几处，12 轮够用；再多通常说明模型在打转
-            max_rounds: 12,
+            // 工具往返的上限（D244）。原来写的是 12——用户 2026-11-04 问"轮数用尽是谁设计的"，
+            // 答案是我拍的：那是个防死循环的安全阀，不是产品决定。12 太低，一个"读文件→改→再读→再改"
+            // 的活很容易撞上，撞上就把话截断了。抬到 32，并且界面可以调。
+            max_rounds: 32,
             max_tokens: None,
             truncate_at: None,
             stream: false,
@@ -176,6 +179,9 @@ pub fn run_turn<T: Transport>(
         .map(|message| u64::from(estimate_tokens(&message.content)))
         .sum();
 
+    // 到上限之后**再给一轮**：这一轮不带工具，让它把话说完（D244）。
+    // 直接返回的话，用户看到的是"回答被砍了一半"，而他什么都没做错。
+    let mut wrap_up = false;
     loop {
         // 取消的检查点之一：发请求之前。已经飞在路上的往返不会被打断（D58）。
         if cancel.is_cancelled() {
@@ -188,9 +194,14 @@ pub fn run_turn<T: Transport>(
         request.stream = config.stream;
         request.messages = messages.clone();
         // 冻结过就按冻结的名单，否则按 policy 现算（D76）。
-        request.tools = match ctx.declared {
-            Some(names) => registry.specs_named(names),
-            None => registry.specs_for(ctx.policy),
+        request.tools = if wrap_up {
+            // 收尾那一轮不给工具：给了它就会继续调，永远收不了尾。
+            Vec::new()
+        } else {
+            match ctx.declared {
+                Some(names) => registry.specs_named(names),
+                None => registry.specs_for(ctx.policy),
+            }
         };
         if let Some(tokens) = config.max_tokens {
             request.max_tokens = Some(tokens);
@@ -358,7 +369,13 @@ pub fn run_turn<T: Transport>(
         }
 
         if report.rounds >= config.max_rounds {
-            // 到顶了：把手上的话交出去，明确告诉调用方"没收尾"
+            if !wrap_up {
+                // 先别交卷：再来一轮不带工具的，让它把手上这件事说完（D244）。
+                // 这一轮仍然算进 `rounds`——轮数是"发了几次请求"，不是"调了几次工具"。
+                wrap_up = true;
+                continue;
+            }
+            // 收尾那一轮它还是只给工具调用（说明没有工具它就不说话）：只能如实交出去。
             report.finished = false;
             return Ok(report);
         }
@@ -826,6 +843,57 @@ mod tests {
         assert!(report.tool_calls[0].outcome.contains("read_file"));
     }
 
+    /// 到上限之后再给**一轮不带工具**的收尾（D244）：那一轮把话说完就算完成。
+    #[test]
+    fn the_last_round_has_no_tools_and_can_finish_the_turn() {
+        let (_dir, workspace, policy) = setup();
+        let transport = Scripted::new(vec![
+            calls_body(&[("c1", "list_dir", "{}")]),
+            text_body("说完了，就这些。"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+        let config = TurnConfig {
+            max_rounds: 1,
+            ..TurnConfig::default()
+        };
+
+        let report = run_turn(
+            &client,
+            &base_request(),
+            &history(),
+            &registry,
+            &ctx,
+            &config,
+            &NeverCancel,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(2, report.rounds, "到顶之后还要再来一轮（不带工具）");
+        assert!(
+            report.finished,
+            "收尾那一轮说出话就算做完了：{}",
+            report.text
+        );
+        assert_eq!("说完了，就这些。", report.text);
+        let requests = transport.requests();
+        assert_eq!(2, requests.len());
+        // 空数组会被 `build_body` 整个省掉：所以判据是"请求里没有 tools 这个键"。
+        assert!(
+            !requests[1].contains("\"tools\""),
+            "收尾那一轮不能再给工具：{}",
+            requests[1]
+        );
+        assert!(
+            requests[0].contains("\"tools\""),
+            "第一轮该带工具：{}",
+            requests[0]
+        );
+    }
+
+    /// 收尾那一轮它还是只给工具调用（说明没有工具就不说话）：如实报"没收尾"，不装做完。
     #[test]
     fn rounds_are_capped_and_reported_honestly() {
         let (_dir, workspace, policy) = setup();
@@ -854,9 +922,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(report.rounds, 2);
+        // 2 轮 + 1 轮收尾：收尾那轮它还在要工具，只能交卷。
+        assert_eq!(3, report.rounds);
         assert!(!report.finished, "轮数用尽时不能假装做完了");
-        assert_eq!(report.tool_calls.len(), 2);
+        assert_eq!(3, report.tool_calls.len());
     }
 
     #[test]

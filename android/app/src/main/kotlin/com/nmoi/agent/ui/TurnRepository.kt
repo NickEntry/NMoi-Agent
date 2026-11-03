@@ -34,7 +34,10 @@ internal data class TurnOutcome(
         val failed = if (failedEdits > 0) "，$failedEdits 处没写进去（原因在日志）" else ""
         return when {
             cancelled -> "已停止（这一轮留下的正文长度 $length$edited$failed）"
-            !finished -> "轮数用尽，模型没收尾（已存 $length 字$edited$failed）"
+            // 这句以前写「轮数用尽，模型没收尾」——像在报错，其实是我自己设的上限。
+            // 现在上限可调（D244），文案也要写清"这是上限、不是模型坏了"。
+            !finished -> "到了工具轮数上限，模型还没收尾（已存 $length 字$edited$failed；" +
+                "上限在 应用设置 → 工具轮数 里调）"
             else -> buildString {
                 append("模型回了 $length 字")
                 if (rounds > 1) append("，$rounds 轮")
@@ -234,6 +237,8 @@ internal object TurnRepository {
                     .put("stream", assistant.stream)
                     .put("presets", PresetRepository.assetsText(context))
                     .put("now_ms", System.currentTimeMillis())
+                    // 工具轮数上限（D244）：安全阀，不是产品决定。用户在应用设置里能调。
+                    .put("max_rounds", AppSettings.maxRounds(context))
                     .also { row ->
                         maxTokens?.let { row.put("max_tokens", it) }
                         temperature?.let { row.put("temperature", it) }

@@ -27,6 +27,14 @@ internal data class LiveReply(
      */
     val prefix: String = "",
     val finished: List<FinishedRound> = emptyList(),
+    /**
+     * 这一轮**收到过**增量没有（D242）。
+     *
+     * 收尾时用来说实话：一个字都没逐字长出来，要么是助手把「逐字输出」关了，
+     * 要么是端点不认 `stream`（core 会退回非流式重发一次，结果一次性出现）。
+     * 两种情况用户看到的都是"流式没生效"，不给一句话，他只能猜。
+     */
+    val sawDelta: Boolean = false,
 )
 
 /**
@@ -109,6 +117,7 @@ internal fun advanceLive(reply: LiveReply, poll: LivePoll, snapshot: BusySnapsho
         text = growText(base.text, snapshot.textLen, snapshot.text),
         reasoning = growText(base.reasoning, snapshot.reasoningLen, snapshot.reasoning),
         running = if (started) snapshot.running else true,
+        sawDelta = base.sawDelta || snapshot.textLen > 0 || snapshot.reasoningLen > 0,
     )
     val nextPoll = LivePoll(started = started)
     return if (started && !snapshot.running) {

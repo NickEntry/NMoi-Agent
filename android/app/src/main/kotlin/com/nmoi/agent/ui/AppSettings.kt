@@ -12,6 +12,21 @@ internal object AppSettings {
     private const val FILE = "nmoi_app_settings"
     private const val KEY_ALLOW_NEW_VERSION = "allow_new_version"
     private const val KEY_DEFAULT_WINDOW = "default_context_window"
+    private const val KEY_IMAGE_COMPRESS = "image.compress"
+    private const val KEY_IMAGE_LONG = "image.long_edge"
+    private const val KEY_IMAGE_SHORT = "image.short_edge"
+    private const val KEY_IMAGE_QUALITY = "image.quality"
+    private const val KEY_MAX_ROUNDS = "turn.max_rounds"
+
+    /** 一轮里允许模型"调工具再开口"几次的上限。撞上就把话截断，所以别设太小。 */
+    const val DEFAULT_MAX_ROUNDS = 32
+    const val MIN_MAX_ROUNDS = 1
+    const val MAX_MAX_ROUNDS = 200
+
+    /** 图片压缩的出厂值（用户 2026-11-04 定）：开、长边 2048、短边 2048、质量 90%。 */
+    const val DEFAULT_IMAGE_LONG = 2048
+    const val DEFAULT_IMAGE_SHORT = 2048
+    const val DEFAULT_IMAGE_QUALITY = 90
 
     /**
      * 模型没填上下文窗口时用的参考值。
@@ -42,6 +57,58 @@ internal object AppSettings {
         if (value > 0) {
             prefs(context).edit().putInt(KEY_DEFAULT_WINDOW, value).apply()
         }
+    }
+
+    /**
+     * 发图前压不压、压到多大。**默认开**：手机拍的图动辄 4–8 MB，
+     * 原样发出去既慢又贵（按 token 算钱的模型尤其），而 2048 长边对聊天够用。
+     */
+    fun imageCompress(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_IMAGE_COMPRESS, true)
+
+    fun setImageCompress(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_IMAGE_COMPRESS, value).apply()
+    }
+
+    /** 长边上限（像素）。**保证 > 0**：0 会让缩放算出一个空图。 */
+    fun imageLongEdge(context: Context): Int {
+        val value = prefs(context).getInt(KEY_IMAGE_LONG, DEFAULT_IMAGE_LONG)
+        return if (value > 0) value else DEFAULT_IMAGE_LONG
+    }
+
+    fun setImageLongEdge(context: Context, value: Int) {
+        if (value > 0) prefs(context).edit().putInt(KEY_IMAGE_LONG, value).apply()
+    }
+
+    fun imageShortEdge(context: Context): Int {
+        val value = prefs(context).getInt(KEY_IMAGE_SHORT, DEFAULT_IMAGE_SHORT)
+        return if (value > 0) value else DEFAULT_IMAGE_SHORT
+    }
+
+    fun setImageShortEdge(context: Context, value: Int) {
+        if (value > 0) prefs(context).edit().putInt(KEY_IMAGE_SHORT, value).apply()
+    }
+
+    /** 质量（1–100）。夹住而不是报错：滑到 0 只是"看不清"，不该拦住发送。 */
+    fun imageQuality(context: Context): Int =
+        prefs(context).getInt(KEY_IMAGE_QUALITY, DEFAULT_IMAGE_QUALITY).coerceIn(1, 100)
+
+    fun setImageQuality(context: Context, value: Int) {
+        prefs(context).edit().putInt(KEY_IMAGE_QUALITY, value.coerceIn(1, 100)).apply()
+    }
+
+    /**
+     * 工具轮数上限（D244）。**这是安全阀，不是产品决定**——防的是模型无限调工具。
+     * 撞上会 `finished=false`，界面显示"没收尾"。所以默认给 32，并且允许用户调。
+     */
+    fun maxRounds(context: Context): Int =
+        prefs(context).getInt(KEY_MAX_ROUNDS, DEFAULT_MAX_ROUNDS)
+            .coerceIn(MIN_MAX_ROUNDS, MAX_MAX_ROUNDS)
+
+    fun setMaxRounds(context: Context, value: Int) {
+        prefs(context).edit()
+            .putInt(KEY_MAX_ROUNDS, value.coerceIn(MIN_MAX_ROUNDS, MAX_MAX_ROUNDS))
+            .apply()
     }
 
     /** 一行摘要，给设置索引页那一行用。 */
