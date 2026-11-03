@@ -9,6 +9,8 @@ package com.nmoi.agent.ui
  * `round` 是模型第几次开口：工具往返之后会 +1，界面看到它变了就清掉上一轮那截——
  * 不清的话收尾落库时正文会突然缩掉一半（库里只存最后一轮）。
  */
+internal data class FinishedRound(val text: String, val reasoning: String)
+
 internal data class LiveReply(
     val text: String = "",
     val reasoning: String = "",
@@ -24,6 +26,7 @@ internal data class LiveReply(
      * 工具往返之后缓冲被清空、native 会再垫一次，所以换轮时这里也要回到 `prefix`。
      */
     val prefix: String = "",
+    val finished: List<FinishedRound> = emptyList(),
 )
 
 /**

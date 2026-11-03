@@ -395,7 +395,12 @@ internal fun ChatScreen(
             val base = when {
                 // 换轮：native 那边缓冲清了、原正文会再垫一次（0.15av），
                 // 所以这里也回到 prefix——不然续话的正文会从"续文"重新开始。
-                round != current.round -> current.copy(text = current.prefix, reasoning = "", round = round)
+                round != current.round -> current.copy(
+                    finished = current.finished + FinishedRound(current.text, current.reasoning),
+                    text = current.prefix,
+                    reasoning = "",
+                    round = round,
+                )
                 // native 的缓冲有上限（50 KB，超了砍头）。这时总量比界面手里的还少，
                 // 再按差值算就永远"没有新字"——屏幕上会卡住不动。从尾部重来，不假装完整。
                 totalText < have -> current.copy(text = "")
@@ -2495,6 +2500,15 @@ private fun AssistantMessage(
         // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
         if (showHeader) AssistantHeader(createdAt = message.createdAt)
         if (live != null) {
+            live.finished.forEach { done ->
+                if (done.reasoning.isNotBlank()) LiveReasoningCard(text = done.reasoning)
+                if (done.text.isNotBlank()) {
+                    MarkdownBody(
+                        text = done.text,
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    )
+                }
+            }
             // 就地渲染：思考卡与正文都取这一轮收到的增量，收尾时换成库里那份（形状一致，不跳）。
             if (live.reasoning.isNotBlank()) LiveReasoningCard(text = live.reasoning)
             if (live.text.isNotBlank()) {
