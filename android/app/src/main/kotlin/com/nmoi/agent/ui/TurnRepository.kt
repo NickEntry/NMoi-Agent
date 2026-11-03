@@ -357,8 +357,11 @@ internal object TurnRepository {
             // 会话自己的 `/chat`（D234）：工具产物与附件落在那儿，模型要看就自己用命令读。
             // 附件目录单独一条绑定，是因为它不挪地方（D216 的路径写进了库与存储页）。
             row.put("chat", ToolingRepository.chatRoot(context, sessionId).absolutePath)
-            val images = ToolingRepository.sessionImagesRoot(context, sessionId)
-            if (images.isDirectory) row.put("chat_images", images.absolutePath)
+            // 附件目录**先建好再绑**：这一份配置是在用户那条消息落库之前拼的，
+            // 那时 `images/` 还不存在（第一次带图就是这样），
+            // 于是"有条...件才绑"等于永远不绑——容器里 `/chat/images` 一直缺席。
+            val images = ToolingRepository.sessionImagesRoot(context, sessionId).apply { mkdirs() }
+            row.put("chat_images", images.absolutePath)
         }
 
     /** 点"停止"。没在跑不算失败：`cancelled:false` 只说明它已经收尾了。 */

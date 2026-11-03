@@ -5882,3 +5882,8 @@ bionic 的 `libdl.so` 在 glibc 里不存在（rootfs 只有 `usr/lib/aarch64-li
 
 **判据**：`ProcessRowsTest` 两条新用例（工具 + 带思考的正文 → 一个大块 + 一行正文；
 只有正文 → 思考留在气泡里）。真机见 V61 第 3、4 条。
+
+**D237 补记（2026-11-04）**：`/chat/images` 那条绑定以前是"目录在才绑"，而这份配置是在用户那条
+消息落库**之前**拼的——第一次带图时目录还不存在，于是永远绑不上（真机上模型 `ls /chat/images`
+就是 `No such file or directory`，然后它推断"图是内联给我的"）。改成**先 `mkdirs()` 再绑**：
+容器里 `/chat/images` 永远在，没附件时是空目录。
