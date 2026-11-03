@@ -89,6 +89,13 @@ internal object ActionIcons {
     }
 
     /** Lucide `ellipsis.svg`：更多。三个 `circle r=1` 写成三段小圆弧。 */
+    /** Lucide `folder.svg`：会话的工作区（D231）。 */
+    val Folder: ImageVector = buildVector("folder") {
+        stroke(
+            "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+        )
+    }
+
     val Ellipsis: ImageVector = buildVector("ellipsis") {
         stroke("M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")
         stroke("M20 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")

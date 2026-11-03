@@ -20,16 +20,54 @@ internal object ToolingRepository {
     private const val KEY_NATIVE_SHELL = "tool.native_shell"
     private const val KEY_ENVIR_SHELL = "tool.envir_shell"
 
-    /** 工作区根目录。**先建好再绑**：FFI 那边不替用户建目录（绑错路径要当场知道）。 */
-    fun workspaceRoot(context: Context): File =
+    /** 全局工作区（老会话 / 显式绑定共享的会话）。**先建好再绑**：FFI 那边不替用户建目录。 */
+    fun sharedRoot(context: Context): File =
         File(context.filesDir, "workspace").apply { mkdirs() }
 
+    /**
+     * 一个会话自己的工作区（D231 / 0.15ao）：`files/sessions/<会话>/chat`。
+     *
+     * 为什么是 `chat` 而不是直接 `sessions/<id>`：同一个会话目录下还要放图片（`images/`），
+     * 模型能看到的只有 `chat/` 这一层——它不该顺手看见自己的附件原图。
+     */
+    fun chatRoot(context: Context, sessionId: String): File =
+        File(File(File(context.filesDir, "sessions"), sessionId), "chat").apply { mkdirs() }
+
+    /** 这个会话的工作区根。`mode` 只认 `chat` / `shared`（认不出按 `shared`，最保守）。 */
+    fun workspaceRoot(context: Context, sessionId: String?, mode: String): File =
+        if (mode == "chat" && sessionId != null) {
+            chatRoot(context, sessionId)
+        } else {
+            sharedRoot(context)
+        }
+
+    /**
+     * 删掉这个会话自己的目录（`sessions/<id>/`，含 `chat/` 与 `images/`）。
+     *
+     * 只在**库里的会话真的删掉之后**调：先删库再删文件，顺序反了会出现
+     * "消息还在、图没了"——那比留着垃圾目录糟得多。
+     * 删不掉不报错（目录可能本来就不存在），但要留一行日志。
+     */
+    fun removeSessionDir(context: Context, sessionId: String) {
+        val dir = File(File(context.filesDir, "sessions"), sessionId)
+        if (!dir.exists()) return
+        val removed = runCatching { dir.deleteRecursively() }.getOrDefault(false)
+        if (removed) {
+            NLog.i("Tools", "已删掉会话目录：sessions/$sessionId")
+        } else {
+            NLog.w("Tools", "会话目录没删干净：sessions/$sessionId（下次清理时会再试）")
+        }
+    }
+
+    /** 老入口（没有会话上下文的地方用）：全局工作区。 */
+    fun workspaceRoot(context: Context): File = sharedRoot(context)
+
     /** 开一个句柄。失败给原因，不返回 0 顶数。 */
-    fun open(context: Context): Result<Long> {
+    fun open(context: Context, sessionId: String? = null, mode: String = "shared"): Result<Long> {
         if (!NativeBridge.loaded) {
             return Result.failure(NmoiFfiException("not_loaded", "原生层没加载"))
         }
-        val root = workspaceRoot(context).absolutePath
+        val root = workspaceRoot(context, sessionId, mode).absolutePath
         val envelope = runCatching { JSONObject(NativeBridge.openWorkspaceJson(root)) }
             .getOrElse {
                 return Result.failure(NmoiFfiException("native_call", "绑工作区时报错：${it.message}"))

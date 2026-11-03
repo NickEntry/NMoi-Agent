@@ -23,6 +23,37 @@ use nmoi_core::source::SourceTag;
 
 use crate::Storage;
 
+/// 一个会话的工作区在哪（D231 / 0.15ao）。
+///
+/// 只两档，没有第三种：
+/// - [`WorkspaceMode::Chat`]：自己的 `files/sessions/<会话>/chat`，容器里挂在 `/chat`；
+/// - [`WorkspaceMode::Shared`]：全局那个 `files/workspace`，老会话升级上来就是这个。
+///
+/// 为什么不做"任意目录"：那要权限、要选目录、要处理被删掉的目录；而这里要的只是
+/// "这个会话别看见上一个会话留下的文件"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceMode {
+    Chat,
+    Shared,
+}
+
+impl WorkspaceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkspaceMode::Chat => "chat",
+            WorkspaceMode::Shared => "shared",
+        }
+    }
+
+    /// 认不出的值落到 `shared`：那是**最保守**的一档（文件都在老地方，不会凭空消失）。
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "chat" => WorkspaceMode::Chat,
+            _ => WorkspaceMode::Shared,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("SQLite 错误: {0}")]
@@ -149,8 +180,11 @@ impl Storage {
         let session = SessionId::new();
         let now = crate::validate::now_ms();
         self.conn.execute(
-            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin, assistant_id)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
+            // 新会话默认**隔离**（D231）：给自己的 `sessions/<id>/chat`。
+            // 老会话升级上来是 `shared`（迁移里的默认值），文件不会突然"全没了"。
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version,
+                                       device_origin, assistant_id, workspace_mode)
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, 'chat')",
             params![
                 session.to_string(),
                 title,
@@ -161,6 +195,36 @@ impl Storage {
             ],
         )?;
         Ok(session)
+    }
+
+    /// 这个会话的工作区模式（D231 / 0.15ao）。
+    pub fn workspace_mode(&self, session: SessionId) -> Result<WorkspaceMode, StorageError> {
+        let raw: String = self
+            .conn
+            .query_row(
+                "SELECT workspace_mode FROM conversations WHERE id = ?1",
+                [session.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| StorageError::Inconsistent(format!("会话 {session} 不存在")))?;
+        Ok(WorkspaceMode::parse(&raw))
+    }
+
+    /// 改这个会话的工作区模式。**只改以后怎么走**：已经落在盘上的文件不搬家
+    /// （搬文件是另一件事，做不好就是"我明明切回来了，文件却没了"）。
+    pub fn set_workspace_mode(
+        &mut self,
+        session: SessionId,
+        mode: WorkspaceMode,
+    ) -> Result<(), StorageError> {
+        let changed = self.conn.execute(
+            "UPDATE conversations SET workspace_mode = ?1 WHERE id = ?2",
+            params![mode.as_str(), session.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::Inconsistent(format!("会话 {session} 不存在")));
+        }
+        Ok(())
     }
 
     /// 一条消息**现在显示的正文**（`messages.content`）。
@@ -262,6 +326,11 @@ impl Storage {
             _ => format!("{source_title} 副本"),
         };
         let target = self.create_conversation(&copy_title, &device, &assistant)?;
+        // 副本跟着原会话走：共享的会话复制出来还是共享的。
+        // （`create_conversation` 默认写 `chat`，所以这里要显式改回来。）
+        if let Ok(mode) = self.workspace_mode(session) {
+            let _ = self.set_workspace_mode(target, mode);
+        }
         for unit in &units {
             let new_unit = UnitId::new(target, unit.id.seq());
             let mut copy = unit.clone();

@@ -145,10 +145,20 @@ internal object ConversationRepository {
         }
 
     /** 删会话（0.15d）。`false` = 本来就没有，不算失败。 */
-    suspend fun delete(databasePath: String, sessionId: String): Result<Boolean> =
+    suspend fun delete(
+        databasePath: String,
+        sessionId: String,
+        /** 给了就顺手把这个会话自己的目录也删掉（D231）。 */
+        context: android.content.Context? = null,
+    ): Result<Boolean> =
         withStorageHandle(databasePath) { handle ->
             NmoiFfi.deleteConversation(handle, sessionId)
                 .map { envelope -> envelope.optBoolean("deleted", false) }
+        }.onSuccess { deleted ->
+            // **先删库、再删文件**：反过来的话中途失败会留下"消息还在、图没了"。
+            if (deleted && context != null) {
+                ToolingRepository.removeSessionDir(context, sessionId)
+            }
         }
 
     /**

@@ -147,7 +147,12 @@ impl Tool for SystemShellTool {
 const GUEST_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// 容器里工作区的挂载点。模型看到的路径就是它，和宿主机那边是同一个目录。
-pub const GUEST_WORKSPACE: &str = "/root/workspace";
+/// 容器里工作区的挂载点（D231 / 0.15ao：从 `/root/workspace` 挪到 `/chat`）。
+///
+/// 为什么改：每个会话有自己的 `sessions/<id>/chat`，"chat" 这个名字说的是它是什么，
+/// 而 `/root/workspace` 说的是它以前在哪。老会话（`shared`）挂的也还是这个点——
+/// 挂载点是**容器里的路径**，跟宿主上绑哪个目录是两件事。
+pub const GUEST_WORKSPACE: &str = "/chat";
 
 /// 跑容器需要的那几样东西的**宿主机路径**。
 ///
@@ -271,7 +276,7 @@ impl Tool for EnvirShellTool {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "相对工作区的目录（容器里就是 /root/workspace 下），默认工作区根；不许写绝对路径或 .."
+                    "description": "相对工作区的目录（容器里就是 /chat 下），默认工作区根；不许写绝对路径或 .."
                 },
                 "timeout_ms": {
                     "type": "integer",

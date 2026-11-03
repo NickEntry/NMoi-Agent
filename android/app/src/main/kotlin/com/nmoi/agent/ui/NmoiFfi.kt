@@ -253,6 +253,14 @@ internal object NmoiFfi {
         call("undo_log") { NativeBridge.undoLogJson(handle, session) }
 
     /** 删一版（`versionNo` 从 1 起；删整条消息走 [deleteMessage]）。 */
+    /** 读一个会话的工作区模式（D231 / 0.15ao）。 */
+    suspend fun workspaceMode(handle: Long, session: String): Result<JSONObject> =
+        call("workspace_mode") { NativeBridge.workspaceModeJson(handle, session) }
+
+    /** 改一个会话的工作区模式（D231 / 0.15ao）。 */
+    suspend fun setWorkspaceMode(handle: Long, session: String, mode: String): Result<JSONObject> =
+        call("set_workspace_mode") { NativeBridge.setWorkspaceModeJson(handle, session, mode) }
+
     suspend fun deleteVersion(
         handle: Long,
         message: String,

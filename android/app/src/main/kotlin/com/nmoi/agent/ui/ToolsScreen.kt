@@ -133,7 +133,7 @@ internal fun ToolsScreen(
                             "隔离环境里的命令。**先把下面那个环境装上**——没有 rootfs 就没有东西可跑，" +
                                 "所以这一行现在是灰的。"
                         } else {
-                            "在容器里的 Ubuntu 里跑命令，起点是工作区（容器里看到的是 /root/workspace）。" +
+                            "在容器里的 Ubuntu 里跑命令，起点是工作区（容器里看到的是 /chat）。" +
                                 "容器里动什么都不影响这台手机；工作区是唯一共享的地方。默认关。"
                         },
                         checked = envir != null && envirShell,
@@ -380,7 +380,7 @@ private fun ConfirmEnvirShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit)
                     )
                     Text(
                         text = "命令跑在容器里的 Ubuntu 里：装包、改容器的 /、删容器里的东西都只影响那份 rootfs。" +
-                            "**工作区是共享的**——它在容器里是 /root/workspace，在里面 rm 掉的东西，手机上也没了。",
+                            "**工作区在容器里是 /chat**——在里面 rm 掉的东西，手机上也没了（新会话各有自己的 /chat，老会话是那个共享目录）。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp),

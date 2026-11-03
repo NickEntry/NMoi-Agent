@@ -813,6 +813,60 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_switchVersionJson<'lo
     to_jstring(&mut env, text)
 }
 
+/// `Native.workspaceModeJson(handle, session)`：读一个会话的工作区模式（D231）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceModeJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => {
+            let Ok(c_session) = CString::new(session) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `session` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_workspace_mode_json(
+                handle as u64,
+                c_session.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.setWorkspaceModeJson(handle, session, mode)`：改一个会话的工作区模式（D231）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_setWorkspaceModeJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    mode: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let mode = read_string(&mut env, &mode);
+    let text = guarded(move || match (session, mode) {
+        (Some(session), Some(mode)) => {
+            let (Ok(c_session), Ok(c_mode)) = (CString::new(session), CString::new(mode)) else {
+                return take_json(crate::json::err_json("bad_argument", "参数含 NUL 字节"));
+            };
+            take_json(crate::storage::nmoi_storage_set_workspace_mode_json(
+                handle as u64,
+                c_session.as_ptr(),
+                c_mode.as_ptr(),
+            ))
+        }
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.deleteVersionJson(handle, message, versionNo)`：删一版（0 = 删除所有版本）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteVersionJson<'local>(

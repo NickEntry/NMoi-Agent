@@ -18,6 +18,7 @@ import com.nmoi.agent.ui.AppSettingsScreen
 import com.nmoi.agent.ui.AppIconSwitcher
 import com.nmoi.agent.ui.AssistantEditScreen
 import com.nmoi.agent.ui.AssistantEntry
+import com.nmoi.agent.ui.ChatRepository
 import com.nmoi.agent.ui.ConversationSelection
 import com.nmoi.agent.ui.AssistantList
 import com.nmoi.agent.ui.AssistantRepository
@@ -281,6 +282,7 @@ class MainActivity : ComponentActivity() {
                 }
                 ConversationDrawer(
                     open = drawerOpen,
+                    databasePath = databasePath,
                     rows = snapshot?.rows.orEmpty(),
                     currentId = (route as? Route.Chat)?.sessionId,
                     assistants = assistantList?.rows.orEmpty(),
@@ -315,7 +317,7 @@ class MainActivity : ComponentActivity() {
                     onDelete = { row ->
                         scope.launch {
                             withContext(Dispatchers.IO) {
-                                ConversationRepository.delete(databasePath, row.id)
+                                ConversationRepository.delete(databasePath, row.id, this@MainActivity)
                             }.onFailure { NLog.w("Storage", "删会话失败：${it.message}") }
                             // 删掉的正是开着的那个：回空白会话，别停在一个不存在的会话里。
                             if ((route as? Route.Chat)?.sessionId == row.id) {
@@ -331,6 +333,22 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     notice = drawerNotice,
+                    onSetWorkspaceMode = { row, mode ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                ChatRepository.setWorkspaceMode(databasePath, row.id, mode)
+                            }.onSuccess { applied ->
+                                drawerNotice = if (applied == "chat") {
+                                    "「${row.title.ifBlank { "这条会话" }}」改用独立工作区（新文件写到它自己的 sessions/${row.id}/chat；老文件不搬）"
+                                } else {
+                                    "「${row.title.ifBlank { "这条会话" }}」改用共享工作区（所有共享会话看到同一份文件）"
+                                }
+                            }.onFailure {
+                                drawerNotice = "工作区没改成功：${it.message}"
+                            }
+                            listReload += 1
+                        }
+                    },
                     onCopy = { row ->
                         scope.launch {
                             val title = row.title.ifBlank { "会话" }
@@ -381,7 +399,7 @@ class MainActivity : ComponentActivity() {
                             var deleted = 0
                             for (row in chosen) {
                                 withContext(Dispatchers.IO) {
-                                    ConversationRepository.delete(databasePath, row.id)
+                                    ConversationRepository.delete(databasePath, row.id, this@MainActivity)
                                 }.onSuccess { deleted += 1 }
                                     .onFailure { NLog.w("Storage", "删 ${row.id} 失败：${it.message}") }
                             }

@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,7 +60,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalTime
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -84,8 +87,12 @@ internal fun ConversationDrawer(
     /** 全部助手（D174）。底部那一行显示当前那个，点它弹出切换面板。 */
     assistants: List<AssistantEntry> = emptyList(),
     activeAssistantId: String = AssistantRepository.DEFAULT_ID,
+    /** 库路径：菜单里要现读这个会话的工作区模式（D231）。 */
+    databasePath: String = "",
     onOpen: () -> Unit,
     onOpenConversation: (ConversationRow) -> Unit,
+    /** 改这个会话的工作区模式（`chat` / `shared`）。动作在外面做，这里只报意图。 */
+    onSetWorkspaceMode: (ConversationRow, String) -> Unit = { _, _ -> },
     /**
      * 每个会话的草稿（0.15b）：`会话 id → 文字`，非空的那些。
      *
@@ -301,6 +308,8 @@ internal fun ConversationDrawer(
                     .offset { IntOffset((shownPx - widthPx).roundToInt(), 0) },
             ) {
                 DrawerPanel(
+                    databasePath = databasePath,
+                    onSetWorkspaceMode = onSetWorkspaceMode,
                     rows = rows,
                     currentId = currentId,
                     hint = hint,
@@ -349,6 +358,8 @@ internal fun ConversationDrawer(
                     modifier = Modifier.width(width).fillMaxHeight(),
                 ) {
                     DrawerPanel(
+                        databasePath = databasePath,
+                        onSetWorkspaceMode = onSetWorkspaceMode,
                         rows = rows,
                         currentId = currentId,
                         hint = hint,
@@ -452,6 +463,10 @@ private fun DrawerPanel(
     onRename: (ConversationRow, String) -> Unit = { _, _ -> },
     onDelete: (ConversationRow) -> Unit = {},
     onCopy: (ConversationRow) -> Unit = {},
+    /** 改这个会话的工作区模式（D231）。 */
+    onSetWorkspaceMode: (ConversationRow, String) -> Unit = { _, _ -> },
+    /** 库路径：菜单里现读工作区模式要用。 */
+    databasePath: String = "",
     onPinMany: (List<ConversationRow>) -> Unit = {},
     onMoveMany: (List<ConversationRow>, String) -> Unit = { _, _ -> },
     onDeleteMany: (List<ConversationRow>) -> Unit = {},
@@ -720,6 +735,13 @@ private fun DrawerPanel(
         // 标题会被挤到看不清；而且这些动作里有破坏性的，露在外面容易误触。
         actionTarget?.let { target ->
             val pinned = target.id in pinnedIds
+            // 工作区模式（D231）：**现读库**，不用行里的快照——切过之后列表还没刷新时，
+            // 菜单上那句话必须是此刻真的那一档。
+            val mode by produceState("shared", target.id, databasePath) {
+                value = withContext(Dispatchers.IO) {
+                    ChatRepository.workspaceMode(databasePath, target.id)
+                }
+            }
             MenuSheet(
                 title = target.title.ifBlank { "（没有标题）" },
                 items = listOf(
@@ -753,6 +775,16 @@ private fun DrawerPanel(
                         onClick = {
                             actionTarget = null
                             onCopy(target)
+                        },
+                    ),
+                    // 工作区（D231）：这个会话的文件放在哪儿。切换**不搬已有文件**——
+                    // 搬文件做不好就是"我明明切回来了，文件却没了"，所以只改以后怎么走。
+                    SheetItem(
+                        label = if (mode == "chat") "改用共享工作区" else "改用独立工作区",
+                        icon = ActionIcons.Folder,
+                        onClick = {
+                            actionTarget = null
+                            onSetWorkspaceMode(target, if (mode == "chat") "shared" else "chat")
                         },
                     ),
                     SheetItem(

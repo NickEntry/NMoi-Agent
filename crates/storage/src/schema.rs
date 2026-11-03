@@ -310,3 +310,13 @@ ALTER TABLE attachments_v11 RENAME TO attachments;
 CREATE INDEX attachments_by_conv ON attachments(conv_id, created_at);
 CREATE INDEX attachments_by_message ON attachments(message_id);
 "#;
+
+/// v12：每个会话自己的 `/chat`（D231 / 0.15ao）。
+///
+/// 只加一列，**默认 `shared`**：老会话升级上来还是原来那个全局工作区，
+/// 文件不会"突然全没了"。新建会话由 `create_conversation` 显式写成 `chat`。
+///
+/// 为什么是列而不是一张表：一个会话只有一个工作区，没有第二份要存的东西。
+pub const SCHEMA_V12: &str = r#"
+ALTER TABLE conversations ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'shared';
+"#;

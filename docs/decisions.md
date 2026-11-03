@@ -5645,3 +5645,29 @@ D230（服务停止询问）**没动**：它依赖 D219 的持久会话，而那
 
 **验证**：`ProcessRowsTest` 8 条（分组断点、保留最新两个、键稳定、running 判定）；
 本机 kotlinc 全量类型检查只剩 9 条已知 `R`。真机 V56 未走。
+
+## D231 每个会话自己的 `/chat`（0.15ao，2026-11-03）
+
+用户 2026-11-02 提，设计在 `docs/chat-isolation.md`。这一轮落地：
+
+1. **数据侧**：schema **v12**，`conversations.workspace_mode TEXT NOT NULL DEFAULT 'shared'`。
+   新会话由 `create_conversation` 显式写 `chat`；**老会话升级上来是 `shared`**——
+   迁成 `chat` 的话，用户打开老会话会发现之前让模型写的文件全不见了，那不是隔离，是丢东西。
+   副本跟着原会话走（`copy_conversation` 显式搬模式）。
+2. **路径**：`chat` → `files/sessions/<会话>/chat`；`shared` → `files/workspace`。
+   为什么是 `sessions/<id>/chat` 而不是直接 `sessions/<id>`：同一个目录下还要放
+   `images/`（D216），模型能看到的只有 `chat/` 这一层，它不该顺手看见自己的附件原图。
+3. **容器**：`GUEST_WORKSPACE` 从 `/root/workspace` 改成 **`/chat`**。挂载点是容器里的路径，
+   跟宿主上绑哪个目录是两件事——共享会话绑的也是这个点。
+4. **入口**：抽屉里长按会话 →「改用共享工作区 / 改用独立工作区」。读的是库（现读），
+   不是行里的快照。**切换不搬已有文件**：搬文件做不好就是"我明明切回来了，文件却没了"，
+   所以只改以后怎么走，提示里也这么写。
+5. **删除**：库里的会话删掉之后，再删 `sessions/<id>/`（含 `chat/` 与 `images/`）。
+   顺序反了会留下"消息还在、图没了"。
+
+**没做**：备份带上 `sessions/`（那是 0.15ai，路径形状这轮定下来了，下一轮直接接）；
+「共享工作区」的全局默认开关（现在只有逐会话的切换，默认已经是隔离）。
+
+**验证**：`workspace_mode` 4 条（新会话隔离、切换后重开还在、老库升级留 shared、
+认不出的值落 shared）；Rust 800 项；kotlinc 全量类型检查只剩 9 条已知 `R`；
+JNI 符号 48 个。真机 V57 未走。
