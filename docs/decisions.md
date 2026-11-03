@@ -5780,3 +5780,33 @@ D231 那套（`conversations.workspace_mode` 两档：`chat` / `shared`）是**�
 `workspace_v13` 两条（v12 库升上来列没了、行还在；新库没有那一列）本地通过；
 `shell.rs` 新增 `envir_binds_chat_before_its_images`。Kotlin 只过了 clippy 那一轮的类型检查之外的
 括号自查，真正编译看 CI。真机 V60 未走。
+
+## D235 覆盖安装解包失败：条目名不能按真实路径解析（2026-11-03）
+
+真机第一次试覆盖安装就挂了：「没装成：解包失败：/data/data/com.nmoi.agent/files/envir/ubuntu/usr/bin」。
+
+**原因**（本机拿真 rootfs 复现过）：`TarGz.resolve` 用的是 `File(...).canonicalFile`，
+也就是**跟着目标树里已有的链接走**。第一次装的时候树是空的，字面路径与真实路径恰好一样；
+覆盖安装时 `bin` 那条符号链接（`bin -> usr/bin`）已经在了，`canonicalFile("bin")` 算出来是
+`usr/bin`——于是"在 `bin` 上建链接"变成了"在 `usr/bin` 上建链接"，`usr/bin` 是个非空目录，
+`createSymbolicLink` 抛 `FileAlreadyExistsException`（消息就是那个路径），整次解包中止。
+同一个毛病还会把 `usr/bin/[` 这类链接算到它指向的目标上，删掉/覆盖掉不该动的文件。
+
+**改法**：条目名**按字面拼**（`..` 弹栈、绝对路径拒绝），不跟随任何已有链接；
+越界仍然挡，但挡的是**父目录的真实路径**必须还在 dest 里——"先建一个指向外面的链接、
+再往链接里写"这一手照样拦得住。链接/文件/目录三种落点各自先清同名旧条目
+（同名是**非空目录**时跳过并记一笔：删目录等于删用户的东西）。
+
+**顺带的**：
+- 每个条目包一层 `try/catch`，失败时把**条目名与类型**写进消息（`条目 bin（类型 2）落不下去：…`），
+  不再只留一个裸路径。
+- 硬链接的源取 `toRealPath()`：覆盖安装时源本身可能是上一次退化成符号链接的那一条，
+  对着链接建硬链接得到的是"链接的链接"。
+- 目录条目遇到同名非目录先删掉再 `mkdirs()`，否则后面每一条子条目都会以"Not a directory"失败。
+
+**验证**：拿 `ubuntu-base-26.04.1-base-arm64.tar.gz`（6564 条）在本机做了两遍解包模拟
+（禁止硬链接，模拟 Android 的 SELinux）：第一遍 `文件 5407 / 目录 755 / 链接 402+0`，
+与真机 state.json 里的数字一致；第二遍（覆盖安装）同样 0 跳过、`bin -> usr/bin` 保持、
+`usr/bin/coreutils` 仍是普通文件、`cat`/`ls`/`sh` 的链都能走到底。
+`TarGzTest` 四条（首次解包、解第二遍不跟随已有链接、越界拒绝、目录挡住链接）进 CI 的
+`testDebugUnitTest`。真机复测见 V59 第 2 条。

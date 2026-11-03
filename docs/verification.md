@@ -1692,3 +1692,9 @@ cargo ndk -t arm64-v8a -p 26 -o android/app/src/main/jniLibs \
     以及"还绑着它的助手：…"；确认后目录没了，那个助手再发消息时退回默认工作区（日志有一行）。
 11. 升级前后的 `schema_version`。**判据**：`PRAGMA user_version` 是 13；
     `PRAGMA table_info(conversations)` 里**没有** `workspace_mode`。
+
+### V59 补充（D235 修完之后要复测的那一条）
+
+0. 覆盖安装连着点两次。**判据**：两次都成功；第二次之后 `usr/bin/coreutils` 还是**普通文件**
+   （不是指回自己的链接），`bin` 还是 `bin -> usr/bin`。
+   （修之前第一次就会报「解包失败：…/envir/ubuntu/usr/bin」，那是解包器跟着已有链接走。）

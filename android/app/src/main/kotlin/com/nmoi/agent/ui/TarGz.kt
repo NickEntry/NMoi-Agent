@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.util.zip.GZIPInputStream
 
@@ -137,59 +138,73 @@ internal object TarGz {
                     continue
                 }
 
-                when (type) {
-                    '5' -> {
-                        // 同名旧条目是链接的话先删掉：后面往这个"目录"里写，就会顺着链接跑到外面。
-                        if (java.nio.file.Files.isSymbolicLink(target.toPath())) target.delete()
-                        target.mkdirs()
-                        dirs += 1
-                        skipEntry(stream, size)
-                    }
-                    '2' -> {
-                        if (linkEscapes(path, link, options)) {
-                            skipped += "拒绝越界符号链接：$path -> $link"
-                            skipEntry(stream, size)
-                            continue
-                        }
-                        target.parentFile?.mkdirs()
-                        target.delete()
-                        java.nio.file.Files.createSymbolicLink(
-                            target.toPath(),
-                            File(link).toPath(),
-                        )
-                        symlinks += 1
-                        skipEntry(stream, size)
-                    }
-                    '1' -> {
-                        // 硬链接：**建真硬链接**。复制内容会把 coreutils 那一百多份 10 MB applet
-                        // 变成 1 GB 以上的磁盘占用，rootfs 一装就爆。
-                        target.parentFile?.mkdirs()
-                        when (linkInto(target, resolve(root, link))) {
-                            LinkKind.Hard -> hardLinks += 1
-                            LinkKind.Relative -> {
-                                symlinks += 1
-                                linkFallbacks += 1
+                try {
+                    when (type) {
+                        '5' -> {
+                            // 同名旧条目不是目录（链接、普通文件）就先删掉：后面往这个"目录"里写，
+                            // 会顺着链接跑到外面，或者干脆写不进去。
+                            val p = target.toPath()
+                            val noFollow = arrayOf(java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                            if (java.nio.file.Files.exists(p, *noFollow) &&
+                                !java.nio.file.Files.isDirectory(p, *noFollow)
+                            ) {
+                                target.delete()
                             }
-                            LinkKind.None -> pendingLinks += path to link
-                        }
-                        skipEntry(stream, size)
-                    }
-                    '0', '\u0000' -> {
-                        target.parentFile?.mkdirs()
-                        // 先删掉同名旧条目：否则会顺着一个已存在的符号链接写到 dest 外面去。
-                        if (!clearBeforeWrite(target, skipped)) {
+                            target.mkdirs()
+                            dirs += 1
                             skipEntry(stream, size)
-                            continue
                         }
-                        val written = copy(stream, target, size)
-                        bytes += written
-                        files += 1
-                        applyMode(target, header)
+                        '2' -> {
+                            if (linkEscapes(path, link, options)) {
+                                skipped += "拒绝越界符号链接：$path -> $link"
+                                skipEntry(stream, size)
+                                continue
+                            }
+                            if (!clearBeforeLink(target, skipped, path)) {
+                                skipEntry(stream, size)
+                                continue
+                            }
+                            target.parentFile?.mkdirs()
+                            java.nio.file.Files.createSymbolicLink(
+                                target.toPath(),
+                                File(link).toPath(),
+                            )
+                            symlinks += 1
+                            skipEntry(stream, size)
+                        }
+                        '1' -> {
+                            // 硬链接：**建真硬链接**。复制内容会把 coreutils 那一百多份 10 MB applet
+                            // 变成 1 GB 以上的磁盘占用，rootfs 一装就爆。
+                            target.parentFile?.mkdirs()
+                            when (linkInto(target, resolve(root, link))) {
+                                LinkKind.Hard -> hardLinks += 1
+                                LinkKind.Relative -> {
+                                    symlinks += 1
+                                    linkFallbacks += 1
+                                }
+                                LinkKind.None -> pendingLinks += path to link
+                            }
+                            skipEntry(stream, size)
+                        }
+                        '0', '\u0000' -> {
+                            target.parentFile?.mkdirs()
+                            // 先删掉同名旧条目：否则会顺着一个已存在的符号链接写到 dest 外面去。
+                            if (!clearBeforeWrite(target, skipped)) {
+                                skipEntry(stream, size)
+                                continue
+                            }
+                            val written = copy(stream, target, size)
+                            bytes += written
+                            files += 1
+                            applyMode(target, header)
+                        }
+                        else -> {
+                            skipped += "跳过条目类型 '$type'：$path"
+                            skipEntry(stream, size)
+                        }
                     }
-                    else -> {
-                        skipped += "跳过条目类型 '$type'：$path"
-                        skipEntry(stream, size)
-                    }
+                } catch (error: IOException) {
+                    throw IOException("条目 $path（类型 $type）落不下去：${error.message}", error)
                 }
             }
         }
@@ -252,12 +267,33 @@ internal object TarGz {
         return raw.toLongOrNull(8) ?: -1
     }
 
-    /** 解析成 dest 里的真实路径；跑出去（或者在解析时炸了）就返回 null。 */
+    /**
+     * 条目名 → dest 里的路径。**按字面拼，不跟随已有链接**。
+     *
+     * 跟随过一次，覆盖安装就炸了（真机 2026-11-03）：`bin` 这一条是 `bin -> usr/bin`，
+     * 而 `usr/bin` 已经存在，`canonicalFile` 把目标算成了 `usr/bin`，于是"在这儿建一个链接"
+     * 变成了"往 `usr/bin` 上建"，`FileAlreadyExistsException` 直接抛出整个解包。
+     * 首次安装看不出来：那时 `bin` 还不存在，字面路径与真实路径恰好一样。
+     *
+     * 越界仍然要挡，但挡的是**父目录**：父目录真实路径必须还在 dest 里。
+     * 这样"先建一个指向外面的链接、再往链接里写"这一手照样被拦下。
+     */
     private fun resolve(root: File, path: String): File? {
-        if (path.isEmpty()) return null
-        if (path.startsWith("/")) return null
-        val candidate = runCatching { File(root, path).canonicalFile }.getOrNull() ?: return null
-        return if (candidate.path == root.path || candidate.path.startsWith(root.path + File.separator)) {
+        if (path.isEmpty() || path.startsWith("/")) return null
+        val stack = ArrayDeque<String>()
+        for (part in path.split('/')) {
+            when (part) {
+                "", "." -> Unit
+                ".." -> if (stack.isEmpty()) return null else stack.removeLast()
+                else -> stack.addLast(part)
+            }
+        }
+        if (stack.isEmpty()) return null
+        val candidate = File(root, stack.joinToString("/"))
+        val parent = candidate.parentFile
+            ?.let { runCatching { it.canonicalFile }.getOrNull() }
+            ?: return null
+        return if (parent.path == root.path || parent.path.startsWith(root.path + File.separator)) {
             candidate
         } else {
             null
@@ -295,21 +331,46 @@ internal object TarGz {
      * 容器里 `cat` 一样能跑，因为它本来只关心 `argv[0]`。
      */
     private fun linkInto(target: File?, source: File?): LinkKind {
-        if (target == null || source == null || !source.isFile) return LinkKind.None
+        if (target == null || source == null) return LinkKind.None
+        // 源要取**真实**那一份：覆盖安装时源本身可能就是上一次退化成符号链接的那一条，
+        // 对着链接建硬链接得到的是"链接的链接"，容器里 `argv[0]` 就认错了。
+        val real = runCatching { source.toPath().toRealPath() }.getOrNull() ?: return LinkKind.None
+        if (!java.nio.file.Files.isRegularFile(real)) return LinkKind.None
+        val noFollow = arrayOf(java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        if (java.nio.file.Files.isDirectory(target.toPath(), *noFollow)) return LinkKind.None
         val hard = runCatching {
             java.nio.file.Files.deleteIfExists(target.toPath())
-            java.nio.file.Files.createLink(target.toPath(), source.toPath())
+            java.nio.file.Files.createLink(target.toPath(), real)
         }.isSuccess
         if (hard) return LinkKind.Hard
         // 相对路径：容器里也成立（绝对路径得指到宿主机的 /data/...，在 guest 里不存在）。
         val relative = runCatching {
-            target.toPath().parent.relativize(source.toPath()).toString()
+            target.toPath().parent.relativize(real).toString()
         }.getOrNull() ?: return LinkKind.None
         val linked = runCatching {
             java.nio.file.Files.deleteIfExists(target.toPath())
             java.nio.file.Files.createSymbolicLink(target.toPath(), java.nio.file.Paths.get(relative))
         }.isSuccess
         return if (linked) LinkKind.Relative else LinkKind.None
+    }
+
+    /**
+     * 建链接之前先清掉同名条目。同名的是**非空目录**就跳过并记一笔：
+     * 删目录等于删用户的东西，而链接本可以不要（它只是快捷方式）。
+     */
+    private fun clearBeforeLink(target: File, skipped: MutableList<String>, path: String): Boolean {
+        val noFollow = arrayOf(java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        val p = target.toPath()
+        if (!java.nio.file.Files.exists(p, *noFollow)) return true
+        if (java.nio.file.Files.isDirectory(p, *noFollow)) {
+            skipped += "同名目录挡住了链接：$path"
+            return false
+        }
+        if (!target.delete()) {
+            skipped += "同名条目删不掉：$path"
+            return false
+        }
+        return true
     }
 
     /**
