@@ -225,7 +225,7 @@ internal object TurnRepository {
                     // 界面这边只负责把原文递进去。
                     // 流式（0.15n）：开着，界面才能"边收边画"。
                     // FFI 那边不认识这个字段就当没开——二进制与界面版本错开时不会炸。
-                    .put("stream", true)
+                    .put("stream", assistant.stream)
                     .put("presets", PresetRepository.assetsText(context))
                     .put("now_ms", System.currentTimeMillis())
                     .also { row ->

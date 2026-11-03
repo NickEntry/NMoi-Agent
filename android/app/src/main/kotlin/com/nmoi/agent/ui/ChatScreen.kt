@@ -683,11 +683,7 @@ internal fun ChatScreen(
                 // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
                 allowNewVersion = AppSettings.allowNewVersion(context),
                 append = append,
-                // 重试与续话都走流式：不流式的话"就地渲染"只剩一行「正在生成…」，
-                // 而用户要的是看着它在那条消息里长出来。
-                // 续话的拼接规则不在这里——native 用 core 的 `join_continuation` 垫字，
-                // 界面上看到的自始至终是"那一条消息的全文"（0.15av）。
-                stream = true,
+                stream = assistant.stream,
             )
             // 残文要在清掉 `live` 之前取：失败三选一里「保留这一版」存的就是这一份。
             val partial = live?.text.orEmpty()

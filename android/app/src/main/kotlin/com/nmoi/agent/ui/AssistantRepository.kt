@@ -20,8 +20,9 @@ internal data class AssistantEntry(
     val maxTokens: Int? = null,
     /** 思考强度（D162）：`auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。 */
     val thinking: String = "auto",
-    /** 子 AGENT（D176）。默认关着——"能被别人调用"这件事得用户主动打开。 */
     val subAgent: SubAgentSpec = SubAgentSpec(),
+    /** 逐字输出。关掉之后正文不边写边画，收尾一次出现。 */
+    val stream: Boolean = true,
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
@@ -202,6 +203,7 @@ internal object AssistantRepository {
                         .put("provider_id", entry.subAgent.providerId.trim())
                         .put("model_id", entry.subAgent.modelId.trim()),
                 )
+                .put("stream", entry.stream)
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
@@ -337,6 +339,7 @@ internal object AssistantRepository {
             maxTokens = safe.optInt("max_tokens", 0).takeIf { it > 0 },
             thinking = safe.optString("thinking", "auto").ifBlank { "auto" },
             subAgent = parseSubAgent(safe.optJSONObject("sub_agent")),
+            stream = safe.optBoolean("stream", true),
         )
     }
 
