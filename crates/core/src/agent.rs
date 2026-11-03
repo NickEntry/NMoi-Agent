@@ -37,9 +37,17 @@ use crate::tools::{ToolContext, ToolRegistry};
 use crate::transport::Transport;
 
 /// 循环预算。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 默认值就是"什么都不设"：不限轮数、不动 `max_tokens`、不设绝对线、不走流式。
+/// 所以用 `derive(Default)`——手写一份全零的 `impl` 只会被 clippy 指出来（D245）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TurnConfig {
-    /// 最多几轮工具往返。到顶就交出最后一段话，`finished = false`。
+    /// 最多几轮工具往返。**0 = 不限制**（D245）。
+    ///
+    /// 一个 agent 该能在一句话里调任意多次工具，只要上下文还装得下——真正的边界是
+    /// 绝对线（[TurnConfig::truncate_at]）、用户取消、和上游自己的限制。硬性轮数上限
+    /// 是早期拍的安全阀，撞上会把话截断，用户什么都没做错却"回答被砍了一半"。
+    /// 想给模型设个闸的人可以显式给一个数；到顶之后还会再给一轮不带工具的收尾。
     pub max_rounds: u32,
     /// 覆盖基准请求的 `max_tokens`。`None` = 不动。
     pub max_tokens: Option<u32>,
@@ -52,21 +60,6 @@ pub struct TurnConfig {
     ///
     /// 默认 `false`：没装钩子时走流式只会多一层解析，界面也还是等整段。
     pub stream: bool,
-}
-
-impl Default for TurnConfig {
-    fn default() -> Self {
-        Self {
-            // 一次任务里读几个文件、改几处，12 轮够用；再多通常说明模型在打转
-            // 工具往返的上限（D244）。原来写的是 12——用户 2026-11-04 问"轮数用尽是谁设计的"，
-            // 答案是我拍的：那是个防死循环的安全阀，不是产品决定。12 太低，一个"读文件→改→再读→再改"
-            // 的活很容易撞上，撞上就把话截断了。抬到 32，并且界面可以调。
-            max_rounds: 32,
-            max_tokens: None,
-            truncate_at: None,
-            stream: false,
-        }
-    }
 }
 
 /// 协作式取消（D58）：**在轮次边界上**问一次，不打断正在飞的网络往返。
@@ -368,7 +361,7 @@ pub fn run_turn<T: Transport>(
             seq += 1;
         }
 
-        if report.rounds >= config.max_rounds {
+        if config.max_rounds > 0 && report.rounds >= config.max_rounds {
             if !wrap_up {
                 // 先别交卷：再来一轮不带工具的，让它把手上这件事说完（D244）。
                 // 这一轮仍然算进 `rounds`——轮数是"发了几次请求"，不是"调了几次工具"。
@@ -891,6 +884,44 @@ mod tests {
             "第一轮该带工具：{}",
             requests[0]
         );
+    }
+
+    /// 默认**不限制**轮数（D245）：连着调五次工具再收尾，照样能做完。
+    ///
+    /// 真正的边界是绝对线（`truncate_at`）与取消，不是"调了几次"。
+    #[test]
+    fn rounds_are_unlimited_by_default() {
+        let (_dir, workspace, policy) = setup();
+        let mut bodies = Vec::new();
+        for index in 0..5 {
+            bodies.push(calls_body(&[(
+                format!("c{index}").as_str(),
+                "list_dir",
+                "{}",
+            )]));
+        }
+        bodies.push(text_body("都看完了。"));
+        let transport = Scripted::new(bodies);
+        let client = ChatClient::new(transport);
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+
+        let report = run_turn(
+            &client,
+            &base_request(),
+            &history(),
+            &registry,
+            &ctx,
+            &TurnConfig::default(),
+            &NeverCancel,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(0, TurnConfig::default().max_rounds, "默认就是不限制");
+        assert_eq!(6, report.rounds, "5 轮工具 + 1 轮收尾");
+        assert!(report.finished, "说完就算做完：{}", report.text);
+        assert_eq!(5, report.tool_calls.len());
     }
 
     /// 收尾那一轮它还是只给工具调用（说明没有工具就不说话）：如实报"没收尾"，不装做完。

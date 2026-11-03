@@ -444,10 +444,9 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
     let user_text = optional_str(&root, "user_text")?.unwrap_or_default();
     let now_ms = optional_i64(&root, "now_ms")?.unwrap_or(0);
 
-    let max_rounds = optional_u64(&root, "max_rounds")?.unwrap_or(12);
-    if max_rounds == 0 {
-        return Err(bad("max_rounds", "至少是 1"));
-    }
+    // 0 = 不限制（D245）。以前这里把 0 当非法值、默认 12——那个 12 是早期拍的安全阀，
+    // 撞上会把话截断。真正的边界是绝对线（`budget`）与取消。
+    let max_rounds = optional_u64(&root, "max_rounds")?.unwrap_or(0);
 
     let budget = match field(&root, "budget") {
         None => None,
@@ -1924,7 +1923,7 @@ mod tests {
     fn no_budget_means_no_compression_signal() {
         let input = parse(&minimal()).unwrap();
         assert!(input.budget.is_none());
-        assert_eq!(input.max_rounds, 12, "默认轮数和 TurnConfig::default 一致");
+        assert_eq!(input.max_rounds, 0, "默认不限制轮数（D245）");
         assert!(!input.read_only);
     }
 

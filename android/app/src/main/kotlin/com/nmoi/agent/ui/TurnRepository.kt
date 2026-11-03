@@ -14,6 +14,8 @@ internal data class TurnOutcome(
     val toolCalls: Int,
     val cancelled: Boolean,
     val finished: Boolean,
+    /** 上下文到了绝对线（D90）提前停手：与"到了轮数上限"是两回事，文案要分开。 */
+    val truncated: Boolean = false,
     val compression: String?,
     /** 这一轮模型真的改了几块消息内容（D177 / 0.14y）。`edits` 已经落库，消息区重读即可。 */
     val editedBlocks: Int,
@@ -36,8 +38,10 @@ internal data class TurnOutcome(
             cancelled -> "已停止（这一轮留下的正文长度 $length$edited$failed）"
             // 这句以前写「轮数用尽，模型没收尾」——像在报错，其实是我自己设的上限。
             // 现在上限可调（D244），文案也要写清"这是上限、不是模型坏了"。
+            // 两种"没做完"要分开说（D245）：到了上下文绝对线，还是（用户自己设的）轮数上限。
+            truncated -> "上下文到了绝对线，这一轮提前停手（已存 $length 字$edited$failed）"
             !finished -> "到了工具轮数上限，模型还没收尾（已存 $length 字$edited$failed；" +
-                "上限在 应用设置 → 工具轮数 里调）"
+                "上限在 应用设置 → 工具轮数 里调，填 0 就是不限制）"
             else -> buildString {
                 append("模型回了 $length 字")
                 if (rounds > 1) append("，$rounds 轮")
@@ -465,6 +469,7 @@ internal object TurnRepository {
             toolCalls = report?.optJSONArray("tool_calls")?.length() ?: 0,
             cancelled = report?.optBoolean("cancelled", false) ?: false,
             finished = report?.optBoolean("finished", true) ?: true,
+            truncated = report?.optBoolean("truncated", false) ?: false,
             compression = envelope.optJSONObject("compression")?.let { signal ->
                 val trigger = signal.optJSONObject("trigger")?.optString("kind", "") ?: ""
                 val action = signal.optString("action", "")

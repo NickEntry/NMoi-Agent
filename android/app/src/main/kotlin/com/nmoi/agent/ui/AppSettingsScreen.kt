@@ -150,14 +150,14 @@ internal fun AppSettingsScreen(
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
-                            text = "工具轮数上限",
+                            text = "工具轮数上限（0 = 不限制）",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = "一轮里模型最多「调工具再开口」几次。到顶之后会再给它一轮（不带工具）" +
-                                "让它把话说完；那一轮还说不出话才算没收尾。" +
-                                "设太小会把长活截断，设太大遇上打转的模型会一直跑下去。",
+                            text = "留空或填 0 就是不限制：一句话里可以调任意多次工具，只要上下文还装得下。" +
+                                "真正的边界是上下文绝对线、你自己点停止、以及上游自己的限制。" +
+                                "填了正数就会在到顶后再给一轮（不带工具）让它收尾。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 2.dp),
@@ -175,18 +175,18 @@ internal fun AppSettingsScreen(
                                     parsed < AppSettings.MIN_MAX_ROUNDS ||
                                     parsed > AppSettings.MAX_MAX_ROUNDS
                                 ) {
-                                    notice = "轮数要填 ${AppSettings.MIN_MAX_ROUNDS}–${AppSettings.MAX_MAX_ROUNDS}"
+                                    notice = "轮数要填 0–${AppSettings.MAX_MAX_ROUNDS}（0 = 不限制）"
                                 } else {
                                     AppSettings.setMaxRounds(context, parsed)
                                     roundsText = AppSettings.maxRounds(context).toString()
-                                    notice = "工具轮数上限改成 ${AppSettings.maxRounds(context)}"
+                                    notice = "工具轮数上限改成 ${AppSettings.maxRoundsLabel(context)}"
                                 }
                             }
                             Spacer(Modifier.width(8.dp))
-                            SettingChip("恢复 ${AppSettings.DEFAULT_MAX_ROUNDS}", selected = false) {
+                            SettingChip("恢复不限制", selected = false) {
                                 AppSettings.setMaxRounds(context, AppSettings.DEFAULT_MAX_ROUNDS)
                                 roundsText = AppSettings.DEFAULT_MAX_ROUNDS.toString()
-                                notice = "工具轮数上限恢复成 ${AppSettings.DEFAULT_MAX_ROUNDS}"
+                                notice = "工具轮数上限恢复成不限制"
                             }
                         }
                     }

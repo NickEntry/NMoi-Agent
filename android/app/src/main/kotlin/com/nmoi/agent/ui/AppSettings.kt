@@ -18,10 +18,16 @@ internal object AppSettings {
     private const val KEY_IMAGE_QUALITY = "image.quality"
     private const val KEY_MAX_ROUNDS = "turn.max_rounds"
 
-    /** 一轮里允许模型"调工具再开口"几次的上限。撞上就把话截断，所以别设太小。 */
-    const val DEFAULT_MAX_ROUNDS = 32
-    const val MIN_MAX_ROUNDS = 1
-    const val MAX_MAX_ROUNDS = 200
+    /**
+     * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
+     *
+     * 一个 agent 该能在一句话里调任意多次工具，只要上下文还装得下——真正的边界是
+     * 绝对线（上下文）、用户取消、上游自己的限制。硬性轮数是早期拍的安全阀，
+     * 撞上会把话截断。想设闸的人可以显式填个数，到顶后还会再给一轮不带工具的收尾。
+     */
+    const val DEFAULT_MAX_ROUNDS = 0
+    const val MIN_MAX_ROUNDS = 0
+    const val MAX_MAX_ROUNDS = 10_000
 
     /** 图片压缩的出厂值（用户 2026-11-04 定）：开、长边 2048、短边 2048、质量 90%。 */
     const val DEFAULT_IMAGE_LONG = 2048
@@ -104,6 +110,10 @@ internal object AppSettings {
     fun maxRounds(context: Context): Int =
         prefs(context).getInt(KEY_MAX_ROUNDS, DEFAULT_MAX_ROUNDS)
             .coerceIn(MIN_MAX_ROUNDS, MAX_MAX_ROUNDS)
+
+    /** 界面上那一行怎么念：0 读作"不限制"。 */
+    fun maxRoundsLabel(context: Context): String =
+        maxRounds(context).let { if (it <= 0) "不限制" else "$it 轮" }
 
     fun setMaxRounds(context: Context, value: Int) {
         prefs(context).edit()
