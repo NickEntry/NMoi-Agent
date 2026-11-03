@@ -11,6 +11,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -166,6 +168,11 @@ internal fun ChatScreen(
     var live by remember(sessionId) { mutableStateOf<LiveReply?>(null) }
     // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
     var settling by remember(sessionId) { mutableStateOf(false) }
+    // 重试落在哪条消息上（D227）：这一轮的部分正文**就地**画在它身上，不再在底部另起一个
+    // 「助手 / 正在生成…」的块。`null` = 这一轮不是重试，或者目标为空（结果会落成新消息）。
+    var regenTarget by remember(sessionId) { mutableStateOf<String?>(null) }
+    // 重试失败 → 三选一（D228）。它决定库里留下哪一版，所以是"必须处理"的那种，点外面不关。
+    var regenFailure by remember { mutableStateOf<RegenFailure?>(null) }
     // 正在跑的那一轮挂在哪个会话上——点"停止"要的就是这个 id。
     // 单独存一份而不是直接读 `sessionId`：跑的过程中用户可能切了会话。
     var runningSession by remember(sessionId) {
@@ -604,9 +611,12 @@ internal fun ChatScreen(
     // 优先级按叠放层次从高到低：编辑对话框 → 「更多」面板 → 分享面板 → 选择模式。
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
     val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen ||
-        selecting || modelSheet || thinkingSheet || queueSheet || plusMenu
+        selecting || modelSheet || thinkingSheet || queueSheet || plusMenu || regenFailure != null
     BackHandler(enabled = overlayOpen) {
         when {
+            // 三选一**必须处理**（D228）：它决定库里留下哪一版，返回键在这里什么也不做。
+            // 点外面也不关——不是"关掉就回到原样"，关掉等于替用户选了"保留上一版"。
+            regenFailure != null -> Unit
             // 顺序 = 叠放顺序，从上往下退：先关最后打开的那一层。
             plusMenu -> plusMenu = false
             queueSheet -> queueSheet = false
@@ -639,8 +649,10 @@ internal fun ChatScreen(
             busy = true
             notice = null
             runningSession = sid
-            // 重试/续话走的是**非流式**（FFI 那条路 `stream:false`），所以这里只立一个
-            // "正在生成"的壳：轮询拿不到增量，但停止键和"在跑"的形态要跟发送一致。
+            // 就地渲染（D227）：这一轮的正文画在**目标消息**上，不再在底部另起一块。
+            // 目标为空（用户消息重试、下面没有回答可挂）时仍然在底部——结果会落成一条新消息，
+            // 那个位置就是它要去的地方，提前摆一个气泡在那里不算撒谎。
+            regenTarget = target
             live = LiveReply(round = 0, running = true)
             settling = false
             // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
@@ -654,12 +666,21 @@ internal fun ChatScreen(
                 // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
                 allowNewVersion = AppSettings.allowNewVersion(context),
                 append = append,
+                // 重试走流式：不流式的话"就地渲染"只剩一行「正在生成…」，
+                // 而用户要的是看着它在那条消息里长出来。
+                // **续话不流式**：它的落库正文是"原正文 + 续文"，而流里只有续文那一截；
+                // 边写边画就得在 Kotlin 里再实现一遍拼接规则（中文不加空格、英文加一个），
+                // 两份规则迟早分叉。续话期间显示原正文 + 一行「正在生成…」，收尾再换。
+                stream = !append,
             )
+            // 残文要在清掉 `live` 之前取：失败三选一里「保留这一版」存的就是这一份。
+            val partial = live?.text.orEmpty()
+            val partialReasoning = live?.reasoning.orEmpty()
             runningSession = null
             GeneratingTracker.mark(sid, false)
             busy = false
-            // 非流式：没有残文要留，直接收掉，让库里那份接管。
             live = null
+            regenTarget = null
             settling = false
             reloadKey += 1
             result.fold(
@@ -667,7 +688,20 @@ internal fun ChatScreen(
                     notice = (if (append) "续话：" else "重试：") + outcome.describe()
                 },
                 onFailure = { error ->
-                    notice = (if (append) "续话失败：" else "重试失败：") + error.message
+                    val reason = error.message ?: "原因不明"
+                    if (target != null) {
+                        // 三选一（D228）：这一版要不要留、上一版要不要留，由用户定。
+                        // 一个字都没收到时也弹——「保留这一版」灰着写原因，
+                        // 比一行会自己消失的提示更能说清"你的消息还在"。
+                        regenFailure = RegenFailure(
+                            messageId = target,
+                            text = partial,
+                            reasoning = partialReasoning,
+                            reason = reason,
+                        )
+                    } else {
+                        notice = (if (append) "续话失败：" else "重试失败：") + reason
+                    }
                 },
             )
         }
@@ -930,6 +964,8 @@ internal fun ChatScreen(
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
                         live = live,
+                        // 重试就地渲染（D227）：这一轮的正文画在它身上，不在底部另起一块。
+                        regenTarget = regenTarget,
                         onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
@@ -1174,6 +1210,51 @@ internal fun ChatScreen(
                     confirmDelete = null
                     deleteMessage(pendingDelete)
                 },
+            )
+        }
+
+        // 失败三选一（D228）的两个"留残文"分支：先存成新版本，再按选择决定上一版去留。
+        // 存的是**内存里这一轮收到的正文**——它还没落过库，所以这是唯一的一份，不是快照。
+        val keepPartial: (RegenFailure, Boolean) -> Unit = { failure, dropPrevious ->
+            regenFailure = null
+            scope.launch {
+                val saved = ChatRepository.saveVersion(databasePath, failure.messageId, failure.text)
+                if (saved.isFailure) {
+                    notice = "存这一版失败：${saved.exceptionOrNull()?.message}"
+                } else {
+                    reloadKey += 1
+                    if (!dropPrevious) {
+                        notice = "两版都留着（这一版是这次收到的 ${failure.text.length} 字，切回去能看上一版）"
+                    } else {
+                        // 「保留这一版」= 只留这一版：上一版删掉。版号现读——存完之后
+                        // 新的那一版才是 `active`，上一版就是它前面那个。
+                        val info = ChatRepository.versions(databasePath, failure.messageId).getOrNull()
+                        val previous = ((info?.active ?: 2) - 1).toLong()
+                        val dropped = if (previous >= 1L) {
+                            ChatRepository.deleteVersion(databasePath, failure.messageId, previous)
+                        } else {
+                            Result.success(0)
+                        }
+                        reloadKey += 1
+                        notice = if (dropped.isSuccess) {
+                            "只留这一版（上一版已删）"
+                        } else {
+                            "这一版存下了，但上一版没删掉：${dropped.exceptionOrNull()?.message}"
+                        }
+                    }
+                }
+            }
+        }
+        val pendingFailure = regenFailure
+        if (pendingFailure != null) {
+            RegenFailureDialog(
+                failure = pendingFailure,
+                onKeepPrevious = {
+                    regenFailure = null
+                    notice = "已保留上一版：这次收到的内容没有存进库里"
+                },
+                onKeepThis = { keepPartial(pendingFailure, true) },
+                onKeepBoth = { keepPartial(pendingFailure, false) },
             )
         }
 
@@ -1586,6 +1667,11 @@ private fun MessageArea(
     pending: PendingSend?,
     /** 这一轮正在长的回复（0.15ah）。`null` = 没有在跑，也没留残文。 */
     live: LiveReply?,
+    /**
+     * 这一轮长在哪条消息上（D227）。非空时 `live` **不再**在底部画，
+     * 而是画在这条消息的正文位置——重试看着像"这条回答在重写"，不是"又开了一个气泡"。
+     */
+    regenTarget: String?,
     /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
     onDismissCut: () -> Unit,
     selecting: Boolean,
@@ -1639,9 +1725,9 @@ private fun MessageArea(
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
     // 发出去那一刻 `pending` 会插在末尾，所以它也要进 key——否则新气泡在屏幕外面。
-    LaunchedEffect(units.size, truncated, pending, live != null) {
-        val target = headerCount + units.size + if (pending != null) 1 else 0 +
-            if (live != null) 1 else 0
+    val liveItem = if (live != null && regenTarget == null) 1 else 0
+    LaunchedEffect(units.size, truncated, pending, live != null, regenTarget) {
+        val target = headerCount + units.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
@@ -1650,8 +1736,7 @@ private fun MessageArea(
     LaunchedEffect(live?.text?.length ?: 0, live?.reasoning?.length ?: 0) {
         if (live == null) return@LaunchedEffect
         if (listState.canScrollForward) return@LaunchedEffect
-        val target = headerCount + units.size + if (pending != null) 1 else 0 +
-            if (live != null) 1 else 0
+        val target = headerCount + units.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
@@ -1686,6 +1771,8 @@ private fun MessageArea(
                 showHeader = assistantSide && !previousAssistantSide,
                 maxBubble = maxBubble,
                 gapAbove = gap,
+                live = live,
+                regenTarget = regenTarget,
                 selecting = selecting,
                 selected = selected,
                 onLongPressMessage = onLongPressMessage,
@@ -1733,7 +1820,9 @@ private fun MessageArea(
             }
         }
         val streaming = live
-        if (streaming != null) {
+        // 有目标消息时这一轮画在那条消息上（D227）；只有"结果会落成一条新消息"时
+        // 才在底部立一个占位——那个位置本来就是新消息要去的地方。
+        if (streaming != null && regenTarget == null) {
             item(key = "live-assistant") {
                 LiveReplyRow(reply = streaming, onDismissCut = onDismissCut)
             }
@@ -1813,6 +1902,10 @@ private fun UnitBlock(
     showHeader: Boolean,
     maxBubble: Dp,
     gapAbove: Dp,
+    /** 这一轮正在长的回复（就地渲染用，D227）。 */
+    live: LiveReply? = null,
+    /** 它长在哪条消息上；`null` = 不在这一轮里。 */
+    regenTarget: String? = null,
     selecting: Boolean,
     selected: Set<String>,
     onLongPressMessage: (String) -> Unit,
@@ -1864,6 +1957,8 @@ private fun UnitBlock(
                         AssistantMessage(
                             message = message,
                             showHeader = false,
+                            // 就地渲染（D227）：这一轮长在这条消息上。
+                            live = live?.takeIf { message.id == regenTarget },
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -2216,6 +2311,14 @@ private fun AssistantMessage(
     message: ChatMessage,
     /** 抬头由 [UnitBlock] 统一画（思考卡/工具卡要排在它下面），所以这里默认不画。 */
     showHeader: Boolean = false,
+    /**
+     * 这一轮正在长出来的那一份（D227，就地渲染）。
+     *
+     * 非空时正文画的是**正在长的这一份**，不是库里那一版——重试期间库里还是旧回答，
+     * 画旧回答再加一行"正在生成"会让人以为它没动。动作行这时也不画：
+     * 复制/版本/编辑指的都是库里那份，而现在屏幕上这份还没落库。
+     */
+    live: LiveReply? = null,
     selecting: Boolean,
     isSelected: Boolean,
     onLongPress: () -> Unit,
@@ -2239,6 +2342,32 @@ private fun AssistantMessage(
         // 头像 + 名字/时间占一行；**正文在它们下面整行铺开**，
         // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
         if (showHeader) AssistantHeader(createdAt = message.createdAt)
+        if (live != null) {
+            // 就地渲染：思考卡与正文都取这一轮收到的增量，收尾时换成库里那份（形状一致，不跳）。
+            if (live.reasoning.isNotBlank()) LiveReasoningCard(text = live.reasoning)
+            if (live.text.isNotBlank()) {
+                MarkdownBody(
+                    text = live.text,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                )
+            }
+            val note = when {
+                live.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里）"
+                live.text.isBlank() && live.reasoning.isBlank() -> "正在生成…"
+                else -> "正在生成…（停止键随时可用）"
+            }
+            Text(
+                text = note,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (live.cut) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            return@Column
+        }
         MarkdownBody(
             text = message.content.ifEmpty { "（空消息）" },
             modifier = Modifier
@@ -2403,6 +2532,187 @@ private fun DialogAction(
             color = ink,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
+    }
+}
+
+/**
+ * 重试失败之后要用户拍板的那一份东西（D228）。
+ *
+ * 存的是**内存里这一轮收到的正文**：它还没落过库，所以这不是"点开那一刻的副本"，
+ * 而是唯一的一份。用户选「保留这一版」时才把它写进库里。
+ */
+private data class RegenFailure(
+    val messageId: String,
+    val text: String,
+    val reasoning: String,
+    val reason: String,
+)
+
+/** 失败三选一里选中的那一项。 */
+private enum class KeepMode { Previous, This, Both }
+
+/**
+ * 重试失败：保留上一版 / 保留这一版 / 都保留（D228）。
+ *
+ * 三条规矩：
+ *
+ * 1. **必须处理**——它决定库里留下哪一版，点外面与返回键都不关（不是"关掉就回到原样"）。
+ * 2. **默认选上一版**：失败之后最常想做的是回到能看的那一版。
+ * 3. **这一版是空的时候两个"留这一版"灰掉并写原因**——留着一条 0 字消息，
+ *    比报错更让人以为消息被吞了。
+ */
+@Composable
+private fun RegenFailureDialog(
+    failure: RegenFailure,
+    onKeepPrevious: () -> Unit,
+    onKeepThis: () -> Unit,
+    onKeepBoth: () -> Unit,
+) {
+    val empty = failure.text.isBlank()
+    var mode by remember(failure) { mutableStateOf(KeepMode.Previous) }
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 遮罩不吃点击：这一层没有"点外面取消"（必须处理）。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f)),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "重试失败",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = failure.reason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        text = if (empty) {
+                            "这一轮一个字都没收到。"
+                        } else {
+                            "这一轮收到了 ${failure.text.length} 字，还没存进库里。"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    KeepChoice(
+                        title = "保留上一版",
+                        note = "回到重试之前那一版，这次收到的内容不留。",
+                        selected = mode == KeepMode.Previous,
+                        enabled = true,
+                        onPick = { mode = KeepMode.Previous },
+                    )
+                    KeepChoice(
+                        title = "保留这一版",
+                        note = if (empty) {
+                            "这一版是空的"
+                        } else {
+                            "把这次收到的 ${failure.text.length} 字存成一版，删掉上一版。"
+                        },
+                        selected = mode == KeepMode.This,
+                        enabled = !empty,
+                        onPick = { mode = KeepMode.This },
+                    )
+                    KeepChoice(
+                        title = "都保留",
+                        note = if (empty) {
+                            "这一版是空的"
+                        } else {
+                            "两版都留着，当前显示这一版，可以切回上一版。"
+                        },
+                        selected = mode == KeepMode.Both,
+                        enabled = !empty,
+                        onPick = { mode = KeepMode.Both },
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        DialogAction(label = "确定", primary = true) {
+                            when (mode) {
+                                KeepMode.Previous -> onKeepPrevious()
+                                KeepMode.This -> onKeepThis()
+                                KeepMode.Both -> onKeepBoth()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 三选一里的一行：圆点 + 标题 + 一句说明。灰掉的那行写清为什么灰。 */
+@Composable
+private fun KeepChoice(
+    title: String,
+    note: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onPick: () -> Unit,
+) {
+    val ink = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+        selected -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Row(
+        verticalAlignment = Alignment.Top,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .then(
+                if (enabled) {
+                    Modifier.clickable(onClick = onPick)
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 3.dp)
+                .size(16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(16.dp)
+                    .border(
+                        width = if (selected) 5.dp else 1.dp,
+                        color = if (enabled) {
+                            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        } else {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                        },
+                        shape = CircleShape,
+                    ),
+            )
+        }
+        Column(modifier = Modifier.padding(start = 10.dp)) {
+            Text(text = title, style = MaterialTheme.typography.bodyMedium, color = ink)
+            Text(
+                text = note,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                },
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
     }
 }
 

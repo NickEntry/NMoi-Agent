@@ -110,12 +110,19 @@ internal object TurnRepository {
          * `target` 为空时这一项没有意义（落的是新消息），所以只在有 target 时才发出去。
          */
         append: Boolean = false,
+        /**
+         * 这一轮走 SSE（D227）：增量进 native 的 partial 表，界面轮询 `turn_busy`
+         * 把正文**就地**画在目标消息上。默认开——重试与发送用同一条路，
+         * 不再有"发送逐字长、重试只能干等"这种两套行为。
+         */
+        stream: Boolean = true,
     ): Result<TurnOutcome> = runTurn(
         context = context,
         databasePath = databasePath,
         sessionId = sessionId,
         decorate = { config ->
             config.put("up_to", upTo).put("allow_new_version", allowNewVersion)
+            config.put("stream", stream)
             if (append) config.put("append", true)
             target?.let { config.put("target", it) }
         },

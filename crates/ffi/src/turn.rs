@@ -1190,6 +1190,8 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
 ///   （只有"那条消息下面本来没有助手消息"时才该这么用）。
 /// - `allow_new_version`（可选，默认 `true`）：关着时覆盖那一版，不新增。
 /// - `append`（可选，默认 `false`）：**续话**（D193）——落库的正文接在 `target` 现在的正文后面。
+/// - `stream`（可选，默认 `false`）：这一轮走 SSE，增量进 partial 表，界面轮询 `turn_busy`
+///   把正文**就地**画在目标消息上（D227）。关着就是"空白到结果回来"。
 ///
 /// 出参：`{text, reasoning, target, appended, rounds, tool_calls, finished}`
 ///
@@ -1222,6 +1224,9 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             .unwrap_or(true);
         // 续话（D193）：`true` = 落库的正文接在原正文后面；默认 `false` = 重试（整段换掉）。
         let append = root.get("append").and_then(Value::as_bool).unwrap_or(false);
+        // 流式（D227）：重试也要"就地长"。默认关——老调用方（脚本、测试）行为一个字都不变；
+        // 界面显式传 `true`，这样"边上屏边看"与"结果回来再换"是同一条路，不是两条。
+        let stream = root.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
         let (_registration, cancel) = Registration::new(&input.session.to_string())?;
         let mut storage = Storage::attach(storage_path(input.storage)?)
@@ -1290,7 +1295,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             suppress_compression: false,
             turn: TurnConfig {
                 max_rounds: input.max_rounds,
-                stream: false,
+                stream,
                 ..TurnConfig::default()
             },
             budget: input.budget.as_ref(),
@@ -1303,20 +1308,42 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
 
         let client = crate::proxy::client();
         let _ = storage.set_conversation_model(input.session, &input.model);
-        let outcome = regenerate_turn(
-            &client,
-            &request,
-            &mut storage,
-            input.session,
-            &up_to,
-            target.as_ref(),
-            append,
-            &registry,
-            &policy,
-            workspace.as_ref(),
-            &session_config,
-            input.now_ms,
-        )
+        // 增量进 partial 表（同 `turn_run`）：界面拿 `turn_busy` 的尾部 + 总量逐字画。
+        // 钩子是作用域内的——这一轮结束（含出错）自动撤掉，不会串到下一轮。
+        let session_key = input.session.to_string();
+        let (sink, round_hook) = if stream {
+            let key = session_key.clone();
+            let round_key = session_key;
+            (
+                Some(std::rc::Rc::new(move |text: &str, reasoning: &str| {
+                    partial_append(&key, text, reasoning);
+                }) as nmoi_core::progress::Sink),
+                Some(std::rc::Rc::new(move || partial_new_round(&round_key))
+                    as nmoi_core::progress::RoundHook),
+            )
+        } else {
+            (None, None)
+        };
+        let mut call = || {
+            regenerate_turn(
+                &client,
+                &request,
+                &mut storage,
+                input.session,
+                &up_to,
+                target.as_ref(),
+                append,
+                &registry,
+                &policy,
+                workspace.as_ref(),
+                &session_config,
+                input.now_ms,
+            )
+        };
+        let outcome = match (sink, round_hook) {
+            (Some(sink), Some(round)) => nmoi_core::progress::scope_with_round(sink, round, call),
+            _ => call(),
+        }
         .map_err(|error| match error {
             SessionError::CompactionRequired { used, usable } => FfiError::new(
                 "compaction_required",
