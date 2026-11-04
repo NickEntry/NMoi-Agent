@@ -424,19 +424,31 @@ fn block_message(
         .iter()
         .find(|message| &message.id == anchor)
         .ok_or_else(|| EditError::MessageNotFound(anchor.clone()))?;
-    let BlockSelector::ToolResult { index } = block else {
-        return Ok(anchor.clone());
-    };
-    // 结果长在调用块上（D258）：同一个 part，只是取的是 `output` 那一栏。
-    // 这里仍然检查序号，为的是"改第 3 个工具"在不存在的第 3 个上照样报错，不静默落空。
-    message
-        .tool_calls()
-        .get(index)
-        .ok_or_else(|| EditError::NoSuchToolResult {
-            message: anchor.clone(),
-            index,
-        })?;
-    Ok(anchor.clone())
+    match block {
+        BlockSelector::ToolCall { index } => {
+            message
+                .tool_calls()
+                .get(index)
+                .ok_or_else(|| EditError::NoSuchToolCall {
+                    message: anchor.clone(),
+                    index,
+                })?;
+            Ok(anchor.clone())
+        }
+        BlockSelector::ToolResult { index } => {
+            // 结果长在调用块上（D258）：同一个 part，只是取的是 `output` 那一栏。
+            // 这里仍然检查序号，为的是"改第 3 个工具"在不存在的第 3 个上照样报错，不静默落空。
+            message
+                .tool_calls()
+                .get(index)
+                .ok_or_else(|| EditError::NoSuchToolResult {
+                    message: anchor.clone(),
+                    index,
+                })?;
+            Ok(anchor.clone())
+        }
+        _ => Ok(anchor.clone()),
+    }
 }
 
 /// 一个块选择器指向哪个 part（删除时按它摘块）。

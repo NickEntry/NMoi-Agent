@@ -31,7 +31,6 @@ class ProcessRowsTest {
             incomplete = false,
             locked = false,
             toolCalls = 0,
-            toolCallId = null,
             reasoning = reasoning,
         )
         return ChatUnit(
