@@ -38,10 +38,10 @@ internal object AppSettings {
     /**
      * 上下文里最多带几张图（D248）。
      *
-     * 12 是用户定的默认值。上限取 **100**：三家端点里最弱的 Anthropic 就是 100 张/请求
+     * 20 是用户 2026-11-04 定的默认值。上限取 **100**：三家端点里最弱的 Anthropic 就是 100 张/请求
      * （OpenAI 500、Gemini 3 600）——填得比它大，换一家端点就会 400。
      */
-    const val DEFAULT_IMAGE_LIMIT = 12
+    const val DEFAULT_IMAGE_LIMIT = 20
     const val MAX_IMAGE_LIMIT = 100
 
     /** 这一轮最多带几张图。**保证在 1..100 之间**：0 张等于把图全关了，超出最弱端点就 400。 */

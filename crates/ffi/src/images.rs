@@ -41,7 +41,7 @@ fn images_json(session: &str) -> Value {
     })
 }
 
-/// `{"session"}` → `{"images":[{id,mime,bytes}], "count", "max":100, "default_limit":12}`。
+/// `{"session"}` → `{"images":[{id,mime,bytes}], "count", "max":100, "default_limit":20}`。
 ///
 /// `max` 是硬上限（三家端点里最弱的 Anthropic 就是 100 张/请求）；界面上那一格
 /// 不该让人填到 500——换了端点就 400。
@@ -113,7 +113,7 @@ mod tests {
                 mime: "image/jpeg".into(),
                 bytes: 10,
             },
-            12,
+            20,
         );
 
         let config = CString::new(r#"{"session":"s-ffi-images"}"#).unwrap();

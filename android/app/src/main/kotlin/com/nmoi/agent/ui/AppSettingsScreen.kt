@@ -56,6 +56,7 @@ internal fun AppSettingsScreen(
     var shortText by remember { mutableStateOf(AppSettings.imageShortEdge(context).toString()) }
     var qualityText by remember { mutableStateOf(AppSettings.imageQuality(context).toString()) }
     var roundsText by remember { mutableStateOf(AppSettings.maxRounds(context).toString()) }
+    var imageLimitText by remember { mutableStateOf(AppSettings.imageLimit(context).toString()) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -208,16 +209,31 @@ internal fun AppSettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 2.dp),
                         )
-                        Row(modifier = Modifier.padding(top = 10.dp)) {
-                            listOf(6, 12, 24, 50).forEach { preset ->
-                                SettingChip(
-                                    label = preset.toString(),
-                                    selected = AppSettings.imageLimit(context) == preset,
+                        SettingField(
+                            value = imageLimitText,
+                            onChange = { imageLimitText = it },
+                            placeholder = AppSettings.DEFAULT_IMAGE_LIMIT.toString(),
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("用这个值", selected = false) {
+                                val parsed = imageLimitText.trim().toIntOrNull()
+                                if (parsed == null ||
+                                    parsed < 1 ||
+                                    parsed > AppSettings.MAX_IMAGE_LIMIT
                                 ) {
-                                    AppSettings.setImageLimit(context, preset)
-                                    notice = "上下文图片上限改成 $preset 张"
+                                    notice = "图片上限要填 1–${AppSettings.MAX_IMAGE_LIMIT} 张"
+                                } else {
+                                    AppSettings.setImageLimit(context, parsed)
+                                    imageLimitText = AppSettings.imageLimit(context).toString()
+                                    notice = "上下文图片上限改成 ${AppSettings.imageLimit(context)} 张"
                                 }
-                                Spacer(Modifier.width(8.dp))
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setImageLimit(context, AppSettings.DEFAULT_IMAGE_LIMIT)
+                                imageLimitText = AppSettings.DEFAULT_IMAGE_LIMIT.toString()
+                                notice = "上下文图片上限恢复成 ${AppSettings.DEFAULT_IMAGE_LIMIT} 张"
                             }
                         }
                     }

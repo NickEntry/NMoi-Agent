@@ -11,7 +11,7 @@
 //!
 //! 1. **新的在前**。用户 2026-11-04 定的：后加进来的图排在前面，满了先丢最旧的。
 //! 2. **上限按最弱的端点算**。OpenAI 500 张/请求、Gemini 3 600 张、Anthropic 100 张
-//!    ——取 100 当硬上限，默认 12（用户定的）。见 [`MAX_LIMIT`]。
+//!    ——取 100 当硬上限，默认 20（用户 2026-11-04 定）。见 [`MAX_LIMIT`]。
 //! 3. **这张表是进程内的**。重启之后清单为空：图还在盘上、消息里也还在，
 //!    只是"这一轮要发它"这件事得重新说一次。持久化它等于给"看不见的上下文"开口子。
 //!
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 /// 用户定的默认值。
-pub const DEFAULT_LIMIT: usize = 12;
+pub const DEFAULT_LIMIT: usize = 20;
 
 /// 硬上限：三家端点里最弱的那个（Anthropic 100 张/请求；OpenAI 500、Gemini 3 600）。
 /// 设得比它大，换一家端点就会 400。
@@ -41,7 +41,7 @@ fn table() -> &'static Mutex<HashMap<String, Vec<ContextImage>>> {
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 把配置里的数折成合法上限：`0` = 没设 = 默认 12，超过硬上限就压到硬上限。
+/// 把配置里的数折成合法上限：`0` = 没设 = 默认 20，超过硬上限就压到硬上限。
 pub fn limit_of(raw: u32) -> usize {
     match raw as usize {
         0 => DEFAULT_LIMIT,
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn limits_fold_to_the_weakest_endpoint() {
-        assert_eq!(limit_of(0), DEFAULT_LIMIT, "0 = 没设 = 默认 12");
+        assert_eq!(limit_of(0), DEFAULT_LIMIT, "0 = 没设 = 默认 20");
         assert_eq!(limit_of(8), 8);
         assert_eq!(limit_of(500), MAX_LIMIT, "比 Anthropic 的 100 还大就会 400");
     }

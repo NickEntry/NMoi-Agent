@@ -130,7 +130,7 @@ pub struct ToolContext<'a> {
     pub call: Option<&'a crate::kills::CallHandle>,
     /// 这个会话的附件目录（`sessions/<id>/images`）。`View-Image` 只认这里的文件（D248）。
     pub chat_images: Option<&'a std::path::Path>,
-    /// 上下文图片清单的上限（0 = 用默认 12）。见 [`crate::images`]。
+    /// 上下文图片清单的上限（0 = 用默认 20）。见 [`crate::images`]。
     pub image_limit: u32,
 }
 

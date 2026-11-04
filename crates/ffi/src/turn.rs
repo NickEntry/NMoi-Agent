@@ -242,7 +242,7 @@ struct TurnInput {
     user_text: String,
     now_ms: i64,
     max_rounds: u32,
-    /// 上下文图片清单的上限（D248）。`0` = 默认 12。
+    /// 上下文图片清单的上限（D248）。`0` = 默认 20。
     image_limit: u32,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
