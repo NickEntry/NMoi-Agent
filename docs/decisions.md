@@ -6125,3 +6125,9 @@ base64 编进请求，三处都按同一份字节算，压得越早越省。三�
 
 **没做**（留给 0.15an）：批次并行、每条调用各自一行进度、四条车道。
 现在一个批次仍然串行（`agent.rs` 那个 `for`），所以"三条各 10 秒"还是 30 秒。
+
+**实测**：CI run `41751275491`（`c66c58c`）六 job 全绿；Rust **817 条 / 23 个测试二进制**、
+Kotlin **102 条 @Test / 10 个文件**；JNI 符号 **47**；APK `17,971,961` 字节 /
+`41b0399c5d6a6272c34dd336c383ec00`。本机 `kotlinc` 全量类型检查只剩那三类已知 error
+（`R` / `savedstate|lifecycle` / `addMenuProvider`），`LiveStreamTest` 5 条 + `LivePollTest` 9 条
+本机 JUnit 全绿。真机 V66 未走。
