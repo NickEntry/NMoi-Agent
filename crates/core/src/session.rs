@@ -537,6 +537,8 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     // 手动关闭（0.15ak）按 `(会话, call_id)` 登记，所以这一轮得带上自己是谁。
     let call_session = session.to_string();
+    // 新一轮：上一轮"跑过什么"作废（D251）。
+    crate::kills::clear_done(&call_session);
     ctx = ctx.with_call_session(&call_session);
     // 上下文图片（D248）：附件目录给 `View-Image` 用，上限跟着这一轮的配置走。
     let images_dir = store.attachment_dir(session);
@@ -795,6 +797,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     attach_images(&mut frozen_base, store, &history, session)?;
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     let call_session = session.to_string();
+    crate::kills::clear_done(&call_session);
     ctx = ctx.with_call_session(&call_session);
     let images_dir = store.attachment_dir(session);
     ctx = ctx.with_images(images_dir.as_deref(), config.turn.image_limit);
@@ -826,6 +829,17 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     if report.text.trim().is_empty() && report.tool_calls.is_empty() {
         return Err(SessionError::Save(
             "这一轮模型没有给出正文，也没有工具调用，没有可落的东西".into(),
+        ));
+    }
+    // 重试/续话要落版本时，**空正文一版都不落**（D251）。
+    //
+    // 2026-11-04 真机：模型在"思考 + 试工具"里打转，用户点停止，正文是空的，
+    // 结果库里多了一版空正文——界面上是 `<3/3>` + 「（空消息）」，而上面还挂着旧的工具块。
+    // 空正文的版本还会让 `load_units` 整页读不出来（`pitfalls.md` 2026-11-03 那条 `EmptyMessage`）。
+    // 界面上"这一版还没写"只能活在流里，不能变成一条记录。
+    if target.is_some() && report.text.trim().is_empty() {
+        return Err(SessionError::Save(
+            "这一轮只有思考与工具调用，没有正文：不落这一版（旧的那一版留着）".into(),
         ));
     }
 

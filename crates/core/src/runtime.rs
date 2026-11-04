@@ -762,8 +762,27 @@ impl ChatStream {
                     if call_id.is_some() {
                         slot.0 = call_id;
                     }
-                    if name.is_some() {
-                        slot.1 = name;
+                    // 工具名（D251）：**不能"后到的覆盖先到的"**。
+                    //
+                    // 2026-11-04 真机：模型一直在说"the tool name keeps being lost"，然后反复重试
+                    // 同一次调用——因为中转在最后又发了一帧 `{"name": ""}`，把前面那个真名字抹掉了，
+                    // 我们于是回一句"工具名是空的（上游没给 name）"，模型再试，再被抹。
+                    //
+                    // 三种形状都要认：
+                    // - 空串：忽略（就是上面那个坑）；
+                    // - 累计式（`read` → `read_file`）：换成长的那个；
+                    // - 分片式（`read` + `_file`）：接起来；
+                    // - 重复发同一个：原样。
+                    if let Some(name) = name {
+                        if !name.is_empty() {
+                            slot.1 = Some(match slot.1.take() {
+                                None => name,
+                                Some(existing) if existing == name => existing,
+                                Some(existing) if name.starts_with(existing.as_str()) => name,
+                                Some(existing) if existing.starts_with(name.as_str()) => existing,
+                                Some(existing) => format!("{existing}{name}"),
+                            });
+                        }
                     }
                     slot.2.push_str(&arguments);
                 }

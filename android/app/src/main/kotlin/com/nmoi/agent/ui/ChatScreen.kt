@@ -445,6 +445,7 @@ internal fun ChatScreen(
                 text = info.optString("text", ""),
                 reasoning = info.optString("reasoning", ""),
                 calls = runningCallsOf(info),
+                done = doneCallsOf(info),
             )
             when (val step = advanceLive(reply, poll, snapshot)) {
                 is LiveStep.Update -> {
@@ -2009,6 +2010,16 @@ private fun MessageArea(
     val units = page?.units.orEmpty()
     // 连续的思考/工具合成一行（D229）。分组只影响渲染，数据一个字都不动。
     val rows = remember(units) { buildRows(units) }
+    // 重试/续话期间（D251）：**这一轮的过程块不画**。
+    //
+    // 用户 2026-11-04：「UI 上在生成的时候不显示旧的」。那些块属于上一版的那一轮，
+    // 而屏幕上正在写的是新的一版——旧的挂在那儿，看起来就像"新版本带着旧块"。
+    // 判据：目标消息之前、最后一条用户消息之后的那几块就是这一轮的。
+    val regenFrom = if (regenTarget == null) {
+        -1
+    } else {
+        rows.indexOfLast { row -> row is ChatRow.Single && row.unit.messages.any { it.isUser } }
+    }
     val truncated = page?.truncated == true
     val listState = rememberLazyListState()
     val headerCount = if (truncated) 1 else 0
@@ -2051,6 +2062,9 @@ private fun MessageArea(
             }
         }
         itemsIndexed(rows) { index, row ->
+            if (row is ChatRow.Process && regenFrom >= 0 && index > regenFrom) {
+                return@itemsIndexed
+            }
             val previous = rows.getOrNull(index - 1)
             // 换人（用户 ↔ 助手）才加那 8dp；同一轮里的几个块贴在一起。
             val gap = if (previous != null && previous.alignsRight() != row.alignsRight()) 8.dp else 0.dp
@@ -2197,6 +2211,7 @@ private fun LiveReplyRow(
                 thinkingOpen = finishedThinkingOpen(index),
                 onToggleThinking = { onToggleFinishedThinking(index) },
                 onOpenCall = {},
+                live = false,
             )
             if (done.text.isNotBlank()) {
                 MarkdownBody(
@@ -2208,6 +2223,7 @@ private fun LiveReplyRow(
         LiveProcessCard(
             reasoning = reply.reasoning,
             calls = reply.calls,
+            done = reply.done,
             thinkingOpen = thinkingOpen,
             onToggleThinking = onToggleThinking,
             onOpenCall = onOpenCall,
@@ -2896,6 +2912,7 @@ private fun AssistantMessage(
             LiveProcessCard(
                 reasoning = live.reasoning,
                 calls = live.calls,
+                done = live.done,
                 thinkingOpen = liveThinkingOpen,
                 onToggleThinking = onToggleLiveThinking,
                 onOpenCall = onOpenRunningCall,
@@ -4576,6 +4593,19 @@ private fun runningCallsOf(info: JSONObject): List<RunningCall> {
     }
 }
 
+/** `turn_busy.done` → 这一轮跑完的那些（D251）。 */
+private fun doneCallsOf(info: JSONObject): List<DoneCall> {
+    val array = info.optJSONArray("done") ?: return emptyList()
+    return buildList {
+        for (index in 0 until array.length()) {
+            val row = array.optJSONObject(index) ?: continue
+            val name = row.text("name")
+            if (name.isEmpty()) continue
+            add(DoneCall(name = name, summary = row.text("summary")))
+        }
+    }
+}
+
 /** 跑了多久。毫秒级只在这一行的头一秒出现，之后按秒走——一直跳小数看着像在闪。 */
 private fun elapsedLabel(ms: Int): String = when {
     ms < 1_000 -> "${ms} 毫秒"
@@ -4640,9 +4670,13 @@ private fun LiveProcessCard(
     thinkingOpen: Boolean,
     onToggleThinking: () -> Unit,
     onOpenCall: (RunningCall) -> Unit,
+    /** 这一轮已经跑完的调用（D251）：跑完就消失的话，屏幕上只剩"模型在思考"。 */
+    done: List<DoneCall> = emptyList(),
+    /** 这一块是**当前这一轮**还是已经收口的那几轮（决定思考那行写不写"还在写"）。 */
+    live: Boolean = true,
 ) {
-    if (reasoning.isBlank() && calls.isEmpty()) return
-    val total = (if (reasoning.isNotBlank()) 1 else 0) + calls.size
+    if (reasoning.isBlank() && calls.isEmpty() && done.isEmpty()) return
+    val total = (if (reasoning.isNotBlank()) 1 else 0) + done.size + calls.size
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -4656,7 +4690,14 @@ private fun LiveProcessCard(
                         text = reasoning,
                         expanded = thinkingOpen,
                         onToggle = onToggleThinking,
+                        live = live,
                     )
+                }
+                index += 1
+            }
+            done.forEach { call ->
+                ProcessNode(index = index, last = index == total - 1) {
+                    DoneCallRow(call)
                 }
                 index += 1
             }
@@ -4672,7 +4713,13 @@ private fun LiveProcessCard(
 
 /** 正在写的思考：一行标题 + 展开（和落库那条同一个形状，只是标题写「还在写」）。 */
 @Composable
-private fun LiveThinkingRow(text: String, expanded: Boolean, onToggle: () -> Unit) {
+private fun LiveThinkingRow(
+    text: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    /** `false` = 这一轮已经收口，标题不写"还在写"。 */
+    live: Boolean = true,
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(vertical = 8.dp),
@@ -4685,7 +4732,11 @@ private fun LiveThinkingRow(text: String, expanded: Boolean, onToggle: () -> Uni
                 modifier = Modifier.size(16.dp),
             )
             Text(
-                text = "深度思考 · ${text.length} 字（还在写）",
+                text = if (live) {
+                    "深度思考 · ${text.length} 字（还在写）"
+                } else {
+                    "深度思考 · ${text.length} 字"
+                },
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
@@ -4703,6 +4754,42 @@ private fun LiveThinkingRow(text: String, expanded: Boolean, onToggle: () -> Uni
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 24.dp, bottom = 8.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 这一轮**已经跑完**的一条调用（D251）：扳手 + 名字 + 摘要（`exit 0 · 121ms`）。
+ *
+ * 不可点：它的详情要等整轮收尾落库之后才有（那一条会带完整的参数与输出）。
+ * 这一行只回答"刚才那一串到底跑了什么"。
+ */
+@Composable
+private fun DoneCallRow(call: DoneCall) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = ActionIcons.Wrench,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Text(
+            text = toolDisplayName(call.name),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(start = 8.dp),
+        )
+        if (call.summary.isNotEmpty()) {
+            Text(
+                text = call.summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

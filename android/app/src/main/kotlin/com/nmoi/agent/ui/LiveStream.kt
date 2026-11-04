@@ -26,6 +26,14 @@ internal data class RunningCall(
     val cancelled: Boolean = false,
 )
 
+/**
+ * 这一轮**已经跑完**的一次工具调用（D251）。
+ *
+ * 结果要等整轮收尾才落库，中间这一段界面上得能看见"它跑过什么"——
+ * 否则用户只看到模型在思考，以为工具没动（2026-11-04 真机就是这么报的）。
+ */
+internal data class DoneCall(val name: String, val summary: String)
+
 internal data class LiveReply(
     val text: String = "",
     val reasoning: String = "",
@@ -52,6 +60,8 @@ internal data class LiveReply(
     val sawDelta: Boolean = false,
     /** 正在跑的工具调用（0.15ak）。空 = 这一拍没有工具在跑。 */
     val calls: List<RunningCall> = emptyList(),
+    /** 这一轮已经跑完的调用（D251），按发生顺序。 */
+    val done: List<DoneCall> = emptyList(),
     /**
      * 这一轮是**重试/续话**（D249）：正文画在目标消息的位置上，旧的那一版还在库里。
      *
@@ -98,6 +108,8 @@ internal data class BusySnapshot(
     val reasoning: String,
     /** 这一拍有哪些工具调用在跑（0.15ak）。 */
     val calls: List<RunningCall> = emptyList(),
+    /** 这一轮已经跑完的调用（D251）。 */
+    val done: List<DoneCall> = emptyList(),
 )
 
 /** 轮询自己的状态：**见过一次 `running:true` 没有**。 */
@@ -146,6 +158,7 @@ internal fun advanceLive(reply: LiveReply, poll: LivePoll, snapshot: BusySnapsho
         sawDelta = base.sawDelta || snapshot.textLen > 0 || snapshot.reasoningLen > 0,
         // 点了「关闭」之后 native 还会把这一条报上几拍（进程还没死），
         // 所以"已请求关闭"要跨快照保住——否则按钮会闪回可点状态，用户会再点一次。
+        done = snapshot.done,
         calls = snapshot.calls.map { call ->
             val asked = base.calls.firstOrNull { it.callId == call.callId }?.cancelled == true
             call.copy(cancelled = asked)

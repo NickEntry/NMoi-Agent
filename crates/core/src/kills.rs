@@ -129,6 +129,85 @@ pub fn cancel_all(session: &str) -> usize {
     calls.len()
 }
 
+/// 工具结果的一句话摘要：`exit 0 · 121ms`。
+///
+/// 只认两种形状：shell 的 `{exit_code, duration_ms}`，以及别的工具（没有这两个字段时返回空）。
+/// 解析失败就返回空——编一句"成功"比不写更糟。
+pub fn summarize(outcome_text: &str) -> String {
+    let trimmed = outcome_text.trim();
+    if !trimmed.starts_with('{') {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    match value.get("exit_code") {
+        Some(serde_json::Value::Number(number)) => {
+            parts.push(format!("exit {number}"));
+        }
+        Some(serde_json::Value::Null) => parts.push("被信号结束".to_string()),
+        _ => {}
+    }
+    if let Some(ms) = value.get("duration_ms").and_then(|v| v.as_u64()) {
+        parts.push(format!("{ms}ms"));
+    }
+    if value.get("timed_out") == Some(&serde_json::Value::Bool(true)) {
+        parts.push("超时".to_string());
+    }
+    if value.get("killed_by_user") == Some(&serde_json::Value::Bool(true)) {
+        parts.push("被用户关闭".to_string());
+    }
+    parts.join(" · ")
+}
+
+/// 这一轮**已经跑完**的调用（D251）：生成期间界面上要能看见"它跑过什么"。
+///
+/// 为什么单独一张表：`CallHandle` 的 Drop 一发生，那条调用就从"在跑"里消失了——
+/// 而它跑出来的东西要等整轮收尾才落库。中间这一段，屏幕上会一片空白，
+/// 用户只看到模型在思考，以为工具没在动（2026-11-04 真机就是这么报的）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoneCall {
+    pub name: String,
+    /// 一眼能认出来的摘要：`exit 0 · 121ms` / `失败` / 空。
+    pub summary: String,
+}
+
+fn done_table() -> &'static Mutex<HashMap<String, Vec<DoneCall>>> {
+    static TABLE: OnceLock<Mutex<HashMap<String, Vec<DoneCall>>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 记一条跑完的调用（按发生顺序追加）。
+pub fn push_done(session: &str, name: &str, summary: &str) {
+    let mut table = done_table()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    table
+        .entry(session.to_string())
+        .or_default()
+        .push(DoneCall {
+            name: name.to_string(),
+            summary: summary.to_string(),
+        });
+}
+
+/// 这一轮跑完的那些，按发生顺序。
+pub fn done(session: &str) -> Vec<DoneCall> {
+    let table = done_table()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    table.get(session).cloned().unwrap_or_default()
+}
+
+/// 开新一轮时清空（这一轮的"跑过什么"只属于这一轮）。
+pub fn clear_done(session: &str) {
+    let mut table = done_table()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    table.remove(session);
+}
+
 /// 这个会话现在有哪些调用在跑，按开始的先后排。
 pub fn running(session: &str) -> Vec<RunningCall> {
     let table = table().lock().unwrap_or_else(|poison| poison.into_inner());

@@ -1224,6 +1224,16 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
         };
         // 正在跑的工具调用（0.15ak）：界面照这一份画"哪一条在跑、跑了多久"，
         // 「关闭」按钮点的就是这里的 `call_id`。没在跑就一律空——同 D236 那条口径。
+        // 这一轮**已经跑完**的调用（D251）：结果要等收尾才落库，中间这一段
+        // 界面上要能看见"它跑过什么"，否则用户只看到模型在思考。
+        let done: Vec<Value> = if running {
+            nmoi_core::kills::done(session)
+                .into_iter()
+                .map(|call| json!({ "name": call.name, "summary": call.summary }))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let calls: Vec<Value> = if running {
             nmoi_core::kills::running(session)
                 .into_iter()
@@ -1249,6 +1259,7 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
             "reasoning": reasoning,
             "reasoning_len": reasoning_len,
             "calls": calls,
+            "done": done,
         }))
     })
 }

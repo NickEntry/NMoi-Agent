@@ -357,6 +357,11 @@ pub fn run_turn<T: Transport>(
             };
             drop(handle);
             let text = outcome.text();
+            // 跑完的这一条留在"这一轮跑过什么"里（D251）：结果要等整轮收尾才落库，
+            // 中间这一段界面上不能一片空白——用户会以为工具没动。
+            if let Some(session) = ctx.call_session {
+                crate::kills::push_done(session, &call.name, &crate::kills::summarize(&text));
+            }
             report.tool_calls.push(ToolRecord {
                 name: call.name.clone(),
                 call_id: call.id.clone(),
