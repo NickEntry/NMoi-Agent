@@ -11,6 +11,19 @@ package com.nmoi.agent.ui
  */
 internal data class FinishedRound(val text: String, val reasoning: String)
 
+/**
+ * 一条正在跑的工具调用（0.15ak）。
+ *
+ * `cancelled` 是**界面自己的**状态：点了「关闭」之后、结果回来之前，那一行要立刻变成
+ * 「已请求关闭」。它不来自 native——native 只知道标志置上了没有，不知道用户点过几下。
+ */
+internal data class RunningCall(
+    val callId: String,
+    val name: String,
+    val elapsedMs: Int,
+    val cancelled: Boolean = false,
+)
+
 internal data class LiveReply(
     val text: String = "",
     val reasoning: String = "",
@@ -35,6 +48,8 @@ internal data class LiveReply(
      * 两种情况用户看到的都是"流式没生效"，不给一句话，他只能猜。
      */
     val sawDelta: Boolean = false,
+    /** 正在跑的工具调用（0.15ak）。空 = 这一拍没有工具在跑。 */
+    val calls: List<RunningCall> = emptyList(),
 )
 
 /**
@@ -72,6 +87,8 @@ internal data class BusySnapshot(
     val reasoningLen: Int,
     val text: String,
     val reasoning: String,
+    /** 这一拍有哪些工具调用在跑（0.15ak）。 */
+    val calls: List<RunningCall> = emptyList(),
 )
 
 /** 轮询自己的状态：**见过一次 `running:true` 没有**。 */
@@ -118,6 +135,12 @@ internal fun advanceLive(reply: LiveReply, poll: LivePoll, snapshot: BusySnapsho
         reasoning = growText(base.reasoning, snapshot.reasoningLen, snapshot.reasoning),
         running = if (started) snapshot.running else true,
         sawDelta = base.sawDelta || snapshot.textLen > 0 || snapshot.reasoningLen > 0,
+        // 点了「关闭」之后 native 还会把这一条报上几拍（进程还没死），
+        // 所以"已请求关闭"要跨快照保住——否则按钮会闪回可点状态，用户会再点一次。
+        calls = snapshot.calls.map { call ->
+            val asked = base.calls.firstOrNull { it.callId == call.callId }?.cancelled == true
+            call.copy(cancelled = asked)
+        },
     )
     val nextPoll = LivePoll(started = started)
     return if (started && !snapshot.running) {

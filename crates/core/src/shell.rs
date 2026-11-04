@@ -45,9 +45,43 @@ use crate::tools::{required_str, Tool, ToolContext, ToolOutcome};
 /// 每个流最多留这么多字节。够看完报错，又不会把内存撑爆。
 const STREAM_CAP: usize = 64 * 1024;
 
-/// 默认 30 秒：够 `cargo check` 之外的绝大多数事。上限 300 秒，再长就该用容器了。
+/// 默认 30 秒：够绝大多数事。上限 10 小时（用户 2026-11-02 说的 1–36000 秒）。
+///
+/// **`0` 不是「不超时」**：不超时只有一个写法——字符串 `"inf"`。
+/// 两个写法并存的话，"没设"和"设成不超时"在日志里长得一样。
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const MAX_TIMEOUT_MS: u64 = 300_000;
+const MIN_TIMEOUT_MS: u64 = 1_000;
+const MAX_TIMEOUT_MS: u64 = 36_000_000;
+
+/// 解析 `timeout_ms`：`None` = 不设闹钟（`"inf"`）。
+///
+/// 越界**报错**，不静默夹到边界上：模型以为"给了 300 秒"，实际跑 5 秒就被杀，
+/// 而结果里只有一句 `timed_out: true`——这种错查起来比报错贵得多。
+fn timeout_of(args: &Value) -> Result<Option<Duration>, ToolOutcome> {
+    let Some(raw) = args.get("timeout_ms") else {
+        return Ok(Some(Duration::from_millis(DEFAULT_TIMEOUT_MS)));
+    };
+    if let Some(text) = raw.as_str() {
+        if text.eq_ignore_ascii_case("inf") {
+            return Ok(None);
+        }
+        return Err(ToolOutcome::failed(format!(
+            "timeout_ms 只认整数毫秒（{MIN_TIMEOUT_MS}–{MAX_TIMEOUT_MS}）或字符串 \"inf\"，拿到的是 \"{text}\""
+        )));
+    }
+    let Some(ms) = raw.as_u64() else {
+        return Err(ToolOutcome::failed(format!(
+            "timeout_ms 只认整数毫秒（{MIN_TIMEOUT_MS}–{MAX_TIMEOUT_MS}）或字符串 \"inf\""
+        )));
+    };
+    if !(MIN_TIMEOUT_MS..=MAX_TIMEOUT_MS).contains(&ms) {
+        return Err(ToolOutcome::failed(format!(
+            "timeout_ms 只能是 {MIN_TIMEOUT_MS}–{MAX_TIMEOUT_MS} 毫秒（1 秒 – 10 小时），\
+             或者字符串 \"inf\" 表示不超时；{ms} 不在这个范围里——0 不是「不超时」"
+        )));
+    }
+    Ok(Some(Duration::from_millis(ms)))
+}
 
 pub struct SystemShellTool;
 
@@ -66,7 +100,9 @@ impl Tool for SystemShellTool {
             "Linux/Android 上是 `/bin/sh -c`（Android 没有 bash，coreutils 是 toybox 的裁剪版）；",
             "Windows 上是 `powershell -NoProfile -Command`——那是本机原生命令，谨慎操作。\n",
             "返回 JSON：exit_code（被信号杀掉时是 null）、stdout、stderr、truncated、duration_ms、timed_out。",
-            "每个流最多 64 KiB；默认超时 30 秒，超时会杀掉整个进程组。"
+            "每个流最多 64 KiB；默认超时 30 秒，超时会杀掉整个进程组。",
+            "timeout_ms 可以给 1000–36000000（毫秒）；要「一直跑到它自己结束」就写字符串 \"inf\"（0 不是不超时）。",
+            "用户点「关闭」时结果里 killed_by_user 为 true、timed_out 为 false——那是用户停的，不是命令失败。"
         )
     }
 
@@ -84,7 +120,7 @@ impl Tool for SystemShellTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "超时毫秒数，默认 30000，最大 300000"
+                    "description": "超时毫秒数：1000–36000000，默认 30000；要一直跑就写字符串 \"inf\"（0 不合法）"
                 }
             },
             "required": ["command"]
@@ -125,13 +161,12 @@ impl Tool for SystemShellTool {
             return ToolOutcome::failed(format!("工作目录不存在：{}", cwd.display()));
         }
 
-        let timeout = args
-            .get("timeout_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .clamp(1_000, MAX_TIMEOUT_MS);
+        let timeout = match timeout_of(args) {
+            Ok(timeout) => timeout,
+            Err(outcome) => return outcome,
+        };
 
-        match run(&command, &cwd, Duration::from_millis(timeout)) {
+        match run(&command, &cwd, timeout, ctx.call) {
             Ok(completed) => ToolOutcome::Ok {
                 text: completed.to_json(&command).to_string(),
                 truncated: completed.truncated,
@@ -282,7 +317,9 @@ impl Tool for EnvirShellTool {
             "容器里**没有内核**：uname -r 显示的是手机内核，systemd / docker / iptables / 内核模块都用不了；",
             "proot 是 ptrace 模拟，比原生慢。\n",
             "返回 JSON：exit_code（被信号杀掉时是 null）、stdout、stderr、truncated、duration_ms、timed_out。",
-            "每个流最多 64 KiB；默认超时 30 秒，超时会杀掉整个进程组（包括容器里的进程）。"
+            "每个流最多 64 KiB；默认超时 30 秒，超时会杀掉整个进程组（包括容器里的进程）。",
+            "timeout_ms 可以给 1000–36000000（毫秒）；要一直跑就写字符串 \"inf\"。",
+            "用户点「关闭」时结果里 killed_by_user 为 true、timed_out 为 false。"
         )
     }
 
@@ -300,7 +337,7 @@ impl Tool for EnvirShellTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "超时毫秒数，默认 30000，最大 300000"
+                    "description": "超时毫秒数：1000–36000000，默认 30000；要一直跑就写字符串 \"inf\"（0 不合法）"
                 }
             },
             "required": ["command"]
@@ -343,14 +380,13 @@ impl Tool for EnvirShellTool {
                 );
             }
         }
-        let timeout = args
-            .get("timeout_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .clamp(1_000, MAX_TIMEOUT_MS);
+        let timeout = match timeout_of(args) {
+            Ok(timeout) => timeout,
+            Err(outcome) => return outcome,
+        };
 
         let cmd = envir.command(workspace.root(), cwd_arg, &command);
-        match execute(cmd, Duration::from_millis(timeout)) {
+        match execute(cmd, timeout, ctx.call) {
             Ok(completed) => ToolOutcome::Ok {
                 text: completed.to_json(&command).to_string(),
                 truncated: completed.truncated,
@@ -366,20 +402,30 @@ struct Completed {
     stderr: String,
     truncated: bool,
     timed_out: bool,
+    /// 用户点了「关闭」。与 `timed_out` **互斥**：一个是用户停的，一个是闹钟停的，
+    /// 合成一个字段的话模型分不清"该不该重试"。
+    killed_by_user: bool,
     duration_ms: u64,
 }
 
 impl Completed {
     fn to_json(&self, command: &str) -> Value {
-        json!({
+        let mut value = json!({
             "command": command,
             "exit_code": self.exit_code,
             "stdout": self.stdout,
             "stderr": self.stderr,
             "truncated": self.truncated,
             "timed_out": self.timed_out,
+            "killed_by_user": self.killed_by_user,
             "duration_ms": self.duration_ms,
-        })
+        });
+        if self.killed_by_user {
+            // 给模型看的那一行：只说 `exit_code: null` 它会当成"命令自己挂了"，
+            // 然后照着同一条命令再试一次。
+            value["note"] = json!("被用户关闭（不是命令自己退出）");
+        }
+        value
     }
 }
 
@@ -387,17 +433,26 @@ impl Completed {
 ///
 /// 结构是"两个读线程 + 主线程 `try_wait` 轮询"：这样两个管道同时有人读（不会互相堵），
 /// 主线程又能按时超时。用 `wait_with_output` 就没有超时可言了。
-fn run(command: &str, cwd: &Path, timeout: Duration) -> Result<Completed, String> {
+fn run(
+    command: &str,
+    cwd: &Path,
+    timeout: Option<Duration>,
+    call: Option<&crate::kills::CallHandle>,
+) -> Result<Completed, String> {
     let mut cmd = platform_command(command);
     cmd.current_dir(cwd);
-    execute(cmd, timeout)
+    execute(cmd, timeout, call)
 }
 
-/// 起一个已经拼好的命令，读两个流、按超时收工。
+/// 起一个已经拼好的命令，读两个流、按超时（或用户点关闭）收工。
 ///
-/// `System-Shell` 与 `WorkSpace-EnvirShell` 走同一条路：**超时/封顶/杀进程组只有一份实现**，
+/// `System-Shell` 与 `WorkSpace-EnvirShell` 走同一条路：**超时/关闭/封顶/杀进程组只有一份实现**，
 /// 否则"容器里的命令超时"和"原生命令超时"迟早会不一样，而那种不一样没人测得到。
-fn execute(mut cmd: Command, timeout: Duration) -> Result<Completed, String> {
+fn execute(
+    mut cmd: Command,
+    timeout: Option<Duration>,
+    call: Option<&crate::kills::CallHandle>,
+) -> Result<Completed, String> {
     let label = cmd.get_program().to_string_lossy().into_owned();
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -430,16 +485,26 @@ fn execute(mut cmd: Command, timeout: Duration) -> Result<Completed, String> {
     drain(stderr, err_tx);
 
     let mut timed_out = false;
+    let mut killed_by_user = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {}
             Err(error) => return Err(format!("等命令结束时出错：{error}")),
         }
-        if started.elapsed() >= timeout {
-            timed_out = true;
+        // 手动关闭（0.15ak）：每 20 ms 看一眼。**先看关闭再看超时**——
+        // 两个条件同一拍成立时，用户按下的那一下更该被记住。
+        if call.map(|call| call.cancelled()).unwrap_or(false) {
+            killed_by_user = true;
             kill_tree(&mut child);
             break None;
+        }
+        if let Some(limit) = timeout {
+            if started.elapsed() >= limit {
+                timed_out = true;
+                kill_tree(&mut child);
+                break None;
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -474,6 +539,7 @@ fn execute(mut cmd: Command, timeout: Duration) -> Result<Completed, String> {
         stderr: err,
         truncated: out_cut || err_cut,
         timed_out,
+        killed_by_user,
         duration_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -966,5 +1032,106 @@ mod tests {
         assert!(!guest_cwd_is_safe("/etc"));
         assert!(!guest_cwd_is_safe("../etc"));
         assert!(!guest_cwd_is_safe("sub/../../etc"));
+    }
+
+    // ------------------------------------------------------------------
+    // 超时与手动关闭（0.15ak / D246）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn timeout_accepts_the_range_and_the_word_inf() {
+        assert_eq!(
+            timeout_of(&json!({})).ok().flatten(),
+            Some(Duration::from_millis(30_000))
+        );
+        assert_eq!(
+            timeout_of(&json!({"timeout_ms": 1000})).ok().flatten(),
+            Some(Duration::from_millis(1_000))
+        );
+        assert_eq!(
+            timeout_of(&json!({"timeout_ms": 36_000_000}))
+                .ok()
+                .flatten(),
+            Some(Duration::from_millis(36_000_000))
+        );
+        // "inf" = 不设闹钟。**这是唯一一种"不超时"的写法**。
+        assert_eq!(
+            timeout_of(&json!({"timeout_ms": "inf"})).ok().flatten(),
+            None
+        );
+        assert_eq!(
+            timeout_of(&json!({"timeout_ms": "INF"})).ok().flatten(),
+            None
+        );
+    }
+
+    #[test]
+    fn timeout_zero_and_out_of_range_are_named_errors() {
+        // 0 不是"不超时"：它不合法。悄悄当成 30 秒的话，模型以为它关掉了闹钟。
+        let zero = timeout_of(&json!({"timeout_ms": 0})).unwrap_err().text();
+        assert!(zero.contains("0 不是"), "{zero}");
+        assert!(zero.contains("1000"), "{zero}");
+        let too_long = timeout_of(&json!({"timeout_ms": 36_000_001}))
+            .unwrap_err()
+            .text();
+        assert!(too_long.contains("36000000"), "{too_long}");
+        let nonsense = timeout_of(&json!({"timeout_ms": "5m"})).unwrap_err().text();
+        assert!(
+            nonsense.contains("\"5m\""),
+            "报错要点名拿到的是什么：{nonsense}"
+        );
+    }
+
+    /// 用户点「关闭」：进程组被杀，`killed_by_user` 为真、`timed_out` 为假。
+    ///
+    /// 不靠 sleep 猜时序：登记是同步的，标志在起进程之前就置上，
+    /// 等待循环的第一拍就会看到它。命令是 `sleep 30`——它要是没被杀，这个用例要等 30 秒。
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_call_is_killed_and_says_it_was_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy = policy();
+        let handle = crate::kills::begin("s-shell-cancel", "call_1", "System-Shell");
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_call_session("s-shell-cancel");
+        let ctx = ToolContext {
+            call: Some(&handle),
+            ..ctx
+        };
+        assert!(crate::kills::cancel("s-shell-cancel", "call_1"));
+
+        let outcome = SystemShellTool.invoke(
+            &json!({"command": command_sleep(), "timeout_ms": "inf"}),
+            &ctx,
+        );
+        let value: Value = serde_json::from_str(&outcome.text()).unwrap();
+        assert_eq!(value["killed_by_user"], json!(true), "{value}");
+        assert_eq!(
+            value["timed_out"],
+            json!(false),
+            "两件事不许合成一个：{value}"
+        );
+        assert!(
+            value["note"].as_str().unwrap().contains("被用户关闭"),
+            "{value}"
+        );
+        assert_eq!(value["exit_code"], Value::Null, "{value}");
+    }
+
+    /// 没登记调用（直接 invoke）时，`"inf"` 照样能用，且没有关闭可点。
+    #[cfg(unix)]
+    #[test]
+    fn without_a_registered_call_inf_still_means_no_alarm() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy = policy();
+        let outcome = SystemShellTool.invoke(
+            &json!({"command": "echo done", "timeout_ms": "inf"}),
+            &context(&policy, &workspace),
+        );
+        let value: Value = serde_json::from_str(&outcome.text()).unwrap();
+        assert_eq!(value["exit_code"], json!(0), "{value}");
+        assert_eq!(value["killed_by_user"], json!(false), "{value}");
+        assert_eq!(value["timed_out"], json!(false), "{value}");
     }
 }

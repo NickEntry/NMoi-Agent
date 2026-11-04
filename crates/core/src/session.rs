@@ -470,6 +470,9 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         frozen_base.images.push((user.id.clone(), images.to_vec()));
     }
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
+    // 手动关闭（0.15ak）按 `(会话, call_id)` 登记，所以这一轮得带上自己是谁。
+    let call_session = session.to_string();
+    ctx = ctx.with_call_session(&call_session);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -723,6 +726,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
     attach_images(&mut frozen_base, store, &history)?;
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
+    let call_session = session.to_string();
+    ctx = ctx.with_call_session(&call_session);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

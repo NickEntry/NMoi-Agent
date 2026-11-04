@@ -76,7 +76,7 @@ internal data class ToolCallArg(
  * `JSON.toString(NULL)`，结果就是这四个字母）。界面上真的会把它显示出来——
  * 思考块里那个 `null` 就是这么来的，不是模型说的。所以字符串字段一律走这里。
  */
-private fun JSONObject.text(key: String, fallback: String = ""): String {
+internal fun JSONObject.text(key: String, fallback: String = ""): String {
     if (isNull(key)) return fallback
     val raw = optString(key, fallback)
     return if (raw == "null") fallback else raw

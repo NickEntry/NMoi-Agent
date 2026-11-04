@@ -122,6 +122,12 @@ pub struct ToolContext<'a> {
     /// 与铁律①不冲突：这里的"现读"发生在**这一轮开始时**（`load_window` 一次），
     /// 而且真正落库时还会再读一次库——快照只用来解析目标与提前拦住明显的错。
     pub history: Option<&'a [Message]>,
+    /// 这一轮属于哪条会话。手动关闭要按 `(session, call_id)` 登记，
+    /// 而 `run_turn` 拿不到会话 id——它由调用方（`session.rs`）填进来。
+    pub call_session: Option<&'a str>,
+    /// 正在跑的这一条调用（0.15ak）。`None` = 不是从工具循环里进来的（直接 `invoke`），
+    /// 这种调用没有"关闭"可点，也不需要等标志。
+    pub call: Option<&'a crate::kills::CallHandle>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -132,7 +138,15 @@ impl<'a> ToolContext<'a> {
             declared: None,
             envir: None,
             history: None,
+            call_session: None,
+            call: None,
         }
+    }
+
+    /// 这一轮属于哪条会话（手动关闭的登记键）。
+    pub fn with_call_session(mut self, session: &'a str) -> Self {
+        self.call_session = Some(session);
+        self
     }
 
     /// 这一轮的会话历史（`edit_message` 解析目标消息用）。

@@ -170,6 +170,28 @@ internal fun ChatScreen(
     // 这一轮已经收到的正文/思考（0.15ah）。**只用于画**：一轮结束以落库结果为准，
     // 免得"流里画的和库里存的"两套东西对不上（铁律①）。
     var live by remember(sessionId) { mutableStateOf<LiveReply?>(null) }
+    // 关掉一条正在跑的工具调用（0.15ak）。**先改屏幕上那一行再发请求**：
+    // 点了之后立刻变「已请求关闭」，等 native 杀完、结果回来时整块被库里那份替掉。
+    // 反过来（等 native 回了再改）会出现"点了没反应"——而这条命令可能要跑几十秒。
+    val cancelCall: (String) -> Unit = { callId ->
+        live = live?.let { reply ->
+            reply.copy(
+                calls = reply.calls.map { call ->
+                    if (call.callId == callId) call.copy(cancelled = true) else call
+                },
+            )
+        }
+        val target = sessionId
+        if (target != null) {
+            scope.launch {
+                val result = NmoiFfi.toolCancel(target, callId)
+                // 点晚了一拍：那条调用已经结束了。说一句，别留一个永远转着的"已请求关闭"。
+                if (result.isSuccess && result.getOrNull()?.optBoolean("found") == false) {
+                    notice = "那条调用已经结束了"
+                }
+            }
+        }
+    }
     // 工具块点开的那一条（D243）：半屏弹窗，不在聊天页里就地展开。
     var toolSheet by remember(sessionId) { mutableStateOf<ChatUnit?>(null) }
     // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
@@ -412,6 +434,7 @@ internal fun ChatScreen(
                 reasoningLen = info.optInt("reasoning_len", 0),
                 text = info.optString("text", ""),
                 reasoning = info.optString("reasoning", ""),
+                calls = runningCallsOf(info),
             )
             when (val step = advanceLive(reply, poll, snapshot)) {
                 is LiveStep.Update -> {
@@ -1030,6 +1053,7 @@ internal fun ChatScreen(
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
                         onOpenTool = { unit -> toolSheet = unit },
+                        onCancelCall = cancelCall,
                         onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
@@ -1757,6 +1781,8 @@ private fun MessageArea(
     onToggleGroup: (String) -> Unit = {},
     /** 工具块点开：在**半屏弹窗**里看细节（用户 2026-11-04 定），不在聊天页里就地展开。 */
     onOpenTool: (ChatUnit) -> Unit = {},
+    /** 关掉一条正在跑的工具调用（0.15ak）。 */
+    onCancelCall: (String) -> Unit = {},
     /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
     onDismissCut: () -> Unit,
     selecting: Boolean,
@@ -1876,6 +1902,7 @@ private fun MessageArea(
                 showHeader = showHeader,
                 hideReasoning = row.hideReasoning,
                 onOpenTool = onOpenTool,
+                onCancelCall = onCancelCall,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 live = live,
@@ -1933,7 +1960,11 @@ private fun MessageArea(
         // 才在底部立一个占位——那个位置本来就是新消息要去的地方。
         if (streaming != null && regenTarget == null) {
             item(key = "live-assistant") {
-                LiveReplyRow(reply = streaming, onDismissCut = onDismissCut)
+                LiveReplyRow(
+                    reply = streaming,
+                    onDismissCut = onDismissCut,
+                    onCancelCall = onCancelCall,
+                )
             }
         }
     }
@@ -1949,7 +1980,11 @@ private fun MessageArea(
  * 3. 断在中途要**留着**并说清楚（它没落库），点一下才收掉。
  */
 @Composable
-private fun LiveReplyRow(reply: LiveReply, onDismissCut: () -> Unit) {
+private fun LiveReplyRow(
+    reply: LiveReply,
+    onDismissCut: () -> Unit,
+    onCancelCall: (String) -> Unit = {},
+) {
     val transition = rememberInfiniteTransition(label = "live")
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
@@ -1969,6 +2004,8 @@ private fun LiveReplyRow(reply: LiveReply, onDismissCut: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             )
         }
+        // 正在跑的工具调用（0.15ak）：一行一条 + 「关闭」。
+        RunningCallRows(calls = reply.calls, onCancel = onCancelCall)
         val note = when {
             reply.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里，点一下收掉）"
             reply.text.isBlank() && reply.reasoning.isBlank() -> "正在生成…"
@@ -2111,6 +2148,8 @@ private fun UnitBlock(
     hideReasoning: Boolean = false,
     /** 单独一条工具单元：点开也是弹窗，不是就地展开。 */
     onOpenTool: (ChatUnit) -> Unit = {},
+    /** 关掉一条正在跑的工具调用（0.15ak）。 */
+    onCancelCall: (String) -> Unit = {},
     maxBubble: Dp,
     gapAbove: Dp,
     /** 这一轮正在长的回复（就地渲染用，D227）。 */
@@ -2182,6 +2221,7 @@ private fun UnitBlock(
                             showHeader = false,
                             // 就地渲染（D227）：这一轮长在这条消息上。
                             live = live?.takeIf { message.id == regenTarget },
+                            onCancelCall = onCancelCall,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -2582,6 +2622,8 @@ private fun AssistantMessage(
     onVersion: (Long, String) -> Unit,
     /** 重试（0.15av）。`null` = 现在不能重试，按钮灰着。 */
     onRetry: (() -> Unit)? = null,
+    /** 关掉一条正在跑的工具调用（0.15ak）。 */
+    onCancelCall: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -2615,6 +2657,9 @@ private fun AssistantMessage(
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                 )
             }
+            // 正在跑的工具调用（0.15ak）：一行一条 + 「关闭」。这一段还没落库，
+            // 所以它画在正在生成的这块里，而不是等工具卡出现。
+            RunningCallRows(calls = live.calls, onCancel = onCancelCall)
             val note = when {
                 live.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里）"
                 live.text.isBlank() && live.reasoning.isBlank() -> "正在生成…"
@@ -4198,5 +4243,86 @@ private fun DialogChip(label: String, primary: Boolean = false, onClick: () -> U
             },
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
+    }
+}
+
+/**
+ * `turn_busy.calls` → 正在跑的那几条（0.15ak）。
+ *
+ * 空 id 直接丢掉：那种行点「关闭」什么也关不掉，画出来就是"点了没反应"。
+ */
+private fun runningCallsOf(info: JSONObject): List<RunningCall> {
+    val array = info.optJSONArray("calls") ?: return emptyList()
+    return buildList {
+        for (index in 0 until array.length()) {
+            val row = array.optJSONObject(index) ?: continue
+            val id = row.text("call_id")
+            if (id.isEmpty()) continue
+            add(
+                RunningCall(
+                    callId = id,
+                    name = row.text("name").ifBlank { "工具" },
+                    elapsedMs = row.optInt("elapsed_ms", 0),
+                ),
+            )
+        }
+    }
+}
+
+/** 跑了多久。毫秒级只在这一行的头一秒出现，之后按秒走——一直跳小数看着像在闪。 */
+private fun elapsedLabel(ms: Int): String = when {
+    ms < 1_000 -> "${ms} 毫秒"
+    ms < 60_000 -> "${ms / 1_000} 秒"
+    else -> "${ms / 60_000} 分 ${(ms % 60_000) / 1_000} 秒"
+}
+
+/**
+ * 正在跑的工具调用（0.15ak）：一行一条，右边一颗「关闭」。
+ *
+ * 为什么在这里而不是工具卡里：工具卡是**落库之后**才有的，而"正在跑"这一段还没落库
+ * （D229 那条"没有单条调用的实时输出通道"就是它）。所以它挂在正在生成的那一块上，
+ * 收尾后整块被库里那份替掉，这一行自然消失。
+ *
+ * 「关闭」是文字按钮不是图标：这个动作收不回来（命令会被杀），字比图形更该被读清楚。
+ * 热区 48：一行只有一句名字 + 一个动作，手指偏一点就点到名字上了。
+ */
+@Composable
+private fun RunningCallRows(calls: List<RunningCall>, onCancel: (String) -> Unit) {
+    if (calls.isEmpty()) return
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        calls.forEach { call ->
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "${call.name} · ${elapsedLabel(call.elapsedMs)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (call.cancelled) {
+                    // 已经点过了：换成一句状态，不再给第二颗按钮——再点一次没有任何新效果。
+                    Text(
+                        text = "已请求关闭",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                } else {
+                    Text(
+                        text = "关闭",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .clickable { onCancel(call.callId) }
+                            .padding(horizontal = 12.dp, vertical = 14.dp),
+                    )
+                }
+            }
+        }
     }
 }

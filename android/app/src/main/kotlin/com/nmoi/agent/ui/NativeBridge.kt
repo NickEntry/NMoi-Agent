@@ -121,6 +121,12 @@ internal object NativeBridge {
     /** 这个会话现在有没有一轮在跑（0.15c）。「正在生成…」靠它复核，不信页面里的缓存。 */
     external fun turnBusyJson(session: String): String
 
+    /**
+     * 关掉一条正在跑的工具调用（0.15ak）：`{"session","call_id"}` → `{"cancelled","found"}`。
+     * `found:false` = 已经结束了，不是错误。
+     */
+    external fun toolCancelJson(config: String): String
+
     /** 应用一份代理配置（`{"proxy": null}` = 关）。热句柄，下一次请求生效（D226）。 */
     external fun proxyApplyJson(config: String): String
 

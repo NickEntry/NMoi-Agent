@@ -92,6 +92,33 @@ pub extern "C" fn nmoi_tool_specs_json(workspace_handle: u64, read_only: i32) ->
     })
 }
 
+/// 关掉一条正在跑的工具调用（0.15ak / D246）。
+///
+/// 入参 `{"session": "...", "call_id": "..."}`，回 `{"cancelled": bool, "found": bool}`。
+///
+/// - `found:false` = 那条调用已经结束了。**不是错误**：用户点晚了一拍，
+///   界面上该写"已经结束了"，不该弹一条红字。
+/// - 只置标志，杀进程由等待循环那一侧做（超时与关闭在同一处，才分得清是谁停的）。
+/// - 行数/条数这类闸不在这里加：一次能关几条由调用方决定。
+#[no_mangle]
+pub extern "C" fn nmoi_tool_cancel_json(input: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let raw = read_str(input, "input")?;
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| crate::json::FfiError::new("bad_json", error.to_string()))?;
+        let session = value
+            .get("session")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::json::FfiError::new("bad_argument", "缺 session"))?;
+        let call_id = value
+            .get("call_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::json::FfiError::new("bad_argument", "缺 call_id"))?;
+        let found = nmoi_core::kills::cancel(session, call_id);
+        Ok(json!({ "cancelled": found, "found": found }))
+    })
+}
+
 /// 直接调一个工具。
 ///
 /// `arguments` 是**工具自己的 JSON**（比如 `{"path":"a.txt"}`），原样交给工具层。
@@ -119,4 +146,56 @@ pub extern "C" fn nmoi_tool_invoke_json(
         };
         Ok(outcome)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    fn read(pointer: *mut c_char) -> Value {
+        assert!(!pointer.is_null(), "返回数据的函数永不返回 null");
+        // SAFETY: 这些指针来自 `run_json` 的 `CString::into_raw`，读一次再还回去。
+        let text = unsafe { CStr::from_ptr(pointer) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { drop(CString::from_raw(pointer)) };
+        serde_json::from_str(&text).expect("必须是合法 JSON")
+    }
+
+    /// 关一条正在跑的调用：`found:true` + `cancelled:true`，且标志真的置上了。
+    #[test]
+    fn cancelling_a_running_call_sets_its_flag() {
+        let handle = nmoi_core::kills::begin("s-ffi-cancel", "call_1", "System-Shell");
+        let config = CString::new(r#"{"session":"s-ffi-cancel","call_id":"call_1"}"#).unwrap();
+        let value = read(nmoi_tool_cancel_json(config.as_ptr()));
+        assert_eq!(value["ok"], json!(true), "{value}");
+        assert_eq!(value["found"], json!(true), "{value}");
+        assert_eq!(value["cancelled"], json!(true), "{value}");
+        assert!(handle.cancelled(), "标志要真的置上，不能只回一句 true");
+    }
+
+    /// 没在跑：`found:false`，**仍然是 `ok:true`**。用户点晚了一拍不是错误。
+    #[test]
+    fn cancelling_something_that_already_finished_is_not_an_error() {
+        let config = CString::new(r#"{"session":"s-ffi-nobody","call_id":"call_9"}"#).unwrap();
+        let value = read(nmoi_tool_cancel_json(config.as_ptr()));
+        assert_eq!(value["ok"], json!(true), "{value}");
+        assert_eq!(value["found"], json!(false), "{value}");
+        assert_eq!(value["cancelled"], json!(false), "{value}");
+    }
+
+    #[test]
+    fn a_missing_call_id_is_named() {
+        let config = CString::new(r#"{"session":"s-ffi-nobody"}"#).unwrap();
+        let value = read(nmoi_tool_cancel_json(config.as_ptr()));
+        assert_eq!(value["ok"], json!(false), "{value}");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("call_id"),
+            "报错要点名缺的是哪一格：{value}"
+        );
+    }
 }

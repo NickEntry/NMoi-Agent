@@ -1030,10 +1030,30 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnBusyJson<'local>(
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.toolCancelJson(config)`：关掉一条正在跑的工具调用（0.15ak / D246）。
+///
+/// `config` = `{"session":"...","call_id":"..."}`。回 `{"cancelled":bool,"found":bool}`，
+/// 字段的权威解释在 `crate::tools::nmoi_tool_cancel_json` 的头上。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_toolCancelJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::tools::nmoi_tool_cancel_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 // ---------------------------------------------------------------------------
 // 发请求：重试 / 续话（0.15h / D185）
 // ---------------------------------------------------------------------------
-
 /// `NativeBridge.turnRegenJson(config)`：前缀重发（重试 / 续话）。**阻塞**，IO 线程上调。
 ///
 /// config 与 `turnRunJson` 是**同一份**（同一个 `parse_config`），多三个字段：

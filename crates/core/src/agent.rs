@@ -340,7 +340,19 @@ pub fn run_turn<T: Transport>(
             if cancel.is_cancelled() {
                 return Ok(stopped(report));
             }
-            let outcome = registry.invoke(&call.name, &call.arguments, ctx);
+            // 手动关闭（0.15ak）：先登记，界面才看得见"哪一条在跑"，也才有东西可关。
+            // 凭据活到结果回来为止——`Drop` 就是"它不在跑了"这件事本身。
+            let handle = ctx
+                .call_session
+                .map(|session| crate::kills::begin(session, &call.id, &call.name));
+            let outcome = {
+                let call_ctx = ToolContext {
+                    call: handle.as_ref(),
+                    ..*ctx
+                };
+                registry.invoke(&call.name, &call.arguments, &call_ctx)
+            };
+            drop(handle);
             let text = outcome.text();
             report.tool_calls.push(ToolRecord {
                 name: call.name.clone(),

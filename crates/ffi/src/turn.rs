@@ -1156,6 +1156,10 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
 ///
 /// 没在跑就是空操作：`{"cancelled":false,"running":false}`。
 /// `cancelled=true` 只表示"标志已经置上"，不代表模型已经停下——见 D58 那条代价。
+///
+/// **顺带把这一轮正在跑的工具调用一起置上**（0.15ak）：只停模型不停命令的话，
+/// 一条 `timeout_ms: "inf"` 的命令会在"用户已经按了停止"之后继续跑下去，
+/// 而屏幕上那一行还写着"正在跑"。`calls_cancelled` 是这条顺手做的事的计数。
 #[no_mangle]
 pub extern "C" fn nmoi_turn_cancel_json(session: *const c_char) -> *mut c_char {
     run_json(|| {
@@ -1164,7 +1168,13 @@ pub extern "C" fn nmoi_turn_cancel_json(session: *const c_char) -> *mut c_char {
         match table.get(session) {
             Some(flag) => {
                 flag.store(true, Ordering::SeqCst);
-                Ok(json!({ "cancelled": true, "running": true }))
+                drop(table);
+                let calls = nmoi_core::kills::cancel_all(session);
+                Ok(json!({
+                    "cancelled": true,
+                    "running": true,
+                    "calls_cancelled": calls,
+                }))
             }
             None => Ok(json!({ "cancelled": false, "running": false })),
         }
@@ -1208,6 +1218,22 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
         } else {
             (String::new(), 0, String::new(), 0, 0)
         };
+        // 正在跑的工具调用（0.15ak）：界面照这一份画"哪一条在跑、跑了多久"，
+        // 「关闭」按钮点的就是这里的 `call_id`。没在跑就一律空——同 D236 那条口径。
+        let calls: Vec<Value> = if running {
+            nmoi_core::kills::running(session)
+                .into_iter()
+                .map(|call| {
+                    json!({
+                        "call_id": call.call_id,
+                        "name": call.name,
+                        "elapsed_ms": call.elapsed_ms,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(json!({
             "session": session,
             "running": running,
@@ -1217,6 +1243,7 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
             "text_len": text_len,
             "reasoning": reasoning,
             "reasoning_len": reasoning_len,
+            "calls": calls,
         }))
     })
 }
@@ -1952,6 +1979,37 @@ mod tests {
         drop(registration);
         let again = read_json(nmoi_turn_busy_json(session.as_ptr()));
         assert_eq!(again["running"], json!(false), "{again}");
+    }
+
+    /// 正在跑的工具调用（0.15ak）：`turn_busy` 要能说清"哪一条在跑、跑了多久"，
+    /// 界面上的「关闭」才有东西可指。
+    ///
+    /// 没在跑时这一项必须是空数组——同 D236 那条口径：没有这一轮就没有"这一轮在调什么"。
+    #[test]
+    fn busy_lists_the_calls_that_are_running() {
+        let name = "018f0000-0000-7000-8000-0000000000cc";
+        let session = CString::new(name).unwrap();
+        let (registration, _flag) = Registration::new(name).unwrap();
+
+        let idle = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        assert_eq!(idle["calls"], json!([]), "{idle}");
+
+        let handle = nmoi_core::kills::begin(name, "call_1", "System-Shell");
+        let running = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        let calls = running["calls"].as_array().expect("calls 是数组");
+        assert_eq!(calls.len(), 1, "{running}");
+        assert_eq!(calls[0]["call_id"], json!("call_1"), "{running}");
+        assert_eq!(calls[0]["name"], json!("System-Shell"), "{running}");
+        assert!(calls[0]["elapsed_ms"].is_u64(), "{running}");
+
+        drop(handle);
+        let after = read_json(nmoi_turn_busy_json(session.as_ptr()));
+        assert_eq!(
+            after["calls"],
+            json!([]),
+            "结果回来了就不该再算在跑：{after}"
+        );
+        drop(registration);
     }
 
     #[test]

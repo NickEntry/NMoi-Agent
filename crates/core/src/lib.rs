@@ -22,6 +22,7 @@ pub mod gate;
 pub mod iconpack;
 pub mod icons;
 pub mod ids;
+pub mod kills;
 pub mod lorebook;
 pub mod message;
 pub mod model;

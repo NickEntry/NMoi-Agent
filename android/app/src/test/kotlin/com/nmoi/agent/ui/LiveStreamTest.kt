@@ -66,6 +66,7 @@ class LivePollTest {
         round: Int = 1,
         text: String = "",
         reasoning: String = "",
+        calls: List<RunningCall> = emptyList(),
     ) = BusySnapshot(
         running = running,
         round = round,
@@ -73,6 +74,7 @@ class LivePollTest {
         reasoningLen = reasoning.codePointCount(0, reasoning.length),
         text = text,
         reasoning = reasoning,
+        calls = calls,
     )
 
     private fun updated(step: LiveStep): LiveStep.Update {
@@ -141,5 +143,62 @@ class LivePollTest {
         val reply = LiveReply(text = "已经写好的", round = 1, running = true)
         val step = updated(advanceLive(reply, LivePoll(started = true), snapshot(running = true, round = 1, text = "")))
         assertEquals("已经写好的", step.reply.text)
+    }
+
+    @Test
+    fun `正在跑的工具调用-跟着快照来去`() {
+        val reply = LiveReply(round = 1, running = true)
+        val one = updated(
+            advanceLive(
+                reply,
+                LivePoll(started = true),
+                snapshot(running = true, calls = listOf(RunningCall("call_1", "System-Shell", 1200))),
+            ),
+        )
+        assertEquals(1, one.reply.calls.size)
+        assertEquals("System-Shell", one.reply.calls.first().name)
+
+        // 结果回来：native 不再报这一条，屏幕上那一行也要跟着消失。
+        val gone = updated(advanceLive(one.reply, one.poll, snapshot(running = true)))
+        assertTrue(gone.reply.calls.isEmpty())
+    }
+
+    @Test
+    fun `已请求关闭-跨快照保住`() {
+        // 点了「关闭」之后 native 还会把这一条报上几拍（进程还没死）。
+        // 这几拍里按钮不能闪回可点状态——用户会以为没点上，再点一次。
+        val asked = LiveReply(
+            round = 1,
+            running = true,
+            calls = listOf(RunningCall("call_1", "System-Shell", 1200, cancelled = true)),
+        )
+        val step = updated(
+            advanceLive(
+                asked,
+                LivePoll(started = true),
+                snapshot(running = true, calls = listOf(RunningCall("call_1", "System-Shell", 1400))),
+            ),
+        )
+        assertTrue(step.reply.calls.first().cancelled)
+        // 时间跟着 native 走：它是"跑了多久"，不是点下去那一刻冻住的值。
+        assertEquals(1400, step.reply.calls.first().elapsedMs)
+    }
+
+    @Test
+    fun `工具行只认这一拍的快照-不拿上一拍的顶上`() {
+        val reply = LiveReply(
+            round = 1,
+            running = true,
+            calls = listOf(RunningCall("call_1", "read_file", 300)),
+        )
+        val step = updated(
+            advanceLive(
+                reply,
+                LivePoll(started = true),
+                snapshot(running = true, round = 2, calls = listOf(RunningCall("call_2", "write_file", 80))),
+            ),
+        )
+        assertEquals(1, step.reply.calls.size)
+        assertEquals("call_2", step.reply.calls.first().callId)
     }
 }

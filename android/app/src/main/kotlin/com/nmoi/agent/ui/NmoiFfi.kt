@@ -214,6 +214,19 @@ internal object NmoiFfi {
         call("turn_cancel") { NativeBridge.turnCancelJson(session) }
 
     /**
+     * 关掉一条正在跑的工具调用（0.15ak）。
+     *
+     * 只置标志，杀进程由 native 的等待循环做（超时与关闭在同一处，才分得清是谁停的）。
+     * `found:false` = 那条调用已经结束了，**不是失败**——界面据此写"已经结束了"。
+     */
+    suspend fun toolCancel(session: String, callId: String): Result<JSONObject> =
+        call("tool_cancel") {
+            NativeBridge.toolCancelJson(
+                JSONObject().put("session", session).put("call_id", callId).toString(),
+            )
+        }
+
+    /**
      * 前缀重发：重试 / 续话（0.15h / D185）。**阻塞**到模型收尾，和 [turnRun] 一样在 IO 上跑。
      *
      * `up_to` / `target` 由调用方按"段内第几条"算好再传——这一层不替它算，
