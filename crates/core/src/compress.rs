@@ -957,7 +957,7 @@ impl CompressionJob {
         let mut dropped = 0usize;
         for unit in &self.above {
             for message in &unit.messages {
-                if message.content.trim().is_empty() {
+                if message.content().trim().is_empty() {
                     continue;
                 }
                 total += 1;
@@ -989,7 +989,7 @@ impl CompressionJob {
 
     fn archive_entry(&self, message: &Message, turn: u32, now: i64) -> ArchiveEntry {
         ArchiveEntry::capture(
-            &message.content,
+            &message.content(),
             message.source,
             Origin::new(self.session, message.id.clone(), turn),
             message.tokens,
@@ -1014,7 +1014,7 @@ impl CompressionJob {
         for (index, unit) in self.above.iter().enumerate() {
             for message in &unit.messages {
                 messages_above += 1;
-                if message.content.trim().is_empty() {
+                if message.content().trim().is_empty() {
                     continue;
                 }
                 let entry = self.archive_entry(message, index as u32 + 1, now);
@@ -1358,7 +1358,7 @@ mod tests {
         // 注入消息：来源是运行时指令，内容是注入份
         let injection = outcome.summary_injection(MessageId::new(session, 5), LogicalClock::new(5));
         assert_eq!(injection.source, SourceTag::InstructionInjection);
-        assert_eq!(injection.content, outcome.injected);
+        assert_eq!(injection.content(), outcome.injected);
     }
 
     #[test]

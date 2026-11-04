@@ -134,25 +134,24 @@ impl Storage {
             for op in list {
                 match (op.block, op.after.as_deref()) {
                     (BlockSelector::Output, Some(text)) => {
-                        message.content = text.to_string();
+                        message.set_text(text);
                         if op.red {
                             red = Some(text.to_string());
                         }
                     }
                     (BlockSelector::Thinking, Some(text)) => {
-                        message.reasoning = Some(text.to_string());
+                        message.set_reasoning(Some(text.to_string()));
                     }
-                    (BlockSelector::Thinking, None) => message.reasoning = None,
+                    (BlockSelector::Thinking, None) => message.set_reasoning(None),
                     (BlockSelector::ToolCall { index }, Some(text)) => {
-                        let call = message.tool_calls.get_mut(index).ok_or_else(|| {
-                            StorageError::Inconsistent(format!(
+                        if !message.set_tool_argument(index, text) {
+                            return Err(StorageError::Inconsistent(format!(
                                 "消息 {id} 没有第 {index} 个工具调用"
-                            ))
-                        })?;
-                        call.arguments = text.to_string();
+                            )));
+                        }
                     }
                     (BlockSelector::ToolResult { .. }, Some(text)) => {
-                        message.content = text.to_string();
+                        message.set_text(text);
                     }
                     (_, None) => {
                         return Err(StorageError::Inconsistent(format!(
@@ -187,15 +186,15 @@ impl Storage {
                 )?;
             }
 
-            let calls = serde_json::to_string(&message.tool_calls)
+            let calls = serde_json::to_string(&message.outgoing_calls())
                 .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
             let changed = tx.execute(
                 "UPDATE messages
                  SET content = ?1, reasoning = ?2, tokens = ?3, revision = ?4, tool_calls = ?5
                  WHERE id = ?6 AND conv_id = ?7",
                 params![
-                    message.content,
-                    message.reasoning,
+                    message.content(),
+                    message.reasoning(),
                     message.tokens,
                     message.revision,
                     calls,

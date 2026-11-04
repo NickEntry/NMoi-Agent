@@ -53,7 +53,7 @@ fn shown_content(storage: &Storage, session: SessionId, message: &MessageId) -> 
         .into_iter()
         .flat_map(|unit| unit.messages)
         .find(|m| &m.id == message)
-        .map(|m| m.content)
+        .map(|m| m.content())
         .expect("消息不见了")
 }
 
@@ -596,7 +596,7 @@ fn a_version_without_tooledit_has_no_red_blue_state() {
 /// 思考跟着版本走（D250）。
 ///
 /// 2026-11-04 真机：重试之后正文换成了新的 142 字，上面那块还写着「深度思考 · 1373 字」——
-/// 因为版本只存正文，思考留在 `messages.reasoning` 上没动。切版本要连思考一起切。
+/// 因为版本只存正文，思考留在 `messages.reasoning()` 上没动。切版本要连思考一起切。
 fn shown_reasoning(storage: &Storage, session: SessionId, message: &MessageId) -> Option<String> {
     storage
         .load_units(session)
@@ -604,7 +604,7 @@ fn shown_reasoning(storage: &Storage, session: SessionId, message: &MessageId) -
         .into_iter()
         .flat_map(|unit| unit.messages)
         .find(|m| &m.id == message)
-        .and_then(|m| m.reasoning.clone())
+        .and_then(|m| m.reasoning().clone())
 }
 
 #[test]

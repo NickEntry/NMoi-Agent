@@ -1,7 +1,7 @@
 //! 断块修复（P4.1 / D66 / D67）。
 //!
 //! 问题长这样：流断在半路，库里留下一个"调用发出去了、结果没回来"的工具单元。
-//! 下一次把历史发给模型时，上游直接 400（`assistant.tool_calls` 有 id、却没有对应的 tool 消息），
+//! 下一次把历史发给模型时，上游直接 400（`assistant.tool_calls()` 有 id、却没有对应的 tool 消息），
 //! 于是这个会话再也续不下去。
 //!
 //! 解法不是删历史，是**在构造请求时把这种单元翻译成一段文字块**：
@@ -138,7 +138,7 @@ pub fn diagnose(unit: &AtomicUnit) -> Option<BrokenBlock> {
         let calls: Vec<String> = unit
             .messages
             .iter()
-            .flat_map(|message| message.tool_calls.iter())
+            .flat_map(|message| message.outgoing_calls())
             .map(|call| format!("{}({})", call.name, call.arguments))
             .collect();
         // 参数不是合法 JSON 的，说"格式错误"更准确：用户看到这两个词反应不一样。
@@ -163,8 +163,8 @@ pub fn diagnose(unit: &AtomicUnit) -> Option<BrokenBlock> {
 
     // 2. 思考被截断：有思考、没正文、标了 incomplete。
     for message in &unit.messages {
-        if message.incomplete && message.content.trim().is_empty() {
-            if let Some(reasoning) = message.reasoning.as_deref() {
+        if message.incomplete && message.content().trim().is_empty() {
+            if let Some(reasoning) = message.reasoning().as_deref() {
                 if !reasoning.trim().is_empty() {
                     return Some(BrokenBlock {
                         id,
@@ -314,7 +314,7 @@ mod tests {
             1_000,
             LogicalClock::new(1),
         );
-        message.reasoning = Some("让我先看看这个文件……".to_string());
+        message.set_reasoning(Some("让我先看看这个文件……".to_string()));
         message.incomplete = true;
         let unit = AtomicUnit::turn(message).unwrap();
         let block = diagnose(&unit).unwrap();
@@ -330,7 +330,7 @@ mod tests {
         assert!(diagnose(&healthy).is_none());
         let history = normalize(std::slice::from_ref(&healthy));
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "在吗");
+        assert_eq!(history[0].content(), "在吗");
         assert!(!history
             .iter()
             .any(|message| message.source == SourceTag::BrokenBlock));
@@ -350,16 +350,24 @@ mod tests {
         assert_eq!(tail.role, Role::Assistant);
         assert_eq!(tail.source, SourceTag::BrokenBlock);
         assert!(
-            tail.tool_calls.is_empty(),
+            tail.tool_calls().is_empty(),
             "这是修复的全部意义：请求里不能再出现没有结果的 tool_calls"
         );
-        let head: String = tail.content.chars().take(ID_DIGITS).collect();
+        let head: String = tail.content().chars().take(ID_DIGITS).collect();
         assert!(
             head.chars().all(|ch| ch.is_ascii_digit()),
             "声明以 13 位数字 ID 开头：{head}"
         );
-        assert!(tail.content.contains("错误工具调用块"), "{}", tail.content);
-        assert!(tail.content.contains("没等到工具结果"), "{}", tail.content);
+        assert!(
+            tail.content().contains("错误工具调用块"),
+            "{}",
+            tail.content()
+        );
+        assert!(
+            tail.content().contains("没等到工具结果"),
+            "{}",
+            tail.content()
+        );
     }
 
     #[test]

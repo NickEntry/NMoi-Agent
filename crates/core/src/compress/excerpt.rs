@@ -34,8 +34,8 @@ pub fn pick(units: &[AtomicUnit]) -> Vec<Message> {
     let candidates: Vec<&Message> = units
         .iter()
         .flat_map(|unit| unit.messages.iter())
-        .filter(|message| !message.content.trim().is_empty())
-        .filter(|message| message.role != Role::Tool && message.tool_calls.is_empty())
+        .filter(|message| !message.content().trim().is_empty())
+        .filter(|message| message.role != Role::Tool && message.tool_calls().is_empty())
         .collect();
     if candidates.is_empty() {
         return Vec::new();
@@ -54,7 +54,7 @@ pub fn pick(units: &[AtomicUnit]) -> Vec<Message> {
             if message.role != want {
                 continue;
             }
-            let cost = estimate_tokens(&message.content);
+            let cost = estimate_tokens(&message.content());
             if cost <= budget {
                 found = Some((index, cost));
             }
@@ -89,7 +89,7 @@ pub fn render(messages: &[Message]) -> Option<String> {
         };
         out.push_str(who);
         out.push('：');
-        out.push_str(message.content.trim());
+        out.push_str(message.content().trim());
         out.push('\n');
         lines += 1;
     }
@@ -194,9 +194,9 @@ mod tests {
         let picked = pick(&b.units);
         assert_eq!(picked.len(), 3);
         // 期望：倒数第三条 assistant、最后一条 user、最后一条 assistant
-        assert_eq!(picked[0].content, "那就先坐着。");
-        assert_eq!(picked[1].content, "周六有空吗？");
-        assert_eq!(picked[2].content, "有。");
+        assert_eq!(picked[0].content(), "那就先坐着。");
+        assert_eq!(picked[1].content(), "周六有空吗？");
+        assert_eq!(picked[2].content(), "有。");
         assert!(picked[0].id.seq() < picked[1].id.seq());
         assert!(picked[1].id.seq() < picked[2].id.seq());
     }
@@ -211,7 +211,7 @@ mod tests {
                 .flat_map(|u| u.messages.iter())
                 .find(|m| m.id == message.id)
                 .expect("摘录必须来自窗口里的同一条消息");
-            assert_eq!(message.content, source.content);
+            assert_eq!(message.content(), source.content());
         }
     }
 
@@ -223,8 +223,8 @@ mod tests {
         b.assistant("查完了。");
         let picked = pick(&b.units);
         assert!(picked.iter().all(|m| m.role != Role::Tool));
-        assert!(picked.iter().all(|m| m.tool_calls.is_empty()));
-        assert_eq!(picked.last().unwrap().content, "查完了。");
+        assert!(picked.iter().all(|m| m.tool_calls().is_empty()));
+        assert_eq!(picked.last().unwrap().content(), "查完了。");
     }
 
     #[test]
@@ -265,8 +265,8 @@ mod tests {
         after.assistant("有。");
         let second = pick(&after.units);
         assert_eq!(second.len(), 2);
-        let old: Vec<String> = first.iter().map(|m| m.content.clone()).collect();
-        let new: Vec<String> = second.iter().map(|m| m.content.clone()).collect();
+        let old: Vec<String> = first.iter().map(|m| m.content().clone()).collect();
+        let new: Vec<String> = second.iter().map(|m| m.content().clone()).collect();
         assert!(!new.contains(&"那就先坐着。".to_string()));
         assert!(new.iter().all(|t| old.contains(t) || t == "有。"));
     }

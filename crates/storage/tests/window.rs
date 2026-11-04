@@ -92,13 +92,13 @@ fn compression_divider_hides_the_above_units_and_brings_the_summary_back() {
 
     let window = storage.load_window(session).unwrap();
     assert_eq!(window.units.len(), 2, "线上两单元不该再进窗口");
-    assert_eq!(window.units[0].messages[0].content, "第二句");
+    assert_eq!(window.units[0].messages[0].content(), "第二句");
     assert_eq!(window.summary.as_deref(), Some(summary));
     assert!(window.is_compacted());
     assert_eq!(window.summary_tokens(), summary.chars().count() as u64);
     // 注入消息排在窗口最前面，且不是历史里的一条（seq = 0）。
     let injection = window.summary_message(session, 1_700_000_000_700).unwrap();
-    assert_eq!(injection.content, summary);
+    assert_eq!(injection.content(), summary);
     assert_eq!(injection.role, Role::User);
     assert_eq!(injection.source, SourceTag::InstructionInjection);
     assert_eq!(injection.id.seq(), 0);
@@ -125,8 +125,8 @@ fn units_with_summary_puts_the_previous_summary_first() {
     let window = storage.load_window(session).unwrap();
     let input = window.units_with_summary(session, 1_700_000_000_700);
     assert_eq!(input.len(), 3, "摘要 + 线下两个单元");
-    assert_eq!(input[0].messages[0].content, summary);
-    assert_eq!(input[1].messages[0].content, "第二句");
+    assert_eq!(input[0].messages[0].content(), summary);
+    assert_eq!(input[1].messages[0].content(), "第二句");
 }
 
 /// 手动画的线也把上面挡在窗口外，只是没有摘要可注入。

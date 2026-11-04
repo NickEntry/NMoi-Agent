@@ -1008,7 +1008,7 @@ fn ensure_representable(message: &Message) -> Result<(), ChatError> {
             message.id
         )));
     }
-    if !message.tool_calls.is_empty() && message.role != Role::Assistant {
+    if !message.tool_calls().is_empty() && message.role != Role::Assistant {
         return Err(ChatError::Unsupported(format!(
             "只有助手消息能带 tool_calls，{} 是 {}",
             message.id, message.role
@@ -1110,11 +1110,11 @@ fn openai_message(
         return Ok(json!({
             "role": "tool",
             "tool_call_id": id,
-            "content": message.content,
+            "content": message.content(),
         }));
     }
 
-    let mut item = json!({"role": message.role.as_str(), "content": message.content});
+    let mut item = json!({"role": message.role.as_str(), "content": message.content()});
     // 图片只在用户消息上发：助手/工具消息带图是另一套协议（编辑回传），现在不做。
     if !images.is_empty() {
         if message.role != Role::User {
@@ -1123,7 +1123,7 @@ fn openai_message(
                 message.id, message.role
             )));
         }
-        let mut parts = vec![json!({"type": "text", "text": message.content})];
+        let mut parts = vec![json!({"type": "text", "text": message.content()})];
         for image in images {
             parts.push(json!({
                 "type": "image_url",
@@ -1134,13 +1134,13 @@ fn openai_message(
     }
     if message.role == Role::Assistant {
         if replay == ReasoningReplay::Always {
-            if let Some(reasoning) = &message.reasoning {
+            if let Some(reasoning) = &message.reasoning() {
                 item["reasoning_content"] = Value::String(reasoning.clone());
             }
         }
-        if !message.tool_calls.is_empty() {
+        if !message.tool_calls().is_empty() {
             let calls: Vec<Value> = message
-                .tool_calls
+                .outgoing_calls()
                 .iter()
                 .map(|call| {
                     json!({
@@ -1168,20 +1168,20 @@ fn responses_body(request: &ChatRequest) -> Result<Value, ChatError> {
     for message in &request.messages {
         ensure_representable(message)?;
         match message.role {
-            Role::System => push_paragraph(&mut instructions, &message.content),
+            Role::System => push_paragraph(&mut instructions, &message.content()),
             Role::User => input.push(json!({
                 "role": "user",
-                "content": [{"type": "input_text", "text": message.content}],
+                "content": [{"type": "input_text", "text": message.content()}],
             })),
             Role::Assistant => {
-                if !message.content.is_empty() {
+                if !message.content().is_empty() {
                     input.push(json!({
                         "role": "assistant",
-                        "content": [{"type": "output_text", "text": message.content}],
+                        "content": [{"type": "output_text", "text": message.content()}],
                     }));
                 }
                 // 工具调用在这里是**顶层 item**，不是 message 里的字段
-                for call in &message.tool_calls {
+                for call in &message.outgoing_calls() {
                     input.push(json!({
                         "type": "function_call",
                         "call_id": call.id,
@@ -1195,7 +1195,7 @@ fn responses_body(request: &ChatRequest) -> Result<Value, ChatError> {
                 input.push(json!({
                     "type": "function_call_output",
                     "call_id": id,
-                    "output": message.content,
+                    "output": message.content(),
                 }));
             }
         }
@@ -1244,18 +1244,18 @@ fn anthropic_body(request: &ChatRequest) -> Result<Value, ChatError> {
     for message in &request.messages {
         ensure_representable(message)?;
         match message.role {
-            Role::System => push_paragraph(&mut system, &message.content),
+            Role::System => push_paragraph(&mut system, &message.content()),
             Role::User => push_anthropic_blocks(
                 &mut messages,
                 "user",
-                vec![json!({"type": "text", "text": message.content})],
+                vec![json!({"type": "text", "text": message.content()})],
             ),
             Role::Assistant => {
                 let mut blocks = Vec::new();
-                if !message.content.is_empty() {
-                    blocks.push(json!({"type": "text", "text": message.content}));
+                if !message.content().is_empty() {
+                    blocks.push(json!({"type": "text", "text": message.content()}));
                 }
-                for call in &message.tool_calls {
+                for call in &message.outgoing_calls() {
                     // `input` 在这边必须是**对象**
                     blocks.push(json!({
                         "type": "tool_use",
@@ -1281,7 +1281,7 @@ fn anthropic_body(request: &ChatRequest) -> Result<Value, ChatError> {
                     vec![json!({
                         "type": "tool_result",
                         "tool_use_id": id,
-                        "content": message.content,
+                        "content": message.content(),
                     })],
                 );
             }
@@ -1351,10 +1351,13 @@ fn gemini_body(request: &ChatRequest) -> Result<Value, ChatError> {
     // Gemini 的 functionResponse 只认**函数名**，不认 call id。
     // 结果消息里存的是 id，所以先从历史里把 id→name 建起来。
     let mut names: HashMap<&str, &str> = HashMap::new();
-    for message in &request.messages {
-        for call in &message.tool_calls {
-            names.insert(call.id.as_str(), call.name.as_str());
-        }
+    let all_calls: Vec<crate::message::OutgoingToolCall> = request
+        .messages
+        .iter()
+        .flat_map(|message| message.outgoing_calls())
+        .collect();
+    for call in &all_calls {
+        names.insert(call.id.as_str(), call.name.as_str());
     }
 
     let mut contents: Vec<Value> = Vec::new();
@@ -1362,18 +1365,18 @@ fn gemini_body(request: &ChatRequest) -> Result<Value, ChatError> {
     for message in &request.messages {
         ensure_representable(message)?;
         match message.role {
-            Role::System => push_paragraph(&mut system, &message.content),
+            Role::System => push_paragraph(&mut system, &message.content()),
             Role::User => push_gemini_parts(
                 &mut contents,
                 "user",
-                vec![json!({"text": message.content})],
+                vec![json!({"text": message.content()})],
             ),
             Role::Assistant => {
                 let mut parts = Vec::new();
-                if !message.content.is_empty() {
-                    parts.push(json!({"text": message.content}));
+                if !message.content().is_empty() {
+                    parts.push(json!({"text": message.content()}));
                 }
-                for call in &message.tool_calls {
+                for call in &message.outgoing_calls() {
                     parts.push(json!({
                         "functionCall": {"name": call.name, "args": tool_input(call)?},
                     }));
@@ -1448,10 +1451,10 @@ fn push_gemini_parts(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
 /// `functionResponse.response` 必须是**对象**。工具结果是字符串时：
 /// 能解析成对象就用它，否则包一层 `{"result": ...}`——直接塞字符串会被上游拒。
 fn tool_response(message: &Message) -> Value {
-    match serde_json::from_str::<Value>(&message.content) {
+    match serde_json::from_str::<Value>(&message.content()) {
         Ok(value @ Value::Object(_)) => value,
         Ok(other) => json!({"result": other}),
-        Err(_) => json!({"result": message.content}),
+        Err(_) => json!({"result": message.content()}),
     }
 }
 

@@ -926,11 +926,11 @@ fn turn_json(turn: &SessionTurn, presets: &Value) -> Value {
         "assistant": turn.assistant.as_ref().map(|message| json!({
             "id": message.id.to_string(),
             "seq": message.id.seq(),
-            "content": message.content,
+            "content": message.content(),
             "incomplete": message.incomplete,
             "tokens": message.tokens,
             // 思考也带出来（D175）：界面不必为了"这一轮有没有思考"再读一次库。
-            "reasoning": message.reasoning,
+            "reasoning": message.reasoning(),
         })),
         "units": turn.units.iter().map(|unit| unit.to_string()).collect::<Vec<_>>(),
         // 模型改消息（D177 / 0.14y）：已经落库的那几块。界面靠它刷新消息卡、

@@ -748,7 +748,7 @@ impl Storage {
         }
 
         for message in &unit.messages {
-            let calls = serde_json::to_string(&message.tool_calls)
+            let calls = serde_json::to_string(&message.outgoing_calls())
                 .map_err(|e| StorageError::Inconsistent(e.to_string()))?;
             tx.execute(
                 "INSERT INTO messages(
@@ -780,8 +780,8 @@ impl Storage {
                     message.id.seq() as i64,
                     message.role.as_str(),
                     message.source.as_str(),
-                    message.content,
-                    message.reasoning,
+                    message.content(),
+                    message.reasoning(),
                     message.form.to_string(),
                     message.tokens,
                     message.created_at,
@@ -1023,7 +1023,7 @@ impl Storage {
             .iter()
             .find(|message| message.id == outcome.message_id)
             .ok_or_else(|| StorageError::Inconsistent("编辑后的消息不在单元里".into()))?;
-        let calls = serde_json::to_string(&message.tool_calls)
+        let calls = serde_json::to_string(&message.outgoing_calls())
             .map_err(|e| StorageError::Inconsistent(e.to_string()))?;
 
         let tx = self.conn.transaction()?;
@@ -1032,8 +1032,8 @@ impl Storage {
              SET content = ?1, reasoning = ?2, tokens = ?3, revision = ?4, tool_calls = ?5
              WHERE id = ?6 AND conv_id = ?7",
             params![
-                message.content,
-                message.reasoning,
+                message.content(),
+                message.reasoning(),
                 message.tokens,
                 message.revision,
                 calls,
@@ -1416,26 +1416,30 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     let tool_calls: Vec<OutgoingToolCall> =
         serde_json::from_str(&calls_text).map_err(|_| parse_err("tool_calls", calls_text))?;
 
-    Ok(Message {
+    // 列 → parts（D255）：正文、思考、工具调用各成一块，顺序与界面上从上到下一致。
+    let content: String = row.get(7)?;
+    let reasoning: Option<String> = row.get(8)?;
+    let mut message = Message::text(
         id,
-        unit_id,
         role,
         source,
-        content: row.get(7)?,
-        reasoning: row.get(8)?,
-        form,
-        tokens: row.get::<_, i64>(10)? as u32,
-        created_at: row.get(11)?,
-        logical_clock: LogicalClock::new(row.get::<_, i64>(12)? as u64),
-        archived_ref,
-        protected: row.get::<_, i64>(14)? != 0,
-        pinned: row.get::<_, i64>(15)? != 0,
-        locked: row.get::<_, i64>(16)? != 0,
-        revision: row.get::<_, i64>(17)? as u32,
-        tool_calls,
-        tool_call_id: row.get(19)?,
-        incomplete: row.get::<_, i64>(20)? != 0,
-    })
+        content,
+        row.get::<_, i64>(10)? as u32,
+        row.get(11)?,
+        LogicalClock::new(row.get::<_, i64>(12)? as u64),
+    )
+    .with_unit(unit_id);
+    message.set_reasoning(reasoning);
+    message.set_tool_calls(tool_calls);
+    message.form = form;
+    message.archived_ref = archived_ref;
+    message.protected = row.get::<_, i64>(14)? != 0;
+    message.pinned = row.get::<_, i64>(15)? != 0;
+    message.locked = row.get::<_, i64>(16)? != 0;
+    message.revision = row.get::<_, i64>(17)? as u32;
+    message.tool_call_id = row.get(19)?;
+    message.incomplete = row.get::<_, i64>(20)? != 0;
+    Ok(message)
 }
 
 fn row_to_archive(row: &rusqlite::Row<'_>) -> Result<ArchiveEntry, rusqlite::Error> {

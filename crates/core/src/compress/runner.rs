@@ -84,24 +84,24 @@ pub fn material(job: &CompressionJob) -> String {
             messages += 1;
             tokens += u64::from(message.tokens);
             let seq = message.id.seq();
-            if !message.tool_calls.is_empty() {
+            if !message.tool_calls().is_empty() {
                 let calls: Vec<String> = message
-                    .tool_calls
+                    .tool_calls()
                     .iter()
                     .map(|call| format!("{}({})", call.name, call.arguments))
                     .collect();
                 out.push_str(&format!("[{seq}] assistant → 工具 {}\n", calls.join("; ")));
             }
-            if let Some(reasoning) = message.reasoning.as_deref() {
+            if let Some(reasoning) = message.reasoning().as_deref() {
                 if !reasoning.trim().is_empty() {
                     out.push_str(&format!("[{seq}] 思考（可能有用，可压缩）: {reasoning}\n"));
                 }
             }
-            if !message.content.trim().is_empty() {
+            if !message.content().trim().is_empty() {
                 out.push_str(&format!(
                     "[{seq}] {}: {}\n",
                     message.role.as_str(),
-                    message.content
+                    message.content()
                 ));
             }
         }
@@ -220,7 +220,7 @@ pub fn drive<T: Transport, S: ArchiveStore>(
             now,
             LogicalClock::new(seq),
         );
-        call_message.content = text.clone();
+        call_message.set_text(text.clone());
         messages.push(call_message);
         seq += 1;
 

@@ -10,7 +10,7 @@
 //! - 收尾标签重复：`</think></think>`（有的还带三个）；
 //! - 空块：`<think></think>`，中间一个字都没有。
 //!
-//! 这一层只做**一件事**：把正文里的思考段切出来，交给 `TurnReport.reasoning`。
+//! 这一层只做**一件事**：把正文里的思考段切出来，交给 `TurnReport.reasoning()`。
 //! 认的标签按常见程度排：`think`（DeepSeek / Qwen 系）、`thinking`、`reasoning`。
 //! 认不出的标签原样留在正文里——宁可显示一段怪字，也不要悄悄吞掉用户看得见的内容。
 

@@ -190,6 +190,78 @@ pub struct ImagePart {
     pub data: String,
 }
 
+/// 消息里的一块（D255）。
+///
+/// 库里存的就是这一串 parts；`Message::text()` / `reasoning()` / `tool_calls()`
+/// 都是从它投影出来的，不再是另一份数据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Part {
+    /// 正文。
+    Text { id: String, text: String },
+    /// 思考。
+    Reasoning { id: String, text: String },
+    /// 一次工具调用（参数原文）。
+    Tool(ToolPart),
+    /// 一张随消息发出去的图：只引用附件表里的那一行，不重复存字节（D208）。
+    Image {
+        id: String,
+        attachment: String,
+        mime: String,
+        size: u64,
+    },
+    /// 断块 / 声明行（P4.1）。
+    Notice {
+        id: String,
+        code: String,
+        text: String,
+    },
+}
+
+impl Part {
+    /// 这一块在消息里的 id（`p1`、`p2`…）。稳定、不复用。
+    pub fn id(&self) -> &str {
+        match self {
+            Part::Text { id, .. }
+            | Part::Reasoning { id, .. }
+            | Part::Image { id, .. }
+            | Part::Notice { id, .. } => id,
+            Part::Tool(tool) => &tool.part,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Part::Text { .. } => "text",
+            Part::Reasoning { .. } => "reasoning",
+            Part::Tool(_) => "tool",
+            Part::Image { .. } => "image",
+            Part::Notice { .. } => "notice",
+        }
+    }
+
+    /// 这一块的文字（工具块没有：它的文字在 `arguments` 与结果里）。
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Part::Text { text, .. } | Part::Reasoning { text, .. } | Part::Notice { text, .. } => {
+                Some(text)
+            }
+            Part::Tool(_) | Part::Image { .. } => None,
+        }
+    }
+}
+
+/// 一次工具调用那一块。
+///
+/// `part` 与 `call_id` 是两样东西：前者是"这条消息里的第几块"，后者是模型给的调用 id
+/// （工具结果按它配对）。混成一个字段的话，改一次调用 id 会把 part 的身份也改掉。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPart {
+    pub part: String,
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
 /// 一条消息。归属某个原子单元，`seq` 在会话内递增。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
@@ -197,8 +269,8 @@ pub struct Message {
     pub unit_id: UnitId,
     pub role: Role,
     pub source: SourceTag,
-    pub content: String,
-    pub reasoning: Option<String>,
+    /// 这一条的全部块，按顺序。正文、思考、工具调用都在这里。
+    parts: Vec<Part>,
     pub form: ContentForm,
     pub tokens: u32,
     pub created_at: i64,
@@ -213,17 +285,14 @@ pub struct Message {
     /// 编辑版本号。每次内容 / 思考 / 工具块被改写加一，用于审计与同步冲突判断。
     pub revision: u32,
     /// 这一轮**没说完整**：断流、被掐断、用户点了停止（D21）。
-    ///
-    /// 为什么要有这个字段：断流的回复和正常回复在数据里长得一模一样，
-    /// 事后谁也看不出它少了半句。`#[serde(default)]` 是为了让没有这个字段的旧数据还能读。
     #[serde(default)]
     pub incomplete: bool,
-    pub tool_calls: Vec<OutgoingToolCall>,
+    /// 工具结果指向哪一次调用。只有 `role = tool` 上有值。
     pub tool_call_id: Option<String>,
 }
 
 impl Message {
-    /// 构造一条全文消息（F1）。
+    /// 构造一条全文消息（F1）。正文为空时**不造空块**——`validate` 会拒。
     pub fn text(
         id: MessageId,
         role: Role,
@@ -234,13 +303,20 @@ impl Message {
         logical_clock: LogicalClock,
     ) -> Self {
         let unit_id = id.unit();
+        let content = content.into();
+        let mut parts = Vec::new();
+        if !content.is_empty() {
+            parts.push(Part::Text {
+                id: "p1".to_string(),
+                text: content,
+            });
+        }
         Self {
             id,
             unit_id,
             role,
             source,
-            content: content.into(),
-            reasoning: None,
+            parts,
             form: ContentForm::Full,
             tokens,
             created_at,
@@ -251,7 +327,6 @@ impl Message {
             locked: false,
             revision: 0,
             incomplete: false,
-            tool_calls: Vec::new(),
             tool_call_id: None,
         }
     }
@@ -273,7 +348,7 @@ impl Message {
             created_at,
             logical_clock,
         );
-        message.tool_calls = calls;
+        message.set_tool_calls(calls);
         message
     }
 
@@ -299,8 +374,185 @@ impl Message {
         message
     }
 
+    /// 这一条的全部块，按顺序。
+    pub fn parts(&self) -> &[Part] {
+        &self.parts
+    }
+
+    /// 正文 = 全部 `Text` 块按顺序拼起来。多块之间空一行。
+    ///
+    /// 为什么是拼接而不是"取第一块"：一轮里正文可以被工具调用隔成两段，
+    /// 两段都是这条消息说的话，只显示一段等于丢字。
+    pub fn content(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// 思考 = 第一个非空的 `Reasoning` 块。
+    pub fn reasoning(&self) -> Option<String> {
+        self.parts.iter().find_map(|part| match part {
+            Part::Reasoning { text, .. } if !text.is_empty() => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    /// 这一条声明的工具调用（按顺序）。
+    pub fn tool_calls(&self) -> Vec<&ToolPart> {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Tool(tool) => Some(tool),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 给 wire 用的那一份（`OutgoingToolCall` 只有 id / name / arguments）。
+    pub fn outgoing_calls(&self) -> Vec<OutgoingToolCall> {
+        self.tool_calls()
+            .into_iter()
+            .map(|tool| {
+                OutgoingToolCall::new(
+                    tool.call_id.clone(),
+                    tool.name.clone(),
+                    tool.arguments.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn next_part_id(&self) -> String {
+        format!("p{}", self.parts.len() + 1)
+    }
+
+    /// 换掉正文：有 `Text` 块就改第一块，没有就补一块；空串等于把这一块去掉。
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let position = self
+            .parts
+            .iter()
+            .position(|part| matches!(part, Part::Text { .. }));
+        match (position, text.is_empty()) {
+            (Some(index), true) => {
+                self.parts.remove(index);
+            }
+            (Some(index), false) => {
+                if let Part::Text { text: slot, .. } = &mut self.parts[index] {
+                    *slot = text;
+                }
+            }
+            (None, false) => {
+                // 正文排在工具调用**之前**：模型是先说话再调工具的，反了的话
+                // 界面上就成了"先跑工具、后说话"，读起来像两次回答。
+                let id = self.next_part_id();
+                let at = self
+                    .parts
+                    .iter()
+                    .position(|part| matches!(part, Part::Tool(_)))
+                    .unwrap_or(self.parts.len());
+                self.parts.insert(at, Part::Text { id, text });
+            }
+            (None, true) => {}
+        }
+    }
+
+    /// 换掉思考：`None` / 空串等于把这一块去掉。
+    pub fn set_reasoning(&mut self, text: Option<String>) {
+        let text = text.unwrap_or_default();
+        let position = self
+            .parts
+            .iter()
+            .position(|part| matches!(part, Part::Reasoning { .. }));
+        match (position, text.is_empty()) {
+            (Some(index), true) => {
+                self.parts.remove(index);
+            }
+            (Some(index), false) => {
+                if let Part::Reasoning { text: slot, .. } = &mut self.parts[index] {
+                    *slot = text;
+                }
+            }
+            (None, false) => {
+                // 思考永远在最前：它是"说这句话之前想了什么"。
+                let id = self.next_part_id();
+                self.parts.insert(0, Part::Reasoning { id, text });
+            }
+            (None, true) => {}
+        }
+    }
+
+    /// 换掉全部工具调用块（按给定顺序）。
+    pub fn set_tool_calls(&mut self, calls: Vec<OutgoingToolCall>) {
+        self.parts.retain(|part| !matches!(part, Part::Tool(_)));
+        let mut next = self.parts.len();
+        for call in calls {
+            next += 1;
+            self.parts.push(Part::Tool(ToolPart {
+                part: format!("p{next}"),
+                call_id: call.id,
+                name: call.name,
+                arguments: call.arguments,
+            }));
+        }
+    }
+
+    /// 第 `index` 个工具调用的参数原文。
+    pub fn tool_argument(&self, index: usize) -> Option<String> {
+        self.tool_calls()
+            .get(index)
+            .map(|call| call.arguments.clone())
+    }
+
+    /// 换掉第 `index` 个工具调用的参数。返回是否找到了那一块。
+    pub fn set_tool_argument(&mut self, index: usize, arguments: impl Into<String>) -> bool {
+        let arguments = arguments.into();
+        let mut seen = 0;
+        for part in &mut self.parts {
+            if let Part::Tool(tool) = part {
+                if seen == index {
+                    tool.arguments = arguments;
+                    return true;
+                }
+                seen += 1;
+            }
+        }
+        false
+    }
+
+    /// 追加一块（id 自动排）。
+    pub fn push_image(
+        &mut self,
+        attachment: impl Into<String>,
+        mime: impl Into<String>,
+        size: u64,
+    ) {
+        let id = self.next_part_id();
+        self.parts.push(Part::Image {
+            id,
+            attachment: attachment.into(),
+            mime: mime.into(),
+            size,
+        });
+    }
+
+    pub fn push_notice(&mut self, code: impl Into<String>, text: impl Into<String>) {
+        let id = self.next_part_id();
+        self.parts.push(Part::Notice {
+            id,
+            code: code.into(),
+            text: text.into(),
+        });
+    }
+
     pub fn with_reasoning(mut self, reasoning: impl Into<String>) -> Self {
-        self.reasoning = Some(reasoning.into());
+        self.set_reasoning(Some(reasoning.into()));
         self
     }
 
@@ -322,7 +574,6 @@ impl Message {
         self
     }
 
-    /// 用户锁定。语义见 docs/decisions.md D11：锁内容，不锁压缩。
     /// 标记这一轮不完整（断流 / 被停止）。
     pub fn mark_incomplete(mut self, incomplete: bool) -> Self {
         self.incomplete = incomplete;
@@ -336,31 +587,32 @@ impl Message {
 
     /// 单条消息的结构校验。
     pub fn validate(&self) -> Result<(), UnitError> {
+        let calls = self.tool_calls();
         if self.role == Role::Tool {
             if self.tool_call_id.as_deref().unwrap_or_default().is_empty() {
                 return Err(UnitError::MissingToolCallId(self.id.clone()));
             }
-            if !self.tool_calls.is_empty() {
+            if !calls.is_empty() {
                 return Err(UnitError::ToolResultHasCalls(self.id.clone()));
             }
         } else {
             if self.tool_call_id.is_some() {
                 return Err(UnitError::ToolCallIdOnNonTool(self.id.clone()));
             }
-            if !self.tool_calls.is_empty() && self.role != Role::Assistant {
+            if !calls.is_empty() && self.role != Role::Assistant {
                 return Err(UnitError::CallsOnNonAssistant(self.id.clone()));
             }
         }
 
         let mut seen = BTreeSet::new();
-        for call in &self.tool_calls {
-            if call.id.is_empty() {
+        for call in &calls {
+            if call.call_id.is_empty() {
                 return Err(UnitError::EmptyToolCallId(self.id.clone()));
             }
-            if !seen.insert(call.id.clone()) {
+            if !seen.insert(call.call_id.clone()) {
                 return Err(UnitError::DuplicateToolCallId {
                     message: self.id.clone(),
-                    call: call.id.clone(),
+                    call: call.call_id.clone(),
                 });
             }
         }
@@ -372,12 +624,8 @@ impl Message {
             });
         }
 
-        // 工具输出可以合法为空（命令没输出）；其他角色发空消息说明构造路径有问题。
-        if self.content.trim().is_empty()
-            && self.reasoning.is_none()
-            && self.tool_calls.is_empty()
-            && self.role != Role::Tool
-        {
+        // 工具输出可以合法为空（命令没输出）；其他角色一条块都没有说明构造路径有问题。
+        if self.parts.is_empty() && self.role != Role::Tool {
             return Err(UnitError::EmptyMessage(self.id.clone()));
         }
 
@@ -431,7 +679,7 @@ pub struct AtomicUnit {
 impl AtomicUnit {
     /// 单元 B。要求消息本身无工具调用。
     pub fn turn(message: Message) -> Result<Self, UnitError> {
-        if !message.tool_calls.is_empty() || message.role == Role::Tool {
+        if !message.tool_calls().is_empty() || message.role == Role::Tool {
             return Err(UnitError::NotATurnMessage(message.id.clone()));
         }
         message.validate()?;
@@ -449,7 +697,7 @@ impl AtomicUnit {
         if call_message.role != Role::Assistant {
             return Err(UnitError::ToolPairNotAssistant(call_message.id.clone()));
         }
-        if call_message.tool_calls.is_empty() {
+        if call_message.tool_calls().is_empty() {
             return Err(UnitError::ToolPairWithoutCalls(call_message.id.clone()));
         }
         call_message.validate()?;
@@ -573,13 +821,13 @@ impl AtomicUnit {
                     return Err(UnitError::TurnUnitHasExtraMessages(self.id.clone()));
                 }
                 let message = &self.messages[0];
-                if message.role == Role::Tool || !message.tool_calls.is_empty() {
+                if message.role == Role::Tool || !message.tool_calls().is_empty() {
                     return Err(UnitError::NotATurnMessage(message.id.clone()));
                 }
             }
             UnitKind::ToolPair => {
                 let head = &self.messages[0];
-                if head.role != Role::Assistant || head.tool_calls.is_empty() {
+                if head.role != Role::Assistant || head.tool_calls().is_empty() {
                     return Err(UnitError::ToolPairNotAssistant(head.id.clone()));
                 }
                 let calls = self.call_ids();
@@ -613,11 +861,11 @@ impl AtomicUnit {
         Ok(())
     }
 
-    fn call_ids(&self) -> BTreeMap<&str, &OutgoingToolCall> {
+    fn call_ids(&self) -> BTreeMap<&str, &ToolPart> {
         let mut map = BTreeMap::new();
         for message in &self.messages {
-            for call in &message.tool_calls {
-                map.insert(call.id.as_str(), call);
+            for call in message.tool_calls() {
+                map.insert(call.call_id.as_str(), call);
             }
         }
         map
@@ -691,6 +939,63 @@ pub enum UnitError {
 mod tests {
     use super::*;
     use crate::ids::SessionId;
+
+    /// parts 是唯一来源（D255）：正文、思考、工具调用都从它投影出来，改也改在它上面。
+    #[test]
+    fn parts_are_the_only_source_of_text_reasoning_and_calls() {
+        let (id, clock) = setup(1);
+        let mut message = Message::tool_call_message(
+            id,
+            vec![OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}")],
+            3,
+            0,
+            clock,
+        );
+        assert_eq!(message.content(), "", "还没写正文");
+        message.set_text("我先看看");
+        message.set_reasoning(Some("想一想".to_string()));
+
+        assert_eq!(message.content(), "我先看看");
+        assert_eq!(message.reasoning().as_deref(), Some("想一想"));
+        assert_eq!(message.tool_calls().len(), 1);
+        assert_eq!(message.tool_calls()[0].call_id, "c1");
+        assert_eq!(
+            message.parts().iter().map(Part::kind).collect::<Vec<_>>(),
+            vec!["reasoning", "text", "tool"],
+            "思考 → 正文 → 工具，与界面上从上到下一致"
+        );
+        // 每块的身份稳定：改正文不会换掉工具块的名字。
+        let part = message.tool_calls()[0].part.clone();
+        message.set_text("换个说法");
+        assert_eq!(message.tool_calls()[0].part, part);
+        message.validate().unwrap();
+    }
+
+    /// 改正文是**替换**不是追加：一条消息里不允许出现两个 Text 块。
+    #[test]
+    fn set_text_replaces_instead_of_appending() {
+        let (id, clock) = setup(1);
+        let mut message = Message::text(
+            id,
+            Role::Assistant,
+            SourceTag::History,
+            "第一版",
+            3,
+            0,
+            clock,
+        );
+        message.set_text("第二版");
+        assert_eq!(message.content(), "第二版");
+        assert_eq!(
+            message
+                .parts()
+                .iter()
+                .filter(|part| part.kind() == "text")
+                .count(),
+            1,
+            "只该有一块正文"
+        );
+    }
 
     fn setup(seq: u64) -> (MessageId, LogicalClock) {
         let session = SessionId::new();

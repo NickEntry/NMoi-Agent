@@ -217,29 +217,29 @@ pub fn apply_edit(unit: &mut AtomicUnit, request: &EditRequest) -> Result<EditOu
         let tokens_before = message.tokens;
         let (before, after) = match request.block {
             BlockSelector::Output => {
-                let before = message.content.clone();
-                message.content = request.content.clone();
-                (before, message.content.clone())
+                let before = message.content().clone();
+                message.set_text(request.content.clone());
+                (before, message.content().clone())
             }
             BlockSelector::Thinking => {
-                let before = message.reasoning.clone().unwrap_or_default();
+                let before = message.reasoning().clone().unwrap_or_default();
                 if request.content.trim().is_empty() {
-                    message.reasoning = None;
+                    message.set_reasoning(None);
                 } else {
-                    message.reasoning = Some(request.content.clone());
+                    message.set_reasoning(Some(request.content.clone()));
                 }
-                (before, message.reasoning.clone().unwrap_or_default())
+                (before, message.reasoning().clone().unwrap_or_default())
             }
             BlockSelector::ToolCall { index: call_index } => {
-                let call = message.tool_calls.get_mut(call_index).ok_or_else(|| {
-                    EditError::NoSuchToolCall {
-                        message: message.id.clone(),
-                        index: call_index,
-                    }
-                })?;
-                let before = call.arguments.clone();
-                call.arguments = request.content.clone();
-                (before, call.arguments.clone())
+                let before =
+                    message
+                        .tool_argument(call_index)
+                        .ok_or_else(|| EditError::NoSuchToolCall {
+                            message: message.id.clone(),
+                            index: call_index,
+                        })?;
+                message.set_tool_argument(call_index, request.content.clone());
+                (before, request.content.clone())
             }
             // 工具结果在**另一条消息**上：单消息的 `apply_edit` 到不了那儿。
             // 报出来而不是悄悄改成调用参数——"点结果卡、参数变了"是最难查的一种。
@@ -374,8 +374,8 @@ fn block_message(
         return Ok(anchor.clone());
     };
     // index 说的是"第几个调用"（与 `tool:<index>` 同一根轴），结果只是它的对家。
-    let call = message
-        .tool_calls
+    let calls = message.tool_calls();
+    let call = calls
         .get(index)
         .ok_or_else(|| EditError::NoSuchToolResult {
             message: anchor.clone(),
@@ -383,7 +383,7 @@ fn block_message(
         })?;
     unit.messages
         .iter()
-        .find(|candidate| candidate.tool_call_id.as_deref() == Some(call.id.as_str()))
+        .find(|candidate| candidate.tool_call_id.as_deref() == Some(call.call_id.as_str()))
         .map(|candidate| candidate.id.clone())
         .ok_or_else(|| EditError::NoSuchToolResult {
             message: anchor.clone(),
@@ -474,10 +474,10 @@ pub fn plan_ops(
             return Err(EditError::UnpairedDelete { index, side });
         }
         // 删掉的是一条消息；它要是带着别的调用，那些调用会一起消失。
-        if anchor_message.tool_calls.len() > 1 {
+        if anchor_message.tool_calls().len() > 1 {
             return Err(EditError::ManyCalls {
                 message: anchor_message.id.clone(),
-                count: anchor_message.tool_calls.len(),
+                count: anchor_message.tool_calls().len(),
             });
         }
     }
@@ -496,13 +496,13 @@ pub fn plan_ops(
             .find(|message| message.id == target)
             .expect("block_message 已经确认过这条消息存在");
         let before = match block {
-            BlockSelector::Thinking => message.reasoning.clone().unwrap_or_default(),
+            BlockSelector::Thinking => message.reasoning().clone().unwrap_or_default(),
             BlockSelector::ToolCall { index } => message
-                .tool_calls
+                .tool_calls()
                 .get(index)
                 .map(|call| call.arguments.clone())
                 .unwrap_or_default(),
-            BlockSelector::Output | BlockSelector::ToolResult { .. } => message.content.clone(),
+            BlockSelector::Output | BlockSelector::ToolResult { .. } => message.content().clone(),
         };
         let after = match op {
             BlockOp::Set { content, .. } => {
@@ -541,11 +541,11 @@ pub fn plan_ops(
         .any(|op| op.after.is_none() && op.block.tool_index().is_some())
     {
         plan.remove_messages.push(anchor_message.id.clone());
-        for call in &anchor_message.tool_calls {
+        for call in &anchor_message.tool_calls() {
             if let Some(result) = unit
                 .messages
                 .iter()
-                .find(|message| message.tool_call_id.as_deref() == Some(call.id.as_str()))
+                .find(|message| message.tool_call_id.as_deref() == Some(call.call_id.as_str()))
             {
                 plan.remove_messages.push(result.id.clone());
             }
@@ -569,13 +569,13 @@ pub fn plan_ops(
     if !deletes.is_empty() {
         let mut whole = String::new();
         for message in &unit.messages {
-            whole.push_str(&message.content);
+            whole.push_str(&message.content());
             whole.push('\n');
-            if let Some(reasoning) = &message.reasoning {
+            if let Some(reasoning) = &message.reasoning() {
                 whole.push_str(reasoning);
                 whole.push('\n');
             }
-            for call in &message.tool_calls {
+            for call in &message.tool_calls() {
                 whole.push_str(&call.arguments);
                 whole.push('\n');
             }
@@ -602,11 +602,11 @@ pub fn plan_ops(
 
 /// 一条消息占用的 token：正文 + 思考 + 全部工具调用参数。
 pub fn message_tokens(message: &Message) -> u32 {
-    let mut total = estimate_tokens(&message.content);
-    if let Some(reasoning) = &message.reasoning {
+    let mut total = estimate_tokens(&message.content());
+    if let Some(reasoning) = &message.reasoning() {
         total = total.saturating_add(estimate_tokens(reasoning));
     }
-    for call in &message.tool_calls {
+    for call in &message.tool_calls() {
         total = total.saturating_add(estimate_tokens(&call.name));
         total = total.saturating_add(estimate_tokens(&call.arguments));
     }
@@ -653,7 +653,7 @@ mod tests {
         let mut unit = turn();
         let request = EditRequest::new(unit.id.clone(), BlockSelector::Output, "world");
         let outcome = apply_edit(&mut unit, &request).unwrap();
-        assert_eq!(unit.messages[0].content, "world");
+        assert_eq!(unit.messages[0].content(), "world");
         assert_eq!(unit.messages[0].revision, 1);
         assert_eq!(outcome.revision, 1);
         assert_ne!(outcome.before_hash, outcome.after_hash);
@@ -664,7 +664,7 @@ mod tests {
         let mut unit = turn();
         let request = EditRequest::new(unit.id.clone(), BlockSelector::Thinking, "换个思路");
         apply_edit(&mut unit, &request).unwrap();
-        assert_eq!(unit.messages[0].reasoning.as_deref(), Some("换个思路"));
+        assert_eq!(unit.messages[0].reasoning().as_deref(), Some("换个思路"));
     }
 
     #[test]
@@ -672,7 +672,7 @@ mod tests {
         let mut unit = turn();
         let request = EditRequest::new(unit.id.clone(), BlockSelector::Thinking, "   ");
         apply_edit(&mut unit, &request).unwrap();
-        assert!(unit.messages[0].reasoning.is_none());
+        assert!(unit.messages[0].reasoning().is_none());
     }
 
     #[test]
@@ -706,7 +706,10 @@ mod tests {
             "{\"path\":\"b\"}",
         );
         apply_edit(&mut unit, &request).unwrap();
-        assert_eq!(unit.messages[0].tool_calls[0].arguments, "{\"path\":\"b\"}");
+        assert_eq!(
+            unit.messages[0].tool_calls()[0].arguments,
+            "{\"path\":\"b\"}"
+        );
 
         let missing = EditRequest::new(unit.id.clone(), BlockSelector::ToolCall { index: 3 }, "x");
         assert!(matches!(
