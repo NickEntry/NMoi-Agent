@@ -200,8 +200,9 @@ internal fun ChatScreen(
     // 正在跑的那条调用点开的弹窗（0.15ak）。**只存 id**：对象是这一拍的副本，
     // 而秒数每 100 ms 在变——存对象的话弹窗里的时间会冻在点开那一刻。
     var runningCallId by remember(sessionId) { mutableStateOf<String?>(null) }
-    // 「查看图像」弹窗看的是哪一条消息的图（0.15ak）。同样只存 id，图现从库里那份读。
-    var imageSheetFor by remember(sessionId) { mutableStateOf<String?>(null) }
+    // 这一轮的上下文图片（D248）：`View-Image` 拉进来的那些。界面只读它、只能移出。
+    var contextImages by remember(sessionId) { mutableStateOf(listOf<ContextImageRow>()) }
+    var contextImagesOpen by remember(sessionId) { mutableStateOf(false) }
     // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
     var settling by remember(sessionId) { mutableStateOf(false) }
     // 重试落在哪条消息上（D227）：这一轮的部分正文**就地**画在它身上，不再在底部另起一个
@@ -472,6 +473,18 @@ internal fun ChatScreen(
             settling = false
             live = null
             pending = null
+        }
+    }
+
+    // 上下文图片清单（D248）：会话变了、或者这一轮收尾重读之后现问一次。
+    // 不在界面里自己维护这份清单——`View-Image` 是 native 那边加的，界面数一遍必然对不上。
+    LaunchedEffect(sessionId, reloadKey) {
+        val sid = sessionId ?: run {
+            contextImages = emptyList()
+            return@LaunchedEffect
+        }
+        contextImages = withContext(Dispatchers.IO) {
+            NmoiFfi.contextImages(sid).getOrNull()?.let { parseContextImages(it) }.orEmpty()
         }
     }
 
@@ -1079,12 +1092,16 @@ internal fun ChatScreen(
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
                         onOpenTool = { unit -> toolSheet = unit },
-                        onOpenImages = { id -> imageSheetFor = id },
                         liveThinkingOpen = openGroups["live:think"] == true,
                         onToggleLiveThinking = {
                             openGroups["live:think"] = openGroups["live:think"] != true
                         },
                         onOpenRunningCall = { call -> runningCallId = call.callId },
+                        finishedThinkingOpen = { index -> openGroups["live:fin:$index"] == true },
+                        onToggleFinishedThinking = { index ->
+                            val key = "live:fin:$index"
+                            openGroups[key] = openGroups[key] != true
+                        },
                         onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
@@ -1178,6 +1195,9 @@ internal fun ChatScreen(
                     },
                     onPlus = { plusMenu = true },
                     imageCapability = imageCapability,
+                    contextImageCount = contextImages.size,
+                    contextImageLimit = AppSettings.imageLimit(context),
+                    onOpenContextImages = { contextImagesOpen = true },
                 )
 
             } else {
@@ -1294,12 +1314,32 @@ internal fun ChatScreen(
             ToolSheet(unit = unit, onDismiss = { toolSheet = null })
         }
 
-        // 「查看图像」（0.15ak）：这一条带进上下文的图，看得到格式、大小、尺寸。
-        val imageMessage = imageSheetFor?.let { id -> allMessages.firstOrNull { it.id == id } }
-        if (imageMessage != null) {
-            ImageContextSheet(
-                images = imageMessage.images,
-                onDismiss = { imageSheetFor = null },
+        // 图片上下文（D248）：这一轮会发出去的图，能看、能移出一张、能清空。
+        if (contextImagesOpen) {
+            ContextImagesSheet(
+                images = contextImages,
+                limit = AppSettings.imageLimit(context),
+                onRemove = { id ->
+                    val sid = sessionId
+                    if (sid != null) {
+                        scope.launch {
+                            val result = NmoiFfi.removeContextImage(sid, id)
+                            result.getOrNull()?.let { contextImages = parseContextImages(it) }
+                            notice = if (result.isSuccess) "已移出上下文（图还在消息里）" else "移出失败"
+                        }
+                    }
+                },
+                onClear = {
+                    val sid = sessionId
+                    if (sid != null) {
+                        scope.launch {
+                            val result = NmoiFfi.clearContextImages(sid)
+                            result.getOrNull()?.let { contextImages = parseContextImages(it) }
+                            notice = if (result.isSuccess) "已清空这一轮的图片上下文" else "清空失败"
+                        }
+                    }
+                },
+                onDismiss = { contextImagesOpen = false },
             )
         }
 
@@ -1837,8 +1877,9 @@ private fun MessageArea(
     onToggleLiveThinking: () -> Unit = {},
     /** 点开一条正在跑的调用（0.15ak）。 */
     onOpenRunningCall: (RunningCall) -> Unit = {},
-    /** 点「查看图像」（0.15ak）：这一条带进上下文的图。 */
-    onOpenImages: (String) -> Unit = {},
+    /** 第 N 轮（已经收口的）思考展开没有。 */
+    finishedThinkingOpen: (Int) -> Boolean = { false },
+    onToggleFinishedThinking: (Int) -> Unit = {},
     /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
     onDismissCut: () -> Unit,
     selecting: Boolean,
@@ -1961,7 +2002,8 @@ private fun MessageArea(
                 liveThinkingOpen = liveThinkingOpen,
                 onToggleLiveThinking = onToggleLiveThinking,
                 onOpenRunningCall = onOpenRunningCall,
-                onOpenImages = onOpenImages,
+                finishedThinkingOpen = finishedThinkingOpen,
+                onToggleFinishedThinking = onToggleFinishedThinking,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 live = live,
@@ -2025,6 +2067,8 @@ private fun MessageArea(
                     thinkingOpen = liveThinkingOpen,
                     onToggleThinking = onToggleLiveThinking,
                     onOpenCall = onOpenRunningCall,
+                    finishedThinkingOpen = finishedThinkingOpen,
+                    onToggleFinishedThinking = onToggleFinishedThinking,
                 )
             }
         }
@@ -2047,6 +2091,9 @@ private fun LiveReplyRow(
     thinkingOpen: Boolean = false,
     onToggleThinking: () -> Unit = {},
     onOpenCall: (RunningCall) -> Unit = {},
+    /** 第 N 轮（已经收口的那几轮）的思考展开没有。每轮各记各的，不共用一个开关。 */
+    finishedThinkingOpen: (Int) -> Boolean = { false },
+    onToggleFinishedThinking: (Int) -> Unit = {},
 ) {
     val transition = rememberInfiniteTransition(label = "live")
     val alpha by transition.animateFloat(
@@ -2061,8 +2108,18 @@ private fun LiveReplyRow(
         // 工具往返之后模型重新开口：上一轮那段话**留在这里**，不能因为换轮就消失
         // （用户 2026-11-04 报的"流式过程吞消息"）。落库之后这一段会并进同一条消息，
         // 所以屏幕上它也该一直在。
-        reply.finished.forEach { done ->
-            if (done.reasoning.isNotBlank()) LiveReasoningCard(text = done.reasoning)
+        // 每一轮 = **一个过程块 + 一段正文**，按发生顺序交替排开：
+        // 块A → 正文 → 块B → 正文 → 思考块 → 正文 → 块C → 正文（用户 2026-11-04 给的结构）。
+        // 以前这里把 `finished` 的思考画成一张独立的思考卡、正文排在它后面，
+        // 于是"上一轮的正文"看起来像被并进思考里了。
+        reply.finished.forEachIndexed { index, done ->
+            LiveProcessCard(
+                reasoning = done.reasoning,
+                calls = emptyList(),
+                thinkingOpen = finishedThinkingOpen(index),
+                onToggleThinking = { onToggleFinishedThinking(index) },
+                onOpenCall = {},
+            )
             if (done.text.isNotBlank()) {
                 MarkdownBody(
                     text = done.text,
@@ -2223,8 +2280,8 @@ private fun UnitBlock(
     onToggleLiveThinking: () -> Unit = {},
     /** 点开一条正在跑的调用（0.15ak）。 */
     onOpenRunningCall: (RunningCall) -> Unit = {},
-    /** 点「查看图像」（0.15ak）。 */
-    onOpenImages: (String) -> Unit = {},
+    finishedThinkingOpen: (Int) -> Boolean = { false },
+    onToggleFinishedThinking: (Int) -> Unit = {},
     maxBubble: Dp,
     gapAbove: Dp,
     /** 这一轮正在长的回复（就地渲染用，D227）。 */
@@ -2277,7 +2334,6 @@ private fun UnitBlock(
                         onShare = { onShareMessage(message.id) },
                         onMore = { onMoreMessage(message.id) },
                         onVersion = { no, view -> onVersionMessage(message.id, no, view) },
-                        onOpenImages = { onOpenImages(message.id) },
                         // 灰的判据是"有没有东西可跑"：思考/工具片段、断块、会话还没落库都不给。
                         onRetry = if (retryEnabled && message.canRetry) {
                             { onRetryMessage(message.id) }
@@ -2300,6 +2356,8 @@ private fun UnitBlock(
                             liveThinkingOpen = liveThinkingOpen,
                             onToggleLiveThinking = onToggleLiveThinking,
                             onOpenRunningCall = onOpenRunningCall,
+                            finishedThinkingOpen = finishedThinkingOpen,
+                            onToggleFinishedThinking = onToggleFinishedThinking,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -2558,9 +2616,7 @@ private fun UserMessage(
     sending: Boolean = false,
     /** 随这一条一起发出去、还没从库里读回来的图。 */
     pendingImageCount: Int = 0,
-    /** 点「查看图像」：这一条带进上下文的图（0.15ak）。 */
-    onOpenImages: () -> Unit = {},
-) {
+ ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
     // 「发送中」的呼吸：它是"还在路上"的唯一信号，静态一行字看着像已经存好了。
@@ -2668,52 +2724,6 @@ private fun UserMessage(
             }
         }
 
-        // 图片进上下文（0.15ak）：一块**工具块形状**的行，点开是这一轮带进去的图。
-        // 为什么要有它：图是"发出去的东西"，可界面上只有气泡里那两张缩略图，
-        // 用户没法确认"进上下文的是哪几张、多大"。铁律②要求每样东西都能被指出来。
-        if (message.images.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.clickable(onClick = onOpenImages),
-                ) {
-                    Row(
-                        modifier = Modifier.heightIn(min = 40.dp).padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = ActionIcons.Image,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Text(
-                            text = "查看图像",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(start = 8.dp),
-                        )
-                        Text(
-                            text = "${message.images.size} 张 · ${imageBytesLabel(message.images)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 8.dp),
-                        )
-                        Icon(
-                            imageVector = ActionIcons.ChevronRight,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp).size(16.dp),
-                        )
-                    }
-                }
-            }
-        }
-
         // 动作行在"发送中"没有意义：这条还没 id，复制/更多都指不到库里的东西。
         if (!sending) {
             MessageActionRow(
@@ -2767,6 +2777,9 @@ private fun AssistantMessage(
     onToggleLiveThinking: () -> Unit = {},
     /** 点开一条正在跑的调用（弹窗底部才有「取消这次调用」）。 */
     onOpenRunningCall: (RunningCall) -> Unit = {},
+    /** 第 N 轮（已经收口的）思考展开没有。 */
+    finishedThinkingOpen: (Int) -> Boolean = { false },
+    onToggleFinishedThinking: (Int) -> Unit = {},
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -2783,8 +2796,14 @@ private fun AssistantMessage(
         // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
         if (showHeader) AssistantHeader(createdAt = message.createdAt)
         if (live != null) {
-            live.finished.forEach { done ->
-                if (done.reasoning.isNotBlank()) LiveReasoningCard(text = done.reasoning)
+            live.finished.forEachIndexed { index, done ->
+                LiveProcessCard(
+                    reasoning = done.reasoning,
+                    calls = emptyList(),
+                    thinkingOpen = finishedThinkingOpen(index),
+                    onToggleThinking = { onToggleFinishedThinking(index) },
+                    onOpenCall = {},
+                )
                 if (done.text.isNotBlank()) {
                     MarkdownBody(
                         text = done.text,
@@ -3471,7 +3490,8 @@ private fun ThinkingBlock(message: ChatMessage) {
 private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
     val calls = unit.messages.flatMap { it.toolArgs }
     val results = unit.messages.filter { it.isToolResult }
-    val name = calls.firstOrNull()?.name?.takeIf { it.isNotBlank() } ?: "工具调用"
+    val name = calls.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+        ?.let { toolDisplayName(it) } ?: "工具调用"
     val summary = toolSummary(results)
     val preview = calls.firstOrNull()?.arguments?.let { toolArgumentPreview(it) }.orEmpty()
 
@@ -3523,6 +3543,26 @@ private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
             )
         }
     }
+}
+
+/**
+ * 工具名在界面上写什么。
+ *
+ * 工具名是给端点看的（OpenAI / Anthropic / Gemini 的函数名规则），界面上不该让人读
+ * `WorkSpace-EnvirShell`——用户 2026-11-04 给的参考图里那一行写的是「运行命令」。
+ * 认不出的名字原样显示：编一个中文名比显示原名更糟。
+ */
+private fun toolDisplayName(name: String): String = when (name) {
+    "System-Shell" -> "运行命令"
+    "WorkSpace-EnvirShell" -> "运行命令（容器）"
+    "View-Image" -> "查看图像"
+    "read_file" -> "读取文件"
+    "write_file" -> "写入文件"
+    "edit_file" -> "修改文件"
+    "list_dir" -> "列出目录"
+    "find_files" -> "查找文件"
+    "search" -> "搜索内容"
+    else -> name
 }
 
 /** 结果摘要：`exit 0 · 202ms`。取不到就说"结果 N 条"，不编数字。 */
@@ -3729,6 +3769,10 @@ private fun Composer(
     onPlus: () -> Unit,
     /** `false` = 这个模型明确不收图（灰掉「图片」那一项并给原因）。 */
     imageCapability: Boolean?,
+    /** 这一轮上下文里已经有几张图（D248）：`View-Image` 拉进来的那些。 */
+    contextImageCount: Int = 0,
+    contextImageLimit: Int = 12,
+    onOpenContextImages: () -> Unit = {},
 ) {
     Column {
         if (notice != null) {
@@ -3752,6 +3796,36 @@ private fun Composer(
             Column(modifier = Modifier.padding(top = 6.dp, bottom = 6.dp)) {
                 if (pending.isNotEmpty()) {
                     PendingImageStrip(images = pending, onRemove = onRemovePending)
+                }
+                // 上下文里已经有图（D248）：一行小字 + 入口。没有就不摆——
+                // 常驻一行"0 张"等于让人以为哪里坏了。
+                if (contextImageCount > 0) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenContextImages)
+                            .padding(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = ActionIcons.Image,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            text = "图片上下文 $contextImageCount/$contextImageLimit",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f).padding(start = 6.dp),
+                        )
+                        Icon(
+                            imageVector = ActionIcons.ChevronRight,
+                            contentDescription = "查看这一轮的图片上下文",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
                 }
                 NativeEditText(
                     value = draft,
@@ -4571,7 +4645,7 @@ private fun RunningCallRow(call: RunningCall, onOpen: () -> Unit) {
                 modifier = Modifier.size(16.dp),
             )
             Text(
-                text = call.name,
+                text = toolDisplayName(call.name),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
@@ -4686,8 +4760,8 @@ private fun RunningCallSheet(call: RunningCall, onCancel: () -> Unit, onDismiss:
 }
 
 /** 一组图的总大小：`1.2 MB` / `860 KB`。整数 KB 就够，这里不是账本。 */
-private fun imageBytesLabel(images: List<ChatImage>): String {
-    val total = images.sumOf { it.size }
+private fun imageBytesLabel(bytes: Long): String {
+    val total = bytes
     return when {
         total < 1024 -> "$total B"
         total < 1024 * 1024 -> "${total / 1024} KB"
@@ -4695,60 +4769,99 @@ private fun imageBytesLabel(images: List<ChatImage>): String {
     }
 }
 
+/** 上下文里的一张图（D248）。只从 native 那份清单来，界面不自己数。 */
+internal data class ContextImageRow(val id: String, val mime: String, val bytes: Long)
+
+/** `nmoi_images_json` 的信封 → 清单。 */
+private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
+    val array = info.optJSONArray("images") ?: return emptyList()
+    return buildList {
+        for (index in 0 until array.length()) {
+            val row = array.optJSONObject(index) ?: continue
+            val id = row.text("id")
+            if (id.isEmpty()) continue
+            add(ContextImageRow(id = id, mime = row.text("mime"), bytes = row.optLong("bytes", 0)))
+        }
+    }
+}
+
 /**
- * 「查看图像」（0.15ak）：这一条消息带进上下文的图，一张一行。
+ * 图片上下文（D248）：这一轮会发出去的图，一张一行。
  *
- * 为什么值得单独一层：图是**发出去的东西**，可聊天页上只有气泡里那两张缩略图——
- * 用户没法确认"进上下文的是哪几张、什么格式、多大"。铁律②（不许有存了但看不见的东西）
- * 在这里的意思就是：能看见它、能说出它是哪一张。
+ * 为什么它不在消息里：这些图是 `View-Image` **拉进上下文**的，不属于任何一条消息——
+ * 原图还在它原来那条消息里，这一层只管"这一轮要发哪几张"。
  *
- * 管理（从上下文里移除、只留一份）是下一步的事（`docs/PLAN.md` 0.15ai）：
- * 现在这一层只读——读之外的动作要动库，得先想清"移出之后气泡里那张还在不在"。
+ * 能做的三件事：看（缩略图 / 格式 / 大小 / 附件 id）、移出一张、清空。
+ * 移出**不删文件**，也不改消息：下一轮不带它而已。
  */
 @Composable
-private fun ImageContextSheet(images: List<ChatImage>, onDismiss: () -> Unit) {
+private fun ContextImagesSheet(
+    images: List<ContextImageRow>,
+    limit: Int,
+    onRemove: (String) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }
     val screen = LocalConfiguration.current.screenHeightDp
     val maxHeight = (screen * 0.5f).dp
-    // 读图放在 IO 上：一张 2 MB 的截图解码要几十毫秒，主线程上就是一次可见的卡顿。
-    val loaded by produceState(initialValue = null as List<Pair<ChatImage, android.graphics.Bitmap?>>?, images) {
+    val loaded by produceState(initialValue = null as List<Pair<ContextImageRow, android.graphics.Bitmap?>>?, images) {
         value = withContext(Dispatchers.IO) {
             images.map { image -> image to AttachmentStore.bitmap(databasePath, image.id) }
         }
     }
-    SheetFrame(title = "查看图像", onDismiss = onDismiss) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxHeight)
-                .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                val rows = loaded
-                if (rows == null) {
+    SheetFrame(title = "图片上下文", onDismiss = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
+            ) {
+                Column {
                     Text(
-                        text = "读图…",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = "这一轮发送 ${images.size} / $limit 张 · 新的在前，满了先丢最旧的",
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                } else {
-                    rows.forEach { (image, bitmap) ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (images.isEmpty()) {
+                        Text(
+                            text = "这一轮还没有图片。让模型用「查看图像」把图加进来，" +
+                                "或者直接在聊天页发一张。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    }
+                    val rows = loaded
+                    if (rows == null && images.isNotEmpty()) {
+                        Text(
+                            text = "读图…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    }
+                    rows?.forEach { (image, bitmap) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             if (bitmap != null) {
                                 Image(
                                     bitmap = bitmap.asImageBitmap(),
                                     contentDescription = "上下文里的图片",
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier
-                                        .size(width = 72.dp, height = 72.dp)
+                                        .size(width = 56.dp, height = 56.dp)
                                         .clip(RoundedCornerShape(8.dp)),
                                 )
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .size(width = 72.dp, height = 72.dp)
+                                        .size(width = 56.dp, height = 56.dp)
                                         .background(
                                             MaterialTheme.colorScheme.surfaceContainerHigh,
                                             RoundedCornerShape(8.dp),
@@ -4762,18 +4875,14 @@ private fun ImageContextSheet(images: List<ChatImage>, onDismiss: () -> Unit) {
                                     )
                                 }
                             }
-                            Column(modifier = Modifier.padding(start = 12.dp)) {
+                            Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text(
-                                    text = if (bitmap != null) {
-                                        "${bitmap.width} × ${bitmap.height} · ${image.mime}"
-                                    } else {
-                                        image.mime.ifBlank { "格式不明" }
-                                    },
+                                    text = "${imageBytesLabel(image.bytes)} · ${image.mime.ifBlank { "格式不明" }}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
                                 Text(
-                                    text = imageBytesLabel(listOf(image)) + " · " + image.id,
+                                    text = image.id,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = FontFamily.Monospace,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4782,13 +4891,35 @@ private fun ImageContextSheet(images: List<ChatImage>, onDismiss: () -> Unit) {
                                     modifier = Modifier.padding(top = 2.dp),
                                 )
                             }
+                            Text(
+                                text = "移出",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .clickable { onRemove(image.id) }
+                                    .padding(horizontal = 10.dp, vertical = 14.dp),
+                            )
                         }
                     }
+                    Text(
+                        text = "移出只是下一轮不再带它：原图还在那条消息里，文件也没删。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 14.dp),
+                    )
                 }
+            }
+            if (images.isNotEmpty()) {
                 Text(
-                    text = "这些图随这条消息一起发出去，模型看到的就是它们。",
-                    style = MaterialTheme.typography.labelSmall,
+                    text = "清空这一轮的图片上下文",
+                    style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable(onClick = onClear)
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                 )
             }
         }

@@ -242,6 +242,8 @@ struct TurnInput {
     user_text: String,
     now_ms: i64,
     max_rounds: u32,
+    /// 上下文图片清单的上限（D248）。`0` = 默认 12。
+    image_limit: u32,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     budget: Option<Budget>,
@@ -484,6 +486,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         user_text,
         now_ms,
         max_rounds: max_rounds as u32,
+        image_limit: optional_u64(&root, "image_limit")?.unwrap_or(0) as u32,
         max_tokens: optional_u64(&root, "max_tokens")?.map(|value| value as u32),
         temperature: optional_f32(&root, "temperature")?,
         budget,
@@ -1072,6 +1075,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             turn: TurnConfig {
                 max_rounds: input.max_rounds,
                 stream,
+                image_limit: input.image_limit,
                 ..TurnConfig::default()
             },
             // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
@@ -1367,6 +1371,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             turn: TurnConfig {
                 max_rounds: input.max_rounds,
                 stream,
+                image_limit: input.image_limit,
                 ..TurnConfig::default()
             },
             budget: input.budget.as_ref(),

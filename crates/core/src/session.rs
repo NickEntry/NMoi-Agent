@@ -54,6 +54,21 @@ pub trait HistoryStore {
         Ok(Vec::new())
     }
 
+    /// 按附件 id 读一张图（D248）。`None` = 库里没有这张。
+    ///
+    /// 与 [`HistoryStore::attachments`] 的区别：那个按**消息**取（用户发的图跟着消息走），
+    /// 这个按**附件 id** 取——"查看图像"拉进上下文的那张不属于任何一条消息。
+    fn attachment(&self, id: &str) -> Result<Option<crate::message::ImagePart>, String> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// 这个会话的附件目录（`sessions/<id>/images`）。`None` = 这个实现没有盘上的附件。
+    fn attachment_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        let _ = session;
+        None
+    }
+
     /// 把这一轮用户带的图片落到那条消息上（D208）。
     ///
     /// 默认实现**什么都不存**（内存实现没有附件表），但这一轮的请求里仍然会带上它们——
@@ -318,12 +333,37 @@ fn attach_images<S: HistoryStore>(
     request: &mut ChatRequest,
     store: &S,
     history: &[Message],
+    session: SessionId,
 ) -> Result<(), SessionError> {
     request.images.clear();
     for message in history {
         let parts = store.attachments(&message.id).map_err(SessionError::Load)?;
         if !parts.is_empty() {
             request.images.push((message.id.clone(), parts));
+        }
+    }
+    // 上下文图片（D248）：`View-Image` 拉进来的那些，挂在**最后一条用户消息**上。
+    // 为什么不另起一条消息：多一条 `role: user` 会改变对话的形状，模型会以为用户又说了句话；
+    // 图本来就属于"这一轮用户给的东西"。
+    let extra = crate::images::list(&session.to_string());
+    if !extra.is_empty() {
+        if let Some(last_user) = history.iter().rev().find(|m| m.role == Role::User) {
+            let mut parts = Vec::with_capacity(extra.len());
+            for image in extra {
+                if let Some(part) = store.attachment(&image.id).map_err(SessionError::Load)? {
+                    parts.push(part);
+                }
+            }
+            if !parts.is_empty() {
+                match request
+                    .images
+                    .iter_mut()
+                    .find(|(id, _)| id == &last_user.id)
+                {
+                    Some((_, existing)) => existing.extend(parts),
+                    None => request.images.push((last_user.id.clone(), parts)),
+                }
+            }
         }
     }
     Ok(())
@@ -464,7 +504,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     // 工具声明也用同一份名单。冻结在**发出去的那一份**上生效，base 由调用方持有。
     let mut frozen_base = base.clone();
     // 图片（D208）：按消息 id 从**库里那一份**取，不经过界面缓存。
-    attach_images(&mut frozen_base, store, &history)?;
+    attach_images(&mut frozen_base, store, &history, session)?;
     // 内存实现不存附件（`save_attachments` 默认空实现），这一轮仍要把刚发的图带上。
     if !images.is_empty() && !frozen_base.images.iter().any(|(id, _)| id == &user.id) {
         frozen_base.images.push((user.id.clone(), images.to_vec()));
@@ -473,6 +513,9 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     // 手动关闭（0.15ak）按 `(会话, call_id)` 登记，所以这一轮得带上自己是谁。
     let call_session = session.to_string();
     ctx = ctx.with_call_session(&call_session);
+    // 上下文图片（D248）：附件目录给 `View-Image` 用，上限跟着这一轮的配置走。
+    let images_dir = store.attachment_dir(session);
+    ctx = ctx.with_images(images_dir.as_deref(), config.turn.image_limit);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -724,10 +767,12 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 
     let mut frozen_base = base.clone();
     // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
-    attach_images(&mut frozen_base, store, &history)?;
+    attach_images(&mut frozen_base, store, &history, session)?;
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     let call_session = session.to_string();
     ctx = ctx.with_call_session(&call_session);
+    let images_dir = store.attachment_dir(session);
+    ctx = ctx.with_images(images_dir.as_deref(), config.turn.image_limit);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

@@ -1051,6 +1051,60 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_toolCancelJson<'local
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.imagesJson(session)`：这一轮的上下文图片清单（D248）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_imagesJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => match c_string(session, "session") {
+            Ok(c_session) => take_json(crate::images::nmoi_images_json(c_session.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.imageRemoveJson(config)`：把一张图移出上下文（`{"session","id"}`）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_imageRemoveJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::images::nmoi_images_remove_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.imageClearJson(session)`：清空这一轮的上下文图片。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_imageClearJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => match c_string(session, "session") {
+            Ok(c_session) => take_json(crate::images::nmoi_images_clear_json(c_session.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 // ---------------------------------------------------------------------------
 // 发请求：重试 / 续话（0.15h / D185）
 // ---------------------------------------------------------------------------

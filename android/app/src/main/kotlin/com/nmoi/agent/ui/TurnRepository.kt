@@ -243,6 +243,8 @@ internal object TurnRepository {
                     .put("now_ms", System.currentTimeMillis())
                     // 工具轮数上限（D244）：安全阀，不是产品决定。用户在应用设置里能调。
                     .put("max_rounds", AppSettings.maxRounds(context))
+                    // 上下文图片上限（D248）：`View-Image` 拉图进来时的清单长度。
+                    .put("image_limit", AppSettings.imageLimit(context))
                     .also { row ->
                         maxTokens?.let { row.put("max_tokens", it) }
                         temperature?.let { row.put("temperature", it) }

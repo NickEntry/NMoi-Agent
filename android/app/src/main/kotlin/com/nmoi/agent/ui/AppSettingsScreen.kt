@@ -192,6 +192,37 @@ internal fun AppSettingsScreen(
                     }
                 }
 
+                // —— 上下文图片上限（D248）——
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "上下文里最多带几张图",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "「查看图像」把图拉进上下文时按这个数封顶：新的在前，满了先丢最旧的。" +
+                                "默认 ${AppSettings.DEFAULT_IMAGE_LIMIT}；上限 ${AppSettings.MAX_IMAGE_LIMIT}——" +
+                                "三家端点里最弱的那家（Anthropic）就是 100 张/请求，填得更大换一家就会 400。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 10.dp)) {
+                            listOf(6, 12, 24, 50).forEach { preset ->
+                                SettingChip(
+                                    label = preset.toString(),
+                                    selected = AppSettings.imageLimit(context) == preset,
+                                ) {
+                                    AppSettings.setImageLimit(context, preset)
+                                    notice = "上下文图片上限改成 $preset 张"
+                                }
+                                Spacer(Modifier.width(8.dp))
+                            }
+                        }
+                    }
+                }
+
                 // —— 图片压缩（D241）——
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {

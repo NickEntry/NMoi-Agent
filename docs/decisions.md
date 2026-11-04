@@ -6188,3 +6188,39 @@ Kotlin **102 条 @Test / 10 个文件**；JNI 符号 **47**；APK `17,971,961` �
 **实测**：CI 见提交后的 run；本机 `kotlinc` 全量类型检查只剩那三类已知 error，
 `LiveStreamTest` 5 条 + `LivePollTest` 9 条本机 JUnit 全绿；Rust `kills::` 16 条绿。
 真机清单 V67。
+
+## D248 `View-Image` 工具 + 上下文图片清单（2026-11-04）
+
+用户 2026-11-04 纠正了一处语义：「**查看图像工具的作用是把图片加入到上下文**，
+至于排序肯定是新的在前插入，到一定程度就先舍弃旧的（这个上下文图片数量限制可以自己调整，
+默认 12，按各家 API 最弱的来）」。
+
+**工具**（`crates/core/src/view_image.rs`）：`View-Image`，参数 `path` = 附件目录里的文件名。
+只认 `sessions/<会话>/images` 下的文件；单张 5 MB（Anthropic 的 API 上限，三家最弱）；
+只收 jpg / jpeg / png / webp / gif。返回一句登记回执（第 k/12 张、丢掉了谁），**不返回图片内容**。
+
+**清单**（`crates/core/src/images.rs`）：按会话、进程内、新的在前、重复加只是挪到最前。
+上限默认 12（用户定的），硬上限 100——三家单请求上限是 OpenAI 500 / Gemini 3 600 /
+Anthropic 100，取最弱的那个，填得更大换一家就 400。
+
+**请求**：`attach_images` 在按消息取完图之后，把清单里的图挂到**最后一条用户消息**上
+（不另起一条 `role: user`：那会让模型以为用户又说了句话）。清单里留着一张已删掉的
+附件 id 时跳过它（先 `has_attachment` 问一句），不报错。
+
+**为什么不做成"把图塞进工具结果"**：OpenAI 的 `role: tool` 只收文本、Anthropic 的
+`tool_result` 能带图、Gemini 的 `functionResponse` 又只认文本。三家不一致；走
+"清单 + 请求级附件"这条路，三家都是同一种形状（消息上的图）。
+
+**FFI**：`nmoi_images_json` / `nmoi_images_remove_json` / `nmoi_images_clear_json`；
+turn 的 config 多一项 `image_limit`（0 = 默认 12）。JNI 符号 **47 → 50**。
+
+**界面**：输入区上方一行 `图片上下文 3/12 ›`（没有图就不摆），点开是半屏面板：
+本轮张数、每张的缩略图/大小/格式/附件 id、「移出」、底部「清空」。
+移出不删文件、不改消息。顺带把工具名中文化（`View-Image` → 查看图像、
+`System-Shell` → 运行命令），认不出的名字原样显示。
+
+**流式渲染顺序**（同一条反馈）：每轮 = **过程块 + 正文**，按发生顺序交替；
+以前把 `finished` 的思考画成独立思考卡、正文排在后面，看着像"正文被并进思考里"。
+
+**没做**：图钉（固定优先保留）、「自动管理历史图片」开关、「再加到输入框」、
+用户发的图是否也占 12 张的额度。见 `docs/image-context.md` §3。

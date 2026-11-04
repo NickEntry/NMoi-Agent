@@ -416,6 +416,18 @@ impl Storage {
     ///
     /// 老数据（v10 及以前）把字节存在库里：这里顺手搬到盘上并清空 BLOB（D216），
     /// 搬不动也照常返回——读图不该因为"整理"失败而失败。
+    /// 这条附件在不在（D248）。`View-Image` 的清单里可能留着一张已经被删掉的图——
+    /// 那不是错误，跳过就行；用一句话去匹配 `Inconsistent` 的文案才是错误。
+    pub fn has_attachment(&self, id: &str) -> Result<bool, StorageError> {
+        let found: Option<i64> = self
+            .conn
+            .query_row("SELECT 1 FROM attachments WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(found.is_some())
+    }
+
     pub fn attachment(&self, id: &str) -> Result<(String, Vec<u8>), StorageError> {
         type Row = (String, Option<Vec<u8>>, Option<String>, String);
         let found: Option<Row> = self
@@ -1552,6 +1564,24 @@ impl nmoi_core::session::HistoryStore for Storage {
             .into_iter()
             .map(|(mime, data)| nmoi_core::message::ImagePart { mime, data })
             .collect())
+    }
+
+    /// 按附件 id 读一张图（D248）：`View-Image` 拉进上下文的那张不属于任何消息。
+    /// 不在了就返回 `None`——清单里留着一个已经不存在的 id 不是错误，跳过它就好。
+    fn attachment(&self, id: &str) -> Result<Option<nmoi_core::message::ImagePart>, String> {
+        if !Storage::has_attachment(self, id).map_err(|error| error.to_string())? {
+            return Ok(None);
+        }
+        let (mime, bytes) = Storage::attachment(self, id).map_err(|error| error.to_string())?;
+        Ok(Some(nmoi_core::message::ImagePart {
+            mime,
+            data: nmoi_core::base64::encode(&bytes),
+        }))
+    }
+
+    /// 这个会话的附件目录（D248）：`View-Image` 只认这里面的文件。
+    fn attachment_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        Some(Storage::attachment_dir(self, session))
     }
 
     /// 这一轮刚发的图片（D208）：解码后逐张落库。解不开就报错——

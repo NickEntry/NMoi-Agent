@@ -127,6 +127,15 @@ internal object NativeBridge {
      */
     external fun toolCancelJson(config: String): String
 
+    /** 这一轮的上下文图片清单（D248）：`{"images":[{id,mime,bytes}],"count","max"}`。 */
+    external fun imagesJson(session: String): String
+
+    /** 把一张图移出上下文：`{"session","id"}`。不在清单里返回 `removed:false`，不是错误。 */
+    external fun imageRemoveJson(config: String): String
+
+    /** 清空这一轮的上下文图片。 */
+    external fun imageClearJson(session: String): String
+
     /** 应用一份代理配置（`{"proxy": null}` = 关）。热句柄，下一次请求生效（D226）。 */
     external fun proxyApplyJson(config: String): String
 

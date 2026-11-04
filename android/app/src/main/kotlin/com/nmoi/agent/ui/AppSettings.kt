@@ -17,6 +17,7 @@ internal object AppSettings {
     private const val KEY_IMAGE_SHORT = "image.short_edge"
     private const val KEY_IMAGE_QUALITY = "image.quality"
     private const val KEY_MAX_ROUNDS = "turn.max_rounds"
+    private const val KEY_IMAGE_LIMIT = "context.image_limit"
 
     /**
      * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
@@ -33,6 +34,25 @@ internal object AppSettings {
     const val DEFAULT_IMAGE_LONG = 2048
     const val DEFAULT_IMAGE_SHORT = 2048
     const val DEFAULT_IMAGE_QUALITY = 90
+
+    /**
+     * 上下文里最多带几张图（D248）。
+     *
+     * 12 是用户定的默认值。上限取 **100**：三家端点里最弱的 Anthropic 就是 100 张/请求
+     * （OpenAI 500、Gemini 3 600）——填得比它大，换一家端点就会 400。
+     */
+    const val DEFAULT_IMAGE_LIMIT = 12
+    const val MAX_IMAGE_LIMIT = 100
+
+    /** 这一轮最多带几张图。**保证在 1..100 之间**：0 张等于把图全关了，超出最弱端点就 400。 */
+    fun imageLimit(context: Context): Int {
+        val value = prefs(context).getInt(KEY_IMAGE_LIMIT, DEFAULT_IMAGE_LIMIT)
+        return value.coerceIn(1, MAX_IMAGE_LIMIT)
+    }
+
+    fun setImageLimit(context: Context, value: Int) {
+        prefs(context).edit().putInt(KEY_IMAGE_LIMIT, value.coerceIn(1, MAX_IMAGE_LIMIT)).apply()
+    }
 
     /**
      * 模型没填上下文窗口时用的参考值。

@@ -28,6 +28,7 @@ use serde_json::json;
 
 mod handles;
 mod icons;
+mod images;
 #[cfg(feature = "jni")]
 mod jni_bridge;
 mod json;

@@ -128,6 +128,10 @@ pub struct ToolContext<'a> {
     /// 正在跑的这一条调用（0.15ak）。`None` = 不是从工具循环里进来的（直接 `invoke`），
     /// 这种调用没有"关闭"可点，也不需要等标志。
     pub call: Option<&'a crate::kills::CallHandle>,
+    /// 这个会话的附件目录（`sessions/<id>/images`）。`View-Image` 只认这里的文件（D248）。
+    pub chat_images: Option<&'a std::path::Path>,
+    /// 上下文图片清单的上限（0 = 用默认 12）。见 [`crate::images`]。
+    pub image_limit: u32,
 }
 
 impl<'a> ToolContext<'a> {
@@ -140,7 +144,16 @@ impl<'a> ToolContext<'a> {
             history: None,
             call_session: None,
             call: None,
+            chat_images: None,
+            image_limit: 0,
         }
+    }
+
+    /// 这个会话的附件目录与图片清单上限（D248）。
+    pub fn with_images(mut self, dir: Option<&'a std::path::Path>, limit: u32) -> Self {
+        self.chat_images = dir;
+        self.image_limit = limit;
+        self
     }
 
     /// 这一轮属于哪条会话（手动关闭的登记键）。
@@ -214,6 +227,8 @@ impl ToolRegistry {
         registry.register(Box::new(SearchTool));
         // 原生命令（D159）：声明另外由 `Capability::NativeShell` 门控，默认不出现。
         registry.register(Box::new(crate::shell::SystemShellTool));
+        // 把图拉进上下文（D248）：读权限门控，不碰工作区。
+        registry.register(Box::new(crate::view_image::ViewImageTool));
         // 容器里的命令（D172）：由 `Capability::ContainerExec` 门控，同样默认不出现。
         registry.register(Box::new(crate::shell::EnvirShellTool));
         // 模型改消息（D177 / 0.14y）：与 `edit_file` 同档能力，但改的是会话不是磁盘。

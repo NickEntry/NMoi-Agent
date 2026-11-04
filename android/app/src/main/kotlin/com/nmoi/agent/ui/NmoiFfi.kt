@@ -192,6 +192,27 @@ internal object NmoiFfi {
     suspend fun turnBusy(session: String): Result<JSONObject> =
         call("turn_busy") { NativeBridge.turnBusyJson(session) }
 
+    /**
+     * 这一轮的上下文图片清单（D248）。
+     *
+     * 只有 `View-Image` 能往里加；界面只能看和移出——界面能加的话，模型就不知道
+     * 上下文里多了什么，那正是"看不见的上下文"。
+     */
+    suspend fun contextImages(session: String): Result<JSONObject> =
+        call("images") { NativeBridge.imagesJson(session) }
+
+    /** 把一张图移出上下文。`removed:false` = 它本来就不在里面，不是失败。 */
+    suspend fun removeContextImage(session: String, id: String): Result<JSONObject> =
+        call("image_remove") {
+            NativeBridge.imageRemoveJson(
+                JSONObject().put("session", session).put("id", id).toString(),
+            )
+        }
+
+    /** 清空这一轮的上下文图片。 */
+    suspend fun clearContextImages(session: String): Result<JSONObject> =
+        call("image_clear") { NativeBridge.imageClearJson(session) }
+
     /** 应用代理配置。`proxy` 为 null 就是关。 */
     suspend fun proxyApply(config: JSONObject): Result<JSONObject> =
         call("proxy_apply") { NativeBridge.proxyApplyJson(config.toString()) }
