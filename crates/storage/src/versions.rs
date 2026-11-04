@@ -12,6 +12,8 @@
 //! 2. `version_no` **永远是 1..=version_count 的连续整数**。删除版本后重新编号，
 //!    这样 UI 上的 `n/n` 不需要再处理空洞。
 //! 3. 每消息上限 [`MAX_VERSIONS`] 版，超了丢**最旧**的一版（丢的是旧，不是当前）。
+//!    50 是 D252 定的：正常结束默认"留两版"，重试频繁的人会很快撞上 20，
+//!    而撞上之后是静默丢最旧的——用户会觉得"我明明留了，怎么没了"。
 //! 4. **用户编辑就地改这两份正文**（D152）：改原文就写 `origin_message`，改 AI 那份就写 `tooledit_message`，
 //!    两组各改各的列，互不覆盖。v6 那套"另存一份 user_text"已经删掉了——一版只存得下一份覆盖层，
 //!    改过一组再改另一组，前一次就没了。
@@ -25,7 +27,7 @@ use crate::repo::StorageError;
 use crate::Storage;
 
 /// 每消息最多保留多少版。超了丢最旧的那一版（当前显示的那一版永不丢）。
-pub const MAX_VERSIONS: i64 = 20;
+pub const MAX_VERSIONS: i64 = 50;
 
 /// 这一版现在显示的是哪一组正文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

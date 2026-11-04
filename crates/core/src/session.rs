@@ -831,15 +831,17 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
             "这一轮模型没有给出正文，也没有工具调用，没有可落的东西".into(),
         ));
     }
-    // 重试/续话要落版本时，**空正文一版都不落**（D251）。
+    // 只存结束（D252）：**正文为空就什么都不落**——版本不落，新消息也不落。
     //
     // 2026-11-04 真机：模型在"思考 + 试工具"里打转，用户点停止，正文是空的，
     // 结果库里多了一版空正文——界面上是 `<3/3>` + 「（空消息）」，而上面还挂着旧的工具块。
     // 空正文的版本还会让 `load_units` 整页读不出来（`pitfalls.md` 2026-11-03 那条 `EmptyMessage`）。
-    // 界面上"这一版还没写"只能活在流里，不能变成一条记录。
-    if target.is_some() && report.text.trim().is_empty() {
+    //
+    // 两条路都要拦：`target` 有值走"落版本"，没值走"追加一条新消息"——后者落一条空消息
+    // 同样是脏数据（`Message::validate` 会直接把它判成 `EmptyMessage`）。
+    if report.text.trim().is_empty() {
         return Err(SessionError::Save(
-            "这一轮只有思考与工具调用，没有正文：不落这一版（旧的那一版留着）".into(),
+            "这一轮只有思考与工具调用，没有正文：没有可落的东西（旧的那一版留着）".into(),
         ));
     }
 
@@ -1408,6 +1410,68 @@ mod tests {
         assert_eq!(
             landed[0].1, "从前有座山山里有座庙",
             "落库的应该是接好的全文，不是只有后半段"
+        );
+    }
+
+    /// 只存结束（D252）：这一轮只有工具调用、没有正文时，**一版都不落**。
+    ///
+    /// 2026-11-04 真机：模型在"思考 + 试工具"里打转，用户点停止，正文是空的，
+    /// 库里却多了一版空正文——界面上 `<3/3>` + 「（空消息）」，旧块还挂在上面。
+    /// 判据：`regenerate_turn` 直接回错，而且**没有碰到 store**（`MemStore` 那条
+    /// "不支持记版本"的错误不该出现——出现了就说明闸门没拦住）。
+    #[test]
+    fn a_turn_without_text_lands_no_version() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = MemStore {
+            units: Mutex::new(Vec::new()),
+        };
+        let unit = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "跑个命令",
+            4,
+            1_000,
+            LogicalClock::new(1),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(unit).unwrap())
+            .unwrap();
+
+        // 两轮都只给工具调用：第一轮执行，第二轮是"到顶之后那一轮不带工具的收尾"，
+        // 它还是只给工具调用 → `finished=false`、正文为空。
+        let call = r#"{"choices":[{"message":{"content":"","tool_calls":[{"id":"c1","function":{"name":"list_dir","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let transport = Scripted::new(vec![call.to_string(), call.to_string()]);
+        let client = ChatClient::new(transport);
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let mut config = SessionConfig::default();
+        config.turn.max_rounds = 1;
+
+        let error = regenerate_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            &MessageId::new(session, 1),
+            None,
+            false,
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            2_000,
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("没有正文"),
+            "要报「只有思考与工具调用、没有正文」：{text}"
+        );
+        assert!(
+            !text.contains("不支持记版本"),
+            "闸门要在碰 store 之前拦住：{text}"
         );
     }
 

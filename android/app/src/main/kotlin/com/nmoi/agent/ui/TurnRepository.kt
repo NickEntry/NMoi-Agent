@@ -35,6 +35,9 @@ internal data class TurnOutcome(
         }
         val failed = if (failedEdits > 0) "，$failedEdits 处没写进去（原因在日志）" else ""
         return when {
+            // 停止（D252）：正文为空时**这一版没有落库**，措辞要说清，别让人以为存了个空壳。
+            cancelled && length == 0 ->
+                "已停止：这一轮没有正文，没有落版本（旧的那一版留着）"
             cancelled -> "已停止（这一轮留下的正文长度 $length$edited$failed）"
             // 这句以前写「轮数用尽，模型没收尾」——像在报错，其实是我自己设的上限。
             // 现在上限可调（D244），文案也要写清"这是上限、不是模型坏了"。
