@@ -52,6 +52,13 @@ internal data class LiveReply(
     val sawDelta: Boolean = false,
     /** 正在跑的工具调用（0.15ak）。空 = 这一拍没有工具在跑。 */
     val calls: List<RunningCall> = emptyList(),
+    /**
+     * 这一轮是**重试/续话**（D249）：正文画在目标消息的位置上，旧的那一版还在库里。
+     *
+     * 只影响那一行说明——"正在生成"和"正在重写这一版"对用户是两件事：
+     * 前者以为多了一条消息，后者知道自己刚才点的是重试、旧的切得回去。
+     */
+    val regen: Boolean = false,
 )
 
 /**

@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import android.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -744,52 +745,65 @@ internal fun ChatScreen(
             } else {
                 ""
             }
-            live = LiveReply(round = 0, running = true, text = before, prefix = before)
+            live = LiveReply(round = 0, running = true, text = before, prefix = before, regen = true)
             settling = false
             // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
             GeneratingTracker.mark(sid, true)
-            val result = TurnRepository.regen(
-                context = context,
-                databasePath = databasePath,
-                sessionId = sid,
-                upTo = upTo,
-                target = target,
-                // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
-                allowNewVersion = AppSettings.allowNewVersion(context),
-                append = append,
-                stream = assistant.stream,
-            )
-            // 残文要在清掉 `live` 之前取：失败三选一里「保留这一版」存的就是这一份。
-            val partial = live?.text.orEmpty()
-            val partialReasoning = live?.reasoning.orEmpty()
-            runningSession = null
-            GeneratingTracker.mark(sid, false)
-            busy = false
-            live = null
-            regenTarget = null
-            settling = false
-            reloadKey += 1
-            result.fold(
-                onSuccess = { outcome ->
-                    notice = (if (append) "续话：" else "重试：") + outcome.describe()
-                },
-                onFailure = { error ->
-                    val reason = error.message ?: "原因不明"
-                    if (target != null) {
-                        // 三选一（D228）：这一版要不要留、上一版要不要留，由用户定。
-                        // 一个字都没收到时也弹——「保留这一版」灰着写原因，
-                        // 比一行会自己消失的提示更能说清"你的消息还在"。
-                        regenFailure = RegenFailure(
-                            messageId = target,
-                            text = partial,
-                            reasoning = partialReasoning,
-                            reason = reason,
-                        )
-                    } else {
-                        notice = (if (append) "续话失败：" else "重试失败：") + reason
-                    }
-                },
-            )
+            try {
+                val result = TurnRepository.regen(
+                    context = context,
+                    databasePath = databasePath,
+                    sessionId = sid,
+                    upTo = upTo,
+                    target = target,
+                    // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
+                    allowNewVersion = AppSettings.allowNewVersion(context),
+                    append = append,
+                    stream = assistant.stream,
+                )
+                result.fold(
+                    onSuccess = { outcome ->
+                        notice = (if (append) "续话：" else "重试：") + outcome.describe()
+                    },
+                    onFailure = { error ->
+                        // 残文要在清掉 `live` 之前取：三选一里「保留这一版」存的就是这一份。
+                        val partial = live?.text.orEmpty()
+                        val partialReasoning = live?.reasoning.orEmpty()
+                        val reason = error.message ?: "原因不明"
+                        if (target != null) {
+                            // 三选一（D228）：这一版要不要留、上一版要不要留，由用户定。
+                            // 一个字都没收到时也弹——「保留这一版」灰着写原因，
+                            // 比一行会自己消失的提示更能说清"你的消息还在"。
+                            regenFailure = RegenFailure(
+                                messageId = target,
+                                text = partial,
+                                reasoning = partialReasoning,
+                                reason = reason,
+                            )
+                        } else {
+                            notice = (if (append) "续话失败：" else "重试失败：") + reason
+                        }
+                    },
+                )
+            } catch (cancelled: CancellationException) {
+                // 页面走了：状态跟着一起销毁，不用收尾（也不该在这里写 state）。
+                throw cancelled
+            } catch (failure: Throwable) {
+                // **这条 catch 是补出来的**（2026-11-04）：以前只要 `regen` 抛出来（不是回
+                // `Result.failure`），协程就死在这一行，下面的 `busy = false` 永远不执行——
+                // 界面上"正在生成"一直转，而原生那边早就没有请求了。
+                notice = (if (append) "续话失败：" else "重试失败：") +
+                    (failure.message ?: failure.javaClass.simpleName)
+            } finally {
+                // 收尾只写一次，放在 finally 里：抛不抛都得把界面收干净。
+                runningSession = null
+                GeneratingTracker.mark(sid, false)
+                busy = false
+                live = null
+                regenTarget = null
+                settling = false
+                reloadKey += 1
+            }
         }
     }
 
@@ -859,25 +873,85 @@ internal fun ChatScreen(
             busy -> notice = "上一轮还没结束（要打断就先点停止）"
             else -> scope.launch {
                 busy = true
-                val sid = sessionId ?: onCreateSession()
-                if (sid == null) {
-                    notice = "建会话失败：原因在 设置 → 调试 → 日志"
-                } else {
-                    ChatRepository.append(databasePath, sid, role, text).fold(
-                        onSuccess = {
-                            draft = ""
-                            reloadKey += 1
-                            notice = if (role == "user") {
-                                "已存为用户消息（没发给模型）"
-                            } else {
-                                "已存为助手消息（没发给模型）"
-                            }
-                        },
-                        onFailure = { notice = "存失败：${it.message}" },
-                    )
+                try {
+                    val sid = sessionId ?: onCreateSession()
+                    if (sid == null) {
+                        notice = "建会话失败：原因在 设置 → 调试 → 日志"
+                    } else {
+                        ChatRepository.append(databasePath, sid, role, text).fold(
+                            onSuccess = {
+                                draft = ""
+                                reloadKey += 1
+                                notice = if (role == "user") {
+                                    "已存为用户消息（没发给模型）"
+                                } else {
+                                    "已存为助手消息（没发给模型）"
+                                }
+                            },
+                            onFailure = { notice = "存失败：${it.message}" },
+                        )
+                    }
+                } finally {
+                    // 与重试那条同一个道理（D249）：抛出去也得把 `busy` 收回来，
+                    // 否则整页再也发不出东西。
+                    busy = false
                 }
-                busy = false
             }
+        }
+    }
+
+    /**
+     * 把"以为在跑、其实没在跑"的状态收干净（D249）。
+     *
+     * watchdog 与「停止」键共用这一份：两处各写一遍，迟早一边忘了清 `pending` 或 `live`。
+     * 收完补领一次结果——那一轮可能刚好在这一段里结束。
+     */
+    fun clearStuckTurn() {
+        val sid = sessionId ?: return
+        busy = false
+        runningSession = null
+        GeneratingTracker.mark(sid, false)
+        settling = false
+        live = null
+        regenTarget = null
+        pending = null
+        reloadKey += 1
+        notice = when (val missed = TurnRunner.takeRecent(sid)) {
+            is TurnEvent.Finished -> missed.message
+            is TurnEvent.Failed -> missed.message
+            else -> "这一轮在原生那边已经结束了（界面刚才没收到收尾）：没有新消息就是它失败了，原因在 设置 → 调试 → 日志"
+        }
+    }
+
+    /**
+     * 状态对账（D249）：**`busy` 只能由"原生那一轮真的结束了"来清**。
+     *
+     * 为什么要有这一条：`busy` 原来只有两个清的地方——发送那条路等 `TurnEvent.Finished`，
+     * 重试那条路等 `regen(...)` 返回。两个都可能漏：事件丢了（页面刚重组完）、
+     * 协程死在中途（抛在 `Result` 之外）、native 卡住不返回。任何一种都让界面永远停在
+     * "正在生成"，而原生那边早就没有请求了——用户看到的就是"卡住了，也不发请求"。
+     *
+     * 判据跟 D236 一样：**以原生为准**。连续三拍（约 3 秒）都说没在跑才收——
+     * 刚点下去那一小段 native 还没登记，一看见 false 就收会误杀刚起的一轮。
+     */
+    LaunchedEffect(sessionId, busy) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (!busy) return@LaunchedEffect
+        var idle = 0
+        while (busy) {
+            delay(1_000)
+            if (!busy) break
+            val running = withContext(Dispatchers.IO) {
+                NmoiFfi.turnBusy(sid).getOrNull()?.optBoolean("running") ?: true
+            }
+            if (running) {
+                idle = 0
+                continue
+            }
+            idle += 1
+            if (idle < 3) continue
+            clearStuckTurn()
+            break
         }
     }
 
@@ -1171,15 +1245,19 @@ internal fun ChatScreen(
                         val running = runningSession
                             ?: sessionId?.takeIf { GeneratingTracker.isRunning(it) }
                         if (running == null) {
+                            // 界面以为在跑、原生那边其实早就没了（D249）：把状态收干净再说话。
+                            clearStuckTurn()
                             notice = "这一轮已经收尾了"
                         } else {
                             scope.launch {
                                 TurnRepository.cancel(running).fold(
                                     onSuccess = { cancelled ->
-                                        notice = if (cancelled) {
-                                            "已请求停止：当前这一次请求回来之后就不再往下走了"
+                                        if (cancelled) {
+                                            notice = "已请求停止：当前这一次请求回来之后就不再往下走了"
                                         } else {
-                                            "这一轮已经收尾了"
+                                            // 点晚了一拍：原生那边没有在跑的这一轮。别把界面留在"生成中"。
+                                            clearStuckTurn()
+                                            notice = "这一轮已经收尾了"
                                         }
                                     },
                                     onFailure = { notice = "取消失败：${it.message}" },
@@ -2142,6 +2220,9 @@ private fun LiveReplyRow(
         }
         val note = when {
             reply.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里，点一下收掉）"
+            reply.regen && reply.text.isBlank() && reply.reasoning.isBlank() ->
+                "正在重写这一版…（旧的留着，切得回去）"
+            reply.regen -> "正在重写这一版…（旧的留着；停止键随时可用）"
             reply.text.isBlank() && reply.reasoning.isBlank() -> "正在生成…"
             else -> "正在生成…（停止键随时可用）"
         }
@@ -2827,6 +2908,11 @@ private fun AssistantMessage(
             }
             val note = when {
                 live.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里）"
+                // 重试（D249）：旧的那一版还在库里，这一版写完才落成 `<n+1>/<n+1>`。
+                // 写清楚，否则用户看到正文"变空了"会以为刚才那条被删了。
+                live.regen && live.text.isBlank() && live.reasoning.isBlank() ->
+                    "正在重写这一版…（旧的留着，切得回去）"
+                live.regen -> "正在重写这一版…（旧的留着；停止键随时可用）"
                 live.text.isBlank() && live.reasoning.isBlank() -> "正在生成…"
                 else -> "正在生成…（停止键随时可用）"
             }
