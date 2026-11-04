@@ -1053,3 +1053,32 @@ Gemini 老接口的同名并行（`functionResponse` 只认函数名，要等 In
 **测试**：`read_lane_runs_a_batch_at_once`（三条同时在跑，峰值 3）、
 `workspace_lane_keeps_calls_serial`（峰值 1）、`batch_records_come_back_in_call_order`
 （完成顺序 2、1、0，回填必须是 0、1、2）、`a_cancelled_batch_dispatches_nothing`。
+
+## D255 消息 = parts：第一批（内存模型）（2026-11-04）
+
+用户 2026-11-04 拍板「全做 / 全存 / 升」，这一条记第一批落地的东西。
+
+**改了什么**：`Message` 不再有 `content` / `reasoning` / `tool_calls` 三个字段，
+只剩 `parts: Vec<Part>`；`content()` / `reasoning()` / `tool_calls()` 都是从 parts 投影出来的方法。
+`Part` 五种：`Text` / `Reasoning` / `Tool` / `Image` / `Notice`。
+
+**为什么先做内存、后做库**：库的形状一改，读写两侧必须同时改完才能编译；
+而内存模型可以先把 358 个调用点搬完、让 648 条测试全绿，再单独动 schema。
+顺序反了就是"库已经换了、代码还没跟上"的半天不可用状态。
+
+**两条顺序规则**（写进代码）：
+
+1. **思考 → 正文 → 工具**。`set_reasoning` 插到最前，`set_text` 插在第一个工具块之前。
+   模型是"先想、再说、再调工具"；顺序反了，界面上读起来像两次回答。
+2. **`ToolPart.part` 与 `ToolPart.call_id` 分开**。前者是"这条消息里的第几块"（稳定、不复用），
+   后者是模型给的调用 id（结果按它配对）。合成一个字段，改一次调用 id 会把 part 的身份也改掉。
+
+**这一批的代价**：`content()` 返回 `String`（不是 `&str`），几处"把 `as_str()` 传进迭代器"的
+地方要先把值 bind 出来（`budget::breakdown_of_units`、`session::request_pieces`）。
+`request_pieces` 因此从 `Vec<&str>` 变成 `Vec<String>`——多一次分配，换来不用管生命周期。
+
+**没做**：库还是老列（`content` / `reasoning` / `tool_calls`），读写两侧在 `repo.rs` 里做投影；
+v15 的表、折行、版本 `parts_json`、编辑按 part id 都在后面的批次（见 `docs/message-parts.md` §12）。
+
+**测试**：`parts_are_the_only_source_of_text_reasoning_and_calls`（投影与顺序）、
+`set_text_replaces_instead_of_appending`（改正文是替换，不是追加）。

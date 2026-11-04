@@ -51,7 +51,7 @@ fn shown(storage: &Storage, session: SessionId, id: &MessageId) -> String {
         .iter()
         .flat_map(|unit| unit.messages.iter())
         .find(|message| &message.id == id)
-        .map(|message| message.content.clone())
+        .map(|message| message.content().clone())
         .expect("消息还在")
 }
 

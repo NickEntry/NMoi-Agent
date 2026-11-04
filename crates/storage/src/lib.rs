@@ -611,7 +611,7 @@ mod tests {
 
         // 内容与 seq 一致，但 id 属于新会话——抄漏 id 会让两条会话抢同一行主键。
         for (before, after) in original[0].messages.iter().zip(&duplicated[0].messages) {
-            assert_eq!(before.content, after.content);
+            assert_eq!(before.content(), after.content());
             assert_eq!(before.id.seq(), after.id.seq());
             assert_eq!(after.id.session(), copy);
             assert_eq!(after.unit_id.session(), copy);

@@ -51,7 +51,7 @@ fn conversation_and_units_roundtrip() {
 
     let units = storage.load_units(session).unwrap();
     assert_eq!(units.len(), 2);
-    assert_eq!(units[0].messages[0].content, "你好");
+    assert_eq!(units[0].messages[0].content(), "你好");
     assert_eq!(storage.message_count(session).unwrap(), 2);
 
     // 重开后数据仍在。
@@ -216,7 +216,7 @@ fn edits_are_persisted_with_audit() {
     storage.save_message_edit(session, &unit, &outcome).unwrap();
 
     let loaded = storage.load_unit(&unit.id).unwrap();
-    assert_eq!(loaded.messages[0].content, "改过的正文");
+    assert_eq!(loaded.messages[0].content(), "改过的正文");
     assert_eq!(loaded.messages[0].revision, 1);
     assert_eq!(storage.edit_count(session).unwrap(), 1);
 }
@@ -470,7 +470,7 @@ fn storage_implements_the_history_store_trait() {
     HistoryStore::append_unit(&mut storage, session, &unit).unwrap();
     let loaded = HistoryStore::load_units(&storage, session).unwrap();
     assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].messages[0].content, "在吗");
+    assert_eq!(loaded[0].messages[0].content(), "在吗");
 }
 
 /// D89：一轮跑自己的连接，两条连接同时开着也要互相看得见。

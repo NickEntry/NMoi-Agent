@@ -389,7 +389,7 @@ impl StreamParser {
             "response.reasoning_summary_text.delta"
             | "response.reasoning_text.delta"
             | "response.reasoning_summary.delta"
-            | "response.reasoning.delta" => {
+            | "response.reasoning().delta" => {
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                     if !delta.is_empty() {
                         events.push(StreamEvent::Reasoning(delta.to_string()));

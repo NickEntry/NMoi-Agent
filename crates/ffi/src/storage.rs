@@ -783,17 +783,17 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "seq": message.id.seq(),
                                 "role": message.role.as_str(),
                                 "source": message.source.as_str(),
-                                "content": message.content,
+                                "content": message.content(),
                                 // 思考块（D158）：以前只存不发，界面上根本看不到它——
                                 // "存了但看不见"正是用户最反感的那种。这里带出去。
-                                "reasoning": message.reasoning,
+                                "reasoning": message.reasoning(),
                                 // 工具调用的参数原文：增强编辑要能在界面上指出"改的是哪一块"，
                                 // 只给个数是不够的。
                                 "tool_call_args": message
-                                    .tool_calls
+                                    .tool_calls()
                                     .iter()
                                     .map(|call| json!({
-                                        "call_id": call.id,
+                                        "call_id": call.call_id,
                                         "name": call.name,
                                         "arguments": call.arguments,
                                     }))
@@ -805,7 +805,7 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "pinned": message.pinned,
                                 "protected": message.protected,
                                 "revision": message.revision,
-                                "tool_calls": message.tool_calls.len(),
+                                "tool_calls": message.tool_calls().len(),
                                 "tool_call_id": message.tool_call_id,
                                 // 版本（D137）：`version_count <= 1` 时 UI 不显示切换控件。
                                 // `version_edited` 决定那个数字的颜色：白 / 蓝 / 红。

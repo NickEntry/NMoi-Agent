@@ -1,6 +1,6 @@
 //! 单元级编辑（0.15f / D188）落库的四个判据。
 //!
-//! 1. **正文改写落红**：`messages.content` 是改后那份，原文还在 `origin_message` 里，
+//! 1. **正文改写落红**：`messages.content()` 是改后那份，原文还在 `origin_message` 里，
 //!    版本控件出现（`<1/1>` 的由来），切回蓝能看见原文；
 //! 2. **工具对成对删**：调用与结果两条行一起消失，原文留在 undo 日志里；
 //! 3. **单边删被拒**：库一点不动（不是"删了一半再报错"）；
@@ -102,7 +102,7 @@ fn red_output_edit_keeps_the_original_and_shows_the_new_one() {
     assert!(outcome.unchanged.is_empty());
 
     // 屏幕上（= 库里 content）是改后那份。
-    assert_eq!(all_messages(&storage, session)[0].content, "改成这样");
+    assert_eq!(all_messages(&storage, session)[0].content(), "改成这样");
 
     // 版本控件出现，而且红的那一份就是改后：这就是 `<1/1>` 的由来。
     let versions = storage.list_message_versions(&id).unwrap();
@@ -238,7 +238,7 @@ fn one_bad_op_leaves_the_whole_batch_unwritten() {
         .unwrap_err();
     assert!(error.to_string().contains("工具"), "{error}");
 
-    assert_eq!(all_messages(&storage, session)[0].content, "正文");
+    assert_eq!(all_messages(&storage, session)[0].content(), "正文");
     assert_eq!(storage.undo_count(session).unwrap(), 0);
 }
 
@@ -271,5 +271,5 @@ fn per_session_cap_stops_at_the_limit() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("上限"), "{error}");
-    assert_eq!(all_messages(&storage, session)[0].content, "第 49 次");
+    assert_eq!(all_messages(&storage, session)[0].content(), "第 49 次");
 }

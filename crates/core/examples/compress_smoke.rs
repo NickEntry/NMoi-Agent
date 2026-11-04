@@ -199,7 +199,7 @@ fn main() -> ExitCode {
         "--- {:.2}s 往返 {} 次 / 工具调用 {} 次 / 覆盖率退回 {} 次 / 结束原因 {:?}",
         started.elapsed().as_secs_f64(),
         report.exchanges,
-        report.tool_calls,
+        report.tool_calls.clone(),
         report.rejections,
         report.finish
     );

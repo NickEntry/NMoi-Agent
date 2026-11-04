@@ -88,8 +88,8 @@ fn editing_thinking_leaves_the_body_alone() {
     assert_eq!(outcome.revision, 1);
 
     let message = last_message(&storage, session, &id);
-    assert_eq!(message.reasoning.as_deref(), Some("换一个思路"));
-    assert_eq!(message.content, "正文", "改思考不该动正文");
+    assert_eq!(message.reasoning().as_deref(), Some("换一个思路"));
+    assert_eq!(message.content(), "正文", "改思考不该动正文");
     assert_eq!(message.revision, 1);
     // 审计表里留了一行，否则 undo 与同步冲突都没有依据。
     assert_eq!(storage.edit_count(session).unwrap(), 1);
@@ -110,11 +110,11 @@ fn editing_tool_arguments_keeps_the_name_and_the_call_id() {
         .unwrap();
 
     let message = last_message(&storage, session, &id);
-    assert_eq!(message.tool_calls.len(), 1);
-    assert_eq!(message.tool_calls[0].arguments, "{\"path\":\"b\"}");
+    assert_eq!(message.tool_calls().len(), 1);
+    assert_eq!(message.tool_calls()[0].arguments, "{\"path\":\"b\"}");
     // 名字决定下一轮怎么解释这一块，call_id 决定它跟哪条结果配对——都不许被编辑改掉。
-    assert_eq!(message.tool_calls[0].name, "read_file");
-    assert_eq!(message.tool_calls[0].id, "call-1");
+    assert_eq!(message.tool_calls()[0].name, "read_file");
+    assert_eq!(message.tool_calls()[0].call_id, "call-1");
 }
 
 #[test]
@@ -182,8 +182,12 @@ fn the_history_store_trait_can_write_a_block() {
     assert_eq!(outcome.revision, 1);
 
     let message = last_message(&storage, session, &id);
-    assert_eq!(message.content, "模型改过的正文");
-    assert_eq!(message.reasoning.as_deref(), Some("原来的思考"), "只动正文");
+    assert_eq!(message.content(), "模型改过的正文");
+    assert_eq!(
+        message.reasoning().as_deref(),
+        Some("原来的思考"),
+        "只动正文"
+    );
     assert_eq!(storage.edit_count(session).unwrap(), 1, "审计表也要有一行");
 
     // 界面重读走的是 `load_units`：模型改完那一轮，消息区拿到的必须已经是新正文（铁律①）。

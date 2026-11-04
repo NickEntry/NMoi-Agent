@@ -1221,7 +1221,7 @@ impl Tool for EditUnitTool {
             ));
         }
 
-        let call_count = message.tool_calls.len();
+        let call_count = message.tool_calls().len();
         for op in &call.ops {
             let block = op.block();
             // 正文没有"删掉"这一说：删了这条消息就是空壳。
@@ -1240,7 +1240,7 @@ impl Tool for EditUnitTool {
                 ));
             }
             // 结果在不在：找不到就是单元还没闭合，改完也发不出去。
-            let call_id = &message.tool_calls[index].id;
+            let call_id = &message.tool_calls()[index].call_id;
             if !history
                 .iter()
                 .any(|other| other.tool_call_id.as_deref() == Some(call_id.as_str()))

@@ -662,7 +662,7 @@ pub fn breakdown_of_units(units: &[AtomicUnit], estimator: Option<&Estimator<'_>
         let mcp = unit
             .messages
             .iter()
-            .flat_map(|message| message.tool_calls.iter())
+            .flat_map(|message| message.outgoing_calls())
             .any(|call| is_mcp_tool(&call.name));
         for message in &unit.messages {
             let tool_side = matches!(
@@ -675,26 +675,28 @@ pub fn breakdown_of_units(units: &[AtomicUnit], estimator: Option<&Estimator<'_>
                 segment_of(message.source)
             };
             let tokens = match estimator {
-                Some(estimator) => u64::from(
-                    estimator
-                        .estimate_all(
-                            std::iter::once(message.content.as_str())
-                                // 思考内容也是要付钱的输入。
-                                .chain(message.reasoning.as_deref())
-                                // 工具调用参数在 `tool_calls` 里，不在 `content` 里。
-                                .chain(
-                                    message
-                                        .tool_calls
-                                        .iter()
-                                        .map(|call| call.arguments.as_str()),
-                                ),
-                        )
-                        .tokens,
-                ),
+                Some(estimator) => {
+                    // 先把这一条摊平：`content()` / `reasoning()` 返回的是新建的 String，
+                    // 直接在 `estimate_all` 的迭代器里取 `as_str()` 会借用已释放的临时值。
+                    let content = message.content();
+                    let reasoning = message.reasoning();
+                    let calls = message.outgoing_calls();
+                    u64::from(
+                        estimator
+                            .estimate_all(
+                                std::iter::once(content.as_str())
+                                    // 思考内容也是要付钱的输入。
+                                    .chain(reasoning.as_deref())
+                                    // 工具调用参数在 `tool_calls` 里，不在 `content` 里。
+                                    .chain(calls.iter().map(|call| call.arguments.as_str())),
+                            )
+                            .tokens,
+                    )
+                }
                 None => {
                     u64::from(message.tokens)
                         + message
-                            .reasoning
+                            .reasoning()
                             .as_deref()
                             .map_or(0, |text| u64::from(estimate_tokens(text)))
                 }
@@ -991,7 +993,7 @@ mod tests {
             0,
             crate::clock::LogicalClock::new(1),
         );
-        message.reasoning = Some("先想一想".to_string());
+        message.set_reasoning(Some("先想一想".to_string()));
         let unit = AtomicUnit::turn(message).expect("文本身份");
 
         let stored = breakdown_of_units(std::slice::from_ref(&unit), None);
@@ -1068,7 +1070,7 @@ mod tests {
             1_000,
             crate::clock::LogicalClock::new(1),
         );
-        message.reasoning = Some("先看看".to_string());
+        message.set_reasoning(Some("先看看".to_string()));
         let unit = AtomicUnit::turn(message).expect("单条文本单元");
 
         let breakdown = breakdown_of_units(&[unit], None);

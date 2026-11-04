@@ -476,7 +476,7 @@ mod tests {
         let id = engine.finish_turn_incomplete(usage(10, 3)).unwrap();
 
         let last = engine.history().last().unwrap();
-        assert_eq!(last.messages[0].content, "说到一半");
+        assert_eq!(last.messages[0].content(), "说到一半");
         assert!(last.messages[0].incomplete, "断流必须留标记");
         assert_eq!(last.messages[0].id, id);
 

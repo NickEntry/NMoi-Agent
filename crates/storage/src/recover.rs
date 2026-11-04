@@ -116,7 +116,7 @@ impl Storage {
                         .messages
                         .iter()
                         .filter(|message| message.role == Role::Assistant)
-                        .flat_map(|message| message.tool_calls.iter())
+                        .flat_map(|message| message.outgoing_calls())
                         .filter(|call| pending.iter().any(|id| *id == call.id))
                         .map(|call| (call.id.clone(), call.name.clone()))
                         .collect();

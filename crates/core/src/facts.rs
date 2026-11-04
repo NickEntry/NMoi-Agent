@@ -229,7 +229,7 @@ fn push(facts: &mut Vec<RawFact>, raw: &str, kind: FactKind, severity: Severity)
 /// 抽一条消息里的事实，并带上消息坐标。
 pub fn extract(message: &Message) -> Vec<Fact> {
     let strict = message.protected || message.role == Role::User;
-    extract_text(&message.content, strict)
+    extract_text(&message.content(), strict)
         .into_iter()
         .map(|raw| Fact {
             message: message.id.clone(),

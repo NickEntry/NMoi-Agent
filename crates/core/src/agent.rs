@@ -118,7 +118,7 @@ pub struct TurnReport {
     pub rounds_detail: Vec<TurnRound>,
     /// 最后一轮**非空**的思考内容。空串 = 这一次没有思考。
     ///
-    /// 为什么要单独带出来：`Completion.reasoning` 以前在 `run_turn` 里被丢掉了，
+    /// 为什么要单独带出来：`Completion.reasoning()` 以前在 `run_turn` 里被丢掉了，
     /// 结果是"供应商后台看得到思考、客户端库里一条都没有"，界面上自然也就没有思考卡。
     /// 取"最后一轮非空"而不是"最后一轮"：收尾那一轮常常只回一句话、没有思考，
     /// 而用户想看的正是最后那次推理。
@@ -188,7 +188,7 @@ pub fn run_turn<T: Transport>(
     // 已经在上下文里的部分先记上：截断判据比的是"整份提示 + 新长出来的"。
     let mut spent: u64 = history
         .iter()
-        .map(|message| u64::from(estimate_tokens(&message.content)))
+        .map(|message| u64::from(estimate_tokens(&message.content())))
         .sum();
 
     // 到上限之后**再给一轮**：这一轮不带工具，让它把话说完（D244）。
@@ -275,7 +275,7 @@ pub fn run_turn<T: Transport>(
             }
         }
         report.text = visible.clone();
-        // 这一轮**自己**的思考：`report.reasoning` 取"最后一轮非空"（收尾那轮常常没思考），
+        // 这一轮**自己**的思考：`report.reasoning()` 取"最后一轮非空"（收尾那轮常常没思考），
         // 但落库要按轮给，所以这里单独算一份。
         let round_reasoning = if !completion.reasoning.trim().is_empty() {
             // 端点自己给了 `reasoning_content`：以它为准（结构化的那份更可信）。
@@ -357,7 +357,7 @@ pub fn run_turn<T: Transport>(
         );
         // 落库的是**切掉标签之后**的正文：历史里再出现 `<tool_call>` 会让下一轮模型
         // 以为上一轮没执行，重复调用。
-        assistant.content = visible.clone();
+        assistant.set_text(visible.clone());
         if !completion.reasoning.trim().is_empty() {
             assistant = assistant.with_reasoning(&completion.reasoning);
         }

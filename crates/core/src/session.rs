@@ -328,8 +328,8 @@ fn with_task_anchor(summary: Option<Message>, compacted: bool, user_text: &str) 
     }
     let mut message = summary?;
     let anchor = crate::anchor::build_task_anchor(user_text);
-    message.content = format!("{}\n\n{anchor}", message.content);
-    message.tokens = estimate_tokens(&message.content);
+    message.set_text(format!("{}\n\n{anchor}", message.content()));
+    message.tokens = estimate_tokens(&message.content());
     Some(message)
 }
 
@@ -712,12 +712,8 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     let calibration = if config.suppress_compression {
         None
     } else {
-        let whole = estimator.estimate_all(request_pieces(
-            &units_before,
-            window.summary.as_deref(),
-            &user,
-            &report,
-        ));
+        let pieces = request_pieces(&units_before, window.summary.as_deref(), &user, &report);
+        let whole = estimator.estimate_all(pieces.iter().map(|text| text.as_str()));
         estimator.observe_usage(u64::from(report.usage.prompt_tokens), &whole, now)
     };
 
@@ -817,7 +813,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .rev()
         .flat_map(|unit| unit.messages.iter().rev())
         .find(|message| message.role == Role::User)
-        .map(|message| message.content.clone())
+        .map(|message| message.content().clone())
         .unwrap_or_default();
     let summary = with_task_anchor(summary_message, compacted, &last_user);
 
@@ -889,9 +885,9 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
                     .iter()
                     .flat_map(|unit| unit.messages.iter())
                     .find(|message| &message.id == target)
-                    .map(|message| message.content.as_str())
+                    .map(|message| message.content())
                     .unwrap_or_default();
-                join_continuation(before, &report.text)
+                join_continuation(&before, &report.text)
             } else {
                 report.text.clone()
             };
@@ -1028,33 +1024,33 @@ fn tokens_of(estimator: &Estimator<'_>, units: &[AtomicUnit]) -> u64 {
 ///
 /// 校准要的是"真实值 ÷ 我们的估算"这一对比率，两边必须指同一份东西：
 /// 少算一段，因子就虚高；多算一段，因子就虚低。
-fn request_pieces<'a>(
-    units: &'a [AtomicUnit],
-    summary: Option<&'a str>,
-    user: &'a Message,
-    report: &'a crate::agent::TurnReport,
-) -> Vec<&'a str> {
-    let mut pieces = Vec::new();
+fn request_pieces(
+    units: &[AtomicUnit],
+    summary: Option<&str>,
+    user: &Message,
+    report: &crate::agent::TurnReport,
+) -> Vec<String> {
+    let mut pieces: Vec<String> = Vec::new();
     // 摘要是请求的第一段（D149）：不算进来的话，压过的会话会显得"估多了"，
     // 校准因子被拉低，下一轮就开始低估。
     if let Some(summary) = summary {
-        pieces.push(summary);
+        pieces.push(summary.to_string());
     }
     for unit in units {
         for message in &unit.messages {
-            pieces.push(message.content.as_str());
-            if let Some(reasoning) = message.reasoning.as_deref() {
+            pieces.push(message.content());
+            if let Some(reasoning) = message.reasoning() {
                 pieces.push(reasoning);
             }
-            for call in &message.tool_calls {
-                pieces.push(call.arguments.as_str());
+            for call in message.tool_calls() {
+                pieces.push(call.arguments.clone());
             }
         }
     }
-    pieces.push(user.content.as_str());
-    pieces.push(report.text.as_str());
+    pieces.push(user.content());
+    pieces.push(report.text.clone());
     for record in &report.tool_calls {
-        pieces.push(record.outcome.as_str());
+        pieces.push(record.outcome.clone());
     }
     pieces
 }
@@ -1819,7 +1815,7 @@ mod tests {
         assert!(turn.report.tool_calls.is_empty(), "取消发生在工具执行之前");
 
         let assistant = turn.assistant.expect("模型说过的话要留下，不能凭空吞掉");
-        assert_eq!(assistant.content, "我看看目录");
+        assert_eq!(assistant.content(), "我看看目录");
         assert!(assistant.incomplete, "被掐断的必须标 incomplete");
 
         let units = store.load_units(session).unwrap();
@@ -1850,8 +1846,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(turn.user.content, "在吗");
-        assert_eq!(turn.assistant.clone().unwrap().content, "好的");
+        assert_eq!(turn.user.content(), "在吗");
+        assert_eq!(turn.assistant.clone().unwrap().content(), "好的");
         assert_eq!(turn.units.len(), 1, "只落一条助手单元");
         let units = store.load_units(session).unwrap();
         assert_eq!(units.len(), 2, "用户 + 助手");
@@ -1896,8 +1892,8 @@ mod tests {
             "工具单元必须是闭合的——不闭合启动收口会报出来"
         );
         assert_eq!(pair.messages.len(), 2);
-        assert_eq!(pair.messages[0].tool_calls[0].name, "read_file");
-        assert!(pair.messages[1].content.contains("hello"));
+        assert_eq!(pair.messages[0].tool_calls()[0].name, "read_file");
+        assert!(pair.messages[1].content().contains("hello"));
     }
 
     /// 一次要**三个**工具：一个单元装下这一轮的全部调用与结果（D253）。
@@ -1954,9 +1950,9 @@ mod tests {
         assert!(pair.is_closed(), "四个调用都得有结果才算闭合");
         assert_eq!(pair.messages.len(), 4, "一条 assistant + 三条结果");
         let calls: Vec<&str> = pair.messages[0]
-            .tool_calls
+            .tool_calls()
             .iter()
-            .map(|call| call.id.as_str())
+            .map(|call| call.call_id.as_str())
             .collect();
         assert_eq!(calls, vec!["c1", "c2", "c3"], "同一批调用装在一个单元里");
         for (index, call_id) in asked.iter().enumerate() {
@@ -1968,11 +1964,11 @@ mod tests {
             );
         }
         assert!(
-            pair.messages[1].content.contains("hello"),
+            pair.messages[1].content().contains("hello"),
             "第一个结果是 a.txt 的内容：{}",
-            pair.messages[1].content
+            pair.messages[1].content()
         );
-        assert_eq!(units[2].messages[0].content, "三件事都做完了");
+        assert_eq!(units[2].messages[0].content(), "三件事都做完了");
     }
 
     /// 多轮工具往返时，**每一轮**的正文都要落库（D253）。
@@ -2009,7 +2005,7 @@ mod tests {
         let texts: Vec<String> = units
             .iter()
             .filter(|unit| unit.kind == UnitKind::Turn)
-            .map(|unit| unit.messages[0].content.clone())
+            .map(|unit| unit.messages[0].content().clone())
             .collect();
         assert_eq!(
             texts,
@@ -2073,7 +2069,7 @@ mod tests {
 
         assert!(!turn.report.finished, "轮数用尽不能装做完");
         let assistant = turn.assistant.expect("说过的话要留下");
-        assert_eq!(assistant.content, "还在看");
+        assert_eq!(assistant.content(), "还在看");
         assert!(assistant.incomplete, "没收尾的回复要标 incomplete（D43）");
     }
 
@@ -2453,7 +2449,7 @@ mod tests {
         .unwrap();
         let messages = conversation_of(&[unit, user]);
         assert_eq!(messages.len(), 1, "注入不该混进对话");
-        assert_eq!(messages[0].content, "在吗");
+        assert_eq!(messages[0].content(), "在吗");
     }
 
     /// 压过的会话：线上原文**不许**再发出去，摘要要排在历史最前面（D149）。
