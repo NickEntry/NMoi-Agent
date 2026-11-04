@@ -740,6 +740,13 @@ impl Storage {
         unit: &AtomicUnit,
     ) -> Result<(), StorageError> {
         unit.validate()?;
+        // 只存结束（D252）：带着没结果的调用进库，等于把"进行时"存下来了。
+        if let Some(call) = unit.pending_calls().first() {
+            return Err(StorageError::Inconsistent(format!(
+                "单元 {} 的调用 {call} 还没有结果：只存结束，不存进行时",
+                unit.id
+            )));
+        }
         if unit.id.session() != session {
             return Err(StorageError::Inconsistent(format!(
                 "单元 {} 不属于会话 {}",
@@ -757,8 +764,8 @@ impl Storage {
                 "INSERT INTO messages(
                      id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
                      form, tokens, created_at, logical_clock, archived_ref,
-                     protected, pinned, locked, revision, tool_call_id, incomplete)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                     protected, pinned, locked, revision, incomplete)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                  ON CONFLICT(id) DO UPDATE SET
                      form = excluded.form,
                      tokens = excluded.tokens,
@@ -768,7 +775,6 @@ impl Storage {
                      pinned = excluded.pinned,
                      locked = excluded.locked,
                      revision = excluded.revision,
-                     tool_call_id = excluded.tool_call_id,
                      incomplete = excluded.incomplete,
                      unit_closed = excluded.unit_closed",
                 params![
@@ -789,7 +795,6 @@ impl Storage {
                     if message.pinned { 1 } else { 0 },
                     if message.locked { 1 } else { 0 },
                     message.revision,
-                    message.tool_call_id,
                     if message.incomplete { 1 } else { 0 },
                 ],
             )?;
@@ -1440,7 +1445,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     message.pinned = row.get::<_, i64>(13)? != 0;
     message.locked = row.get::<_, i64>(14)? != 0;
     message.revision = row.get::<_, i64>(15)? as u32;
-    message.tool_call_id = row.get(16)?;
+    // 第 16 列是 `tool_call_id`：折行之后不再有 `role=tool` 的行，这一列只留给旧库。
     message.incomplete = row.get::<_, i64>(17)? != 0;
     Ok(message)
 }

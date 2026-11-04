@@ -167,7 +167,6 @@ pub fn scan(conn: &Connection) -> Result<SemanticReport, rusqlite::Error> {
     issues.extend(check_orphans(conn)?);
     issues.extend(check_malformed_tool_calls(conn)?);
     issues.extend(check_tool_result_in_turn_unit(conn)?);
-    issues.extend(check_unpaired_results(conn)?);
     issues.extend(check_unpaired_calls(conn)?);
     issues.extend(check_missing_refs(conn)?);
     issues.extend(check_duplicate_seq(conn)?);
@@ -246,9 +245,7 @@ fn check_malformed_tool_calls(conn: &Connection) -> Result<Vec<Issue>, rusqlite:
 }
 
 fn check_tool_result_in_turn_unit(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT id, unit_id FROM messages WHERE role = 'tool' AND unit_kind <> 'tool_pair'",
-    )?;
+    let mut stmt = conn.prepare("SELECT id, unit_id FROM messages WHERE role = 'tool'")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -261,46 +258,7 @@ fn check_tool_result_in_turn_unit(conn: &Connection) -> Result<Vec<Issue>, rusql
             "messages",
             id.clone(),
             Some(unit_id),
-            format!("消息 {id} 是工具结果，却归属 turn 单元"),
-            Repair::QuarantineUnit,
-        ));
-    }
-    Ok(issues)
-}
-
-fn check_unpaired_results(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT r.id, r.unit_id, r.tool_call_id
-         FROM messages r
-         WHERE r.role = 'tool' AND NOT EXISTS (
-             SELECT 1
-             FROM messages a
-             JOIN message_parts p ON p.message_id = a.id AND p.kind = 'tool'
-             WHERE a.unit_id = r.unit_id
-               AND a.role = 'assistant'
-               AND json_extract(p.body, '$.call_id') = r.tool_call_id
-         )",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
-    })?;
-    let mut issues = Vec::new();
-    for row in rows {
-        let (id, unit_id, call_id) = row?;
-        issues.push(Issue::new(
-            IssueCode::UnpairedToolResult,
-            Severity::Blocking,
-            "messages",
-            id.clone(),
-            Some(unit_id),
-            format!(
-                "工具结果 {id} 找不到对应调用（tool_call_id={}）",
-                call_id.unwrap_or_else(|| "null".into())
-            ),
+            format!("消息 {id} 还是旧的 `role=tool` 形状（v16 应该已经并进调用块）"),
             Repair::QuarantineUnit,
         ));
     }
@@ -313,12 +271,7 @@ fn check_unpaired_calls(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Error
          FROM messages a
          JOIN message_parts p ON p.message_id = a.id AND p.kind = 'tool'
          WHERE a.role = 'assistant'
-           AND a.unit_kind = 'tool_pair'
-           AND NOT EXISTS (
-               SELECT 1 FROM messages r
-               WHERE r.unit_id = a.unit_id
-                 AND r.tool_call_id = json_extract(p.body, '$.call_id')
-           )",
+           AND COALESCE(json_extract(p.body, '$.status'), 'pending') = 'pending'",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((

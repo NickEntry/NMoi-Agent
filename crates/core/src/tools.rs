@@ -1241,32 +1241,11 @@ impl Tool for EditUnitTool {
                      工具块不能新增"
                 ));
             }
-            // 结果在不在：找不到就是单元还没闭合，改完也发不出去。
-            let call_id = &message.tool_calls()[index].call_id;
-            if !history
-                .iter()
-                .any(|other| other.tool_call_id.as_deref() == Some(call_id.as_str()))
-            {
+            // 结果在不在：还没有结果就是这一轮没跑完，改完也发不出去。
+            if !message.tool_calls()[index].status.is_finished() {
                 return ToolOutcome::failed(format!(
                     "第 {index} 个工具调用还没有结果：单元没闭合，改不了（先让那一轮跑完）"
                 ));
-            }
-            // 成对删：另一边也得在这一批里。
-            if op.is_delete() {
-                let partner = match block {
-                    BlockSelector::ToolCall { .. } => BlockSelector::ToolResult { index },
-                    _ => BlockSelector::ToolCall { index },
-                };
-                if !call
-                    .ops
-                    .iter()
-                    .any(|other| other.is_delete() && other.block() == partner)
-                {
-                    return ToolOutcome::failed(format!(
-                        "工具块是成对的：删第 {index} 个调用时要连它的结果一起删（或者反过来），\
-                         单独删一边会让下一轮请求直接 400"
-                    ));
-                }
             }
         }
 
@@ -1551,22 +1530,14 @@ mod tests {
         use crate::source::SourceTag;
 
         let session = SessionId::new();
-        let head = Message::tool_call_message(
+        let mut head = Message::tool_call_message(
             MessageId::new(session, 1),
             vec![OutgoingToolCall::new("call_1", "read_file", "{}")],
             4,
             1_000,
             LogicalClock::new(1),
         );
-        let mut result = Message::tool_result(
-            MessageId::new(session, 2),
-            "call_1",
-            "ok",
-            1,
-            1_000,
-            LogicalClock::new(2),
-        );
-        result.unit_id = head.unit_id.clone();
+        head.set_tool_output("call_1", "ok", crate::message::ToolStatus::Ok);
         let mut user = Message::text(
             MessageId::new(session, 3),
             Role::User,
@@ -1577,7 +1548,7 @@ mod tests {
             LogicalClock::new(3),
         );
         user.unit_id = MessageId::new(session, 3).unit();
-        vec![head, result, user]
+        vec![head, user]
     }
 
     fn edit_outcome(history: &[Message], args: &str) -> ToolOutcome {

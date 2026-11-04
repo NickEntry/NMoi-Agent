@@ -391,3 +391,72 @@ ALTER TABLE messages DROP COLUMN content;
 ALTER TABLE messages DROP COLUMN reasoning;
 ALTER TABLE messages DROP COLUMN tool_calls;
 "#;
+
+/// v16（D258）：**折行**——工具结果并进调用块，`role=tool` 的行退场。
+///
+/// 一条消息 = 一轮。以前一次调用是两条记录（assistant 带 `tool_calls` + 一条 `role=tool`），
+/// 于是"改结果"要跨两条写、版本只跟着调用那条走、序号轴删一个就全错位。
+///
+/// 顺序不能反：先把结果读进块里，再删行；先删行就再也找不到结果了。
+///
+/// 三个顺带要处理的东西：
+/// 1. `dividers.after_seq` 指向被并掉的那条行时，改成它所属那条 assistant 的 seq——
+///    不改的话分界线指向一个不存在的 seq，窗口会静默退回整条历史。
+/// 2. `attachments` 不该挂在工具行上（图片只挂 user）。真挂了就中止迁移，不猜。
+/// 3. 旧的结果没有状态：文本以"失败："/"拒绝执行："开头的算 `error`，其余算 `ok`；
+///    找不到对应结果行的调用是**旧的开口单元**，标 `killed`（它确实没跑完）。
+pub const SCHEMA_V16: &str = r#"
+UPDATE message_parts
+   SET body = json_set(
+        body,
+        '$.output', COALESCE((
+            SELECT json_extract(tp.body, '$.text')
+              FROM message_parts tp
+              JOIN messages tm ON tm.id = tp.message_id
+              JOIN messages cm ON cm.id = message_parts.message_id
+             WHERE tm.role = 'tool'
+               AND tm.tool_call_id = json_extract(message_parts.body, '$.call_id')
+               AND tm.unit_id = cm.unit_id
+               AND tp.kind = 'text'
+             LIMIT 1), ''),
+        '$.status', COALESCE((
+            SELECT CASE
+                     WHEN json_extract(tp.body, '$.text') LIKE '失败：%' THEN 'error'
+                     WHEN json_extract(tp.body, '$.text') LIKE '拒绝执行：%' THEN 'error'
+                     ELSE 'ok'
+                   END
+              FROM message_parts tp
+              JOIN messages tm ON tm.id = tp.message_id
+              JOIN messages cm ON cm.id = message_parts.message_id
+             WHERE tm.role = 'tool'
+               AND tm.tool_call_id = json_extract(message_parts.body, '$.call_id')
+               AND tm.unit_id = cm.unit_id
+               AND tp.kind = 'text'
+             LIMIT 1), 'killed'))
+ WHERE kind = 'tool';
+
+UPDATE dividers
+   SET after_seq = COALESCE((
+        SELECT a.seq FROM messages a
+         WHERE a.role = 'assistant'
+           AND a.unit_id = (SELECT t.unit_id FROM messages t
+                             WHERE t.seq = dividers.after_seq AND t.role = 'tool'
+                             LIMIT 1)
+         LIMIT 1), after_seq)
+ WHERE after_seq IN (SELECT seq FROM messages WHERE role = 'tool');
+
+CREATE TEMP TABLE _abort_if_attachments_point_at_tool_rows(
+    x INTEGER CHECK (x = 0)
+);
+INSERT INTO _abort_if_attachments_point_at_tool_rows
+SELECT COUNT(*)
+  FROM attachments a JOIN messages m ON m.id = a.message_id
+ WHERE m.role = 'tool';
+DROP TABLE _abort_if_attachments_point_at_tool_rows;
+
+DELETE FROM message_parts
+ WHERE message_id IN (SELECT id FROM messages WHERE role = 'tool');
+DELETE FROM messages WHERE role = 'tool';
+
+UPDATE messages SET unit_closed = 1 WHERE unit_kind = 'tool_pair';
+"#;

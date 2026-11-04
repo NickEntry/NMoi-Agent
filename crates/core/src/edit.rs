@@ -406,8 +406,8 @@ pub struct UnitPlan {
     /// 内容和现状一样、因此没有写进去的块（中文名）。**不是错误**：模型原样重发很常见，
     /// 但工具必须把它报出来，否则"改了 3 处"和"实际写了 2 处"对不上。
     pub unchanged: Vec<String>,
-    /// 要整条删掉的消息（成对删工具块）。删的是行，不是列。
-    pub remove_messages: Vec<MessageId>,
+    /// 要整块删掉的 part id（工具块是调用 + 结果同一块，删一次就没了）。
+    pub remove_parts: Vec<String>,
 }
 
 /// 把一个块落到具体消息上。
@@ -427,22 +427,28 @@ fn block_message(
     let BlockSelector::ToolResult { index } = block else {
         return Ok(anchor.clone());
     };
-    // index 说的是"第几个调用"（与 `tool:<index>` 同一根轴），结果只是它的对家。
-    let calls = message.tool_calls();
-    let call = calls
+    // 结果长在调用块上（D258）：同一个 part，只是取的是 `output` 那一栏。
+    // 这里仍然检查序号，为的是"改第 3 个工具"在不存在的第 3 个上照样报错，不静默落空。
+    message
+        .tool_calls()
         .get(index)
         .ok_or_else(|| EditError::NoSuchToolResult {
             message: anchor.clone(),
             index,
         })?;
-    unit.messages
-        .iter()
-        .find(|candidate| candidate.tool_call_id.as_deref() == Some(call.call_id.as_str()))
-        .map(|candidate| candidate.id.clone())
-        .ok_or_else(|| EditError::NoSuchToolResult {
-            message: anchor.clone(),
-            index,
-        })
+    Ok(anchor.clone())
+}
+
+/// 一个块选择器指向哪个 part（删除时按它摘块）。
+pub fn part_of(block: &BlockSelector, message: &Message) -> Option<String> {
+    match block {
+        BlockSelector::ToolCall { index } | BlockSelector::ToolResult { index } => message
+            .tool_calls()
+            .get(*index)
+            .map(|call| call.part.clone()),
+        BlockSelector::Part { id, .. } => Some(id.clone()),
+        _ => None,
+    }
 }
 
 /// 校验一组块级动作，并算出一份可执行的计划。**不改 `unit`。**
@@ -499,49 +505,21 @@ pub fn plan_ops(
         resolved.push((target, block, op));
     }
 
-    // 2. 工具块只有"成对删"这一种删除（D184）：单独删一边 = 孤儿调用 / 孤儿结果，
-    //    下一次请求会被上游直接 400。改不要求成对：改参数不影响配对。
+    // 2. 工具块是**一块**（D258）：删掉它就是这一次调用连同结果一起没了。
+    //    以前"调用一条消息、结果另一条消息"时才需要成对删，现在单边根本不存在。
+
     let anchor_message = unit
         .messages
         .iter()
         .find(|message| &message.id == anchor)
         .expect("上面已经确认锚点消息存在");
-    for (_, block, op) in &resolved {
-        if !op.is_delete() {
-            continue;
-        }
-        let Some(index) = block.tool_index() else {
-            continue;
-        };
-        // 同一序号上的另一半也必须删。`ToolCall{0}` 与 `ToolResult{0}` 是两个不同的块，
-        // 所以这一步不能用重复检查代替（那一步拦的是同一块写两遍）。
-        let partner_deleted = ops.iter().any(|other| {
-            other.is_delete()
-                && other.block().tool_index() == Some(index)
-                && other.block() != *block
-        });
-        if !partner_deleted {
-            let side = match block {
-                BlockSelector::ToolCall { .. } => "调用",
-                _ => "结果",
-            };
-            return Err(EditError::UnpairedDelete { index, side });
-        }
-        // 删掉的是一条消息；它要是带着别的调用，那些调用会一起消失。
-        if anchor_message.tool_calls().len() > 1 {
-            return Err(EditError::ManyCalls {
-                message: anchor_message.id.clone(),
-                count: anchor_message.tool_calls().len(),
-            });
-        }
-    }
 
     // 3. 算 before / after。
     let mut plan = UnitPlan {
         unit: unit.id.clone(),
         ops: Vec::with_capacity(resolved.len()),
         unchanged: Vec::new(),
-        remove_messages: Vec::new(),
+        remove_parts: Vec::new(),
     };
     for (target, block, op) in resolved {
         let message = unit
@@ -556,7 +534,12 @@ pub fn plan_ops(
                 .get(index)
                 .map(|call| call.arguments.clone())
                 .unwrap_or_default(),
-            BlockSelector::Output | BlockSelector::ToolResult { .. } => message.content(),
+            BlockSelector::ToolResult { index } => message
+                .tool_calls()
+                .get(index)
+                .map(|call| call.output.clone())
+                .unwrap_or_default(),
+            BlockSelector::Output => message.content(),
             BlockSelector::Part { ref id, output } => {
                 message.part_field(id, output).unwrap_or_default()
             }
@@ -576,8 +559,8 @@ pub fn plan_ops(
             plan.unchanged.push(block_label(block));
             continue;
         }
-        // 正文落红：工具结果不是正文（它有自己的卡），所以排除 `role = Tool`。
-        let red = block == BlockSelector::Output && message.role != Role::Tool;
+        // 只有正文落红：工具块有自己的卡，红蓝是"这条消息的正文被谁改过"。
+        let red = block == BlockSelector::Output;
         plan.ops.push(PlannedOp {
             message: target,
             block: block.clone(),
@@ -590,22 +573,16 @@ pub fn plan_ops(
         });
     }
 
-    // 4. 成对删：调用消息与它的结果消息都要从库里删（storage 删行，连同版本行）。
-    //    `ManyCalls` 已经在上面拦过"多调用消息"，所以这里只会有一次配对。
-    if plan
-        .ops
-        .iter()
-        .any(|op| op.after.is_none() && op.block.tool_index().is_some())
-    {
-        plan.remove_messages.push(anchor_message.id.clone());
-        for call in &anchor_message.tool_calls() {
-            if let Some(result) = unit
-                .messages
-                .iter()
-                .find(|message| message.tool_call_id.as_deref() == Some(call.call_id.as_str()))
-            {
-                plan.remove_messages.push(result.id.clone());
-            }
+    // 4. 删工具块 = 把这个 part 摘掉（同一块写两遍也只摘一次）。
+    for op in &plan.ops {
+        if op.after.is_some() {
+            continue;
+        }
+        let Some(part) = part_of(&op.block, anchor_message) else {
+            continue;
+        };
+        if !plan.remove_parts.contains(&part) {
+            plan.remove_parts.push(part);
         }
     }
 
@@ -634,6 +611,8 @@ pub fn plan_ops(
             }
             for call in &message.tool_calls() {
                 whole.push_str(&call.arguments);
+                whole.push('\n');
+                whole.push_str(&call.output);
                 whole.push('\n');
             }
         }
@@ -666,6 +645,7 @@ pub fn message_tokens(message: &Message) -> u32 {
     for call in &message.tool_calls() {
         total = total.saturating_add(estimate_tokens(&call.name));
         total = total.saturating_add(estimate_tokens(&call.arguments));
+        total = total.saturating_add(estimate_tokens(&call.output));
     }
     total
 }
@@ -757,6 +737,8 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        unit.set_output("c1", "内容", crate::message::ToolStatus::Ok)
+            .unwrap();
         let request = EditRequest::new(
             unit.id.clone(),
             BlockSelector::ToolCall { index: 0 },
@@ -832,17 +814,8 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let unit_id = unit.id.clone();
-        let result = Message::tool_result(
-            MessageId::new(session, 2),
-            "c1",
-            "内容 a",
-            3,
-            0,
-            LogicalClock::new(2),
-        )
-        .with_unit(unit_id);
-        unit.add_result(result).unwrap();
+        unit.set_output("c1", "内容 a", crate::message::ToolStatus::Ok)
+            .unwrap();
         unit
     }
 
@@ -867,9 +840,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.ops.len(), 2);
-        // 结果块落在**结果消息**上：认错了就会"改结果、参数变了"。
+        // 调用与结果在**同一块**上（D258）：认错了就会"改结果、参数变了"。
         assert_eq!(plan.ops[0].message, unit.messages[0].id);
-        assert_eq!(plan.ops[1].message, unit.messages[1].id);
+        assert_eq!(plan.ops[1].message, unit.messages[0].id);
         assert_eq!(plan.ops[1].before, "内容 a");
         assert!(plan.ops.iter().all(|op| !op.red), "工具块就地改，不落红");
     }
@@ -894,26 +867,25 @@ mod tests {
         assert_ne!(plan.ops[0].before_hash, plan.ops[0].after_hash);
     }
 
+    /// 工具块是一块（D258）：只点"删调用"也是把整块摘掉，不存在"留下孤儿结果"。
     #[test]
-    fn plan_ops_rejects_a_half_deleted_tool_block() {
+    fn deleting_one_side_removes_the_whole_tool_part() {
         let unit = pair_with_result();
         let anchor = unit.messages[0].id.clone();
-        let error = plan_ops(
+        let plan = plan_ops(
             &unit,
             &anchor,
             &[BlockOp::Delete {
                 block: BlockSelector::ToolCall { index: 0 },
             }],
         )
-        .unwrap_err();
-        assert!(
-            matches!(error, EditError::UnpairedDelete { index: 0, .. }),
-            "{error}"
-        );
+        .unwrap();
+        assert_eq!(plan.remove_parts, vec!["p1".to_string()]);
+        assert_eq!(plan.ops.len(), 1);
     }
 
     #[test]
-    fn plan_ops_deletes_both_messages_of_a_tool_pair() {
+    fn deleting_both_selectors_still_removes_the_tool_part_once() {
         let unit = pair_with_result();
         let anchor = unit.messages[0].id.clone();
         let plan = plan_ops(
@@ -930,17 +902,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(plan.ops.len(), 2);
         assert!(plan.ops.iter().all(|op| op.after.is_none()));
-        assert_eq!(plan.remove_messages.len(), 2);
-        assert!(plan.remove_messages.contains(&unit.messages[0].id));
-        assert!(plan.remove_messages.contains(&unit.messages[1].id));
+        assert_eq!(plan.remove_parts, vec!["p1".to_string()], "同一块只摘一次");
     }
 
-    /// 一条消息带两个调用时（D253 起同一轮的并行调用就是这样），
-    /// 删其中一个会被挡住，而且话里要给出一条走得通的路。
+    /// 一条消息带两个调用时（D253 起同一轮的并行调用就是这样）：
+    /// 删其中一个只摘那一块，另一个原样留着。
     #[test]
-    fn plan_ops_refuses_deleting_one_call_out_of_a_batch() {
+    fn deleting_one_call_out_of_a_batch_leaves_the_others_alone() {
         let session = SessionId::new();
         let head = Message::tool_call_message(
             MessageId::new(session, 1),
@@ -953,41 +922,21 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let unit_id = unit.id.clone();
-        for (index, call) in ["c1", "c2"].iter().enumerate() {
-            let result = Message::tool_result(
-                MessageId::new(session, 2 + index as u64),
-                *call,
-                "内容",
-                2,
-                0,
-                LogicalClock::new(2 + index as u64),
-            )
-            .with_unit(unit_id.clone());
-            unit.add_result(result).unwrap();
-        }
+        unit.set_output("c1", "内容", crate::message::ToolStatus::Ok)
+            .unwrap();
+        unit.set_output("c2", "内容", crate::message::ToolStatus::Ok)
+            .unwrap();
         let anchor = unit.messages[0].id.clone();
-        let error = plan_ops(
+        let plan = plan_ops(
             &unit,
             &anchor,
-            &[
-                BlockOp::Delete {
-                    block: BlockSelector::ToolCall { index: 0 },
-                },
-                BlockOp::Delete {
-                    block: BlockSelector::ToolResult { index: 0 },
-                },
-            ],
+            &[BlockOp::Delete {
+                block: BlockSelector::ToolCall { index: 0 },
+            }],
         )
-        .unwrap_err();
-        assert!(
-            matches!(error, EditError::ManyCalls { count: 2, .. }),
-            "{error}"
-        );
-        assert!(
-            error.to_string().contains("整条删"),
-            "报错要说清怎么走：{error}"
-        );
+        .unwrap();
+        assert_eq!(plan.remove_parts.len(), 1);
+        assert_eq!(plan.remove_parts[0], "p1");
     }
 
     /// 按 part id 改：删掉一个调用之后，另一个块的 id 不变，改的还是它（D257）。
@@ -1005,18 +954,9 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let unit_id = unit.id.clone();
-        for (index, call) in ["c1", "c2"].iter().enumerate() {
-            let result = Message::tool_result(
-                MessageId::new(session, 2 + index as u64),
-                *call,
-                "内容",
-                2,
-                0,
-                LogicalClock::new(2 + index as u64),
-            )
-            .with_unit(unit_id.clone());
-            unit.add_result(result).unwrap();
+        for call in ["c1", "c2"] {
+            unit.set_output(call, "内容", crate::message::ToolStatus::Ok)
+                .unwrap();
         }
         let second = unit.messages[0].tool_calls()[1].part.clone();
 
@@ -1027,9 +967,6 @@ mod tests {
             "read_file",
             "{\"path\":\"b\"}",
         )]);
-        edited
-            .messages
-            .retain(|message| message.tool_call_id.as_deref() != Some("c1"));
         assert_eq!(
             edited.messages[0].tool_calls()[0].part,
             second,
@@ -1044,7 +981,11 @@ mod tests {
                 output: false
             }
         );
-        let request = EditRequest::new(unit_id, selector, String::from("{\"path\":\"c\"}"));
+        let request = EditRequest::new(
+            edited.id.clone(),
+            selector,
+            String::from("{\"path\":\"c\"}"),
+        );
         let outcome = apply_edit(&mut edited, &request).unwrap();
         assert_eq!(outcome.block, format!("part:{second}"));
         assert_eq!(
@@ -1164,30 +1105,20 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let unit_id = unit.id.clone();
-        let result = Message::tool_result(
-            MessageId::new(session, 2),
+        unit.set_output(
             "c1",
             "读到 crates/core/src/runtime.rs 第 12 行",
-            3,
-            0,
-            LogicalClock::new(2),
+            crate::message::ToolStatus::Ok,
         )
-        .with_unit(unit_id);
-        unit.add_result(result).unwrap();
+        .unwrap();
 
         let anchor = unit.messages[0].id.clone();
         let error = plan_ops(
             &unit,
             &anchor,
-            &[
-                BlockOp::Delete {
-                    block: BlockSelector::ToolCall { index: 0 },
-                },
-                BlockOp::Delete {
-                    block: BlockSelector::ToolResult { index: 0 },
-                },
-            ],
+            &[BlockOp::Delete {
+                block: BlockSelector::ToolResult { index: 0 },
+            }],
         )
         .unwrap_err();
         assert!(
@@ -1210,21 +1141,15 @@ mod tests {
         )
         .with_reasoning("要看的是 crates/core/src/runtime.rs");
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let unit_id = unit.id.clone();
-        let result = Message::tool_result(
-            MessageId::new(session, 2),
+        unit.set_output(
             "c1",
             "读到 crates/core/src/runtime.rs 第 12 行",
-            3,
-            0,
-            LogicalClock::new(2),
+            crate::message::ToolStatus::Ok,
         )
-        .with_unit(unit_id);
-        unit.add_result(result).unwrap();
+        .unwrap();
 
         let anchor = unit.messages[0].id.clone();
-        // 只删结果那一条：思考块里还留着同一个路径。工具块单边删仍然要拒——
-        // 所以这一条测的是"删思考块"这条路。
+        // 删的是思考块：同一个路径在工具结果里还留着，所以不该拦。
         let plan = plan_ops(
             &unit,
             &anchor,

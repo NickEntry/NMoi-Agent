@@ -1797,25 +1797,23 @@ private fun buildShareMarkdown(
             append("\n")
 
             if (includeThinkingTools) {
-                val unit = unitOf[message.id]
-                val extra = unit?.messages.orEmpty().filter {
-                    it.id != message.id && (it.isThinking || it.isToolCall || it.isToolResult)
+                // 思考与工具就在这一条消息里（D258）：不再去同单元里找"另一条过程消息"。
+                val extra = buildList {
+                    message.reasoning?.takeIf { it.isNotBlank() }?.let { add("思考" to it) }
+                    message.toolArgs.forEach { call ->
+                        add("工具调用" to "${call.name} ${call.arguments}")
+                        if (call.output.isNotBlank()) add("工具结果" to call.output)
+                    }
                 }
                 if (extra.isNotEmpty()) {
                     append("\n<details><summary>思考与工具调用（")
                     append(extra.size)
                     append(" 段）</summary>\n\n")
-                    extra.forEach { part ->
+                    extra.forEach { (label, body) ->
                         append("- **")
-                        append(
-                            when {
-                                part.isThinking -> "思考"
-                                part.isToolCall -> "工具调用"
-                                else -> "工具结果"
-                            },
-                        )
+                        append(label)
                         append("**：")
-                        append(part.content.replace("\n", "\n  "))
+                        append(body.replace("\n", "\n  "))
                         append("\n")
                     }
                     append("\n</details>\n")
@@ -2130,7 +2128,6 @@ private fun MessageArea(
                         incomplete = false,
                         locked = false,
                         toolCalls = 0,
-                        toolCallId = null,
                     ),
                     maxBubble = maxBubble,
                     selecting = false,
@@ -3592,7 +3589,6 @@ private fun ThinkingBlock(message: ChatMessage) {
 @Composable
 private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
     val calls = unit.messages.flatMap { it.toolArgs }
-    val results = unit.messages.filter { it.isToolResult }
 
     Column(
         modifier = Modifier
@@ -3601,26 +3597,40 @@ private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
             .padding(vertical = 6.dp),
     ) {
         // **一次调用一行**（D253）：同一轮里模型可能一次报三四个调用，它们都在同一个单元里。
-        // 以前一个单元只有一次调用，所以这里只画一行；现在按调用铺开，少一条就等于
-        // "库里存了、界面上指不出来"。
+        // 结果就在这一块里（D258），不用再跨消息按 call_id 找。
         if (calls.isEmpty()) {
             ToolCallLine(name = "工具调用", summary = "", preview = "")
         } else {
             calls.forEach { call ->
-                val result = results.firstOrNull { it.toolCallId == call.callId }
                 ToolCallLine(
                     name = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用",
-                    summary = result?.let { toolSummary(listOf(it)) }.orEmpty(),
+                    summary = toolSummaryOf(call),
                     preview = toolArgumentPreview(call.arguments),
+                    failed = call.status == "error" || call.status == "killed",
                 )
             }
         }
     }
 }
 
+/** 一行的摘要：从结果 JSON 里取 `exit_code` / `duration_ms`，拿不到就写"结果 N 字"。 */
+private fun toolSummaryOf(call: ToolCallArg): String {
+    if (call.status == "pending") return "还没结果"
+    if (call.status == "killed") return "没跑"
+    val text = call.output.trim()
+    if (text.isEmpty()) return "（空）"
+    val exit = Regex("\"exit_code\"\\s*:\\s*(-?\\d+)").find(text)?.groupValues?.get(1)
+    val millis = Regex("\"duration_ms\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
+    return when {
+        exit != null && millis != null -> "exit $exit · ${millis}ms"
+        exit != null -> "exit $exit"
+        else -> "${text.length} 字"
+    }
+}
+
 /** 过程块里的一行：扳手 + 名字 + 结果摘要 + chevron，下面一行参数预览。 */
 @Composable
-private fun ToolCallLine(name: String, summary: String, preview: String) {
+private fun ToolCallLine(name: String, summary: String, preview: String, failed: Boolean = false) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -3641,7 +3651,11 @@ private fun ToolCallLine(name: String, summary: String, preview: String) {
                 Text(
                     text = summary,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
             Icon(
@@ -3787,12 +3801,7 @@ private fun ToolSheet(unit: ChatUnit, onDismiss: () -> Unit) {
  */
 @Composable
 private fun ToolPairBody(unit: ChatUnit) {
-    val results = unit.messages
-        .filter { it.isToolResult }
-        .associateBy { it.toolCallId.orEmpty() }
-    val pairs = unit.messages.flatMap { message ->
-        message.toolArgs.map { arg -> arg to results[arg.callId] }
-    }
+    val calls = unit.messages.flatMap { it.toolArgs }
     Column(modifier = Modifier.fillMaxWidth()) {
         if (!unit.closed) {
             Text(
@@ -3802,29 +3811,15 @@ private fun ToolPairBody(unit: ChatUnit) {
                 modifier = Modifier.padding(bottom = 6.dp),
             )
         }
-        if (pairs.isNotEmpty()) {
-            pairs.forEach { (arg, result) ->
-                ToolCallBlock(command = arg, result = result)
-            }
+        if (calls.isEmpty()) {
+            Text(
+                text = "这一轮没有工具调用",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         } else {
-            unit.messages.forEach { message ->
-                Text(
-                    text = buildString {
-                        append(if (message.isToolResult) "← 结果" else "→ 调用")
-                        message.toolCallId?.let { append(" [$it]") }
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-                Text(
-                    text = message.content.ifEmpty { "（空）" },
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+            calls.forEach { call ->
+                ToolCallBlock(command = call, result = call)
             }
         }
     }
@@ -4281,9 +4276,9 @@ private fun NativeEditText(
  * 原样铺开之后人根本看不出哪段是命令、哪段是 stdout、哪段是报错。
  */
 @Composable
-private fun ToolCallBlock(command: ToolCallArg, result: ChatMessage?) {
+private fun ToolCallBlock(command: ToolCallArg, result: ToolCallArg?) {
     val context = LocalContext.current
-    val payload = result?.content?.let { text ->
+    val payload = result?.output?.let { text ->
         runCatching { JSONObject(text) }.getOrNull()?.takeIf { it.has("stdout") || it.has("stderr") }
     }
     val shown = if (payload != null) {
@@ -4293,7 +4288,7 @@ private fun ToolCallBlock(command: ToolCallArg, result: ChatMessage?) {
     }
     val label = if (command.name == "System-Shell") "运行命令" else command.name
     // 用「选过没有」+ 默认页签，而不是在组合过程里改状态：组合里赋值会多走一轮重组。
-    var picked by remember(result?.id) { mutableStateOf<Int?>(null) }
+    var picked by remember(result?.part) { mutableStateOf<Int?>(null) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4303,7 +4298,7 @@ private fun ToolCallBlock(command: ToolCallArg, result: ChatMessage?) {
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
-            if (result == null) {
+            if (result == null || result.status == "pending" || result.status == "killed") {
                 Text(
                     text = "没有结果（这一批里它没跑完）",
                     style = MaterialTheme.typography.labelSmall,
@@ -4329,7 +4324,7 @@ private fun ToolCallBlock(command: ToolCallArg, result: ChatMessage?) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 10.dp),
                 )
-                MonoBox(text = result.content.ifEmpty { "（空）" })
+                MonoBox(text = result.output.ifEmpty { "（空）" })
             }
             return@Column
         }

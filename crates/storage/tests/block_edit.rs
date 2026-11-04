@@ -58,9 +58,10 @@ fn seed_tool_pair(storage: &mut Storage) -> (SessionId, MessageId) {
         1_700_000_000_000,
         LogicalClock::new(1),
     );
-    storage
-        .append_unit(session, &AtomicUnit::tool_pair(head.clone()).unwrap())
+    let mut unit = AtomicUnit::tool_pair(head.clone()).unwrap();
+    unit.set_output("call-1", "文件内容", nmoi_core::message::ToolStatus::Ok)
         .unwrap();
+    storage.append_unit(session, &unit).unwrap();
     (session, head.id)
 }
 

@@ -109,24 +109,14 @@ fn tool_pair_with_results_roundtrips() {
         LogicalClock::new(1),
     );
     let mut unit = AtomicUnit::tool_pair(head).unwrap();
-    unit.add_result(
-        Message::tool_result(
-            MessageId::new(session, 2),
-            "c1",
-            "contents",
-            1,
-            1_700_000_000_001,
-            LogicalClock::new(2),
-        )
-        .with_unit(unit.id.clone()),
-    )
-    .unwrap();
+    unit.set_output("c1", "contents", nmoi_core::message::ToolStatus::Ok)
+        .unwrap();
     storage.append_unit(session, &unit).unwrap();
 
     let loaded = storage.load_unit(&unit.id).unwrap();
     assert!(loaded.is_closed());
-    assert_eq!(loaded.messages.len(), 2);
-    assert_eq!(loaded.messages[1].tool_call_id.as_deref(), Some("c1"));
+    assert_eq!(loaded.messages.len(), 1, "一轮 = 一条消息");
+    assert_eq!(loaded.messages[0].tool_output(0), Some("contents"));
 }
 
 #[test]

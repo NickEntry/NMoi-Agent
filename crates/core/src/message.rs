@@ -262,6 +262,8 @@ impl Part {
                 "call_id": tool.call_id,
                 "name": tool.name,
                 "arguments": tool.arguments,
+                "output": tool.output,
+                "status": tool.status.as_str(),
             }),
             Part::Image {
                 attachment,
@@ -302,6 +304,15 @@ impl Part {
                 call_id: text("call_id"),
                 name: text("name"),
                 arguments: text("arguments"),
+                output: text("output"),
+                // v15 的块没有 status，迁移（v16）会把它们补成 ok；
+                // 这里再兜一次，是为了让"少一个字段"不至于让整条会话打不开。
+                status: value
+                    .get("status")
+                    .and_then(|slot| slot.as_str())
+                    .unwrap_or("ok")
+                    .parse()
+                    .unwrap_or(ToolStatus::Ok),
             })),
             "image" => Ok(Part::Image {
                 id: part_id,
@@ -317,16 +328,68 @@ impl Part {
     }
 }
 
+/// 一次工具调用的结局（D258）。
+///
+/// `Pending` 只活在内存里：落库的单元必须是三者之一（D252 只存结束）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    Pending,
+    Ok,
+    Error,
+    Killed,
+}
+
+impl ToolStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolStatus::Pending => "pending",
+            ToolStatus::Ok => "ok",
+            ToolStatus::Error => "error",
+            ToolStatus::Killed => "killed",
+        }
+    }
+
+    pub fn is_finished(self) -> bool {
+        !matches!(self, ToolStatus::Pending)
+    }
+}
+
+impl fmt::Display for ToolStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ToolStatus {
+    type Err = UnitError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(ToolStatus::Pending),
+            "ok" => Ok(ToolStatus::Ok),
+            "error" => Ok(ToolStatus::Error),
+            "killed" => Ok(ToolStatus::Killed),
+            other => Err(UnitError::UnknownToolStatus(other.to_string())),
+        }
+    }
+}
+
 /// 一次工具调用那一块。
 ///
 /// `part` 与 `call_id` 是两样东西：前者是"这条消息里的第几块"，后者是模型给的调用 id
-/// （工具结果按它配对）。混成一个字段的话，改一次调用 id 会把 part 的身份也改掉。
+/// （结果按它配对）。混成一个字段的话，改一次调用 id 会把 part 的身份也改掉。
+///
+/// `output` 是结果原文（D258）：以前它是同一单元里另一条 `role=tool` 的消息，
+/// 现在并进这一块——一条消息 = 一轮，界面上那行工具本来也只有一格。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPart {
     pub part: String,
     pub call_id: String,
     pub name: String,
     pub arguments: String,
+    pub output: String,
+    pub status: ToolStatus,
 }
 
 /// 一条消息。归属某个原子单元，`seq` 在会话内递增。
@@ -354,8 +417,6 @@ pub struct Message {
     /// 这一轮**没说完整**：断流、被掐断、用户点了停止（D21）。
     #[serde(default)]
     pub incomplete: bool,
-    /// 工具结果指向哪一次调用。只有 `role = tool` 上有值。
-    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -394,7 +455,6 @@ impl Message {
             locked: false,
             revision: 0,
             incomplete: false,
-            tool_call_id: None,
         }
     }
 
@@ -416,28 +476,6 @@ impl Message {
             logical_clock,
         );
         message.set_tool_calls(calls);
-        message
-    }
-
-    /// 构造工具结果。
-    pub fn tool_result(
-        id: MessageId,
-        tool_call_id: impl Into<String>,
-        content: impl Into<String>,
-        tokens: u32,
-        created_at: i64,
-        logical_clock: LogicalClock,
-    ) -> Self {
-        let mut message = Self::text(
-            id,
-            Role::Tool,
-            SourceTag::ToolResult,
-            content,
-            tokens,
-            created_at,
-            logical_clock,
-        );
-        message.tool_call_id = Some(tool_call_id.into());
         message
     }
 
@@ -510,6 +548,12 @@ impl Message {
         format!("p{}", highest + 1)
     }
 
+    /// 摘掉几块（按 part id）。删不存在的块是空操作。
+    pub fn remove_parts(&mut self, ids: &[String]) {
+        self.parts
+            .retain(|part| !ids.iter().any(|id| id == part.id()));
+    }
+
     /// 整份换掉（读库那条路用）。
     pub fn set_parts(&mut self, parts: Vec<Part>) {
         self.parts = parts;
@@ -576,36 +620,85 @@ impl Message {
     /// **还在的调用保留原来的 part id**（D257）：id 是编辑与审计的定位手段，
     /// 每次重建都换一遍号，等于"改完这一块，下一块变成了别人"。
     pub fn set_tool_calls(&mut self, calls: Vec<OutgoingToolCall>) {
-        let previous: Vec<(String, String)> = self
+        let previous: Vec<(String, String, String, ToolStatus)> = self
             .parts
             .iter()
             .filter_map(|part| match part {
-                Part::Tool(tool) => Some((tool.call_id.clone(), tool.part.clone())),
+                Part::Tool(tool) => Some((
+                    tool.call_id.clone(),
+                    tool.part.clone(),
+                    tool.output.clone(),
+                    tool.status,
+                )),
                 _ => None,
             })
             .collect();
         self.parts.retain(|part| !matches!(part, Part::Tool(_)));
         for call in calls {
-            let part = previous
+            let previous = previous
                 .iter()
-                .find(|(call_id, _)| *call_id == call.id)
-                .map(|(_, part)| part.clone())
+                .find(|(call_id, _, _, _)| *call_id == call.id);
+            let part = previous
+                .map(|(_, part, _, _)| part.clone())
                 .unwrap_or_else(|| self.next_part_id());
             self.parts.push(Part::Tool(ToolPart {
                 part,
                 call_id: call.id,
                 name: call.name,
                 arguments: call.arguments,
+                output: previous
+                    .map(|(_, _, output, _)| output.clone())
+                    .unwrap_or_default(),
+                status: previous
+                    .map(|(_, _, _, status)| *status)
+                    .unwrap_or(ToolStatus::Pending),
             }));
         }
     }
 
-    /// 按 part id 取这一块的主字段（正文 / 思考 / 通知的文字，工具块的参数）。
+    /// 把某一次调用的结果写进那一块（D258）。返回是否找到了这次调用。
+    ///
+    /// 结果**不是另一条消息**：一条消息 = 一轮，工具那一行在界面上也只有一格。
+    pub fn set_tool_output(
+        &mut self,
+        call_id: &str,
+        output: impl Into<String>,
+        status: ToolStatus,
+    ) -> bool {
+        for part in &mut self.parts {
+            if let Part::Tool(tool) = part {
+                if tool.call_id == call_id {
+                    tool.output = output.into();
+                    tool.status = status;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// 第 `index` 个工具调用的结果原文。
+    pub fn tool_output(&self, index: usize) -> Option<&str> {
+        self.tool_calls()
+            .get(index)
+            .map(|call| call.output.as_str())
+    }
+
+    /// 还有没有调用在等结果。
+    pub fn pending_calls(&self) -> Vec<&str> {
+        self.tool_calls()
+            .into_iter()
+            .filter(|call| !call.status.is_finished())
+            .map(|call| call.call_id.as_str())
+            .collect()
+    }
+
+    /// 按 part id 取这一块的主字段（正文 / 思考 / 通知的文字，工具块的参数或结果）。
     pub fn part_field(&self, part_id: &str, output: bool) -> Option<String> {
         let part = self.parts.iter().find(|part| part.id() == part_id)?;
         match (part, output) {
             (Part::Tool(tool), false) => Some(tool.arguments.clone()),
-            (Part::Tool(_), true) => Some(String::new()),
+            (Part::Tool(tool), true) => Some(tool.output.clone()),
             (_, false) => part.text().map(str::to_string),
             (_, true) => None,
         }
@@ -623,7 +716,10 @@ impl Message {
                     tool.arguments = text;
                     true
                 }
-                (Part::Tool(_), true) => false,
+                (Part::Tool(tool), true) => {
+                    tool.output = text;
+                    true
+                }
                 (Part::Text { text: slot, .. }, false)
                 | (Part::Reasoning { text: slot, .. }, false)
                 | (Part::Notice { text: slot, .. }, false) => {
@@ -721,20 +817,8 @@ impl Message {
     /// 单条消息的结构校验。
     pub fn validate(&self) -> Result<(), UnitError> {
         let calls = self.tool_calls();
-        if self.role == Role::Tool {
-            if self.tool_call_id.as_deref().unwrap_or_default().is_empty() {
-                return Err(UnitError::MissingToolCallId(self.id.clone()));
-            }
-            if !calls.is_empty() {
-                return Err(UnitError::ToolResultHasCalls(self.id.clone()));
-            }
-        } else {
-            if self.tool_call_id.is_some() {
-                return Err(UnitError::ToolCallIdOnNonTool(self.id.clone()));
-            }
-            if !calls.is_empty() && self.role != Role::Assistant {
-                return Err(UnitError::CallsOnNonAssistant(self.id.clone()));
-            }
+        if !calls.is_empty() && self.role != Role::Assistant {
+            return Err(UnitError::CallsOnNonAssistant(self.id.clone()));
         }
 
         let mut seen = BTreeSet::new();
@@ -757,8 +841,8 @@ impl Message {
             });
         }
 
-        // 工具输出可以合法为空（命令没输出）；其他角色一条块都没有说明构造路径有问题。
-        if self.parts.is_empty() && self.role != Role::Tool {
+        // 工具块可以合法地没有正文（模型只想调工具）；其他角色一条块都没有说明构造路径有问题。
+        if self.parts.is_empty() && calls.is_empty() {
             return Err(UnitError::EmptyMessage(self.id.clone()));
         }
 
@@ -843,64 +927,44 @@ impl AtomicUnit {
         })
     }
 
-    /// 追加一条工具结果。重复、未知、错单元的结果一律拒绝。
-    pub fn add_result(&mut self, result: Message) -> Result<(), UnitError> {
-        if self.is_closed() {
-            return Err(UnitError::UnitAlreadyClosed(self.id.clone()));
-        }
+    /// 把一次调用的结果写进这一轮的块里（D258）。
+    ///
+    /// 没有"追加一条结果消息"这条路了：一条消息 = 一轮，结果就长在调用块上。
+    /// 重复、未知的结果一律拒绝。
+    pub fn set_output(
+        &mut self,
+        call_id: &str,
+        output: impl Into<String>,
+        status: ToolStatus,
+    ) -> Result<(), UnitError> {
         if self.kind != UnitKind::ToolPair {
             return Err(UnitError::NotAToolPair(self.id.clone()));
         }
-        if result.role != Role::Tool {
-            return Err(UnitError::ResultNotTool(result.id.clone()));
-        }
-        if result.unit_id != self.id {
-            return Err(UnitError::WrongUnit {
-                expected: self.id.clone(),
-                actual: result.unit_id.clone(),
-            });
-        }
-        let call_id = result
-            .tool_call_id
-            .clone()
-            .ok_or_else(|| UnitError::MissingToolCallId(result.id.clone()))?;
-        let calls = self.call_ids();
-        if !calls.contains_key(call_id.as_str()) {
+        let head = self
+            .messages
+            .first_mut()
+            .ok_or_else(|| UnitError::EmptyUnit(self.id.clone()))?;
+        if !head.tool_calls().iter().any(|call| call.call_id == call_id) {
             return Err(UnitError::UnknownToolCall {
                 unit: self.id.clone(),
-                call: call_id,
+                call: call_id.to_string(),
             });
         }
-        if self.result_ids().contains_key(call_id.as_str()) {
-            return Err(UnitError::DuplicateToolResult {
+        if !head.set_tool_output(call_id, output, status) {
+            return Err(UnitError::UnknownToolCall {
                 unit: self.id.clone(),
-                call: call_id,
+                call: call_id.to_string(),
             });
         }
-        result.validate()?;
-        if result.logical_clock
-            <= self
-                .messages
-                .last()
-                .map(|m| m.logical_clock)
-                .unwrap_or(self.logical_clock)
-        {
-            return Err(UnitError::UnitClockNotMonotonic {
-                unit: self.id.clone(),
-                message: result.id.clone(),
-            });
-        }
-        self.messages.push(result);
         Ok(())
     }
 
     /// 未闭合的调用 ID（按声明顺序）。
     pub fn pending_calls(&self) -> Vec<&str> {
-        let results = self.result_ids();
-        self.call_ids()
-            .into_keys()
-            .filter(|id| !results.contains_key(*id))
-            .collect()
+        self.messages
+            .first()
+            .map(|message| message.pending_calls())
+            .unwrap_or_default()
     }
 
     /// 所有调用是否都已到齐。
@@ -963,32 +1027,21 @@ impl AtomicUnit {
                 if head.role != Role::Assistant || head.tool_calls().is_empty() {
                     return Err(UnitError::ToolPairNotAssistant(head.id.clone()));
                 }
-                let calls = self.call_ids();
-                let mut results: BTreeMap<&str, usize> = BTreeMap::new();
-                for message in &self.messages[1..] {
-                    if message.role != Role::Tool {
-                        return Err(UnitError::ResultNotTool(message.id.clone()));
-                    }
-                    let call_id = message
-                        .tool_call_id
-                        .as_deref()
-                        .ok_or_else(|| UnitError::MissingToolCallId(message.id.clone()))?;
-                    if !calls.contains_key(call_id) {
-                        return Err(UnitError::UnknownToolCall {
-                            unit: self.id.clone(),
-                            call: call_id.to_string(),
-                        });
-                    }
-                    *results.entry(call_id).or_insert(0) += 1;
+                if self.messages.len() != 1 {
+                    return Err(UnitError::ToolPairHasExtraMessages(self.id.clone()));
                 }
-                for (call_id, count) in results {
-                    if count > 1 {
-                        return Err(UnitError::DuplicateToolResult {
-                            unit: self.id.clone(),
-                            call: call_id.to_string(),
+                let mut seen: BTreeSet<&str> = BTreeSet::new();
+                for call in head.tool_calls() {
+                    if !seen.insert(call.call_id.as_str()) {
+                        return Err(UnitError::DuplicateToolCallId {
+                            message: head.id.clone(),
+                            call: call.call_id.clone(),
                         });
                     }
                 }
+                // 结构性校验到这里为止：`Pending` 是合法的内存状态，也是老库里的真实形状。
+                // "落库必须是闭合的"由写入路径把关（`Storage::append_unit`），
+                // 读路径要能把老库读出来，交给 `reconcile` 去报。
             }
         }
         Ok(())
@@ -1003,16 +1056,6 @@ impl AtomicUnit {
         }
         map
     }
-
-    fn result_ids(&self) -> BTreeMap<&str, &Message> {
-        let mut map = BTreeMap::new();
-        for message in &self.messages {
-            if let Some(call_id) = message.tool_call_id.as_deref() {
-                map.insert(call_id, message);
-            }
-        }
-        map
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -1021,16 +1064,12 @@ pub enum UnitError {
     UnknownRole(String),
     #[error("未知单元类型: {0}")]
     UnknownUnitKind(String),
+    #[error("未知工具状态: {0}")]
+    UnknownToolStatus(String),
     #[error("非法内容形态: {0}")]
     MalformedForm(String),
     #[error("消息 {0} 内容为空")]
     EmptyMessage(MessageId),
-    #[error("消息 {0} 是工具结果但缺少 tool_call_id")]
-    MissingToolCallId(MessageId),
-    #[error("消息 {0} 带 tool_call_id 但不是工具结果")]
-    ToolCallIdOnNonTool(MessageId),
-    #[error("消息 {0} 是工具结果却带 tool_calls")]
-    ToolResultHasCalls(MessageId),
     #[error("非 assistant 消息 {0} 带 tool_calls")]
     CallsOnNonAssistant(MessageId),
     #[error("消息 {0} 的工具调用 id 为空")]
@@ -1054,14 +1093,18 @@ pub enum UnitError {
     ToolPairNotAssistant(MessageId),
     #[error("消息 {0} 没有工具调用，不能开工具对单元")]
     ToolPairWithoutCalls(MessageId),
+    #[error("工具对单元 {0} 只能有一条消息（结果长在调用块上）")]
+    ToolPairHasExtraMessages(UnitId),
     #[error("单元 {0} 已闭合")]
     UnitAlreadyClosed(UnitId),
-    #[error("消息 {0} 不是工具结果")]
+    #[error("单元 {0} 不是工具结果")]
     ResultNotTool(MessageId),
     #[error("单元不匹配：期望 {expected}，实际 {actual}")]
     WrongUnit { expected: UnitId, actual: UnitId },
     #[error("单元 {unit} 里没有调用 {call}")]
     UnknownToolCall { unit: UnitId, call: String },
+    #[error("单元 {unit} 的调用 {call} 还没结果，不能落库")]
+    ToolCallStillPending { unit: UnitId, call: String },
     #[error("单元 {unit} 的调用 {call} 已有结果")]
     DuplicateToolResult { unit: UnitId, call: String },
     #[error("单元 {unit} 的消息 {message} 逻辑时钟未递增")]
@@ -1181,27 +1224,18 @@ mod tests {
         let head = Message::tool_call_message(id.clone(), calls, 10, 0, clock);
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
         assert!(!unit.is_closed());
-        let uid = unit.id.clone();
+        assert_eq!(unit.pending_calls(), vec!["c1", "c2"]);
 
-        let (rid, rclock) = setup(2);
-        unit.add_result(
-            Message::tool_result(rid.clone(), "c1", "a", 1, 0, rclock).with_unit(uid.clone()),
-        )
-        .unwrap();
+        unit.set_output("c1", "a", ToolStatus::Ok).unwrap();
         assert_eq!(unit.pending_calls(), vec!["c2"]);
 
-        let (rid2, rclock2) = setup(3);
-        unit.add_result(
-            Message::tool_result(rid2, "c2", "b", 1, 0, rclock2).with_unit(uid.clone()),
-        )
-        .unwrap();
+        unit.set_output("c2", "b", ToolStatus::Error).unwrap();
         assert!(unit.is_closed());
         unit.validate().unwrap();
+        assert_eq!(unit.messages.len(), 1, "结果不再是一条消息");
+        assert_eq!(unit.messages[0].tool_output(0), Some("a"));
 
-        let (rid3, rclock3) = setup(4);
-        assert!(unit
-            .add_result(Message::tool_result(rid3, "c1", "dup", 1, 0, rclock3).with_unit(uid))
-            .is_err());
+        assert!(unit.set_output("c9", "x", ToolStatus::Ok).is_err());
     }
 
     #[test]
@@ -1215,19 +1249,16 @@ mod tests {
             clock,
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let uid = unit.id.clone();
-        let (rid, rclock) = setup(2);
-        let err = unit
-            .add_result(Message::tool_result(rid, "nope", "x", 1, 0, rclock).with_unit(uid))
-            .unwrap_err();
+        let err = unit.set_output("nope", "x", ToolStatus::Ok).unwrap_err();
         assert!(matches!(err, UnitError::UnknownToolCall { .. }));
     }
 
     #[test]
     fn turn_unit_rejects_tool_messages() {
         let (id, clock) = setup(1);
-        let result = Message::tool_result(id, "c1", "x", 1, 0, clock);
-        assert!(AtomicUnit::turn(result).is_err());
+        let mut message = Message::text(id, Role::Assistant, SourceTag::History, "x", 1, 0, clock);
+        message.set_tool_calls(vec![OutgoingToolCall::new("c1", "bash", "{}")]);
+        assert!(AtomicUnit::turn(message).is_err());
     }
 
     #[test]

@@ -221,29 +221,22 @@ pub fn drive<T: Transport, S: ArchiveStore>(
             LogicalClock::new(seq),
         );
         call_message.set_text(text.clone());
+        let call_index = messages.len();
         messages.push(call_message);
         seq += 1;
 
         for call in &outgoing {
             report.tool_calls += 1;
-            let reply = match job.handle(&call.name, &call.arguments) {
-                Ok(reply) => reply.text,
+            let (reply, status) = match job.handle(&call.name, &call.arguments) {
+                Ok(reply) => (reply.text, crate::message::ToolStatus::Ok),
                 Err(error) => {
                     // 关键：工具失败变成工具结果，不结束这一轮
                     let text = error.tool_text();
                     report.errors.push(format!("{}: {text}", call.name));
-                    text
+                    (text, crate::message::ToolStatus::Error)
                 }
             };
-            messages.push(Message::tool_result(
-                MessageId::new(SessionId::new(), seq),
-                &call.id,
-                reply,
-                estimate_tokens(&call.arguments),
-                now,
-                LogicalClock::new(seq),
-            ));
-            seq += 1;
+            messages[call_index].set_tool_output(&call.id, reply, status);
         }
 
         match job.state() {

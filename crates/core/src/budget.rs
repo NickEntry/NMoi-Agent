@@ -680,15 +680,16 @@ pub fn breakdown_of_units(units: &[AtomicUnit], estimator: Option<&Estimator<'_>
                     // 直接在 `estimate_all` 的迭代器里取 `as_str()` 会借用已释放的临时值。
                     let content = message.content();
                     let reasoning = message.reasoning();
-                    let calls = message.outgoing_calls();
+                    let calls = message.tool_calls();
                     u64::from(
                         estimator
                             .estimate_all(
                                 std::iter::once(content.as_str())
                                     // 思考内容也是要付钱的输入。
                                     .chain(reasoning.as_deref())
-                                    // 工具调用参数在 `tool_calls` 里，不在 `content` 里。
-                                    .chain(calls.iter().map(|call| call.arguments.as_str())),
+                                    // 工具调用参数与结果都在 tool 块里，不在 `content` 里。
+                                    .chain(calls.iter().map(|call| call.arguments.as_str()))
+                                    .chain(calls.iter().map(|call| call.output.as_str())),
                             )
                             .tokens,
                     )
@@ -1043,19 +1044,12 @@ mod tests {
             crate::clock::LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).expect("工具头单元");
-        let result = crate::message::Message::tool_result(
-            crate::ids::MessageId::new(session(), 2),
-            "call_1",
-            "文件内容",
-            10,
-            1_000,
-            crate::clock::LogicalClock::new(2),
-        )
-        .with_unit(unit.id.clone());
-        unit.add_result(result).expect("结果挂得上");
+        unit.set_output("call_1", "文件内容", crate::message::ToolStatus::Ok)
+            .expect("结果挂得上");
 
         let breakdown = breakdown_of_units(&[unit], None);
-        assert_eq!(breakdown.items_of(Segment::McpTools), 2);
+        // 一轮 = 一条消息（D258）：调用与结果在同一块里，所以这一行是 1 项。
+        assert_eq!(breakdown.items_of(Segment::McpTools), 1);
         assert_eq!(breakdown.items_of(Segment::BuiltinTools), 0);
     }
 

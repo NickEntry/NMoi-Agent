@@ -211,7 +211,7 @@ mod tests {
     use super::*;
     use nmoi_core::clock::LogicalClock;
     use nmoi_core::ids::MessageId;
-    use nmoi_core::message::{AtomicUnit, OutgoingToolCall};
+    use nmoi_core::message::AtomicUnit;
     use nmoi_core::source::SourceTag;
 
     fn storage() -> Storage {
@@ -229,6 +229,50 @@ mod tests {
             LogicalClock::new(seq),
         ))
         .unwrap()
+    }
+
+    /// 旧版（v16 之前）留下的"开口单元"：调用发出去了、结果没回来。
+    /// 新写入路径已经拒绝这种形状（只存结束），所以这里直接写库，模拟一个老库。
+    fn insert_open_tool_unit(
+        store: &Storage,
+        session: SessionId,
+        seq: u64,
+        calls: &[(&str, &str)],
+    ) -> UnitId {
+        let id = MessageId::new(session, seq);
+        let unit = id.unit();
+        store
+            .conn
+            .execute(
+                "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                      form, tokens, created_at, logical_clock)
+                 VALUES (?1, ?2, ?3, 'tool_pair', 0, ?4, 'assistant', 'tool_call', 'F1', 10, 0, ?4)",
+                rusqlite::params![id.to_string(), session.to_string(), unit.to_string(), seq as i64],
+            )
+            .unwrap();
+        for (index, (call, name)) in calls.iter().enumerate() {
+            let body = serde_json::json!({
+                "call_id": call,
+                "name": name,
+                "arguments": "{}",
+                "output": "",
+                "status": "pending",
+            });
+            store
+                .conn
+                .execute(
+                    "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+                     VALUES (?1, ?2, ?3, 'tool', ?4)",
+                    rusqlite::params![
+                        id.to_string(),
+                        format!("p{}", index + 1),
+                        index as i64,
+                        body.to_string()
+                    ],
+                )
+                .unwrap();
+        }
+        unit
     }
 
     use nmoi_core::message::Message;
@@ -288,19 +332,13 @@ mod tests {
         store
             .append_unit(session, &turn(session, 1, Role::User, "读一下文件"))
             .unwrap();
-        // 只有 tool_call，结果还没写
-        let open = AtomicUnit::tool_pair(Message::tool_call_message(
-            MessageId::new(session, 2),
-            vec![
-                OutgoingToolCall::new("c1", "read_file", "{}"),
-                OutgoingToolCall::new("c2", "list_dir", "{}"),
-            ],
-            10,
-            0,
-            LogicalClock::new(2),
-        ))
-        .unwrap();
-        store.append_unit(session, &open).unwrap();
+        // 只有 tool_call，结果还没写（老库留下的形状）
+        insert_open_tool_unit(
+            &store,
+            session,
+            2,
+            &[("c1", "read_file"), ("c2", "list_dir")],
+        );
 
         let report = store.reconcile().unwrap();
         assert_eq!(report.open_units.len(), 1);
@@ -320,16 +358,7 @@ mod tests {
         store
             .append_unit(session, &turn(session, 1, Role::User, "读一下"))
             .unwrap();
-        let open = AtomicUnit::tool_pair(Message::tool_call_message(
-            MessageId::new(session, 2),
-            vec![OutgoingToolCall::new("c1", "read_file", "{}")],
-            10,
-            0,
-            LogicalClock::new(2),
-        ))
-        .unwrap();
-        let unit_id = open.id.clone();
-        store.append_unit(session, &open).unwrap();
+        let unit_id = insert_open_tool_unit(&store, session, 2, &[("c1", "read_file")]);
 
         assert_eq!(store.abandon_open_unit(&unit_id).unwrap(), 1);
         let report = store.reconcile().unwrap();

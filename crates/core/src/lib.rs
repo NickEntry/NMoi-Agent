@@ -56,6 +56,7 @@ pub mod turn;
 pub mod vars;
 pub mod view_image;
 pub mod vision;
+pub mod wire;
 pub mod workspace;
 pub mod zip;
 

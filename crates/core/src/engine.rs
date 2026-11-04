@@ -504,8 +504,10 @@ mod tests {
         assert!(matches!(err, EngineError::SnapshotNotFound(_)));
     }
 
+    /// 内存里可以有一个还没闭合的单元（正在跑的批次就是这个样子）；
+    /// "只存结束"由**写入路径**把关（`Storage::append_unit`），不在内存这一层拦。
     #[test]
-    fn tool_pair_unit_can_be_appended_open() {
+    fn an_open_tool_unit_can_live_in_memory() {
         let mut engine = MemoryEngine::new();
         let session = engine.session();
         let head_id = MessageId::new(session, 1);

@@ -160,17 +160,11 @@ mod tests {
                 LogicalClock::new(call_seq),
             );
             let mut unit = AtomicUnit::tool_pair(head).unwrap();
-            let result_seq = self.next();
-            unit.add_result(
-                Message::tool_result(
-                    MessageId::new(self.session, result_seq),
-                    "c1",
-                    "工具结果不该出现在摘录里",
-                    1,
-                    0,
-                    LogicalClock::new(result_seq),
-                )
-                .with_unit(unit.id.clone()),
+            let _ = self.next();
+            unit.set_output(
+                "c1",
+                "工具结果不该出现在摘录里",
+                crate::message::ToolStatus::Ok,
             )
             .unwrap();
             self.units.push(unit);

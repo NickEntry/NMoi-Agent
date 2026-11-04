@@ -492,8 +492,9 @@ mod tests {
         );
     }
 
+    /// 折行之后"单元内部"不存在了：一条消息就是一个单元，它的 seq 天然是切点（D258）。
     #[test]
-    fn position_inside_tool_pair_is_rejected() {
+    fn a_tool_round_is_itself_a_valid_cut() {
         let session = SessionId::new();
         let head = Message::tool_call_message(
             MessageId::new(session, 1),
@@ -503,25 +504,15 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut pair = AtomicUnit::tool_pair(head).unwrap();
-        pair.add_result(
-            Message::tool_result(
-                MessageId::new(session, 2),
-                "c1",
-                "x",
-                1,
-                0,
-                LogicalClock::new(2),
-            )
-            .with_unit(pair.id.clone()),
-        )
-        .unwrap();
+        pair.set_output("c1", "x", crate::message::ToolStatus::Ok)
+            .unwrap();
         let tail = unit(session, 3, 1);
         let list = vec![pair, tail];
+        assert!(validate_position(&list, 1).is_ok());
         assert_eq!(
-            validate_position(&list, 1),
-            Err(DividerError::SplitsUnit { after_seq: 1 })
+            validate_position(&list, 2),
+            Err(DividerError::OutOfRange { after_seq: 2 })
         );
-        assert!(validate_position(&list, 2).is_ok());
     }
 
     #[test]
@@ -632,19 +623,9 @@ mod tests {
                 LogicalClock::new(call_seq),
             );
             let mut unit = AtomicUnit::tool_pair(head).unwrap();
-            let result_seq = self.bump();
-            unit.add_result(
-                Message::tool_result(
-                    MessageId::new(self.session, result_seq),
-                    "c1",
-                    "x",
-                    tokens,
-                    0,
-                    LogicalClock::new(result_seq),
-                )
-                .with_unit(unit.id.clone()),
-            )
-            .unwrap();
+            let _ = self.bump();
+            unit.set_output("c1", "x", crate::message::ToolStatus::Ok)
+                .unwrap();
             self.units.push(unit);
         }
     }

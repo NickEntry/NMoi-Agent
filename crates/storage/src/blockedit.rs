@@ -100,7 +100,7 @@ impl Storage {
             ..Default::default()
         };
         // 全部是"和原文一样"：不算错误，但没有任何东西要写。
-        if plan.ops.is_empty() && plan.remove_messages.is_empty() {
+        if plan.ops.is_empty() && plan.remove_parts.is_empty() {
             return Ok(outcome);
         }
 
@@ -108,11 +108,10 @@ impl Storage {
         let tx = self.conn.transaction()?;
 
         // 1) 按消息分组：同一条消息上的几块一次写完，避免同一行在一个事务里被写两遍。
-        //    要删行的（工具对）不进这一组。
+        //    要删块的不进这一组（它们在第 4 步按 part id 摘）。
         let mut groups: Vec<(MessageId, Vec<&PlannedOp>)> = Vec::new();
         for op in &plan.ops {
-            let deletes_row = op.after.is_none() && op.block.tool_index().is_some();
-            if deletes_row {
+            if op.after.is_none() {
                 continue;
             }
             match groups.iter_mut().find(|(id, _)| id == &op.message) {
@@ -235,25 +234,88 @@ impl Storage {
             outcome.written += list.len();
         }
 
-        // 4) 成对删：调用消息与结果消息一起删，版本行与审计行跟着清掉。
-        //    原文还在 undo 日志里（`deleted = true`），所以这一刀不是"无声无息地没了"。
-        for id in &plan.remove_messages {
-            let id_text = id.to_string();
-            tx.execute(
-                "DELETE FROM message_versions WHERE message_id = ?1",
-                [&id_text],
-            )?;
-            tx.execute("DELETE FROM edits WHERE message_id = ?1", [&id_text])?;
-            outcome.removed += tx.execute(
-                "DELETE FROM messages WHERE id = ?1 AND conv_id = ?2",
-                params![id_text, session.to_string()],
-            )?;
+        // 4) 删块：把 part 从消息里摘掉（同一块只摘一次）。
+        //    以前工具对是两条消息，删的是行；现在调用与结果在同一块里，删的是块。
+        let mut removals: Vec<(MessageId, Vec<String>)> = Vec::new();
+        for op in plan.ops.iter().filter(|op| op.after.is_none()) {
+            let message = unit
+                .messages
+                .iter()
+                .find(|message| message.id == op.message)
+                .ok_or_else(|| {
+                    StorageError::Inconsistent(format!("消息 {} 不在单元里", op.message))
+                })?;
+            let Some(part) = nmoi_core::edit::part_of(&op.block, message) else {
+                continue;
+            };
+            match removals.iter_mut().find(|(id, _)| id == &op.message) {
+                Some((_, list)) => {
+                    if !list.contains(&part) {
+                        list.push(part);
+                    }
+                }
+                None => removals.push((op.message.clone(), vec![part])),
+            }
         }
-        for op in plan
-            .ops
-            .iter()
-            .filter(|op| op.after.is_none() && op.block.tool_index().is_some())
-        {
+        for (id, parts) in &removals {
+            let mut message = unit
+                .messages
+                .iter()
+                .find(|message| &message.id == id)
+                .cloned()
+                .ok_or_else(|| StorageError::Inconsistent(format!("消息 {id} 不在单元里")))?;
+            message.remove_parts(parts);
+            outcome.removed += parts.len();
+            // 摘空了就是一条空壳：整行删掉，不留"没有块的消息"（`Message::validate` 也拒）。
+            if message.parts().is_empty() {
+                tx.execute(
+                    "DELETE FROM message_versions WHERE message_id = ?1",
+                    [id.to_string()],
+                )?;
+                tx.execute("DELETE FROM edits WHERE message_id = ?1", [id.to_string()])?;
+                tx.execute(
+                    "DELETE FROM messages WHERE id = ?1 AND conv_id = ?2",
+                    params![id.to_string(), session.to_string()],
+                )?;
+                continue;
+            }
+            message.revision = message.revision.saturating_add(1);
+            message.tokens = message_tokens(&message);
+            tx.execute(
+                "UPDATE messages SET tokens = ?1, revision = ?2 WHERE id = ?3 AND conv_id = ?4",
+                params![
+                    message.tokens,
+                    message.revision,
+                    id.to_string(),
+                    session.to_string(),
+                ],
+            )?;
+            crate::parts::write_parts(&tx, &message)?;
+        }
+        for op in plan.ops.iter().filter(|op| op.after.is_none()) {
+            tx.execute(
+                "INSERT INTO edits(id, conv_id, unit_id, message_id, block, before_hash,
+                                   after_hash, tokens_before, tokens_after, revision, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    session.to_string(),
+                    unit_id.to_string(),
+                    op.message.to_string(),
+                    op.label,
+                    op.before_hash,
+                    op.after_hash,
+                    message_tokens(
+                        unit.messages
+                            .iter()
+                            .find(|message| message.id == op.message)
+                            .expect("上面已经确认过这条消息存在")
+                    ),
+                    0i64,
+                    0u32,
+                    at,
+                ],
+            )?;
             write_undo(&tx, session, &unit_id, op, at)?;
             outcome.blocks.push(op.label.clone());
         }

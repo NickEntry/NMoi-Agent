@@ -685,17 +685,8 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut unit = AtomicUnit::tool_pair(head).unwrap();
-        let unit_id = unit.id.clone();
-        let result = Message::tool_result(
-            MessageId::new(session, 2),
-            "call-1",
-            "文件内容 a",
-            3,
-            1_700_000_000_001,
-            LogicalClock::new(2),
-        )
-        .with_unit(unit_id);
-        unit.add_result(result).unwrap();
+        unit.set_output("call-1", "文件内容 a", nmoi_core::message::ToolStatus::Ok)
+            .unwrap();
         storage.append_unit(session, &unit).unwrap();
 
         let copy = storage
@@ -704,11 +695,8 @@ mod tests {
         let duplicated = storage.load_units(copy).unwrap();
         assert_eq!(duplicated.len(), 1);
         assert!(duplicated[0].is_closed(), "副本的工具对必须是闭合的");
-        assert_eq!(duplicated[0].messages.len(), 2);
-        assert_eq!(
-            duplicated[0].messages[1].tool_call_id.as_deref(),
-            Some("call-1")
-        );
+        assert_eq!(duplicated[0].messages.len(), 1, "一轮 = 一条消息");
+        assert_eq!(duplicated[0].messages[0].tool_output(0), Some("文件内容 a"));
     }
 
     /// 图片附件（D208）：存进去、取出来、跟着会话一起走。

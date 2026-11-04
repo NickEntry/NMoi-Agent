@@ -23,7 +23,6 @@ internal data class ChatMessage(
     val incomplete: Boolean,
     val locked: Boolean,
     val toolCalls: Int,
-    val toolCallId: String?,
     /** 版本（D137）：总共几版。<= 1 时界面不显示切换控件。 */
     val versionCount: Int = 0,
     /** 当前第几版（1 起）。 */
@@ -62,11 +61,19 @@ internal data class ChatMessage(
         get() = isUser || (!isThinking && !isToolCall && !isToolResult && !isBrokenBlock)
 }
 
-/** 一条工具调用（D158）：名字决定怎么解释它，`call_id` 决定它跟哪条结果配对。 */
+/**
+ * 一次工具调用（D158 / D258）：参数与结果在**同一块**里。
+ *
+ * 以前结果在另一条 `role=tool` 的消息上，按 `call_id` 配对；折行之后结果就是
+ * 这一块的 `output`，界面上那一行也只读这一份——不再有两处各拿一份的情况。
+ */
 internal data class ToolCallArg(
     val callId: String,
+    val part: String,
     val name: String,
     val arguments: String,
+    val output: String,
+    val status: String,
 )
 
 /**
@@ -108,8 +115,11 @@ private fun parseToolArgs(array: JSONArray?): List<ToolCallArg> {
             add(
                 ToolCallArg(
                     callId = row.text("call_id"),
+                    part = row.text("part"),
                     name = row.text("name"),
                     arguments = row.text("arguments"),
+                    output = row.text("output"),
+                    status = row.text("status", "ok"),
                 ),
             )
         }
@@ -200,7 +210,6 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
                     incomplete = message.optBoolean("incomplete", false),
                     locked = message.optBoolean("locked", false),
                     toolCalls = message.optInt("tool_calls", 0),
-                    toolCallId = message.text("tool_call_id").ifEmpty { null },
                     versionCount = message.optInt("version_count", 0),
                     versionActive = message.optInt("version_active", 0),
                     versionView = message.text("version_view", "raw"),

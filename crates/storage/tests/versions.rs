@@ -542,22 +542,12 @@ fn deleting_a_tool_message_takes_the_whole_unit() {
         LogicalClock::new(1),
     );
     let mut unit = AtomicUnit::tool_pair(head).unwrap();
-    unit.add_result(
-        Message::tool_result(
-            MessageId::new(session, 2),
-            "c1",
-            "contents",
-            1,
-            1_700_000_000_001,
-            LogicalClock::new(2),
-        )
-        .with_unit(unit.id.clone()),
-    )
-    .unwrap();
+    unit.set_output("c1", "contents", nmoi_core::message::ToolStatus::Ok)
+        .unwrap();
     storage.append_unit(session, &unit).unwrap();
 
     let removed = storage.delete_message(&MessageId::new(session, 1)).unwrap();
-    assert_eq!(removed, 2, "工具往返两条一起走");
+    assert_eq!(removed, 1, "一轮只有一条消息");
     assert!(storage.load_units(session).unwrap().is_empty());
 
     // 删干净之后不该留下"有结果没发起"这种残局：重开一次库，语义校验会拦（`ready` 会 panic）。

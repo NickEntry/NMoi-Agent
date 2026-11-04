@@ -27,7 +27,7 @@
 use crate::budget::Usage;
 use crate::clock::LogicalClock;
 use crate::ids::{MessageId, SessionId};
-use crate::message::{Message, OutgoingToolCall, Role};
+use crate::message::{Message, OutgoingToolCall, Role, ToolStatus};
 use crate::retry::RetryPolicy;
 use crate::runtime::{ChatClient, ChatRequest};
 use crate::source::SourceTag;
@@ -105,8 +105,11 @@ pub struct TurnRound {
     pub text: String,
     /// 这一轮自己的思考。空串 = 这一轮没有。
     pub reasoning: String,
-    /// 这一轮发起的调用 id（按模型给的顺序）。空 = 这一轮没调工具。
-    pub call_ids: Vec<String>,
+    /// 这一轮发起的调用（按模型给的顺序）。空 = 这一轮没调工具。
+    ///
+    /// 带完整调用（不只是 id）：没有跑成的那几条（批次被取消）也要能落库——
+    /// 库里那一轮发出去过什么，界面上就得能指出来。
+    pub calls: Vec<OutgoingToolCall>,
 }
 
 /// 一轮跑完的结果。
@@ -289,7 +292,7 @@ pub fn run_turn<T: Transport>(
         report.rounds_detail.push(TurnRound {
             text: visible.clone(),
             reasoning: round_reasoning,
-            call_ids: Vec::new(),
+            calls: Vec::new(),
         });
         report.usage = completion.usage;
 
@@ -361,12 +364,13 @@ pub fn run_turn<T: Transport>(
         if !completion.reasoning.trim().is_empty() {
             assistant = assistant.with_reasoning(&completion.reasoning);
         }
+        let assistant_index = messages.len();
         messages.push(assistant);
         seq += 1;
 
         // 这一轮的调用登记到这一轮名下（D253）：落库按轮分组，不靠"最后一条消息"猜。
         if let Some(round) = report.rounds_detail.last_mut() {
-            round.call_ids = outgoing.iter().map(|call| call.id.clone()).collect();
+            round.calls = outgoing.clone();
         }
 
         // 一次消息里的 N 个调用算一个**批次**（D254）：按车道并行跑，
@@ -374,21 +378,25 @@ pub fn run_turn<T: Transport>(
         let batch = execute_batch(registry, ctx, &outgoing, cancel);
         for (call, record) in outgoing.iter().zip(batch.records) {
             let Some(record) = record else {
-                // 这一条没执行（批次里前面有人把整轮停下了）。
+                // 这一条没执行（批次里前面有人把整轮停下了）。仍然落一块 `killed`：
+                // 它确实发出去过，界面上要能看见"这次调用没跑"。
+                messages[assistant_index].set_tool_output(
+                    &call.id,
+                    "这一条没有执行（整轮被停）",
+                    ToolStatus::Killed,
+                );
                 continue;
             };
             let text = record.outcome.clone();
+            let status = if record.ok {
+                ToolStatus::Ok
+            } else {
+                ToolStatus::Error
+            };
             report.tool_calls.push(record);
             spent = spent.saturating_add(u64::from(estimate_tokens(&text)));
-            messages.push(Message::tool_result(
-                MessageId::new(session, seq),
-                &call.id,
-                text,
-                estimate_tokens(&call.arguments),
-                0,
-                LogicalClock::new(seq),
-            ));
-            seq += 1;
+            // 结果长在调用块上（D258）：一条消息 = 一轮，不再另起一条 `role=tool` 的消息。
+            messages[assistant_index].set_tool_output(&call.id, text, status);
         }
         if batch.cancelled {
             return Ok(stopped(report));

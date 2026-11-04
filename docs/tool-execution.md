@@ -27,8 +27,8 @@
 模型回 3 个调用
   for call in calls:            ← 串行
       invoke()                  ← 阻塞就卡在这里
-      push(tool_result)
-  下一轮请求（带 3 条结果）
+      set_tool_output(call.id)  ← 结果写进那一块（D258）
+  下一轮请求（wire 展开成 1 条 assistant + 3 条 tool）
 ```
 
 `ToolContext` 是 `Copy` 的借用集合（policy / workspace / declared / envir / history），

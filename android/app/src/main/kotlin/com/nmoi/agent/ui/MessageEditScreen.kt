@@ -80,7 +80,7 @@ internal fun MessageEditScreen(
             noticeIsError = true
             return@LaunchedEffect
         }
-        val document = buildEditDocument(message, unit.messages)
+        val document = buildEditDocument(message)
         original = document
         try {
             text = serializeEditDocument(document)
@@ -202,18 +202,17 @@ internal fun MessageEditScreen(
 /**
  * 库里的一条消息 → 文档。
  *
- * 工具结果在**另一条消息**上（`role=tool`），按 `call_id` 配对——不按顺序：
- * 并行调用时结果的先后不保证，按下标猜会把第 0 个调用的结果挂到第 1 个上。
+ * 参数与结果在**同一块**里（D258）：编辑这一块就是编辑这一次调用，
+ * 不用再跨消息按 `call_id` 找结果。
  */
-private fun buildEditDocument(message: ChatMessage, siblings: List<ChatMessage>): EditDocument {
-    val results = siblings.filter { it.isToolResult }
+private fun buildEditDocument(message: ChatMessage): EditDocument {
     val tools = message.toolArgs.mapIndexed { index, call ->
         EditToolBlock(
             index = index,
             name = call.name,
             input = call.arguments,
             // 库里只有一份结果原文，先放在 stdout 这一栏；stderr 留空。
-            stdout = results.firstOrNull { it.toolCallId == call.callId }?.content,
+            stdout = call.output,
             stderr = null,
         )
     }

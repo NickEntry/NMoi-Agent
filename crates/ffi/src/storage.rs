@@ -804,8 +804,12 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                     .iter()
                                     .map(|call| json!({
                                         "call_id": call.call_id,
+                                        "part": call.part,
                                         "name": call.name,
                                         "arguments": call.arguments,
+                                        // 结果长在调用块上（D258）：界面那一行就是读这两个字段。
+                                        "output": call.output,
+                                        "status": call.status.as_str(),
                                     }))
                                     .collect::<Vec<_>>(),
                                 "tokens": message.tokens,
@@ -816,7 +820,6 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "protected": message.protected,
                                 "revision": message.revision,
                                 "tool_calls": message.tool_calls().len(),
-                                "tool_call_id": message.tool_call_id,
                                 // 版本（D137）：`version_count <= 1` 时 UI 不显示切换控件。
                                 // `version_edited` 决定那个数字的颜色：白 / 蓝 / 红。
                                 "version_count": brief.map(|b| b.count).unwrap_or(0),

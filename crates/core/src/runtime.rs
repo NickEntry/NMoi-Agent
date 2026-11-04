@@ -965,11 +965,13 @@ pub fn build_body(request: &ChatRequest) -> Result<Value, ChatError> {
                 .sum::<usize>()
         )));
     }
+    // 展开只做一次（D258）：库里一条消息可能发成 N 条，四个端口不再各猜一遍。
+    let wire = crate::wire::expand(&request.messages)?;
     let mut body = match request.provider.kind {
-        ProviderKind::OpenAiCompatible => openai_body(request)?,
-        ProviderKind::OpenAiResponses => responses_body(request)?,
-        ProviderKind::Anthropic => anthropic_body(request)?,
-        ProviderKind::Gemini => gemini_body(request)?,
+        ProviderKind::OpenAiCompatible => openai_body(request, &wire)?,
+        ProviderKind::OpenAiResponses => responses_body(request, &wire)?,
+        ProviderKind::Anthropic => anthropic_body(request, &wire)?,
+        ProviderKind::Gemini => gemini_body(request, &wire)?,
     };
     request.thinking.apply(&mut body);
     Ok(request.provider.overrides.apply(body))
@@ -993,22 +995,15 @@ fn apply_sampling(body: &mut Value, request: &ChatRequest) {
     // Responses 压根没有这个参数。按端口各写各的，别用一个通用名糊过去。
 }
 
-/// 消息能不能被这一层表示。表示不了就报错——静默丢内容比报错糟得多。
-fn ensure_representable(message: &Message) -> Result<(), ChatError> {
-    if message.archived_ref.is_some() {
-        return Err(ChatError::Unsupported(format!(
-            "消息 {} 的内容在归档里（形态 {}），发请求前需要先取回原文",
-            message.id, message.form
-        )));
-    }
-    // 工具块本身现在能表示了，但配对关系得对：结果必须知道自己在回哪一次调用。
+/// 展开后的消息能不能被这一层表示。表示不了就报错——静默丢内容比报错糟得多。
+fn ensure_representable(message: &crate::wire::WireMessage) -> Result<(), ChatError> {
     if message.role == Role::Tool && message.tool_call_id.is_none() {
         return Err(ChatError::Unsupported(format!(
-            "工具结果消息 {} 没有 tool_call_id，对不上是哪次调用",
+            "工具结果 {} 没有 tool_call_id，对不上是哪次调用",
             message.id
         )));
     }
-    if !message.tool_calls().is_empty() && message.role != Role::Assistant {
+    if !message.tool_calls.is_empty() && message.role != Role::Assistant {
         return Err(ChatError::Unsupported(format!(
             "只有助手消息能带 tool_calls，{} 是 {}",
             message.id, message.role
@@ -1017,7 +1012,7 @@ fn ensure_representable(message: &Message) -> Result<(), ChatError> {
     Ok(())
 }
 
-fn tool_call_id(message: &Message) -> Result<&str, ChatError> {
+fn tool_call_id(message: &crate::wire::WireMessage) -> Result<&str, ChatError> {
     message.tool_call_id.as_deref().ok_or_else(|| {
         ChatError::Unsupported(format!("工具结果消息 {} 没有 tool_call_id", message.id))
     })
@@ -1049,10 +1044,13 @@ fn tool_input(call: &crate::message::OutgoingToolCall) -> Result<Value, ChatErro
     }
 }
 
-fn openai_body(request: &ChatRequest) -> Result<Value, ChatError> {
+fn openai_body(
+    request: &ChatRequest,
+    wire: &[crate::wire::WireMessage],
+) -> Result<Value, ChatError> {
     let replay = request.effective_replay();
     let mut messages = Vec::new();
-    for message in &request.messages {
+    for message in wire {
         ensure_representable(message)?;
         let images = request
             .images
@@ -1101,7 +1099,7 @@ fn openai_body(request: &ChatRequest) -> Result<Value, ChatError> {
 }
 
 fn openai_message(
-    message: &Message,
+    message: &crate::wire::WireMessage,
     replay: ReasoningReplay,
     images: &[crate::message::ImagePart],
 ) -> Result<Value, ChatError> {
@@ -1110,11 +1108,11 @@ fn openai_message(
         return Ok(json!({
             "role": "tool",
             "tool_call_id": id,
-            "content": message.content(),
+            "content": message.content,
         }));
     }
 
-    let mut item = json!({"role": message.role.as_str(), "content": message.content()});
+    let mut item = json!({"role": message.role.as_str(), "content": message.content});
     // 图片只在用户消息上发：助手/工具消息带图是另一套协议（编辑回传），现在不做。
     if !images.is_empty() {
         if message.role != Role::User {
@@ -1123,7 +1121,7 @@ fn openai_message(
                 message.id, message.role
             )));
         }
-        let mut parts = vec![json!({"type": "text", "text": message.content()})];
+        let mut parts = vec![json!({"type": "text", "text": message.content})];
         for image in images {
             parts.push(json!({
                 "type": "image_url",
@@ -1134,13 +1132,13 @@ fn openai_message(
     }
     if message.role == Role::Assistant {
         if replay == ReasoningReplay::Always {
-            if let Some(reasoning) = &message.reasoning() {
+            if let Some(reasoning) = &message.reasoning {
                 item["reasoning_content"] = Value::String(reasoning.clone());
             }
         }
-        if !message.tool_calls().is_empty() {
+        if !message.tool_calls.is_empty() {
             let calls: Vec<Value> = message
-                .outgoing_calls()
+                .tool_calls
                 .iter()
                 .map(|call| {
                     json!({
@@ -1156,7 +1154,10 @@ fn openai_message(
     Ok(item)
 }
 
-fn responses_body(request: &ChatRequest) -> Result<Value, ChatError> {
+fn responses_body(
+    request: &ChatRequest,
+    wire: &[crate::wire::WireMessage],
+) -> Result<Value, ChatError> {
     if request.effective_replay() == ReasoningReplay::Always {
         return Err(ChatError::Unsupported(
             "Responses 端口的思考回放要 `reasoning` item（还要 encrypted_content），还没做".into(),
@@ -1165,23 +1166,23 @@ fn responses_body(request: &ChatRequest) -> Result<Value, ChatError> {
 
     let mut input = Vec::new();
     let mut instructions: Option<String> = None;
-    for message in &request.messages {
+    for message in wire {
         ensure_representable(message)?;
         match message.role {
-            Role::System => push_paragraph(&mut instructions, &message.content()),
+            Role::System => push_paragraph(&mut instructions, &message.content),
             Role::User => input.push(json!({
                 "role": "user",
-                "content": [{"type": "input_text", "text": message.content()}],
+                "content": [{"type": "input_text", "text": message.content}],
             })),
             Role::Assistant => {
-                if !message.content().is_empty() {
+                if !message.content.is_empty() {
                     input.push(json!({
                         "role": "assistant",
-                        "content": [{"type": "output_text", "text": message.content()}],
+                        "content": [{"type": "output_text", "text": message.content}],
                     }));
                 }
                 // 工具调用在这里是**顶层 item**，不是 message 里的字段
-                for call in &message.outgoing_calls() {
+                for call in &message.tool_calls {
                     input.push(json!({
                         "type": "function_call",
                         "call_id": call.id,
@@ -1195,7 +1196,7 @@ fn responses_body(request: &ChatRequest) -> Result<Value, ChatError> {
                 input.push(json!({
                     "type": "function_call_output",
                     "call_id": id,
-                    "output": message.content(),
+                    "output": message.content,
                 }));
             }
         }
@@ -1230,7 +1231,10 @@ fn responses_body(request: &ChatRequest) -> Result<Value, ChatError> {
     Ok(body)
 }
 
-fn anthropic_body(request: &ChatRequest) -> Result<Value, ChatError> {
+fn anthropic_body(
+    request: &ChatRequest,
+    wire: &[crate::wire::WireMessage],
+) -> Result<Value, ChatError> {
     if request.effective_replay() == ReasoningReplay::Always {
         // Anthropic 的 thinking 块必须带签名才回传得出去，而签名要先把
         // `signature_delta` 收进消息结构（还没做）。宁可报错也不要发一个无签名块去换 400。
@@ -1241,21 +1245,21 @@ fn anthropic_body(request: &ChatRequest) -> Result<Value, ChatError> {
 
     let mut system: Option<String> = None;
     let mut messages: Vec<Value> = Vec::new();
-    for message in &request.messages {
+    for message in wire {
         ensure_representable(message)?;
         match message.role {
-            Role::System => push_paragraph(&mut system, &message.content()),
+            Role::System => push_paragraph(&mut system, &message.content),
             Role::User => push_anthropic_blocks(
                 &mut messages,
                 "user",
-                vec![json!({"type": "text", "text": message.content()})],
+                vec![json!({"type": "text", "text": message.content})],
             ),
             Role::Assistant => {
                 let mut blocks = Vec::new();
-                if !message.content().is_empty() {
-                    blocks.push(json!({"type": "text", "text": message.content()}));
+                if !message.content.is_empty() {
+                    blocks.push(json!({"type": "text", "text": message.content}));
                 }
-                for call in &message.outgoing_calls() {
+                for call in &message.tool_calls {
                     // `input` 在这边必须是**对象**
                     blocks.push(json!({
                         "type": "tool_use",
@@ -1281,7 +1285,7 @@ fn anthropic_body(request: &ChatRequest) -> Result<Value, ChatError> {
                     vec![json!({
                         "type": "tool_result",
                         "tool_use_id": id,
-                        "content": message.content(),
+                        "content": message.content,
                     })],
                 );
             }
@@ -1333,7 +1337,10 @@ fn push_anthropic_blocks(messages: &mut Vec<Value>, role: &str, blocks: Vec<Valu
     messages.push(json!({"role": role, "content": blocks}));
 }
 
-fn gemini_body(request: &ChatRequest) -> Result<Value, ChatError> {
+fn gemini_body(
+    request: &ChatRequest,
+    wire: &[crate::wire::WireMessage],
+) -> Result<Value, ChatError> {
     if request.effective_replay() == ReasoningReplay::Always {
         return Err(ChatError::Unsupported(
             "Gemini 的思考回放要带 thoughtSignature 的 part，还没做".into(),
@@ -1351,10 +1358,9 @@ fn gemini_body(request: &ChatRequest) -> Result<Value, ChatError> {
     // Gemini 的 functionResponse 只认**函数名**，不认 call id。
     // 结果消息里存的是 id，所以先从历史里把 id→name 建起来。
     let mut names: HashMap<&str, &str> = HashMap::new();
-    let all_calls: Vec<crate::message::OutgoingToolCall> = request
-        .messages
+    let all_calls: Vec<crate::message::OutgoingToolCall> = wire
         .iter()
-        .flat_map(|message| message.outgoing_calls())
+        .flat_map(|message| message.tool_calls.clone())
         .collect();
     for call in &all_calls {
         names.insert(call.id.as_str(), call.name.as_str());
@@ -1362,21 +1368,21 @@ fn gemini_body(request: &ChatRequest) -> Result<Value, ChatError> {
 
     let mut contents: Vec<Value> = Vec::new();
     let mut system: Option<String> = None;
-    for message in &request.messages {
+    for message in wire {
         ensure_representable(message)?;
         match message.role {
-            Role::System => push_paragraph(&mut system, &message.content()),
+            Role::System => push_paragraph(&mut system, &message.content),
             Role::User => push_gemini_parts(
                 &mut contents,
                 "user",
-                vec![json!({"text": message.content()})],
+                vec![json!({"text": message.content})],
             ),
             Role::Assistant => {
                 let mut parts = Vec::new();
-                if !message.content().is_empty() {
-                    parts.push(json!({"text": message.content()}));
+                if !message.content.is_empty() {
+                    parts.push(json!({"text": message.content}));
                 }
-                for call in &message.outgoing_calls() {
+                for call in &message.tool_calls {
                     parts.push(json!({
                         "functionCall": {"name": call.name, "args": tool_input(call)?},
                     }));
@@ -1450,11 +1456,11 @@ fn push_gemini_parts(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
 
 /// `functionResponse.response` 必须是**对象**。工具结果是字符串时：
 /// 能解析成对象就用它，否则包一层 `{"result": ...}`——直接塞字符串会被上游拒。
-fn tool_response(message: &Message) -> Value {
-    match serde_json::from_str::<Value>(&message.content()) {
+fn tool_response(message: &crate::wire::WireMessage) -> Value {
+    match serde_json::from_str::<Value>(&message.content) {
         Ok(value @ Value::Object(_)) => value,
         Ok(other) => json!({"result": other}),
-        Err(_) => json!({"result": message.content()}),
+        Err(_) => json!({"result": message.content}),
     }
 }
 
@@ -1586,15 +1592,18 @@ mod tests {
         )
     }
 
-    fn tool_result_message(session: SessionId, seq: u64, id: &str, text: &str) -> Message {
-        Message::tool_result(
-            MessageId::new(session, seq),
-            id,
-            text,
-            1,
-            crate::engine::now_ms(),
-            LogicalClock::new(seq),
-        )
+    /// 一轮：调用与它的结果在同一条消息里（D258 折行后的形状）。
+    fn tool_call_with_output(
+        session: SessionId,
+        seq: u64,
+        id: &str,
+        name: &str,
+        arguments: &str,
+        output: &str,
+    ) -> Message {
+        let mut message = tool_call_message(session, seq, id, name, arguments);
+        message.set_tool_output(id, output, crate::message::ToolStatus::Ok);
+        message
     }
 
     fn request_with(kind: ProviderKind, base: &str) -> ChatRequest {
@@ -1754,8 +1763,14 @@ mod tests {
         let mut request = request_with(ProviderKind::OpenAiCompatible, "https://api.example/v1")
             .messages(vec![
                 message(session, 1, Role::User, "读一下 a.md"),
-                tool_call_message(session, 2, "call_1", "read_file", "{\"path\":\"a.md\"}"),
-                tool_result_message(session, 3, "call_1", "文件内容"),
+                tool_call_with_output(
+                    session,
+                    2,
+                    "call_1",
+                    "read_file",
+                    "{\"path\":\"a.md\"}",
+                    "文件内容",
+                ),
             ]);
         request.stop = vec!["STOP".into()];
 
@@ -1783,8 +1798,14 @@ mod tests {
         let request = request_with(ProviderKind::Anthropic, "https://api.anthropic.com/v1")
             .messages(vec![
                 message(session, 1, Role::User, "读一下 a.md"),
-                tool_call_message(session, 2, "toolu_1", "read_file", "{\"path\":\"a.md\"}"),
-                tool_result_message(session, 3, "toolu_1", "文件内容"),
+                tool_call_with_output(
+                    session,
+                    2,
+                    "toolu_1",
+                    "read_file",
+                    "{\"path\":\"a.md\"}",
+                    "文件内容",
+                ),
             ]);
 
         let body = build_body(&request).unwrap();
@@ -1807,8 +1828,14 @@ mod tests {
         let request = request_with(ProviderKind::OpenAiResponses, "https://api.example/v1")
             .messages(vec![
                 message(session, 1, Role::User, "查一下"),
-                tool_call_message(session, 2, "call_1", "get_weather", "{\"city\":\"Paris\"}"),
-                tool_result_message(session, 3, "call_1", "{\"temp\":21}"),
+                tool_call_with_output(
+                    session,
+                    2,
+                    "call_1",
+                    "get_weather",
+                    "{\"city\":\"Paris\"}",
+                    "{\"temp\":21}",
+                ),
             ]);
 
         let body = build_body(&request).unwrap();
@@ -1837,9 +1864,15 @@ mod tests {
         )
         .messages(vec![
             message(session, 1, Role::User, "读一下 a.md"),
-            tool_call_message(session, 2, "call_1", "read_file", "{\"path\":\"a.md\"}"),
             // 工具结果是纯文本，不是 JSON
-            tool_result_message(session, 3, "call_1", "文件内容"),
+            tool_call_with_output(
+                session,
+                2,
+                "call_1",
+                "read_file",
+                "{\"path\":\"a.md\"}",
+                "文件内容",
+            ),
         ]);
 
         let body = build_body(&request).unwrap();
@@ -1861,25 +1894,25 @@ mod tests {
     }
 
     #[test]
-    fn gemini_refuses_a_tool_result_it_cannot_name() {
+    fn an_unfinished_tool_block_is_refused_instead_of_sent() {
+        // 折行之后"结果指向不存在的调用"结构上不会出现；能出现的是"调用还没有结果"。
         let session = SessionId::new();
-        let request = request_with(ProviderKind::Gemini, "https://x/v1beta").messages(vec![
+        let request = request_with(ProviderKind::OpenAiCompatible, "https://x/v1").messages(vec![
             message(session, 1, Role::User, "x"),
-            tool_result_message(session, 2, "call_unknown", "结果"),
+            tool_call_message(session, 2, "call_1", "read_file", "{}"),
         ]);
         let error = build_body(&request).unwrap_err();
-        assert!(error.to_string().contains("call_unknown"), "{error}");
+        assert!(error.to_string().contains("还没结果"), "{error}");
     }
 
     #[test]
-    fn tool_result_without_an_id_is_refused_everywhere() {
+    fn an_old_role_tool_row_is_refused_instead_of_guessed() {
         let session = SessionId::new();
-        let mut orphan = message(session, 1, Role::Tool, "结果");
-        orphan.tool_call_id = None;
+        let orphan = message(session, 1, Role::Tool, "结果");
         let request = request_with(ProviderKind::OpenAiCompatible, "https://x/v1")
             .messages(vec![message(session, 2, Role::User, "x"), orphan]);
         let error = build_body(&request).unwrap_err();
-        assert!(error.to_string().contains("tool_call_id"), "{error}");
+        assert!(error.to_string().contains("v16"), "{error}");
     }
 
     #[test]

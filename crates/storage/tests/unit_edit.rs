@@ -58,17 +58,8 @@ fn seed_pair(storage: &mut Storage) -> (SessionId, MessageId) {
         LogicalClock::new(1),
     );
     let mut unit = AtomicUnit::tool_pair(head.clone()).unwrap();
-    let unit_id = unit.id.clone();
-    let result = Message::tool_result(
-        MessageId::new(session, 2),
-        "call-1",
-        "文件内容 a",
-        3,
-        1_700_000_000_001,
-        LogicalClock::new(2),
-    )
-    .with_unit(unit_id);
-    unit.add_result(result).unwrap();
+    unit.set_output("call-1", "文件内容 a", nmoi_core::message::ToolStatus::Ok)
+        .unwrap();
     storage.append_unit(session, &unit).unwrap();
     (session, head.id)
 }
@@ -156,7 +147,7 @@ fn deleting_a_tool_pair_removes_both_rows_and_keeps_the_text() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("nmoi.db"));
     let (session, id) = seed_pair(&mut storage);
-    assert_eq!(all_messages(&storage, session).len(), 2);
+    assert_eq!(all_messages(&storage, session).len(), 1);
 
     let outcome = storage
         .apply_unit_edits(
@@ -171,11 +162,11 @@ fn deleting_a_tool_pair_removes_both_rows_and_keeps_the_text() {
             ],
         )
         .unwrap();
-    assert_eq!(outcome.removed, 2);
+    assert_eq!(outcome.removed, 1, "一块：调用与结果在同一块里");
 
     assert!(
         all_messages(&storage, session).is_empty(),
-        "调用与结果都要消失（留一条就是孤儿）"
+        "摘空了就把那一行删掉，不留空壳"
     );
 
     let log = storage.undo_log(session).unwrap();
@@ -190,28 +181,45 @@ fn deleting_a_tool_pair_removes_both_rows_and_keeps_the_text() {
 }
 
 #[test]
-fn half_deleted_tool_block_is_refused_and_nothing_changes() {
+fn deleting_one_tool_block_keeps_the_other() {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = ready(&dir.path().join("nmoi.db"));
-    let (session, id) = seed_pair(&mut storage);
+    let session = storage
+        .create_conversation("两块工具", "device-a", "default")
+        .unwrap();
+    let head = Message::tool_call_message(
+        MessageId::new(session, 1),
+        vec![
+            OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}"),
+            OutgoingToolCall::new("c2", "read_file", "{\"path\":\"b\"}"),
+        ],
+        5,
+        1_700_000_000_000,
+        LogicalClock::new(1),
+    );
+    let id = head.id.clone();
+    let mut unit = AtomicUnit::tool_pair(head).unwrap();
+    unit.set_output("c1", "内容 a", nmoi_core::message::ToolStatus::Ok)
+        .unwrap();
+    unit.set_output("c2", "内容 b", nmoi_core::message::ToolStatus::Ok)
+        .unwrap();
+    storage.append_unit(session, &unit).unwrap();
 
-    let error = storage
+    let outcome = storage
         .apply_unit_edits(
             &id,
             &[BlockOp::Delete {
                 block: BlockSelector::ToolCall { index: 0 },
             }],
         )
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("成对"),
-        "报错要说清是成对的问题：{error}"
-    );
+        .unwrap();
+    assert_eq!(outcome.removed, 1);
 
-    // 一条都没动：不是"删了一半再报错"。
-    assert_eq!(all_messages(&storage, session).len(), 2);
-    assert_eq!(storage.undo_count(session).unwrap(), 0);
-    assert_eq!(storage.edit_count(session).unwrap(), 0);
+    let messages = all_messages(&storage, session);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].tool_calls().len(), 1);
+    assert_eq!(messages[0].tool_calls()[0].call_id, "c2");
+    assert_eq!(storage.undo_count(session).unwrap(), 1);
 }
 
 #[test]

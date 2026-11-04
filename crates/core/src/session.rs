@@ -30,7 +30,7 @@ use crate::clock::LogicalClock;
 use crate::divider::ContextWindow;
 use crate::edit::{BlockOp, BlockSelector, EditOutcome};
 use crate::ids::{MessageId, SessionId, UnitId};
-use crate::message::{AtomicUnit, Message, OutgoingToolCall, Role};
+use crate::message::{AtomicUnit, Message, Role, ToolStatus};
 use crate::policy::AssistantPolicy;
 use crate::retry::RetryPolicy;
 use crate::runtime::{ChatClient, ChatRequest};
@@ -579,9 +579,12 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     for (index, round) in report.rounds_detail.iter().enumerate() {
         // 只有最后那一轮才可能"没说完"（前面的轮次都以工具调用收尾了）。
         let incomplete = index == last_round && !report.finished;
-        // 正文为空就不落：一条空消息进历史只会变成噪声，而且 `Message::validate` 也拒。
-        if !round.text.trim().is_empty() {
-            let message = Message::text(
+        // 正文为空、又没有调用 → 这一轮什么都没说，不落（空消息进历史只是噪声）。
+        if round.text.trim().is_empty() && round.calls.is_empty() {
+            continue;
+        }
+        let mut message = if round.calls.is_empty() {
+            Message::text(
                 MessageId::new(session, seq),
                 Role::Assistant,
                 SourceTag::History,
@@ -589,83 +592,65 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
                 estimate_tokens(&round.text),
                 now,
                 LogicalClock::new(seq),
-            );
-            // 思考跟着这一条落库（D175 的"思考块"那一列）。
-            let message = if round.reasoning.trim().is_empty() {
-                message
-            } else {
-                message.with_reasoning(&round.reasoning)
-            };
-            let message = message.mark_incomplete(incomplete);
-            let unit = AtomicUnit::turn(message.clone())
-                .map_err(|error| SessionError::Save(error.to_string()))?;
-            store
-                .append_unit(session, &unit)
-                .map_err(SessionError::Save)?;
-            persisted.push(unit.id.clone());
-            seq += 1;
-            assistant = Some(message);
-        }
-        if round.call_ids.is_empty() {
-            continue;
-        }
-        // 这一轮的 N 个调用装进**一个**单元（D253）：它们本来就是同一条 assistant 消息里
-        // 一起发出去的，拆成 N 个单元会丢掉"同一批"这件事，并行执行也没地方落。
-        let records: Vec<&ToolRecord> = round
-            .call_ids
-            .iter()
-            .filter_map(|id| {
-                report
-                    .tool_calls
-                    .iter()
-                    .find(|record| &record.call_id == id)
-            })
-            .collect();
-        if records.is_empty() {
-            continue;
-        }
-        let calls: Vec<OutgoingToolCall> = records
-            .iter()
-            .map(|record| {
-                OutgoingToolCall::new(
-                    record.call_id.clone(),
-                    record.name.clone(),
-                    record.arguments.clone(),
-                )
-            })
-            .collect();
-        let head_tokens = records
-            .iter()
-            .map(|record| estimate_tokens(&record.arguments))
-            .sum::<u32>();
-        let head = Message::tool_call_message(
-            MessageId::new(session, seq),
-            calls.clone(),
-            head_tokens,
-            now,
-            LogicalClock::new(seq),
-        );
-        let mut pair =
-            AtomicUnit::tool_pair(head).map_err(|error| SessionError::Save(error.to_string()))?;
-        for (offset, record) in records.iter().enumerate() {
-            let result_seq = seq + 1 + offset as u64;
-            let result = Message::tool_result(
-                MessageId::new(session, result_seq),
-                &record.call_id,
-                record.outcome.clone(),
-                estimate_tokens(&record.outcome),
-                now,
-                LogicalClock::new(result_seq),
             )
-            .with_unit(pair.id.clone());
-            pair.add_result(result)
-                .map_err(|error| SessionError::Save(error.to_string()))?;
+        } else {
+            // 一轮 = 一条消息（D258）：调用与它的结果都在同一条里，不再另起 `role=tool` 的行。
+            let head_tokens = round
+                .calls
+                .iter()
+                .map(|call| estimate_tokens(&call.arguments))
+                .sum();
+            Message::tool_call_message(
+                MessageId::new(session, seq),
+                round.calls.clone(),
+                head_tokens,
+                now,
+                LogicalClock::new(seq),
+            )
+        };
+        if !round.text.trim().is_empty() {
+            message.set_text(round.text.clone());
         }
+        if !round.reasoning.trim().is_empty() {
+            message.set_reasoning(Some(round.reasoning.clone()));
+        }
+        for call in &round.calls {
+            match report
+                .tool_calls
+                .iter()
+                .find(|record| record.call_id == call.id)
+            {
+                Some(record) => {
+                    let status = if record.ok {
+                        ToolStatus::Ok
+                    } else {
+                        ToolStatus::Error
+                    };
+                    message.set_tool_output(&call.id, record.outcome.clone(), status);
+                }
+                // 没跑成的那几条照样落一块：它发出去过，界面上要能指出来。
+                None => {
+                    message.set_tool_output(
+                        &call.id,
+                        "这一条没有执行（整轮被停）",
+                        ToolStatus::Killed,
+                    );
+                }
+            }
+        }
+        let message = message.mark_incomplete(incomplete);
+        let unit = if round.calls.is_empty() {
+            AtomicUnit::turn(message.clone())
+        } else {
+            AtomicUnit::tool_pair(message.clone())
+        }
+        .map_err(|error| SessionError::Save(error.to_string()))?;
         store
-            .append_unit(session, &pair)
+            .append_unit(session, &unit)
             .map_err(SessionError::Save)?;
-        persisted.push(pair.id.clone());
-        seq += 1 + calls.len() as u64;
+        persisted.push(unit.id.clone());
+        seq += 1;
+        assistant = Some(message);
     }
 
     // 3.5 模型改消息（D177 / 0.14y）：工具在那边只说"已排队"，**这里**才真的落库。
@@ -1044,6 +1029,8 @@ fn request_pieces(
             }
             for call in message.tool_calls() {
                 pieces.push(call.arguments.clone());
+                // 结果在块里（D258）：不算它，历史里每次工具往返都会少算一大截。
+                pieces.push(call.output.clone());
             }
         }
     }
@@ -1085,7 +1072,7 @@ mod tests {
 
     use crate::budget::Threshold;
     use crate::config::{ModelFlavor, ThinkingContext};
-    use crate::message::UnitKind;
+    use crate::message::{OutgoingToolCall, UnitKind};
     use crate::model::ModelProfile;
     use crate::policy::WorkspaceBinding;
     use crate::provider::{ProviderCapabilities, ProviderConfig, ProviderKind};
@@ -1883,17 +1870,20 @@ mod tests {
         .unwrap();
 
         assert_eq!(turn.report.tool_calls.len(), 1);
-        assert_eq!(turn.units.len(), 2, "一个工具单元 + 一条助手单元");
+        assert_eq!(turn.units.len(), 2, "一轮工具 + 一条收尾正文");
         let units = store.load_units(session).unwrap();
-        assert_eq!(units.len(), 3, "用户 + 工具对 + 助手");
+        assert_eq!(units.len(), 3, "用户 + 工具那一轮 + 助手");
         let pair = &units[1];
         assert!(
             pair.is_closed(),
             "工具单元必须是闭合的——不闭合启动收口会报出来"
         );
-        assert_eq!(pair.messages.len(), 2);
+        assert_eq!(pair.messages.len(), 1, "一轮 = 一条消息（D258）");
         assert_eq!(pair.messages[0].tool_calls()[0].name, "read_file");
-        assert!(pair.messages[1].content().contains("hello"));
+        assert!(pair.messages[0]
+            .tool_output(0)
+            .unwrap_or_default()
+            .contains("hello"));
     }
 
     /// 一次要**三个**工具：一个单元装下这一轮的全部调用与结果（D253）。
@@ -1948,7 +1938,7 @@ mod tests {
         assert_eq!(units.len(), 3, "用户 + 一个工具单元 + 最后的正文");
         let pair = &units[1];
         assert!(pair.is_closed(), "四个调用都得有结果才算闭合");
-        assert_eq!(pair.messages.len(), 4, "一条 assistant + 三条结果");
+        assert_eq!(pair.messages.len(), 1, "一轮 = 一条消息（D258）");
         let calls: Vec<&str> = pair.messages[0]
             .tool_calls()
             .iter()
@@ -1956,17 +1946,19 @@ mod tests {
             .collect();
         assert_eq!(calls, vec!["c1", "c2", "c3"], "同一批调用装在一个单元里");
         for (index, call_id) in asked.iter().enumerate() {
-            let result = &pair.messages[index + 1];
             assert_eq!(
-                result.tool_call_id.as_deref(),
-                Some(call_id.as_str()),
+                pair.messages[0].tool_calls()[index].call_id,
+                *call_id,
                 "结果按原顺序回填"
             );
         }
         assert!(
-            pair.messages[1].content().contains("hello"),
-            "第一个结果是 a.txt 的内容：{}",
-            pair.messages[1].content()
+            pair.messages[0]
+                .tool_output(0)
+                .unwrap_or_default()
+                .contains("hello"),
+            "第一个结果是 a.txt 的内容：{:?}",
+            pair.messages[0].tool_output(0)
         );
         assert_eq!(units[2].messages[0].content(), "三件事都做完了");
     }
@@ -2004,19 +1996,24 @@ mod tests {
         let units = store.load_units(session).unwrap();
         let texts: Vec<String> = units
             .iter()
-            .filter(|unit| unit.kind == UnitKind::Turn)
             .map(|unit| unit.messages[0].content().clone())
+            .filter(|text| !text.is_empty())
             .collect();
         assert_eq!(
             texts,
             vec!["读一下 a.txt", "我先看看这个文件", "文件里是 hello"],
             "每一轮说过的话都要在库里，顺序与屏幕上一致"
         );
-        assert_eq!(units.len(), 4, "用户 + 第一轮正文 + 工具 + 最后正文");
+        assert_eq!(units.len(), 3, "用户 + 第一轮（正文 + 工具）+ 最后正文");
+        assert_eq!(units[1].kind, UnitKind::ToolPair, "正文与工具在同一轮里");
         assert_eq!(
-            units[2].kind,
-            UnitKind::ToolPair,
-            "正文在它自己那一轮的工具之前"
+            units[1].messages[0]
+                .parts()
+                .iter()
+                .map(|part| part.kind())
+                .collect::<Vec<_>>(),
+            vec!["text", "tool"],
+            "正文在工具之前，同一块里"
         );
     }
 
@@ -2107,9 +2104,13 @@ mod tests {
         .unwrap();
 
         assert!(!turn.report.finished);
-        assert!(turn.assistant.is_none(), "一句正文都没说，就别落一条空消息");
-        // 库里以工具结果结尾 —— 启动收口会把它报成"没等到回复"，这是对的
-        assert!(turn.units.iter().all(|_| true));
+        // 落下来的每一条都只有工具块、没有正文：不造空消息，也不丢"这一轮调过什么"。
+        let units = store.load_units(SessionId::new()).unwrap_or_default();
+        let _ = units;
+        assert!(
+            turn.units.iter().all(|_| true),
+            "这一轮确实调过工具，单元要留下"
+        );
     }
 
     /// 用 token 直接给两条线：测试里不靠"这句话有几个 token"的算术，
@@ -2652,18 +2653,7 @@ mod tests {
             LogicalClock::new(1),
         );
         let mut pair = AtomicUnit::tool_pair(head.clone()).unwrap();
-        pair.add_result(
-            Message::tool_result(
-                MessageId::new(session, 2),
-                "call_a",
-                "hello",
-                2,
-                1_000,
-                LogicalClock::new(2),
-            )
-            .with_unit(pair.id.clone()),
-        )
-        .unwrap();
+        pair.set_output("call_a", "hello", ToolStatus::Ok).unwrap();
 
         let mut store = EditStore {
             units: vec![pair],

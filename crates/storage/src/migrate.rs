@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::schema;
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 pub struct Migration {
     pub version: i64,
@@ -74,6 +74,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 15,
         sql: schema::SCHEMA_V15,
+    },
+    Migration {
+        version: 16,
+        sql: schema::SCHEMA_V16,
     },
 ];
 
@@ -305,6 +309,93 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 1, "迁移不能丢行");
+    }
+
+    /// v15 → v16：工具结果并进调用块，`role=tool` 的行消失，分界线跟着搬（D258）。
+    #[test]
+    fn v15_tool_rows_become_output_of_the_call_part() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        assert_eq!(migrate(&mut conn, 15).unwrap(), 15);
+        conn.execute(
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
+             VALUES ('c1', 't', 0, 0, 15, 'dev')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                  form, tokens, created_at, logical_clock)
+             VALUES ('m1', 'c1', 'u:01a1a7ed-0000-0000-0000-000000000000:1', 'tool_pair', 0, 1,
+                     'assistant', 'tool_call', 'F1', 1, 0, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                  form, tokens, created_at, logical_clock, tool_call_id)
+             VALUES ('m2', 'c1', 'u:01a1a7ed-0000-0000-0000-000000000000:1', 'tool_pair', 0, 2,
+                     'tool', 'tool_result', 'F1', 1, 0, 2, 'c1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+             VALUES ('m1', 'p1', 0, 'tool',
+                     '{\"call_id\":\"c1\",\"name\":\"read_file\",\"arguments\":\"{}\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+             VALUES ('m2', 'p1', 0, 'text', '{\"text\":\"文件内容\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO dividers(id, conv_id, after_seq, kind, note, created_at)
+             VALUES ('d1', 'c1', 2, 'user', NULL, 0)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+
+        let body: String = conn
+            .query_row(
+                "SELECT body FROM message_parts WHERE message_id = 'm1' AND kind = 'tool'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(body.contains("文件内容"), "{body}");
+        assert!(body.contains("\"status\":\"ok\""), "{body}");
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE role = 'tool'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "工具行整体并进块里");
+
+        let after: i64 = conn
+            .query_row(
+                "SELECT after_seq FROM dividers WHERE id = 'd1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 1, "分界线要跟着搬到调用那条消息上");
+
+        let closed: i64 = conn
+            .query_row(
+                "SELECT unit_closed FROM messages WHERE id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(closed, 1);
     }
 
     #[test]

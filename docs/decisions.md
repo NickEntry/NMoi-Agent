@@ -1135,3 +1135,47 @@ D255 把消息拆成块、D256 把块写进库，这一条把**编辑**也挪到
 
 **测试**：`part_selector_survives_a_deleted_neighbour`（删掉第一个调用之后，第二个块的 id 不变、
 按 id 改的还是它）、`part_selector_refuses_an_unknown_id`（找不到就报错，不改别的块）。
+
+## D258 折行：工具结果并进调用块，wire 单独一层（2026-11-05）
+
+D255/D256/D257 把消息拆成块、把块写进库、把编辑挪到块上；这一条把**工具结果**也并进来。
+以前一轮是"1 条 assistant + N 条 `role=tool`"，现在**一条消息 = 一轮**。
+
+**核心形状**：`ToolPart` 多两栏 `output` / `status`（`ok` / `error` / `killed`；
+`pending` 只活在内存里）。`Message::tool_result` 与 `Message.tool_call_id` 一起删掉——
+留着就是"还能造出旧形状"的路。
+
+**写入**：`agent::run_turn` 跑完一批之后直接写回那条 assistant 的块
+（`set_tool_output`），不再往历史里 push 结果消息。没跑成的那几条写 `killed` +
+"这一条没有执行（整轮被停）"：它确实发出去过，界面上要能指出来。
+`session` 落库时一轮写一条消息（`text` / `reasoning` / 若干 `tool` 块），
+`TurnRound.call_ids` 换成 `calls: Vec<OutgoingToolCall>`——被取消的那几条没有 `ToolRecord`，
+只留 id 的话名字和参数就丢了，落库会少一块。
+
+**只存结束落在写入路径**：`Storage::append_unit` 见到 `pending` 就拒。
+`AtomicUnit::validate` 不拒——老库里真有开口单元，读路径要能读出来交给 `reconcile` 报。
+
+**wire 单独一层**（`crates/core/src/wire.rs`）：`expand(&[Message]) -> Vec<WireMessage>`，
+四个端口共用。规则：走 parts，攒正文；一组连续的 `tool` 块发成一条带 N 个 `tool_calls`
+的 assistant，紧跟 N 条 `tool` 消息；工具之后的正文另起一条 assistant。
+`ChatRequest.messages` 仍是库里那份，展开只在 `build_body` 里做一次。
+
+**删除与编辑**：`ToolResult{index}` 落到**同一条消息**（`output` 那栏）；
+删工具块 = 摘掉这个 part（两个选择器指同一块时只摘一次）。
+摘空了就整行删掉——不留"没有块的消息"。`UnpairedDelete` / `ManyCalls` 两条规则退场：
+一块就是一对，不存在"删一半"。
+
+**schema v16**：先回填 `output` / `status`，再重映射 `dividers.after_seq`，
+再断言 `attachments` 没有挂在工具行上（挂了就中止，不猜），最后删 parts 与行。
+旧结果的状态按文本前缀判：`失败：` / `拒绝执行：` → `error`，其余 `ok`，没有结果行 → `killed`。
+
+**没删的三列**：`unit_id` / `unit_kind` / `unit_closed` 留着，值由块形状决定
+（一条消息一个单元）。删它们要重建 `messages` 表，而 `attachments` 与 `message_parts`
+都外键引用它——那是单独一批的事，混在折行里风险不成比例。
+
+**FFI / UI**：`tool_call_args` 每项多 `part` / `output` / `status`，`tool_call_id` 字段退场；
+界面那一行摘要、弹窗正文、编辑文档全读这一份，不再跨消息按 `call_id` 配对。
+
+**测试**：core 650（新增 `an_unfinished_tool_block_is_refused_instead_of_sent`、
+`an_old_role_tool_row_is_refused_instead_of_guessed`、`deleting_one_side_removes_the_whole_tool_part`）、
+ffi 59、storage 13 个测试二进制（新增 `v15_tool_rows_become_output_of_the_call_part`）。
