@@ -416,8 +416,11 @@ internal object TurnRepository {
             assistant = envelope.optString("text", "").takeIf { it.isNotEmpty() },
             rounds = envelope.optInt("rounds", 0),
             toolCalls = envelope.optInt("tool_calls", 0),
-            cancelled = false,
+            // 这两个字段以前没读：`finished=false` 一律被读成"到了轮数上限"，
+            // 于是"用户点了停止"也会报成"到了上限"（2026-11-04 真机就是这么报的）。
+            cancelled = envelope.optBoolean("cancelled", false),
             finished = envelope.optBoolean("finished", true),
+            truncated = envelope.optBoolean("truncated", false),
             compression = null,
             editedBlocks = 0,
             failedEdits = 0,

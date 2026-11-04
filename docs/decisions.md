@@ -870,3 +870,44 @@ turn 的 config 多一项 `image_limit`（0 = 默认 20）。JNI 符号 **47 →
 
 **没做**：给 `turn_run`/`turn_regen` 加客户端侧的硬超时。原生那条路有 120 秒读超时兜底，
 而"界面卡住"这一半已经由对账解决了；真出现"原生也卡住"时，用户点停止 + 对账会把界面放出来。
+
+## D250 思考跟着版本走 + 「停」不再报成「到了轮数上限」（2026-11-04）
+
+用户 2026-11-04 报（原话）：「好奇怪啊，你看看这是什么问题」——三张截图连起来看是：
+重试中思考 6721 字 → 点停止 → 十秒后落成 `<3/3>`，正文只有两句，上面那块还写着
+「深度思考 · 1373 字」，提示行写「到了工具轮数上限」。
+
+**两个独立的毛病，凑成了一个看不懂的现象。**
+
+### ① 「到了工具轮数上限」其实是他自己点的停止
+
+`regen` 的返回体里**没有** `cancelled` / `truncated` 两个字段，Kotlin 侧 `parseRegen`
+把 `cancelled` 写死成 `false`。于是 `finished=false` 全被读成"轮数上限"那一支：
+
+```
+cancelled -> "已停止…"        ← 从来没走到过
+truncated -> "上下文到了绝对线…"
+!finished -> "到了工具轮数上限…"  ← 全落到这里
+```
+
+修法：FFI 的 regen 回包补上 `cancelled` / `truncated`，`parseRegen` 读它们。
+这也正是 `pitfalls.md` 那条"状态文案别把两种故障合成一句"的第三次复发。
+
+### ② 版本只存正文，思考留在消息上
+
+`message_versions` 没有 `reasoning` 列；`push_version` 只改 `messages.content`，
+`messages.reasoning` 保持旧值。所以重试之后屏幕上是**新正文 + 上一版的思考**
+（截图里 142 字的正文配 1373 字的思考）。
+
+修法：**schema v14**，`message_versions` 加 `reasoning`。
+
+- `push_version` 写这一版的思考；`NULL` = 这一版没有思考（切过去那块该消失，不是留空壳）。
+- `save/append/overwrite_generated_version` 都带 `reasoning`（`*_with` 后缀那三个；
+  老的两参版本留着当包装，测试与 FFI 的"只存正文"那条 C ABI 用它）。
+- `switch_message_version` 连着 `messages.reasoning` 一起切。
+
+**测试**：`reasoning_follows_the_version`（两版各带思考，来回切，正文与思考一起换）、
+`a_version_without_reasoning_clears_it`（第二版没思考 → 切过去是 `None`）。
+
+**没做**：工具往返那几条单元（`tool_pair`）仍然属于消息、不属于版本——切版本时它们不跟着变。
+那是另一件事（一次重试要不要重跑工具），现在重试只重写正文与思考，工具块留在原位。

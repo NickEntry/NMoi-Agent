@@ -331,3 +331,12 @@ ALTER TABLE conversations ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'share
 pub const SCHEMA_V13: &str = r#"
 ALTER TABLE conversations DROP COLUMN workspace_mode;
 "#;
+
+/// v14（D250）：版本自己带思考。
+///
+/// 以前版本只存正文，思考留在 `messages.reasoning` 上——于是重试之后屏幕上显示的是
+/// **新正文 + 旧思考**（2026-11-04 真机：正文 142 字，上面那块写着「深度思考 · 1373 字」）。
+/// 思考属于那一版，切版本就该跟着换。
+pub const SCHEMA_V14: &str = r#"
+ALTER TABLE message_versions ADD COLUMN reasoning TEXT;
+"#;

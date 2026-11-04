@@ -592,3 +592,61 @@ fn a_version_without_tooledit_has_no_red_blue_state() {
     let brief = brief.get(&message.to_string()).expect("有一版就有条目");
     assert!(!brief.edited_by_tool);
 }
+
+/// 思考跟着版本走（D250）。
+///
+/// 2026-11-04 真机：重试之后正文换成了新的 142 字，上面那块还写着「深度思考 · 1373 字」——
+/// 因为版本只存正文，思考留在 `messages.reasoning` 上没动。切版本要连思考一起切。
+fn shown_reasoning(storage: &Storage, session: SessionId, message: &MessageId) -> Option<String> {
+    storage
+        .load_units(session)
+        .unwrap()
+        .into_iter()
+        .flat_map(|unit| unit.messages)
+        .find(|m| &m.id == message)
+        .and_then(|m| m.reasoning.clone())
+}
+
+#[test]
+fn reasoning_follows_the_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, id) = fixture(dir.path());
+    // 第 1 版：原文 + 原思考。
+    storage
+        .save_generated_version_with(&id, "原始回复", Some("原始思考"))
+        .unwrap();
+    // 第 2 版（重试）：新正文 + 新思考。
+    storage
+        .append_generated_version_with(&id, "重试后的回答", Some("重试后的思考"))
+        .unwrap();
+
+    assert_eq!(shown_content(&storage, session, &id), "重试后的回答");
+    assert_eq!(
+        shown_reasoning(&storage, session, &id).as_deref(),
+        Some("重试后的思考")
+    );
+
+    // 切回第 1 版：正文与思考一起回到那一版。
+    storage
+        .switch_message_version(&id, 1, VersionView::Raw)
+        .unwrap();
+    assert_eq!(shown_content(&storage, session, &id), "原始回复");
+    assert_eq!(
+        shown_reasoning(&storage, session, &id).as_deref(),
+        Some("原始思考")
+    );
+}
+
+/// 这一版没有思考时存 `NULL` 而不是空串：切过去那块该**消失**，不是留一个空壳。
+#[test]
+fn a_version_without_reasoning_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut storage, session, id) = fixture(dir.path());
+    storage
+        .append_generated_version_with(&id, "有思考的一版", Some("想了一会儿"))
+        .unwrap();
+    storage
+        .append_generated_version_with(&id, "没思考的一版", None)
+        .unwrap();
+    assert_eq!(shown_reasoning(&storage, session, &id), None);
+}

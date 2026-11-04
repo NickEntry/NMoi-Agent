@@ -1459,6 +1459,11 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             "rounds": outcome.report.rounds,
             "tool_calls": outcome.report.tool_calls.len(),
             "finished": outcome.report.finished,
+            // 两种"没做完"要分开说（D245）：用户按了停止 / 上下文到了绝对线 / （设了）轮数上限。
+            // 以前这两个字段没进包，界面只能把 `finished=false` 一律读成"到了轮数上限"——
+            // 用户明明是自己停的，却被告知"到了上限"（2026-11-04 真机就是这么报的）。
+            "cancelled": outcome.report.cancelled,
+            "truncated": outcome.report.truncated,
         }))
     })
 }

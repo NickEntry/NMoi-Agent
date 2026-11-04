@@ -522,6 +522,7 @@ pub extern "C" fn nmoi_storage_save_version_json(
         let text = read_str(text, "text")?;
         let message_id = parse_message(message_text)?;
         with_storage(handle, |storage| {
+            // 这条 C ABI 是"存一版正文"用的（界面手动存/工具存），没有思考可带（D250）。
             let (version_no, count) = storage
                 .save_generated_version(&message_id, text)
                 .map_err(storage_error)?;

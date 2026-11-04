@@ -87,10 +87,22 @@ impl Storage {
     /// - 超过 [`MAX_VERSIONS`] 时丢最旧的一版——但**不丢当前版**。
     ///
     /// 返回 `(新的版号, 当前总版数)`。
+    /// 存一版正文（不带思考）。等价于 [`Storage::save_generated_version_with`] 的 `None`。
     pub fn save_generated_version(
         &mut self,
         message_id: &MessageId,
         origin_message: &str,
+    ) -> Result<(i64, i64), StorageError> {
+        self.save_generated_version_with(message_id, origin_message, None)
+    }
+
+    /// 存一版正文 + 思考（D250）。思考跟着版本走：只换正文不换思考，
+    /// 屏幕上就是"新话 + 上一版的思考"。
+    pub fn save_generated_version_with(
+        &mut self,
+        message_id: &MessageId,
+        origin_message: &str,
+        reasoning: Option<&str>,
     ) -> Result<(i64, i64), StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
@@ -105,7 +117,7 @@ impl Storage {
             )));
         }
 
-        let result = push_version(&tx, &id, origin_message)?;
+        let result = push_version(&tx, &id, origin_message, reasoning)?;
         tx.commit()?;
         Ok(result)
     }
@@ -121,10 +133,20 @@ impl Storage {
         message_id: &MessageId,
         text: &str,
     ) -> Result<(i64, i64), StorageError> {
+        self.append_generated_version_with(message_id, text, None)
+    }
+
+    /// 追加一版（重试），带思考（D250）。
+    pub fn append_generated_version_with(
+        &mut self,
+        message_id: &MessageId,
+        text: &str,
+        reasoning: Option<&str>,
+    ) -> Result<(i64, i64), StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
         seed_first_version(&tx, &id)?;
-        let result = push_version(&tx, &id, text)?;
+        let result = push_version(&tx, &id, text, reasoning)?;
         tx.commit()?;
         Ok(result)
     }
@@ -181,6 +203,16 @@ impl Storage {
         message_id: &MessageId,
         text: &str,
     ) -> Result<(), StorageError> {
+        self.overwrite_message_text_with(message_id, text, None)
+    }
+
+    /// 覆盖当前版（带思考，D250）。
+    pub fn overwrite_message_text_with(
+        &mut self,
+        message_id: &MessageId,
+        text: &str,
+        reasoning: Option<&str>,
+    ) -> Result<(), StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
         seed_first_version(&tx, &id)?;
@@ -208,8 +240,15 @@ impl Storage {
             )?;
         }
         tx.execute(
-            "UPDATE messages SET content = ?1, tokens = ?2, revision = revision + 1 WHERE id = ?3",
-            params![text, nmoi_core::estimate_tokens(text), id],
+            "UPDATE message_versions SET reasoning = ?1
+             WHERE message_id = ?2 AND version_no = ?3",
+            params![reasoning, id, active],
+        )?;
+        tx.execute(
+            "UPDATE messages SET content = ?1, tokens = ?2, reasoning = ?3,
+                                 revision = revision + 1
+             WHERE id = ?4",
+            params![text, nmoi_core::estimate_tokens(text), reasoning, id],
         )?;
         tx.commit()?;
         Ok(())
@@ -278,9 +317,9 @@ impl Storage {
     ) -> Result<String, StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
-        let (raw, edited, edited_by_tool) = tx
+        let (raw, edited, edited_by_tool, reasoning) = tx
             .query_row(
-                "SELECT origin_message, tooledit_message, edited_by_tool
+                "SELECT origin_message, tooledit_message, edited_by_tool, reasoning
                  FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
                 params![id, version_no],
                 |row| {
@@ -288,6 +327,7 @@ impl Storage {
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 },
             )
@@ -305,9 +345,10 @@ impl Storage {
             "UPDATE message_versions SET active_view = ?1 WHERE message_id = ?2 AND version_no = ?3",
             params![effective.as_str(), id, version_no],
         )?;
+        // 切版本 = 连思考一起切（D250）：只换正文的话，屏幕上会是"这一版的话 + 上一版的思考"。
         tx.execute(
-            "UPDATE messages SET version_active = ?1, content = ?2 WHERE id = ?3",
-            params![version_no, text, id],
+            "UPDATE messages SET version_active = ?1, content = ?2, reasoning = ?3 WHERE id = ?4",
+            params![version_no, text, reasoning, id],
         )?;
         tx.commit()?;
         Ok(text)
@@ -598,6 +639,7 @@ fn push_version(
     tx: &Transaction<'_>,
     id: &str,
     origin_message: &str,
+    reasoning: Option<&str>,
 ) -> Result<(i64, i64), StorageError> {
     let current: i64 = tx.query_row(
         "SELECT version_count FROM messages WHERE id = ?1",
@@ -607,9 +649,15 @@ fn push_version(
     let next = current + 1;
     tx.execute(
         "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
-                                      edited_by_tool, active_view, created_at)
-         VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4)",
-        params![id, next, origin_message, crate::validate::now_ms()],
+                                      edited_by_tool, active_view, created_at, reasoning)
+         VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4, ?5)",
+        params![
+            id,
+            next,
+            origin_message,
+            crate::validate::now_ms(),
+            reasoning
+        ],
     )?;
 
     // 超上限：丢最旧的一版（当前这一版刚插入，永远不会是被丢的那个）。
@@ -632,9 +680,13 @@ fn push_version(
         [id],
         |row| row.get(0),
     )?;
+    // 思考跟着这一版走（D250）：`NULL` = 这一版没有思考，那就把旧的那份清掉——
+    // 留着它，屏幕上就是"新正文 + 旧思考"。
     tx.execute(
-        "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3 WHERE id = ?4",
-        params![count, active, origin_message, id],
+        "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3,
+                            reasoning = ?4
+         WHERE id = ?5",
+        params![count, active, origin_message, reasoning, id],
     )?;
     Ok((active, count))
 }

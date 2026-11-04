@@ -108,16 +108,28 @@ pub trait HistoryStore {
     /// 记一版**新生成的**回复（D185 的重试）：这一版成为当前版，旧版留着。
     ///
     /// 默认实现拒绝：内存实现没理由假装记了版本。
-    fn save_generated_version(&mut self, message_id: &MessageId, text: &str) -> Result<(), String> {
-        let _ = text;
+    /// 重试落成新版本。`reasoning` 跟着这一版走（D250）：只换正文不换思考，
+    /// 屏幕上就是"新话 + 上一版的思考"——2026-11-04 真机上就是这么错的。
+    fn save_generated_version(
+        &mut self,
+        message_id: &MessageId,
+        text: &str,
+        reasoning: Option<&str>,
+    ) -> Result<(), String> {
+        let _ = (text, reasoning);
         Err(format!(
             "这个历史实现不支持记版本，消息 {message_id} 没有改动"
         ))
     }
 
     /// 覆盖当前这一版的正文（D185："允许生成新版本"关着时走这条）。
-    fn overwrite_message_text(&mut self, message_id: &MessageId, text: &str) -> Result<(), String> {
-        let _ = text;
+    fn overwrite_message_text(
+        &mut self,
+        message_id: &MessageId,
+        text: &str,
+        reasoning: Option<&str>,
+    ) -> Result<(), String> {
+        let _ = (text, reasoning);
         Err(format!(
             "这个历史实现不支持覆盖正文，消息 {message_id} 没有改动"
         ))
@@ -329,6 +341,19 @@ fn with_task_anchor(summary: Option<Message>, compacted: bool, user_text: &str) 
 ///
 /// 覆盖而不是追加：同一份 base 会被多轮复用（重试、队列），追加会让上一轮的图
 /// 跟着下一轮再发一遍——那既费钱又会让模型看到"你没发过的图"。
+/// 这一版的思考：空串就是"没有"，存 `NULL` 而不是 `""`（D250）。
+///
+/// 为什么要区分：`NULL` = 这一版没有思考（切过去时界面上那块该消失）；
+/// `""` 会被当成"有思考但内容为空"，界面上留一个空壳。
+fn reasoning_of(reasoning: &str) -> Option<&str> {
+    let trimmed = reasoning.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(reasoning)
+    }
+}
+
 fn attach_images<S: HistoryStore>(
     request: &mut ChatRequest,
     store: &S,
@@ -821,11 +846,11 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
             };
             if config.allow_new_version {
                 store
-                    .save_generated_version(target, &text)
+                    .save_generated_version(target, &text, reasoning_of(&report.reasoning))
                     .map_err(SessionError::Save)?;
             } else {
                 store
-                    .overwrite_message_text(target, &text)
+                    .overwrite_message_text(target, &text, reasoning_of(&report.reasoning))
                     .map_err(SessionError::Save)?;
             }
             None
@@ -2415,6 +2440,7 @@ mod tests {
             &mut self,
             message_id: &MessageId,
             text: &str,
+            _reasoning: Option<&str>,
         ) -> Result<(), String> {
             self.generated
                 .lock()
