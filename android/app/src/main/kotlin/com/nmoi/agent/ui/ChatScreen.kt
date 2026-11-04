@@ -29,6 +29,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -78,6 +80,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -194,6 +197,11 @@ internal fun ChatScreen(
     }
     // 工具块点开的那一条（D243）：半屏弹窗，不在聊天页里就地展开。
     var toolSheet by remember(sessionId) { mutableStateOf<ChatUnit?>(null) }
+    // 正在跑的那条调用点开的弹窗（0.15ak）。**只存 id**：对象是这一拍的副本，
+    // 而秒数每 100 ms 在变——存对象的话弹窗里的时间会冻在点开那一刻。
+    var runningCallId by remember(sessionId) { mutableStateOf<String?>(null) }
+    // 「查看图像」弹窗看的是哪一条消息的图（0.15ak）。同样只存 id，图现从库里那份读。
+    var imageSheetFor by remember(sessionId) { mutableStateOf<String?>(null) }
     // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
     var settling by remember(sessionId) { mutableStateOf(false) }
     // 重试落在哪条消息上（D227）：这一轮的部分正文**就地**画在它身上，不再在底部另起一个
@@ -464,6 +472,15 @@ internal fun ChatScreen(
             settling = false
             live = null
             pending = null
+        }
+    }
+
+    // 那条调用跑完了：弹窗自己收掉。留着它会变成一个"没有对象"的空壳，
+    // 而这时候屏幕上已经有库里那一份了（用户 2026-11-04：「结束时应该刷新掉」）。
+    LaunchedEffect(live?.calls) {
+        val id = runningCallId ?: return@LaunchedEffect
+        if (live?.calls.orEmpty().none { it.callId == id }) {
+            runningCallId = null
         }
     }
 
@@ -777,8 +794,17 @@ internal fun ChatScreen(
                 runRegen(sid, message.id, reply?.id, false)
             }
 
-            index == 0 -> notice = "这条是这段的第一条，前面没有可重发的内容"
-            else -> runRegen(sid, allMessages[index - 1].id, message.id, false)
+            else -> {
+                // `up_to` 取的是**这一轮的用户消息**，不是列表里的上一条。
+                // 列表里上一条很可能是这一轮自己的工具结果——那样重发等于把"已经跑过的 9 步"
+                // 一起递过去，模型看见结果就只补一句总结，看着像"根本没重测"（用户 2026-11-04 报的）。
+                val user = allMessages.take(index).lastOrNull { it.isUser }
+                if (user == null) {
+                    notice = "这条前面没有用户消息，没法重发"
+                } else {
+                    runRegen(sid, user.id, message.id, false)
+                }
+            }
         }
     }
 
@@ -1053,7 +1079,12 @@ internal fun ChatScreen(
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
                         onOpenTool = { unit -> toolSheet = unit },
-                        onCancelCall = cancelCall,
+                        onOpenImages = { id -> imageSheetFor = id },
+                        liveThinkingOpen = openGroups["live:think"] == true,
+                        onToggleLiveThinking = {
+                            openGroups["live:think"] = openGroups["live:think"] != true
+                        },
+                        onOpenRunningCall = { call -> runningCallId = call.callId },
                         onDismissCut = { live = null },
                         selecting = selecting,
                         selected = selected,
@@ -1261,6 +1292,26 @@ internal fun ChatScreen(
         // 工具块点开的那一条（D243）：半屏弹窗，看完就收。
         toolSheet?.let { unit ->
             ToolSheet(unit = unit, onDismiss = { toolSheet = null })
+        }
+
+        // 「查看图像」（0.15ak）：这一条带进上下文的图，看得到格式、大小、尺寸。
+        val imageMessage = imageSheetFor?.let { id -> allMessages.firstOrNull { it.id == id } }
+        if (imageMessage != null) {
+            ImageContextSheet(
+                images = imageMessage.images,
+                onDismiss = { imageSheetFor = null },
+            )
+        }
+
+        // 正在跑的那条调用（0.15ak）：弹窗底部才是「取消这次调用」。
+        // 找不到目标（已经跑完）就不画——那一瞬屏幕上已经有库里那份了。
+        val running = runningCallId?.let { id -> live?.calls?.firstOrNull { it.callId == id } }
+        if (running != null) {
+            RunningCallSheet(
+                call = running,
+                onCancel = { cancelCall(running.callId) },
+                onDismiss = { runningCallId = null },
+            )
         }
 
         if (thinkingSheet) {
@@ -1781,8 +1832,13 @@ private fun MessageArea(
     onToggleGroup: (String) -> Unit = {},
     /** 工具块点开：在**半屏弹窗**里看细节（用户 2026-11-04 定），不在聊天页里就地展开。 */
     onOpenTool: (ChatUnit) -> Unit = {},
-    /** 关掉一条正在跑的工具调用（0.15ak）。 */
-    onCancelCall: (String) -> Unit = {},
+    /** 这一轮正在写的思考展开没有（0.15ak）。 */
+    liveThinkingOpen: Boolean = false,
+    onToggleLiveThinking: () -> Unit = {},
+    /** 点开一条正在跑的调用（0.15ak）。 */
+    onOpenRunningCall: (RunningCall) -> Unit = {},
+    /** 点「查看图像」（0.15ak）：这一条带进上下文的图。 */
+    onOpenImages: (String) -> Unit = {},
     /** 断在中途那一段：点一下收掉（它没落库，留着只是让他看见写到哪儿）。 */
     onDismissCut: () -> Unit,
     selecting: Boolean,
@@ -1902,7 +1958,10 @@ private fun MessageArea(
                 showHeader = showHeader,
                 hideReasoning = row.hideReasoning,
                 onOpenTool = onOpenTool,
-                onCancelCall = onCancelCall,
+                liveThinkingOpen = liveThinkingOpen,
+                onToggleLiveThinking = onToggleLiveThinking,
+                onOpenRunningCall = onOpenRunningCall,
+                onOpenImages = onOpenImages,
                 maxBubble = maxBubble,
                 gapAbove = gap,
                 live = live,
@@ -1963,7 +2022,9 @@ private fun MessageArea(
                 LiveReplyRow(
                     reply = streaming,
                     onDismissCut = onDismissCut,
-                    onCancelCall = onCancelCall,
+                    thinkingOpen = liveThinkingOpen,
+                    onToggleThinking = onToggleLiveThinking,
+                    onOpenCall = onOpenRunningCall,
                 )
             }
         }
@@ -1983,7 +2044,9 @@ private fun MessageArea(
 private fun LiveReplyRow(
     reply: LiveReply,
     onDismissCut: () -> Unit,
-    onCancelCall: (String) -> Unit = {},
+    thinkingOpen: Boolean = false,
+    onToggleThinking: () -> Unit = {},
+    onOpenCall: (RunningCall) -> Unit = {},
 ) {
     val transition = rememberInfiniteTransition(label = "live")
     val alpha by transition.animateFloat(
@@ -1995,17 +2058,31 @@ private fun LiveReplyRow(
     Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
         // 抬头没有时间：这一条还没落库，写一个假时间比空着更糟。
         AssistantHeader(createdAt = 0L)
-        if (reply.reasoning.isNotBlank()) {
-            LiveReasoningCard(text = reply.reasoning)
+        // 工具往返之后模型重新开口：上一轮那段话**留在这里**，不能因为换轮就消失
+        // （用户 2026-11-04 报的"流式过程吞消息"）。落库之后这一段会并进同一条消息，
+        // 所以屏幕上它也该一直在。
+        reply.finished.forEach { done ->
+            if (done.reasoning.isNotBlank()) LiveReasoningCard(text = done.reasoning)
+            if (done.text.isNotBlank()) {
+                MarkdownBody(
+                    text = done.text,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                )
+            }
         }
+        LiveProcessCard(
+            reasoning = reply.reasoning,
+            calls = reply.calls,
+            thinkingOpen = thinkingOpen,
+            onToggleThinking = onToggleThinking,
+            onOpenCall = onOpenCall,
+        )
         if (reply.text.isNotBlank()) {
             MarkdownBody(
                 text = reply.text,
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             )
         }
-        // 正在跑的工具调用（0.15ak）：一行一条 + 「关闭」。
-        RunningCallRows(calls = reply.calls, onCancel = onCancelCall)
         val note = when {
             reply.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里，点一下收掉）"
             reply.text.isBlank() && reply.reasoning.isBlank() -> "正在生成…"
@@ -2077,7 +2154,6 @@ private fun ProcessGroupRow(
     val open = expanded && foldable
     val visible = visibleItems(group.items, open)
     val hidden = hiddenCount(group.items, open)
-    val line = MaterialTheme.colorScheme.outlineVariant
 
     Column(modifier = Modifier.fillMaxWidth().padding(top = gapAbove)) {
         if (showHeader) AssistantHeader(createdAt = group.items.first().unit.createdAt)
@@ -2092,15 +2168,7 @@ private fun ProcessGroupRow(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .drawBehind {
-                        val x = 6.dp.toPx()
-                        drawLine(
-                            color = line,
-                            start = Offset(x, 0f),
-                            end = Offset(x, size.height),
-                            strokeWidth = 1.dp.toPx(),
-                        )
-                    },
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
             ) {
                 // 头部：折叠时「展开更多 N 步」，展开时「收起」；不够三个就没有这一行。
                 if (foldable) {
@@ -2114,8 +2182,10 @@ private fun ProcessGroupRow(
                             .padding(start = 18.dp, top = 8.dp, bottom = 2.dp),
                     )
                 }
-                visible.forEach { item ->
-                    Box(modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 2.dp, bottom = 2.dp)) {
+                visible.forEachIndexed { index, item ->
+                    // 每项前面一个圆点节点（用户 2026-11-04 给的截图）：原来那条贯穿整块的竖线
+                    // 又长又直，看着像表格边框；圆点加短连线才看得出"这是几步"。
+                    ProcessNode(index = index, last = index == visible.lastIndex) {
                         when (item.kind) {
                             ProcessItem.Kind.Thinking -> item.thinking?.let { thinking ->
                                 // 思考**在聊天页里**展开（用户 2026-11-04 定的）：一行标题 + 一个竖标，
@@ -2148,8 +2218,13 @@ private fun UnitBlock(
     hideReasoning: Boolean = false,
     /** 单独一条工具单元：点开也是弹窗，不是就地展开。 */
     onOpenTool: (ChatUnit) -> Unit = {},
-    /** 关掉一条正在跑的工具调用（0.15ak）。 */
-    onCancelCall: (String) -> Unit = {},
+    /** 这一轮正在写的思考展开没有（0.15ak）。 */
+    liveThinkingOpen: Boolean = false,
+    onToggleLiveThinking: () -> Unit = {},
+    /** 点开一条正在跑的调用（0.15ak）。 */
+    onOpenRunningCall: (RunningCall) -> Unit = {},
+    /** 点「查看图像」（0.15ak）。 */
+    onOpenImages: (String) -> Unit = {},
     maxBubble: Dp,
     gapAbove: Dp,
     /** 这一轮正在长的回复（就地渲染用，D227）。 */
@@ -2202,6 +2277,7 @@ private fun UnitBlock(
                         onShare = { onShareMessage(message.id) },
                         onMore = { onMoreMessage(message.id) },
                         onVersion = { no, view -> onVersionMessage(message.id, no, view) },
+                        onOpenImages = { onOpenImages(message.id) },
                         // 灰的判据是"有没有东西可跑"：思考/工具片段、断块、会话还没落库都不给。
                         onRetry = if (retryEnabled && message.canRetry) {
                             { onRetryMessage(message.id) }
@@ -2221,7 +2297,9 @@ private fun UnitBlock(
                             showHeader = false,
                             // 就地渲染（D227）：这一轮长在这条消息上。
                             live = live?.takeIf { message.id == regenTarget },
-                            onCancelCall = onCancelCall,
+                            liveThinkingOpen = liveThinkingOpen,
+                            onToggleLiveThinking = onToggleLiveThinking,
+                            onOpenRunningCall = onOpenRunningCall,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -2480,9 +2558,19 @@ private fun UserMessage(
     sending: Boolean = false,
     /** 随这一条一起发出去、还没从库里读回来的图。 */
     pendingImageCount: Int = 0,
+    /** 点「查看图像」：这一条带进上下文的图（0.15ak）。 */
+    onOpenImages: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
+    // 「发送中」的呼吸：它是"还在路上"的唯一信号，静态一行字看着像已经存好了。
+    val pulse = rememberInfiniteTransition(label = "sending")
+    val sendingAlpha by pulse.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 900), RepeatMode.Reverse),
+        label = "sending-alpha",
+    )
     val tint = if (selecting && isSelected) {
         Modifier
             .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f), RoundedCornerShape(12.dp))
@@ -2563,19 +2651,71 @@ private fun UserMessage(
                             modifier = Modifier.padding(top = 4.dp),
                         )
                     }
+                    if (sending) {
+                        // 「发送中」属于**这条消息**，所以画在气泡里、跟着气泡右对齐，
+                        // 不是气泡外面飘一行灰字（用户 2026-11-04：「这个"发送中"谁教你的，渲染出来啊」）。
+                        Text(
+                            text = "发送中…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = sendingAlpha),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            textAlign = TextAlign.End,
+                        )
+                    }
                 }
             }
         }
 
-        if (sending) {
-            // 动作行在这里没有意义：这条还没 id，复制/更多都指不到库里的东西。
-            Text(
-                text = "发送中…",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // 图片进上下文（0.15ak）：一块**工具块形状**的行，点开是这一轮带进去的图。
+        // 为什么要有它：图是"发出去的东西"，可界面上只有气泡里那两张缩略图，
+        // 用户没法确认"进上下文的是哪几张、多大"。铁律②要求每样东西都能被指出来。
+        if (message.images.isNotEmpty()) {
+            Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            )
-        } else {
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.clickable(onClick = onOpenImages),
+                ) {
+                    Row(
+                        modifier = Modifier.heightIn(min = 40.dp).padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = ActionIcons.Image,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text = "查看图像",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                        Text(
+                            text = "${message.images.size} 张 · ${imageBytesLabel(message.images)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                        Icon(
+                            imageVector = ActionIcons.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp).size(16.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        // 动作行在"发送中"没有意义：这条还没 id，复制/更多都指不到库里的东西。
+        if (!sending) {
             MessageActionRow(
                 mine = true,
                 onCopy = {
@@ -2622,8 +2762,11 @@ private fun AssistantMessage(
     onVersion: (Long, String) -> Unit,
     /** 重试（0.15av）。`null` = 现在不能重试，按钮灰着。 */
     onRetry: (() -> Unit)? = null,
-    /** 关掉一条正在跑的工具调用（0.15ak）。 */
-    onCancelCall: (String) -> Unit = {},
+    /** 这一轮正在写的思考展开没有（0.15ak：和落库那条共用一份展开状态）。 */
+    liveThinkingOpen: Boolean = false,
+    onToggleLiveThinking: () -> Unit = {},
+    /** 点开一条正在跑的调用（弹窗底部才有「取消这次调用」）。 */
+    onOpenRunningCall: (RunningCall) -> Unit = {},
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -2649,17 +2792,20 @@ private fun AssistantMessage(
                     )
                 }
             }
-            // 就地渲染：思考卡与正文都取这一轮收到的增量，收尾时换成库里那份（形状一致，不跳）。
-            if (live.reasoning.isNotBlank()) LiveReasoningCard(text = live.reasoning)
+            // 就地渲染：过程块与正文都取这一轮收到的增量，收尾时换成库里那份（形状一致，不跳）。
+            LiveProcessCard(
+                reasoning = live.reasoning,
+                calls = live.calls,
+                thinkingOpen = liveThinkingOpen,
+                onToggleThinking = onToggleLiveThinking,
+                onOpenCall = onOpenRunningCall,
+            )
             if (live.text.isNotBlank()) {
                 MarkdownBody(
                     text = live.text,
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                 )
             }
-            // 正在跑的工具调用（0.15ak）：一行一条 + 「关闭」。这一段还没落库，
-            // 所以它画在正在生成的这块里，而不是等工具卡出现。
-            RunningCallRows(calls = live.calls, onCancel = onCancelCall)
             val note = when {
                 live.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里）"
                 live.text.isBlank() && live.reasoning.isBlank() -> "正在生成…"
@@ -4263,6 +4409,7 @@ private fun runningCallsOf(info: JSONObject): List<RunningCall> {
                     callId = id,
                     name = row.text("name").ifBlank { "工具" },
                     elapsedMs = row.optInt("elapsed_ms", 0),
+                    arguments = row.text("arguments"),
                 ),
             )
         }
@@ -4277,51 +4424,372 @@ private fun elapsedLabel(ms: Int): String = when {
 }
 
 /**
- * 正在跑的工具调用（0.15ak）：一行一条，右边一颗「关闭」。
+ * 过程块里的一项：左边一个**圆点节点**加一段连接线，右边是内容。
  *
- * 为什么在这里而不是工具卡里：工具卡是**落库之后**才有的，而"正在跑"这一段还没落库
- * （D229 那条"没有单条调用的实时输出通道"就是它）。所以它挂在正在生成的那一块上，
- * 收尾后整块被库里那份替掉，这一行自然消失。
+ * 换掉了原来那条贯穿整块、从头画到尾的竖线（用户 2026-11-04：「大块左边的竖线就没必要画了，
+ * 你画的有点丑，没有它这种节点」）。现在的样子是照他给的截图：每项前面一个点，
+ * 点与点之间一段线，最后一项下面不拖尾巴。
  *
- * 「关闭」是文字按钮不是图标：这个动作收不回来（命令会被杀），字比图形更该被读清楚。
- * 热区 48：一行只有一句名字 + 一个动作，手指偏一点就点到名字上了。
+ * 线用 `drawBehind` 画而不是摆 `Box`：一项的高度可能是两行（标题 + 命令预览），
+ * 也可能展开成几十行（思考），用布局去拼"从顶到点、从点到尾"两段要量高度，画反而简单。
  */
 @Composable
-private fun RunningCallRows(calls: List<RunningCall>, onCancel: (String) -> Unit) {
-    if (calls.isEmpty()) return
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-        calls.forEach { call ->
-            Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "${call.name} · ${elapsedLabel(call.elapsedMs)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                if (call.cancelled) {
-                    // 已经点过了：换成一句状态，不再给第二颗按钮——再点一次没有任何新效果。
-                    Text(
-                        text = "已请求关闭",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                    )
-                } else {
-                    Text(
-                        text = "关闭",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .clickable { onCancel(call.callId) }
-                            .padding(horizontal = 12.dp, vertical = 14.dp),
+private fun ProcessNode(
+    index: Int,
+    last: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val line = MaterialTheme.colorScheme.outlineVariant
+    Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+        Box(
+            modifier = Modifier
+                .width(18.dp)
+                .fillMaxHeight()
+                .drawBehind {
+                    val x = size.width / 2f
+                    // 点对着**标题那一行**的中间，不是整项的正中：展开的思考有几十行，
+                    // 点落在正中间会跑到正文里去。
+                    val y = 14.dp.toPx()
+                    val stroke = 1.dp.toPx()
+                    if (index > 0) {
+                        drawLine(line, Offset(x, 0f), Offset(x, y), stroke)
+                    }
+                    if (!last) {
+                        drawLine(line, Offset(x, y), Offset(x, size.height), stroke)
+                    }
+                    drawCircle(line, radius = 2.5.dp.toPx(), center = Offset(x, y))
+                },
+        )
+        Box(modifier = Modifier.weight(1f)) { content() }
+    }
+}
+
+/**
+ * 这一轮正在长的过程块：思考 + 正在跑的工具调用，**一个块**（0.15ak）。
+ *
+ * 形状照用户 2026-11-04 给的截图：一块圆角卡，里面每项前面一个圆点节点，
+ * 思考一项、每条工具调用一项。工具那一行点开是半屏弹窗，弹窗底部才有「取消这次调用」——
+ * 挂在聊天页里一行「关闭」不是他要的样子。
+ *
+ * 为什么它属于"正在生成"这一块：这些调用还没落库（D229），收尾后整块被库里那份替掉。
+ */
+@Composable
+private fun LiveProcessCard(
+    reasoning: String,
+    calls: List<RunningCall>,
+    thinkingOpen: Boolean,
+    onToggleThinking: () -> Unit,
+    onOpenCall: (RunningCall) -> Unit,
+) {
+    if (reasoning.isBlank() && calls.isEmpty()) return
+    val total = (if (reasoning.isNotBlank()) 1 else 0) + calls.size
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)) {
+            var index = 0
+            if (reasoning.isNotBlank()) {
+                ProcessNode(index = index, last = index == total - 1) {
+                    LiveThinkingRow(
+                        text = reasoning,
+                        expanded = thinkingOpen,
+                        onToggle = onToggleThinking,
                     )
                 }
+                index += 1
+            }
+            calls.forEach { call ->
+                ProcessNode(index = index, last = index == total - 1) {
+                    RunningCallRow(call = call, onOpen = { onOpenCall(call) })
+                }
+                index += 1
+            }
+        }
+    }
+}
+
+/** 正在写的思考：一行标题 + 展开（和落库那条同一个形状，只是标题写「还在写」）。 */
+@Composable
+private fun LiveThinkingRow(text: String, expanded: Boolean, onToggle: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = ActionIcons.Gauge,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = "深度思考 · ${text.length} 字（还在写）",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            Icon(
+                imageVector = if (expanded) ActionIcons.ChevronUp else ActionIcons.ChevronDown,
+                contentDescription = if (expanded) "收起思考" else "展开思考",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (expanded) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 24.dp, bottom = 8.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 正在跑的一条调用：一行 + 命令预览，点开是弹窗。
+ *
+ * 形状照落库后的 `ToolProcessRow`（同一个扳手、同一个 chevron、同样一行 mono 预览）——
+ * 收尾换成库里那份时不跳。秒数在涨，那是"它真的在跑"的唯一证据。
+ */
+@Composable
+private fun RunningCallRow(call: RunningCall, onOpen: () -> Unit) {
+    val preview = toolArgumentPreview(call.arguments)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = ActionIcons.Wrench,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = call.name,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            Text(
+                text = if (call.cancelled) "正在关闭" else elapsedLabel(call.elapsedMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                imageVector = ActionIcons.ChevronRight,
+                contentDescription = "查看这次调用",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp).size(16.dp),
+            )
+        }
+        if (preview.isNotEmpty()) {
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 24.dp, top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 正在跑的那次调用的弹窗（0.15ak）：**底部**才是「取消这次调用」。
+ *
+ * 为什么按钮在这里而不是聊天页那一行：那一行是"哪一次调用在跑"，动作属于"这一次调用"，
+ * 点开它才看得见参数——不看参数就点取消，等于闭着眼关。取消只在**还没结束**时出现；
+ * 结果回来这一层自己收掉（调用方在 `calls` 里找不到它就关）。
+ */
+@Composable
+private fun RunningCallSheet(call: RunningCall, onCancel: () -> Unit, onDismiss: () -> Unit) {
+    val screen = LocalConfiguration.current.screenHeightDp
+    val maxHeight = (screen * 0.4f).dp
+    SheetFrame(title = call.name, onDismiss = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
+            ) {
+                Column {
+                    Text(
+                        text = if (call.cancelled) {
+                            "已请求关闭 · 等它退出（${elapsedLabel(call.elapsedMs)}）"
+                        } else {
+                            "正在运行 · ${elapsedLabel(call.elapsedMs)}"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (call.cancelled) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                    if (call.arguments.isNotBlank()) {
+                        Text(
+                            text = "参数",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = call.arguments,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(10.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        text = "结果回来之后，这一块会换成库里那次调用（带退出码与输出）。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
+            }
+            if (!call.cancelled) {
+                Text(
+                    text = "取消这次调用",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable(onClick = onCancel)
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 一组图的总大小：`1.2 MB` / `860 KB`。整数 KB 就够，这里不是账本。 */
+private fun imageBytesLabel(images: List<ChatImage>): String {
+    val total = images.sumOf { it.size }
+    return when {
+        total < 1024 -> "$total B"
+        total < 1024 * 1024 -> "${total / 1024} KB"
+        else -> String.format(Locale.US, "%.1f MB", total / 1024.0 / 1024.0)
+    }
+}
+
+/**
+ * 「查看图像」（0.15ak）：这一条消息带进上下文的图，一张一行。
+ *
+ * 为什么值得单独一层：图是**发出去的东西**，可聊天页上只有气泡里那两张缩略图——
+ * 用户没法确认"进上下文的是哪几张、什么格式、多大"。铁律②（不许有存了但看不见的东西）
+ * 在这里的意思就是：能看见它、能说出它是哪一张。
+ *
+ * 管理（从上下文里移除、只留一份）是下一步的事（`docs/PLAN.md` 0.15ai）：
+ * 现在这一层只读——读之外的动作要动库，得先想清"移出之后气泡里那张还在不在"。
+ */
+@Composable
+private fun ImageContextSheet(images: List<ChatImage>, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val databasePath = remember(context) { ProviderRepository.databasePath(context) }
+    val screen = LocalConfiguration.current.screenHeightDp
+    val maxHeight = (screen * 0.5f).dp
+    // 读图放在 IO 上：一张 2 MB 的截图解码要几十毫秒，主线程上就是一次可见的卡顿。
+    val loaded by produceState(initialValue = null as List<Pair<ChatImage, android.graphics.Bitmap?>>?, images) {
+        value = withContext(Dispatchers.IO) {
+            images.map { image -> image to AttachmentStore.bitmap(databasePath, image.id) }
+        }
+    }
+    SheetFrame(title = "查看图像", onDismiss = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val rows = loaded
+                if (rows == null) {
+                    Text(
+                        text = "读图…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    rows.forEach { (image, bitmap) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = "上下文里的图片",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .size(width = 72.dp, height = 72.dp)
+                                        .clip(RoundedCornerShape(8.dp)),
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 72.dp, height = 72.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            RoundedCornerShape(8.dp),
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = "读不出",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.padding(start = 12.dp)) {
+                                Text(
+                                    text = if (bitmap != null) {
+                                        "${bitmap.width} × ${bitmap.height} · ${image.mime}"
+                                    } else {
+                                        image.mime.ifBlank { "格式不明" }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = imageBytesLabel(listOf(image)) + " · " + image.id,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = "这些图随这条消息一起发出去，模型看到的就是它们。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

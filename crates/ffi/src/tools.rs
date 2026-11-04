@@ -166,7 +166,7 @@ mod tests {
     /// 关一条正在跑的调用：`found:true` + `cancelled:true`，且标志真的置上了。
     #[test]
     fn cancelling_a_running_call_sets_its_flag() {
-        let handle = nmoi_core::kills::begin("s-ffi-cancel", "call_1", "System-Shell");
+        let handle = nmoi_core::kills::begin("s-ffi-cancel", "call_1", "System-Shell", "");
         let config = CString::new(r#"{"session":"s-ffi-cancel","call_id":"call_1"}"#).unwrap();
         let value = read(nmoi_tool_cancel_json(config.as_ptr()));
         assert_eq!(value["ok"], json!(true), "{value}");

@@ -22,12 +22,16 @@ use std::time::Instant;
 pub struct RunningCall {
     pub call_id: String,
     pub name: String,
+    /// 这次调用的参数原文（截断过）。弹窗里要能看见"它到底在跑什么"——
+    /// 一行名字加一个秒数，用户没法判断该不该关掉它。
+    pub arguments: String,
     pub elapsed_ms: u64,
 }
 
 struct Entry {
     flag: Arc<AtomicBool>,
     name: String,
+    arguments: String,
     started: Instant,
 }
 
@@ -74,8 +78,12 @@ impl Drop for CallHandle {
     }
 }
 
+/// 参数最多留这么多字符。界面每 100 ms 问一次 `turn_busy`，一条几 KB 的命令
+/// 乘上轮询频率就是白烧带宽；弹窗里看得清前 2 000 个字就够了。
+const ARGUMENTS_CAP: usize = 2_000;
+
 /// 登记一条调用开始跑。返回的凭据活到结果回来为止。
-pub fn begin(session: &str, call_id: &str, name: &str) -> CallHandle {
+pub fn begin(session: &str, call_id: &str, name: &str, arguments: &str) -> CallHandle {
     let flag = Arc::new(AtomicBool::new(false));
     let mut table = table().lock().unwrap_or_else(|poison| poison.into_inner());
     table.entry(session.to_string()).or_default().insert(
@@ -83,6 +91,7 @@ pub fn begin(session: &str, call_id: &str, name: &str) -> CallHandle {
         Entry {
             flag: Arc::clone(&flag),
             name: name.to_string(),
+            arguments: arguments.chars().take(ARGUMENTS_CAP).collect(),
             started: Instant::now(),
         },
     );
@@ -134,6 +143,7 @@ pub fn running(session: &str) -> Vec<RunningCall> {
                 RunningCall {
                     call_id: call_id.clone(),
                     name: entry.name.clone(),
+                    arguments: entry.arguments.clone(),
                     elapsed_ms: entry.started.elapsed().as_millis() as u64,
                 },
             )
@@ -151,7 +161,7 @@ mod tests {
     #[test]
     fn a_registered_call_shows_up_and_disappears_when_it_returns() {
         let session = "s-register";
-        let handle = begin(session, "call_1", "read_file");
+        let handle = begin(session, "call_1", "read_file", "{\"path\":\"a.txt\"}");
         let rows = running(session);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].call_id, "call_1");
@@ -165,7 +175,7 @@ mod tests {
     #[test]
     fn cancelling_sets_the_flag_and_an_unknown_id_is_not_an_error() {
         let session = "s-cancel";
-        let handle = begin(session, "call_1", "System-Shell");
+        let handle = begin(session, "call_1", "System-Shell", "");
         assert!(cancel(session, "call_1"));
         assert!(handle.cancelled());
         // 再点一次：还在跑，照样 true（幂等）。界面上那颗按钮不会因为点过就变成错误。
@@ -177,8 +187,8 @@ mod tests {
 
     #[test]
     fn two_sessions_do_not_see_each_other() {
-        let a = begin("s-a", "call_1", "read_file");
-        let b = begin("s-b", "call_1", "read_file");
+        let a = begin("s-a", "call_1", "read_file", "");
+        let b = begin("s-b", "call_1", "read_file", "");
         assert_eq!(running("s-a").len(), 1);
         assert!(cancel("s-a", "call_1"));
         assert!(a.cancelled());
@@ -192,8 +202,8 @@ mod tests {
     #[test]
     fn re_registering_the_same_id_does_not_let_the_old_guard_remove_the_new_one() {
         let session = "s-reuse";
-        let old = begin(session, "call_1", "read_file");
-        let fresh = begin(session, "call_1", "read_file");
+        let old = begin(session, "call_1", "read_file", "{\"path\":\"a.txt\"}");
+        let fresh = begin(session, "call_1", "read_file", "{\"path\":\"a.txt\"}");
         drop(old);
         assert_eq!(running(session).len(), 1, "新的那条还在跑");
         assert!(cancel(session, "call_1"));
@@ -205,9 +215,9 @@ mod tests {
     /// 整轮停止：这个会话里在跑的调用全置上，别的会话一条都不动。
     #[test]
     fn cancel_all_stops_every_call_of_one_session_only() {
-        let a1 = begin("s-all", "call_1", "System-Shell");
-        let a2 = begin("s-all", "call_2", "WorkSpace-EnvirShell");
-        let other = begin("s-other", "call_1", "System-Shell");
+        let a1 = begin("s-all", "call_1", "System-Shell", "");
+        let a2 = begin("s-all", "call_2", "WorkSpace-EnvirShell", "");
+        let other = begin("s-other", "call_1", "System-Shell", "");
         assert_eq!(cancel_all("s-all"), 2);
         assert!(a1.cancelled());
         assert!(a2.cancelled());

@@ -344,7 +344,7 @@ pub fn run_turn<T: Transport>(
             // 凭据活到结果回来为止——`Drop` 就是"它不在跑了"这件事本身。
             let handle = ctx
                 .call_session
-                .map(|session| crate::kills::begin(session, &call.id, &call.name));
+                .map(|session| crate::kills::begin(session, &call.id, &call.name, &call.arguments));
             let outcome = {
                 let call_ctx = ToolContext {
                     call: handle.as_ref(),

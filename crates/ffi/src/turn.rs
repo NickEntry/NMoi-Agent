@@ -1227,6 +1227,7 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
                     json!({
                         "call_id": call.call_id,
                         "name": call.name,
+                        "arguments": call.arguments,
                         "elapsed_ms": call.elapsed_ms,
                     })
                 })
@@ -1994,12 +1995,19 @@ mod tests {
         let idle = read_json(nmoi_turn_busy_json(session.as_ptr()));
         assert_eq!(idle["calls"], json!([]), "{idle}");
 
-        let handle = nmoi_core::kills::begin(name, "call_1", "System-Shell");
+        let handle =
+            nmoi_core::kills::begin(name, "call_1", "System-Shell", r#"{"command":"sleep 600"}"#);
         let running = read_json(nmoi_turn_busy_json(session.as_ptr()));
         let calls = running["calls"].as_array().expect("calls 是数组");
         assert_eq!(calls.len(), 1, "{running}");
         assert_eq!(calls[0]["call_id"], json!("call_1"), "{running}");
         assert_eq!(calls[0]["name"], json!("System-Shell"), "{running}");
+        // 参数要跟着来：弹窗里得说清"它到底在跑什么"，光有名字没法判断该不该关。
+        assert_eq!(
+            calls[0]["arguments"],
+            json!(r#"{"command":"sleep 600"}"#),
+            "{running}"
+        );
         assert!(calls[0]["elapsed_ms"].is_u64(), "{running}");
 
         drop(handle);

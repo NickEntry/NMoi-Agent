@@ -21,6 +21,8 @@ internal data class RunningCall(
     val callId: String,
     val name: String,
     val elapsedMs: Int,
+    /** 参数原文（native 截到 2 000 字）。弹窗里要能看见"它到底在跑什么"。 */
+    val arguments: String = "",
     val cancelled: Boolean = false,
 )
 

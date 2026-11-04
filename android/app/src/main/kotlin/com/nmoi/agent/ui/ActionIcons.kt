@@ -96,6 +96,13 @@ internal object ActionIcons {
         )
     }
 
+    /** Lucide `image.svg`：图片上下文那一行（0.15ak）。 */
+    val Image: ImageVector = buildVector("image") {
+        stroke("M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z")
+        stroke("M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0")
+        stroke("m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21")
+    }
+
     val Ellipsis: ImageVector = buildVector("ellipsis") {
         stroke("M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")
         stroke("M20 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0")

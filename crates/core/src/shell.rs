@@ -1092,7 +1092,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(dir.path()).unwrap();
         let policy = policy();
-        let handle = crate::kills::begin("s-shell-cancel", "call_1", "System-Shell");
+        let handle = crate::kills::begin("s-shell-cancel", "call_1", "System-Shell", "");
         let ctx = ToolContext::new(&policy, Some(&workspace)).with_call_session("s-shell-cancel");
         let ctx = ToolContext {
             call: Some(&handle),
