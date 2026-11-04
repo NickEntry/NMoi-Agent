@@ -224,6 +224,15 @@ impl Storage {
                 supported: SCHEMA_VERSION,
             });
         }
+        // 迁移前先留一份副本（用户 2026-11-04 的要求）：迁移改的是库的形状，
+        // 改坏了没有第二份可回退。副本只留一份（`<库>.v<旧版本>.bak`），
+        // 同一版本反复打开不会越攒越多。
+        if found > 0 && found < SCHEMA_VERSION {
+            let backup = path.with_extension(format!("v{found}.bak"));
+            if !backup.exists() {
+                std::fs::copy(&path, &backup)?;
+            }
+        }
         migrate::migrate(&mut conn, SCHEMA_VERSION)?;
         let device = ensure_device_id(&conn)?;
 
@@ -585,6 +594,35 @@ mod tests {
     }
 
     /// 备份必须"在副本上"验证：主库正常、副本损坏时要能看出来。
+    /// 迁移前留一份副本（D256）：v14 的库打开一次之后，旁边应该多一个 `.v14.bak`。
+    #[test]
+    fn migrating_leaves_one_backup_next_to_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nmoi.db");
+        {
+            // 造一个 v14 的库：只迁到 14 就撒手。
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            crate::migrate::migrate(&mut conn, 14).unwrap();
+        }
+
+        let storage = match Storage::open(&path).unwrap() {
+            OpenOutcome::Ready(storage) => storage,
+            OpenOutcome::Blocked(_) => panic!("不该被拦：语义扫描报了阻塞"),
+        };
+        drop(storage);
+
+        let backup = dir.path().join("nmoi.v14.bak");
+        assert!(backup.exists(), "迁移前要先留一份副本");
+        // 再打开一次不会多出一份（同一版本只留一份）。
+        drop(Storage::open(&path).unwrap());
+        let count = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+            .count();
+        assert_eq!(count, 1, "同一版本反复打开不该越攒越多");
+    }
+
     #[test]
     fn backup_of_empty_database_still_verifies() {
         let dir = tempfile::tempdir().unwrap();
