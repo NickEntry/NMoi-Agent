@@ -95,11 +95,27 @@ pub struct ToolRecord {
     pub outcome: String,
 }
 
+/// 一次模型往返的产出（D253）。
+///
+/// 为什么要按轮记：`text` 每轮都被覆盖，多轮工具往返时**只有最后一轮的正文**能落库——
+/// 前面几轮模型说过的话，用户屏幕上看见过，重开会话就没了。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnRound {
+    /// 这一轮的正文（已切掉行内工具标签）。
+    pub text: String,
+    /// 这一轮自己的思考。空串 = 这一轮没有。
+    pub reasoning: String,
+    /// 这一轮发起的调用 id（按模型给的顺序）。空 = 这一轮没调工具。
+    pub call_ids: Vec<String>,
+}
+
 /// 一轮跑完的结果。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnReport {
     /// 模型最后输出的正文（可能为空：它可能只想调工具）。
     pub text: String,
+    /// 每一次模型往返自己的正文 / 思考 / 调用（D253）。落库按它逐轮写。
+    pub rounds_detail: Vec<TurnRound>,
     /// 最后一轮**非空**的思考内容。空串 = 这一次没有思考。
     ///
     /// 为什么要单独带出来：`Completion.reasoning` 以前在 `run_turn` 里被丢掉了，
@@ -259,12 +275,22 @@ pub fn run_turn<T: Transport>(
             }
         }
         report.text = visible.clone();
-        if !completion.reasoning.trim().is_empty() {
+        // 这一轮**自己**的思考：`report.reasoning` 取"最后一轮非空"（收尾那轮常常没思考），
+        // 但落库要按轮给，所以这里单独算一份。
+        let round_reasoning = if !completion.reasoning.trim().is_empty() {
             // 端点自己给了 `reasoning_content`：以它为准（结构化的那份更可信）。
-            report.reasoning = completion.reasoning.clone();
-        } else if !inline.thinking.is_empty() {
-            report.reasoning = inline.thinking.clone();
+            completion.reasoning.clone()
+        } else {
+            inline.thinking.clone()
+        };
+        if !round_reasoning.trim().is_empty() {
+            report.reasoning = round_reasoning.clone();
         }
+        report.rounds_detail.push(TurnRound {
+            text: visible.clone(),
+            reasoning: round_reasoning,
+            call_ids: Vec::new(),
+        });
         report.usage = completion.usage;
 
         // 流断了（没等到终止信号）：这一轮到此为止，残文已经落在 `report.text` 里，
@@ -337,6 +363,11 @@ pub fn run_turn<T: Transport>(
         }
         messages.push(assistant);
         seq += 1;
+
+        // 这一轮的调用登记到这一轮名下（D253）：落库按轮分组，不靠"最后一条消息"猜。
+        if let Some(round) = report.rounds_detail.last_mut() {
+            round.call_ids = outgoing.iter().map(|call| call.id.clone()).collect();
+        }
 
         for call in &outgoing {
             // 检查点之二：每个工具调用之前。已经执行完的那些是真发生过的事，照常记录。

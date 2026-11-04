@@ -3593,10 +3593,6 @@ private fun ThinkingBlock(message: ChatMessage) {
 private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
     val calls = unit.messages.flatMap { it.toolArgs }
     val results = unit.messages.filter { it.isToolResult }
-    val name = calls.firstOrNull()?.name?.takeIf { it.isNotBlank() }
-        ?.let { toolDisplayName(it) } ?: "工具调用"
-    val summary = toolSummary(results)
-    val preview = calls.firstOrNull()?.arguments?.let { toolArgumentPreview(it) }.orEmpty()
 
     Column(
         modifier = Modifier
@@ -3604,6 +3600,28 @@ private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
             .clickable(onClick = onOpen)
             .padding(vertical = 6.dp),
     ) {
+        // **一次调用一行**（D253）：同一轮里模型可能一次报三四个调用，它们都在同一个单元里。
+        // 以前一个单元只有一次调用，所以这里只画一行；现在按调用铺开，少一条就等于
+        // "库里存了、界面上指不出来"。
+        if (calls.isEmpty()) {
+            ToolCallLine(name = "工具调用", summary = "", preview = "")
+        } else {
+            calls.forEach { call ->
+                val result = results.firstOrNull { it.toolCallId == call.callId }
+                ToolCallLine(
+                    name = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用",
+                    summary = result?.let { toolSummary(listOf(it)) }.orEmpty(),
+                    preview = toolArgumentPreview(call.arguments),
+                )
+            }
+        }
+    }
+}
+
+/** 过程块里的一行：扳手 + 名字 + 结果摘要 + chevron，下面一行参数预览。 */
+@Composable
+private fun ToolCallLine(name: String, summary: String, preview: String) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = ActionIcons.Wrench,

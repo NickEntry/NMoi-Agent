@@ -167,7 +167,13 @@ pub enum EditError {
     #[error("工具块是成对的（第 {index} 个调用 + 它的结果）：删除要两边一起删，这次只删了{side}")]
     UnpairedDelete { index: usize, side: &'static str },
     /// 一条消息带多个调用时，删单个会把它跟结果的关系撕开。
-    #[error("消息 {message} 带了 {count} 个工具调用：不能只删其中一个（要删就整条删，或者别删）")]
+    ///
+    /// 同一轮并行几个调用时这条会经常出现（D253 起它们装在一个单元里），所以话要说全：
+    /// 不能只删一个，但整条删是有路的（长按那条消息 → 删除，按单元删）。
+    #[error(
+        "这条消息里一次发了 {count} 个工具调用，不能只删其中一个：\
+         要删就整条删（长按那条消息 → 删除），或者别删"
+    )]
     ManyCalls { message: MessageId, count: usize },
     #[error("同一次调用里把「{0}」写了两遍：落库按顺序来，后一遍会盖掉前一遍")]
     Duplicate(String),
@@ -869,6 +875,59 @@ mod tests {
         assert_eq!(plan.remove_messages.len(), 2);
         assert!(plan.remove_messages.contains(&unit.messages[0].id));
         assert!(plan.remove_messages.contains(&unit.messages[1].id));
+    }
+
+    /// 一条消息带两个调用时（D253 起同一轮的并行调用就是这样），
+    /// 删其中一个会被挡住，而且话里要给出一条走得通的路。
+    #[test]
+    fn plan_ops_refuses_deleting_one_call_out_of_a_batch() {
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![
+                OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}"),
+                OutgoingToolCall::new("c2", "read_file", "{\"path\":\"b\"}"),
+            ],
+            8,
+            0,
+            LogicalClock::new(1),
+        );
+        let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        let unit_id = unit.id.clone();
+        for (index, call) in ["c1", "c2"].iter().enumerate() {
+            let result = Message::tool_result(
+                MessageId::new(session, 2 + index as u64),
+                *call,
+                "内容",
+                2,
+                0,
+                LogicalClock::new(2 + index as u64),
+            )
+            .with_unit(unit_id.clone());
+            unit.add_result(result).unwrap();
+        }
+        let anchor = unit.messages[0].id.clone();
+        let error = plan_ops(
+            &unit,
+            &anchor,
+            &[
+                BlockOp::Delete {
+                    block: BlockSelector::ToolCall { index: 0 },
+                },
+                BlockOp::Delete {
+                    block: BlockSelector::ToolResult { index: 0 },
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EditError::ManyCalls { count: 2, .. }),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("整条删"),
+            "报错要说清怎么走：{error}"
+        );
     }
 
     #[test]
