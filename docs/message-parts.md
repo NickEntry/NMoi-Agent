@@ -262,8 +262,9 @@ Kotlin 不重写。
 |---|---|---|
 | 1 | `Part` / `ToolPart` + `Message` 以 parts 为唯一来源（正文 / 思考 / 工具调用都是投影）+ 全仓调用点迁移 | **已落地**（D255），库仍是老列，行为不变 |
 | 2 | schema **v15**：`message_parts` 建表 + 回填 + 删三列（**已落地**，D256） | 已完成 |
+| 3b | 编辑按 part id（`BlockSelector::Part`）+ part id 不再随重建换号 + FFI 给 `parts` 清单 | **已落地**（D257） |
 | 3 | 折行（`role=tool` 的行并进调用消息的 tool 块）、`message_versions.parts_json` | 未动工 |
-| 3b | 编辑按 part id（`BlockSelector::Part`）、单框编辑器标记 v2 | 未动工 |
+| 3c | 单框编辑器标记 v2（`tool index` → `part id`） | 未动工 |
 | 4 | UI 从 parts 渲染（过程块与正文来自同一条消息） | 未动工 |
 
 第一批落地时定下的两条顺序规则（写进代码，不是口头）：

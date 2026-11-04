@@ -2570,10 +2570,11 @@ mod tests {
             block: BlockSelector,
             content: &str,
         ) -> Result<EditOutcome, String> {
-            self.applied
-                .lock()
-                .unwrap()
-                .push((message_id.clone(), block, content.to_string()));
+            self.applied.lock().unwrap().push((
+                message_id.clone(),
+                block.clone(),
+                content.to_string(),
+            ));
             Ok(EditOutcome {
                 message_id: message_id.clone(),
                 block: block.as_str(),
@@ -2610,13 +2611,13 @@ mod tests {
                     BlockOp::Set { block, content } => {
                         self.applied.lock().unwrap().push((
                             message_id.clone(),
-                            *block,
+                            block.clone(),
                             content.clone(),
                         ));
-                        blocks.push(crate::edit::block_label(*block));
+                        blocks.push(crate::edit::block_label(block.clone()));
                     }
                     BlockOp::Delete { block } => {
-                        blocks.push(crate::edit::block_label(*block));
+                        blocks.push(crate::edit::block_label(block.clone()));
                     }
                 }
             }
@@ -2704,7 +2705,7 @@ mod tests {
         assert_eq!(
             applied
                 .iter()
-                .map(|(_, block, _)| *block)
+                .map(|(_, block, _)| block.clone())
                 .collect::<Vec<_>>(),
             vec![
                 BlockSelector::Output,

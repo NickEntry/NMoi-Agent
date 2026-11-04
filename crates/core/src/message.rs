@@ -572,18 +572,68 @@ impl Message {
     }
 
     /// 换掉全部工具调用块（按给定顺序）。
+    ///
+    /// **还在的调用保留原来的 part id**（D257）：id 是编辑与审计的定位手段，
+    /// 每次重建都换一遍号，等于"改完这一块，下一块变成了别人"。
     pub fn set_tool_calls(&mut self, calls: Vec<OutgoingToolCall>) {
+        let previous: Vec<(String, String)> = self
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Tool(tool) => Some((tool.call_id.clone(), tool.part.clone())),
+                _ => None,
+            })
+            .collect();
         self.parts.retain(|part| !matches!(part, Part::Tool(_)));
-        let mut next = self.parts.len();
         for call in calls {
-            next += 1;
+            let part = previous
+                .iter()
+                .find(|(call_id, _)| *call_id == call.id)
+                .map(|(_, part)| part.clone())
+                .unwrap_or_else(|| self.next_part_id());
             self.parts.push(Part::Tool(ToolPart {
-                part: format!("p{next}"),
+                part,
                 call_id: call.id,
                 name: call.name,
                 arguments: call.arguments,
             }));
         }
+    }
+
+    /// 按 part id 取这一块的主字段（正文 / 思考 / 通知的文字，工具块的参数）。
+    pub fn part_field(&self, part_id: &str, output: bool) -> Option<String> {
+        let part = self.parts.iter().find(|part| part.id() == part_id)?;
+        match (part, output) {
+            (Part::Tool(tool), false) => Some(tool.arguments.clone()),
+            (Part::Tool(_), true) => Some(String::new()),
+            (_, false) => part.text().map(str::to_string),
+            (_, true) => None,
+        }
+    }
+
+    /// 按 part id 换掉这一块的主字段。找不到返回 `false`。
+    pub fn set_part_field(&mut self, part_id: &str, output: bool, text: impl Into<String>) -> bool {
+        let text = text.into();
+        for part in &mut self.parts {
+            if part.id() != part_id {
+                continue;
+            }
+            return match (part, output) {
+                (Part::Tool(tool), false) => {
+                    tool.arguments = text;
+                    true
+                }
+                (Part::Tool(_), true) => false,
+                (Part::Text { text: slot, .. }, false)
+                | (Part::Reasoning { text: slot, .. }, false)
+                | (Part::Notice { text: slot, .. }, false) => {
+                    *slot = text;
+                    true
+                }
+                _ => false,
+            };
+        }
+        false
     }
 
     /// 第 `index` 个工具调用的参数原文。

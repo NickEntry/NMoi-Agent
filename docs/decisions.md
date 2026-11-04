@@ -1113,3 +1113,25 @@ D255 把内存里的消息改成了 parts，这一条把**库**也换过去：`m
 
 **测试**：`v14_rows_become_parts_in_display_order`（回填顺序 + 三列确实删了）、
 storage 13 个测试二进制全绿（含 roundtrip / block_edit / versions / window）。
+
+## D257 按 part id 编辑 + part id 不再随重建换号（2026-11-04）
+
+D255 把消息拆成块、D256 把块写进库，这一条把**编辑**也挪到块上。
+
+**改了什么**：
+
+1. `BlockSelector::Part { id, output }`：`part:p3` 改这一块的主字段（正文 / 思考 / 工具参数），
+   `part:p3:out` 改工具块的输出。序号轴（`tool:<i>`）保留，旧调用方不用改。
+2. `Message::set_tool_calls` **保留还在的调用的 part id**。以前是"清空重建、按 `len()+1` 重新发号"，
+   于是删掉一个调用之后，后面每一块的 id 都变了——而这正是序号轴那个毛病换了个样子。
+3. `next_part_id` 改成"现有最大号 +1"，删掉的号不复用。
+4. FFI 的 `load_units` 每条消息多一个 `parts: [{id, kind}]`：界面要按 id 定位，就得先看得见 id。
+
+**为什么先做这一条、而不是先折行**：折行会把工具结果并进同一条消息，那时候**只能**按块定位
+（一条消息里好几个工具块，序号轴更靠不住）。先把按块定位做出来，折行才有落点。
+
+**代价**：`BlockSelector` 不再是 `Copy`（里面装了 `String`），几处 `*block` 改成 `clone()`。
+这个类型本来就只在编辑路径上出现，拷贝一次可以接受。
+
+**测试**：`part_selector_survives_a_deleted_neighbour`（删掉第一个调用之后，第二个块的 id 不变、
+按 id 改的还是它）、`part_selector_refuses_an_unknown_id`（找不到就报错，不改别的块）。
