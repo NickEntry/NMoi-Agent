@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::images::{self, ContextImage, DEFAULT_LIMIT};
 use crate::policy::Capability;
-use crate::tools::{required_str, Tool, ToolContext, ToolOutcome};
+use crate::tools::{required_str, Lane, Tool, ToolContext, ToolOutcome};
 
 /// 单张图上限：Anthropic 的 API 是 5 MB（Gemini 单张更宽，OpenAI 20 MB）。
 /// 取最弱的那个——换端点不该因为一张图就 400。
@@ -29,6 +29,10 @@ const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 pub struct ViewImageTool;
 
 impl Tool for ViewImageTool {
+    fn lane(&self) -> Lane {
+        Lane::Read
+    }
+
     fn name(&self) -> &str {
         "View-Image"
     }

@@ -1,4 +1,4 @@
-# 工具调用的并行与阻塞（设计稿，未动工）
+# 工具调用的并行与阻塞（设计稿；0.15an-a 已落地，见 D254）
 
 > 用户 2026-11-02 问：模型一次要调好几个工具时，能不能并行？其中一个阻塞 0–30 秒，
 > 会不会把别的也拖住？各家的格式支持吗？这一份先答"端点支持不支持"，再答"我们怎么排"。
@@ -107,13 +107,22 @@
 
 ## 6. 分批
 
-1. **0.15an-a**：`Tool::lane()` + 批次执行器（`read` 4 / `workspace` 1 / `process` 4），
-   默认 `workspace`。判据：三个各 300 ms 的 `read_file` 总耗时 < 500 ms；
-   两个 `write_file` 仍然串行。
-2. **0.15an-b**：`crate::kills` + 工具卡上的单条"关闭" + `nmoi_tool_cancel_json`。
-   （和 0.15ak 是同一套，先做那边再回来接这里。）
-3. **0.15an-c**：`session:<id>` 车道 + `Session-*` 的 `call_id` 配对。
-4. 之后：Gemini 的 `call_id`（等 Interactions 那套接上）。
+1. **0.15an-a ✅**（D254）：`Tool::lane()` + `agent::execute_batch`
+   （`read` 4 / `workspace` 1 / `process` 4，默认 `workspace`）。
+   结果按调用顺序回填；单个工具 panic 只让那一条失败。
+2. **0.15an-b ✅**（D246 那一套已经在）：`crate::kills` 按 `(session, call_id)` 登记，
+   界面每条调用一行、弹窗底部「关闭」，`nmoi_tool_cancel_json` 只置那一条。
+   并行之后不需要新增界面。
+3. **0.15an-c 未做**：`session:<id>` 车道 + `Session-*` 的 `call_id` 配对
+   （`Session-*` 工具本身还没做，见 0.15aj）。
+4. **未做**：Gemini 的 `call_id`（等 Interactions 那套接上）。
+
+## 6.1 落地时改掉的两处
+
+- `Cancellation` 加了 `Send + Sync`：取消标志现在被工作线程读。测试里那几个 `Cell` 实现
+  换成了原子类型。
+- 批次里**没执行**的调用（整轮取消时排在后面的）不产生记录，也不进历史——
+  与串行时代的行为一致：已经跑完的照常记，没跑的不编一条"没执行"出来。
 
 ## 7. 验收
 

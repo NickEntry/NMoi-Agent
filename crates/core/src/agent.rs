@@ -33,7 +33,7 @@ use crate::runtime::{ChatClient, ChatRequest};
 use crate::source::SourceTag;
 use crate::stream::FinishReason;
 use crate::tokens::estimate_tokens;
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{Lane, ToolContext, ToolOutcome, ToolRegistry};
 use crate::transport::Transport;
 
 /// 循环预算。
@@ -69,7 +69,7 @@ pub struct TurnConfig {
 ///
 /// 为什么是 trait 而不是 `AtomicBool`：core 不该知道 UI 那个标志住在哪、谁在置它。
 /// 测试里给一个"第 N 次问就说取消"的实现，就能把边界行为钉死，不用起线程。
-pub trait Cancellation {
+pub trait Cancellation: Send + Sync {
     fn is_cancelled(&self) -> bool;
 }
 
@@ -369,37 +369,16 @@ pub fn run_turn<T: Transport>(
             round.call_ids = outgoing.iter().map(|call| call.id.clone()).collect();
         }
 
-        for call in &outgoing {
-            // 检查点之二：每个工具调用之前。已经执行完的那些是真发生过的事，照常记录。
-            if cancel.is_cancelled() {
-                return Ok(stopped(report));
-            }
-            // 手动关闭（0.15ak）：先登记，界面才看得见"哪一条在跑"，也才有东西可关。
-            // 凭据活到结果回来为止——`Drop` 就是"它不在跑了"这件事本身。
-            let handle = ctx
-                .call_session
-                .map(|session| crate::kills::begin(session, &call.id, &call.name, &call.arguments));
-            let outcome = {
-                let call_ctx = ToolContext {
-                    call: handle.as_ref(),
-                    ..*ctx
-                };
-                registry.invoke(&call.name, &call.arguments, &call_ctx)
+        // 一次消息里的 N 个调用算一个**批次**（D254）：按车道并行跑，
+        // 结果按调用顺序回填。已经跑完的那些是真发生过的事，取消时也照常记录。
+        let batch = execute_batch(registry, ctx, &outgoing, cancel);
+        for (call, record) in outgoing.iter().zip(batch.records) {
+            let Some(record) = record else {
+                // 这一条没执行（批次里前面有人把整轮停下了）。
+                continue;
             };
-            drop(handle);
-            let text = outcome.text();
-            // 跑完的这一条留在"这一轮跑过什么"里（D251）：结果要等整轮收尾才落库，
-            // 中间这一段界面上不能一片空白——用户会以为工具没动。
-            if let Some(session) = ctx.call_session {
-                crate::kills::push_done(session, &call.name, &crate::kills::summarize(&text));
-            }
-            report.tool_calls.push(ToolRecord {
-                name: call.name.clone(),
-                call_id: call.id.clone(),
-                arguments: call.arguments.clone(),
-                ok: outcome.is_ok(),
-                outcome: text.clone(),
-            });
+            let text = record.outcome.clone();
+            report.tool_calls.push(record);
             spent = spent.saturating_add(u64::from(estimate_tokens(&text)));
             messages.push(Message::tool_result(
                 MessageId::new(session, seq),
@@ -410,6 +389,9 @@ pub fn run_turn<T: Transport>(
                 LogicalClock::new(seq),
             ));
             seq += 1;
+        }
+        if batch.cancelled {
+            return Ok(stopped(report));
         }
 
         if config.max_rounds > 0 && report.rounds >= config.max_rounds {
@@ -423,6 +405,118 @@ pub fn run_turn<T: Transport>(
             report.finished = false;
             return Ok(report);
         }
+    }
+}
+
+/// 一个批次跑完的样子（D254）。
+struct BatchOutcome {
+    /// 按**调用顺序**排好；`None` = 这一条没执行（批次被取消，或它前面那条把整轮停了）。
+    records: Vec<Option<ToolRecord>>,
+    /// 批次里有人看见"整轮取消"了。
+    cancelled: bool,
+}
+
+/// 跑一个批次：按车道并行，结果按调用顺序回填。
+///
+/// 为什么不是"全并行"：判据是碰不碰共享状态，不是快不快。两个 `write_file` 一起跑，
+/// 谁后写谁赢；两个 `read_file` 一起跑，只是快一点。车道见 [`Lane`]。
+///
+/// 为什么结果要按顺序排：wire 上顺序无所谓（都带 id），但历史里顺序乱了以后排查会疯，
+/// 而且界面上的行会每批换一次顺序。
+fn execute_batch(
+    registry: &ToolRegistry,
+    ctx: &ToolContext<'_>,
+    calls: &[OutgoingToolCall],
+    cancel: &dyn Cancellation,
+) -> BatchOutcome {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    // 车道 → 这一批里属于它的调用下标（保持调用顺序）。
+    let mut lanes: BTreeMap<Lane, Vec<usize>> = BTreeMap::new();
+    for (index, call) in calls.iter().enumerate() {
+        lanes
+            .entry(registry.lane_of(&call.name))
+            .or_default()
+            .push(index);
+    }
+
+    let slots: Mutex<Vec<Option<ToolRecord>>> =
+        Mutex::new((0..calls.len()).map(|_| None).collect());
+    let cancelled = AtomicBool::new(false);
+
+    let slots_ref = &slots;
+    let cancelled_ref = &cancelled;
+
+    std::thread::scope(|scope| {
+        for (lane, indexes) in &lanes {
+            let workers = lane.concurrency().min(indexes.len()).max(1);
+            let cursor = std::sync::Arc::new(AtomicUsize::new(0));
+            for _ in 0..workers {
+                let cursor = std::sync::Arc::clone(&cursor);
+                scope.spawn(move || loop {
+                    let slot = cursor.fetch_add(1, Ordering::SeqCst);
+                    let Some(&index) = indexes.get(slot) else {
+                        break;
+                    };
+                    // 检查点：每条调用之前。已经跑完的那几条留在 slots 里，照常回填。
+                    if cancel.is_cancelled() {
+                        cancelled_ref.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    let call = &calls[index];
+                    // 手动关闭（0.15ak）：先登记，界面才看得见"哪一条在跑"，也才有东西可关。
+                    // 凭据活到结果回来为止——`Drop` 就是"它不在跑了"这件事本身。
+                    let handle = ctx.call_session.map(|session| {
+                        crate::kills::begin(session, &call.id, &call.name, &call.arguments)
+                    });
+                    let call_ctx = ToolContext {
+                        call: handle.as_ref(),
+                        ..*ctx
+                    };
+                    // 工具 panic 只该让这一条失败：整批跟着炸掉，用户会以为三条都没跑。
+                    let outcome =
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            registry.invoke(&call.name, &call.arguments, &call_ctx)
+                        })) {
+                            Ok(outcome) => outcome,
+                            Err(_) => {
+                                ToolOutcome::failed("工具内部错误（panic）：这一条没跑完，其余照常")
+                            }
+                        };
+                    drop(handle);
+                    let text = outcome.text();
+                    // 跑完的这一条留在"这一轮跑过什么"里（D251）：结果要等整轮收尾才落库，
+                    // 中间这一段界面上不能一片空白——用户会以为工具没动。
+                    if let Some(session) = ctx.call_session {
+                        crate::kills::push_done(
+                            session,
+                            &call.name,
+                            &crate::kills::summarize(&text),
+                        );
+                    }
+                    let record = ToolRecord {
+                        name: call.name.clone(),
+                        call_id: call.id.clone(),
+                        arguments: call.arguments.clone(),
+                        ok: outcome.is_ok(),
+                        outcome: text,
+                    };
+                    if let Ok(mut slots) = slots_ref.lock() {
+                        slots[index] = Some(record);
+                    }
+                });
+            }
+        }
+    });
+
+    let records = slots
+        .into_inner()
+        .unwrap_or_else(|error| error.into_inner());
+    BatchOutcome {
+        records,
+        cancelled: cancelled.load(Ordering::SeqCst),
     }
 }
 
@@ -476,6 +570,7 @@ mod tests {
 
     use crate::policy::{AssistantPolicy, WorkspaceBinding};
     use crate::provider::{ProviderConfig, ProviderKind};
+    use crate::tools::Tool;
     use crate::transport::{HttpRequest, HttpResponse, Transport, TransportError};
     use crate::workspace::Workspace;
 
@@ -541,14 +636,14 @@ mod tests {
 
     /// 第 `at` 次被问"取消了吗"时开始说"是"。用 Cell 就够：run_turn 是单线程的。
     struct CancelAt {
-        asked: std::cell::Cell<usize>,
+        asked: std::sync::atomic::AtomicUsize,
         at: usize,
     }
 
     impl CancelAt {
         fn new(at: usize) -> Self {
             Self {
-                asked: std::cell::Cell::new(0),
+                asked: std::sync::atomic::AtomicUsize::new(0),
                 at,
             }
         }
@@ -556,10 +651,171 @@ mod tests {
 
     impl Cancellation for CancelAt {
         fn is_cancelled(&self) -> bool {
-            let asked = self.asked.get() + 1;
-            self.asked.set(asked);
+            let asked = self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             asked >= self.at
         }
+    }
+
+    /// 一个可以观察"同时有几个在跑"的假工具（D254）。
+    struct ProbeTool {
+        name: &'static str,
+        lane: Lane,
+        running: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+        /// 进到工具里之后等几个同伴到齐再返回（0 = 不等）。
+        wait_for: usize,
+    }
+
+    impl Tool for ProbeTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "probe"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn capability(&self) -> crate::policy::Capability {
+            crate::policy::Capability::WorkspaceRead
+        }
+        fn lane(&self) -> Lane {
+            self.lane
+        }
+        fn invoke(&self, args: &serde_json::Value, _ctx: &ToolContext<'_>) -> ToolOutcome {
+            use std::sync::atomic::Ordering;
+            let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            // 等同伴到齐（有上限：串行执行时这里会等到超时，用例随即失败）。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while self.running.load(Ordering::SeqCst) < self.wait_for
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            if let Some(ms) = args.get("delay").and_then(|value| value.as_u64()) {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+            self.running.fetch_sub(1, Ordering::SeqCst);
+            ToolOutcome::ok(format!("{} 完成", self.name))
+        }
+    }
+
+    fn probe_registry(
+        lane: Lane,
+        wait_for: usize,
+    ) -> (
+        ToolRegistry,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let running = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ProbeTool {
+            name: "probe",
+            lane,
+            running: Arc::clone(&running),
+            peak: Arc::clone(&peak),
+            wait_for,
+        }));
+        (registry, running, peak)
+    }
+
+    fn probe_calls(count: usize) -> Vec<OutgoingToolCall> {
+        (0..count)
+            .map(|index| OutgoingToolCall::new(format!("c{index}"), "probe", "{}"))
+            .collect()
+    }
+
+    #[test]
+    fn read_lane_runs_a_batch_at_once() {
+        let (registry, _running, peak) = probe_registry(Lane::Read, 3);
+        let policy = AssistantPolicy::locked_down();
+        let ctx = ToolContext::new(&policy, None);
+        let calls = probe_calls(3);
+
+        let batch = execute_batch(&registry, &ctx, &calls, &NeverCancel);
+
+        assert!(!batch.cancelled);
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "三条只读调用应该同时在里面：串行的话第一条会等到超时"
+        );
+        assert!(
+            batch.records.iter().all(|slot| slot.is_some()),
+            "三条都要有结果"
+        );
+    }
+
+    #[test]
+    fn workspace_lane_keeps_calls_serial() {
+        let (registry, _running, peak) = probe_registry(Lane::Workspace, 2);
+        let policy = AssistantPolicy::locked_down();
+        let ctx = ToolContext::new(&policy, None);
+        let calls = probe_calls(3);
+
+        let batch = execute_batch(&registry, &ctx, &calls, &NeverCancel);
+
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "改东西的车道只能一个工人：两个写撞在一起，谁后写谁赢"
+        );
+        assert!(batch.records.iter().all(|slot| slot.is_some()));
+    }
+
+    #[test]
+    fn batch_records_come_back_in_call_order() {
+        // 第 0 条最慢、第 2 条最快：完成顺序是 2、1、0，回填必须是 0、1、2。
+        let (registry, _running, _peak) = probe_registry(Lane::Read, 0);
+        let policy = AssistantPolicy::locked_down();
+        let ctx = ToolContext::new(&policy, None);
+        let calls: Vec<OutgoingToolCall> = [80u64, 40, 0]
+            .iter()
+            .enumerate()
+            .map(|(index, ms)| {
+                OutgoingToolCall::new(format!("c{index}"), "probe", format!("{{\"delay\":{ms}}}"))
+            })
+            .collect();
+
+        let batch = execute_batch(&registry, &ctx, &calls, &NeverCancel);
+
+        let ids: Vec<String> = batch
+            .records
+            .iter()
+            .map(|slot| slot.as_ref().expect("每条都要有结果").call_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["c0", "c1", "c2"],
+            "结果按调用顺序排，不按完成顺序"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_batch_dispatches_nothing() {
+        struct Always;
+        impl Cancellation for Always {
+            fn is_cancelled(&self) -> bool {
+                true
+            }
+        }
+
+        let (registry, running, _peak) = probe_registry(Lane::Read, 0);
+        let policy = AssistantPolicy::locked_down();
+        let ctx = ToolContext::new(&policy, None);
+        let calls = probe_calls(3);
+
+        let batch = execute_batch(&registry, &ctx, &calls, &Always);
+
+        assert!(batch.cancelled, "整轮已经取消了");
+        assert!(
+            batch.records.iter().all(|slot| slot.is_none()),
+            "一条都不该执行"
+        );
+        assert_eq!(running.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     fn text_body(text: &str) -> String {

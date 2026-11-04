@@ -1017,3 +1017,39 @@ OpenAI 兼容端口不要求角色交替。
 `three_tool_calls_in_one_message_yield_three_paired_results` 改成盯"一个单元装三条"。
 
 **没做**：并行执行（0.15an）、按调用单条关闭的界面（kills 那层按 call_id 已经能关，缺的是每行一个按钮）。
+
+## D254 工具批次并行：四条车道，结果按调用顺序回填（2026-11-04）
+
+用户 2026-11-02 问「一次要调好几个工具能不能并行」，设计在 `docs/tool-execution.md`。
+这一条落地的是其中的 **0.15an-a**：`Tool::lane()` + 批次执行器。
+
+**改动**：`agent::run_turn` 里那个 `for call in &outgoing` 换成 `execute_batch`。
+一次 assistant 消息里的 N 个调用算一个批次，按车道分组、组内并行，收齐后按**调用顺序**回填。
+
+| 车道 | 并发度 | 谁在上面 |
+|---|---|---|
+| `read` | 4 | `read_file` / `list_dir` / `find_files` / `search` / `View-Image` |
+| `workspace` | 1 | `write_file` / `edit_file` / `edit_message`，**以及所有没声明的工具** |
+| `process` | 4 | `System-Shell` / `WorkSpace-EnvirShell` |
+
+**为什么默认是 `workspace`（串行）**：新工具不知道碰不碰共享状态，猜错一次就是两个写撞在一起。
+宁可慢一点，也不要"我明明写了两版，怎么只剩一版"。
+
+**三条实现上的决定**：
+
+1. **结果按调用顺序排，不按完成顺序**。wire 上顺序无所谓（都带 id），但历史里顺序乱了
+   以后排查会疯，界面上的行也会每批换一次顺序。用 `Mutex<Vec<Option<ToolRecord>>>` 按 index 放。
+2. **工具 panic 只让这一条失败**（`catch_unwind`），整批跟着炸掉的话用户会以为三条都没跑。
+3. `Cancellation` 加了 `Send + Sync`：取消标志现在会被工作线程读，`Cell` 那一套测试实现
+   换成了 `AtomicUsize` / `AtomicU32`。这是契约变了，不是顺手改的。
+
+**单条关闭**（0.15an-b 的界面那一半）**本来就有**：`kills` 按 `(session, call_id)` 登记，
+界面上每条正在跑的调用自己一行、点开弹窗底部有「关闭」，`nmoi_tool_cancel_json` 只置那一条。
+并行之后这三样天然对上，没有新增界面。
+
+**没做**：`session:<id>` 车道（`Session-*` 工具本身还没做，见 0.15aj）；
+Gemini 老接口的同名并行（`functionResponse` 只认函数名，要等 Interactions 的 `call_id`）。
+
+**测试**：`read_lane_runs_a_batch_at_once`（三条同时在跑，峰值 3）、
+`workspace_lane_keeps_calls_serial`（峰值 1）、`batch_records_come_back_in_call_order`
+（完成顺序 2、1、0，回填必须是 0、1、2）、`a_cancelled_batch_dispatches_nothing`。

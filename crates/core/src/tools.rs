@@ -190,6 +190,39 @@ impl<'a> ToolContext<'a> {
     }
 }
 
+/// 一次批次里这条工具能不能和别的调用一起跑（D254）。
+///
+/// 判据是"碰不碰共享状态"，不是"快不快"：读文件的慢和写文件的慢不是一回事，
+/// 前者并行只是快一点，后者并行会把两个写撞在一起。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Lane {
+    /// 只读：读文件、列目录、找文件、搜内容、把图拉进上下文。
+    Read,
+    /// 改东西（文件 / 消息）。**默认车道**——新工具不声明就串行，宁可慢也不要两个写撞上。
+    Workspace,
+    /// 各自独立的进程：两条 shell 一起跑。
+    Process,
+}
+
+impl Lane {
+    /// 这条车道最多几个一起跑。
+    pub fn concurrency(self) -> usize {
+        match self {
+            Lane::Read => 4,
+            Lane::Workspace => 1,
+            Lane::Process => 4,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Lane::Read => "read",
+            Lane::Workspace => "workspace",
+            Lane::Process => "process",
+        }
+    }
+}
+
 /// 一个工具。
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -198,6 +231,11 @@ pub trait Tool: Send + Sync {
     /// 需要哪一项能力。门控在 [`Tool::invoke`] 的最前面用掉它。
     fn capability(&self) -> Capability;
     fn invoke(&self, arguments: &Value, ctx: &ToolContext<'_>) -> ToolOutcome;
+
+    /// 这一批里它跟谁一起跑（D254）。默认 [`Lane::Workspace`]：不声明就串行。
+    fn lane(&self) -> Lane {
+        Lane::Workspace
+    }
 
     /// 塞进 `ChatRequest::tools` 的声明。
     fn spec(&self) -> ToolSpec {
@@ -282,6 +320,15 @@ impl ToolRegistry {
             .filter(|tool| policy.allows(tool.capability()))
             .map(|tool| tool.spec())
             .collect()
+    }
+
+    /// 某个工具在哪条车道上（D254）。`None`（不认识的名字）按 `workspace` 算——
+    /// 不认识的工具本来就只会回一句"未知工具"，让它串行不会有任何损失。
+    pub fn lane_of(&self, name: &str) -> Lane {
+        self.tools
+            .get(name)
+            .map(|tool| tool.lane())
+            .unwrap_or(Lane::Workspace)
     }
 
     /// 某个工具需要哪一项能力。`None` = 没这个工具。
@@ -395,6 +442,10 @@ fn workspace_error(error: WorkspaceError) -> ToolOutcome {
 pub struct ReadFileTool;
 
 impl Tool for ReadFileTool {
+    fn lane(&self) -> Lane {
+        Lane::Read
+    }
+
     fn name(&self) -> &str {
         "read_file"
     }
@@ -574,6 +625,10 @@ impl Tool for EditFileTool {
 pub struct ListDirTool;
 
 impl Tool for ListDirTool {
+    fn lane(&self) -> Lane {
+        Lane::Read
+    }
+
     fn name(&self) -> &str {
         "list_dir"
     }
@@ -636,6 +691,10 @@ impl Tool for ListDirTool {
 pub struct FindFilesTool;
 
 impl Tool for FindFilesTool {
+    fn lane(&self) -> Lane {
+        Lane::Read
+    }
+
     fn name(&self) -> &str {
         "find_files"
     }
@@ -699,6 +758,10 @@ impl Tool for FindFilesTool {
 pub struct SearchTool;
 
 impl Tool for SearchTool {
+    fn lane(&self) -> Lane {
+        Lane::Read
+    }
+
     fn name(&self) -> &str {
         "search"
     }

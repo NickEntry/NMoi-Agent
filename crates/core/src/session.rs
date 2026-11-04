@@ -1771,14 +1771,13 @@ mod tests {
     /// 协作式取消（D58）：说过的话要留下，但要标 `incomplete`——
     /// 断流的回复和正常的回复在数据里长得一样，这个字段就是唯一的分界。
     struct CancelAt {
-        asked: std::cell::Cell<usize>,
+        asked: std::sync::atomic::AtomicUsize,
         at: usize,
     }
 
     impl crate::agent::Cancellation for CancelAt {
         fn is_cancelled(&self) -> bool {
-            let asked = self.asked.get() + 1;
-            self.asked.set(asked);
+            let asked = self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             asked >= self.at
         }
     }
@@ -1793,7 +1792,7 @@ mod tests {
         let session = SessionId::new();
         // 询问顺序：请求前(1) 放行；第一个工具调用前(2) 取消
         let cancel = CancelAt {
-            asked: std::cell::Cell::new(0),
+            asked: std::sync::atomic::AtomicUsize::new(0),
             at: 2,
         };
         let config = SessionConfig {

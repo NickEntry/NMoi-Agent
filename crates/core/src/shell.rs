@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::policy::Capability;
-use crate::tools::{required_str, Tool, ToolContext, ToolOutcome};
+use crate::tools::{required_str, Lane, Tool, ToolContext, ToolOutcome};
 
 /// 每个流最多留这么多字节。够看完报错，又不会把内存撑爆。
 const STREAM_CAP: usize = 64 * 1024;
@@ -86,6 +86,10 @@ fn timeout_of(args: &Value) -> Result<Option<Duration>, ToolOutcome> {
 pub struct SystemShellTool;
 
 impl Tool for SystemShellTool {
+    fn lane(&self) -> Lane {
+        Lane::Process
+    }
+
     fn name(&self) -> &str {
         // 用户 2026-10-27 定的名字。连字符在 OpenAI / Anthropic / Gemini 的函数名规则里都合法。
         "System-Shell"
@@ -304,6 +308,10 @@ fn guest_cwd_is_safe(relative: &str) -> bool {
 pub struct EnvirShellTool;
 
 impl Tool for EnvirShellTool {
+    fn lane(&self) -> Lane {
+        Lane::Process
+    }
+
     fn name(&self) -> &str {
         "WorkSpace-EnvirShell"
     }

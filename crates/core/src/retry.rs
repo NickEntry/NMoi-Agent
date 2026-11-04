@@ -631,22 +631,22 @@ mod tests {
         );
     }
 
-    struct CancelAfter(std::cell::Cell<u32>);
+    struct CancelAfter(std::sync::atomic::AtomicU32);
 
     impl Cancellation for CancelAfter {
         fn is_cancelled(&self) -> bool {
-            let left = self.0.get();
+            let left = self.0.load(std::sync::atomic::Ordering::SeqCst);
             if left == 0 {
                 return true;
             }
-            self.0.set(left - 1);
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             false
         }
     }
 
     #[test]
     fn wait_is_interruptible() {
-        let cancel = CancelAfter(std::cell::Cell::new(2));
+        let cancel = CancelAfter(std::sync::atomic::AtomicU32::new(2));
         let started = Instant::now();
         let outcome = wait(Duration::from_secs(5), &cancel);
         assert_eq!(outcome, WaitOutcome::Cancelled);
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn short_waits_complete() {
-        let cancel = CancelAfter(std::cell::Cell::new(1_000));
+        let cancel = CancelAfter(std::sync::atomic::AtomicU32::new(1_000));
         let outcome = wait(Duration::from_millis(60), &cancel);
         assert_eq!(outcome, WaitOutcome::Completed);
     }
