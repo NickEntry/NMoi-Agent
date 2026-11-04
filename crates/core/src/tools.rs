@@ -1269,10 +1269,15 @@ mod tests {
         let registry = ToolRegistry::workspace_defaults();
         let names = registry.names();
         // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）
-        // + 模型改消息（`edit_message` D177）。
+        // + 模型改消息（`edit_unit` D177）+ 把图拉进上下文（`View-Image` D248）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
-        assert_eq!(names.len(), 9, "{names:?}");
-        for name in ["System-Shell", "WorkSpace-EnvirShell", "edit_unit"] {
+        assert_eq!(names.len(), 10, "{names:?}");
+        for name in [
+            "System-Shell",
+            "WorkSpace-EnvirShell",
+            "View-Image",
+            "edit_unit",
+        ] {
             assert!(names.contains(&name), "缺少 {name}");
         }
         for name in [
@@ -1286,7 +1291,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 9);
+        assert_eq!(specs.len(), 10);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }
