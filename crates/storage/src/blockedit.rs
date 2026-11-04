@@ -132,7 +132,7 @@ impl Storage {
             let mut red: Option<String> = None;
 
             for op in list {
-                match (op.block, op.after.as_deref()) {
+                match (&op.block, op.after.as_deref()) {
                     (BlockSelector::Output, Some(text)) => {
                         message.set_text(text);
                         if op.red {
@@ -144,7 +144,7 @@ impl Storage {
                     }
                     (BlockSelector::Thinking, None) => message.set_reasoning(None),
                     (BlockSelector::ToolCall { index }, Some(text)) => {
-                        if !message.set_tool_argument(index, text) {
+                        if !message.set_tool_argument(*index, text) {
                             return Err(StorageError::Inconsistent(format!(
                                 "消息 {id} 没有第 {index} 个工具调用"
                             )));
@@ -152,6 +152,13 @@ impl Storage {
                     }
                     (BlockSelector::ToolResult { .. }, Some(text)) => {
                         message.set_text(text);
+                    }
+                    (BlockSelector::Part { id, output }, Some(text)) => {
+                        if !message.set_part_field(id, *output, text) {
+                            return Err(StorageError::Inconsistent(format!(
+                                "消息 {id} 里没有 `{id}` 这一块（或者它没有输出）"
+                            )));
+                        }
                     }
                     (_, None) => {
                         return Err(StorageError::Inconsistent(format!(

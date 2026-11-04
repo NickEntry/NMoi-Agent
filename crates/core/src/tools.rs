@@ -1068,11 +1068,13 @@ pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
                     _ => {}
                 }
                 BlockOp::Set {
-                    block,
+                    block: block.clone(),
                     content: content.to_string(),
                 }
             }
-            "delete" => BlockOp::Delete { block },
+            "delete" => BlockOp::Delete {
+                block: block.clone(),
+            },
             other => {
                 return Err(format!(
                     "第 {which} 项的 action `{other}` 不认识：只能是 set / delete"

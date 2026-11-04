@@ -27,7 +27,7 @@ use crate::tokens::estimate_tokens;
 pub const MAX_BLOCK_BYTES: usize = 200_000;
 
 /// 可选中的块。长按 UI 上的哪个区域，就落到哪个选择器。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockSelector {
     /// 正文：assistant 回复、用户输入、工具结果原文。
     Output,
@@ -35,6 +35,12 @@ pub enum BlockSelector {
     Thinking,
     /// 第 `index` 个工具调用的参数（tool_calls[index].arguments）。
     ToolCall { index: usize },
+    /// 按 part id 定位（D257）：`part:p3` 改这一块的主字段（正文 / 思考 / 工具参数），
+    /// `part:p3:out` 改工具块的输出。
+    ///
+    /// 为什么要有这一条：序号轴（`tool:<i>`）删掉一个调用，后面的全错位；
+    /// 而 part id 是写进库里的、删了也不复用（`next_part_id` 取 max+1）。
+    Part { id: String, output: bool },
     /// 第 `index` 个工具调用的**结果**（`role = Tool` 那条消息的 `content`）。
     ///
     /// 与 [`BlockSelector::ToolCall`] 分开命名（0.15f / D188）：结果在**另一条消息**上，
@@ -57,6 +63,21 @@ impl BlockSelector {
             other => {
                 // `tool:` = 调用参数，`tool_result:` = 结果正文（0.15f）。两者前缀不同，
                 // 不能共用一个 strip：`tool_result:0` 会被 `tool:` 那条抢先认成"参数第 0 个"。
+                if let Some(tail) = other.strip_prefix("part:") {
+                    let (id, output) = match tail.strip_suffix(":out") {
+                        Some(id) => (id, true),
+                        None => (tail, false),
+                    };
+                    if id.is_empty() || !id.starts_with('p') {
+                        return Err(format!(
+                            "`{other}` 里的 part id 要写成 `p3` 这样（收到 `{id}`）"
+                        ));
+                    }
+                    return Ok(BlockSelector::Part {
+                        id: id.to_string(),
+                        output,
+                    });
+                }
                 let (which, tail) = if let Some(tail) = other.strip_prefix("tool_result:") {
                     ("工具结果", tail)
                 } else if let Some(tail) = other.strip_prefix("tool:") {
@@ -87,19 +108,27 @@ impl BlockSelector {
         }
     }
 
-    pub fn as_str(self) -> String {
+    pub fn as_str(&self) -> String {
         match self {
             BlockSelector::Output => "output".into(),
             BlockSelector::Thinking => "thinking".into(),
             BlockSelector::ToolCall { index } => format!("tool_call:{index}"),
             BlockSelector::ToolResult { index } => format!("tool_result:{index}"),
+            BlockSelector::Part { id, output } => {
+                if *output {
+                    format!("part:{id}:out")
+                } else {
+                    format!("part:{id}")
+                }
+            }
         }
     }
 
     /// 工具调用序号（参数块与结果块共用同一个序号轴）。
-    pub fn tool_index(self) -> Option<usize> {
+    pub fn tool_index(&self) -> Option<usize> {
         match self {
-            BlockSelector::ToolCall { index } | BlockSelector::ToolResult { index } => Some(index),
+            BlockSelector::ToolCall { index } | BlockSelector::ToolResult { index } => Some(*index),
+            BlockSelector::Part { .. } => None,
             _ => None,
         }
     }
@@ -179,6 +208,8 @@ pub enum EditError {
     Duplicate(String),
     #[error("正文不能删：删掉正文等于把这条消息变成空壳（要清空就改用 set，别用 delete）")]
     CannotDeleteOutput,
+    #[error("消息 {message} 里没有 `{part}` 这一块")]
+    NoSuchPart { message: MessageId, part: String },
     #[error("第 {index} 项是工具结果，但消息 {message} 没有第 {index} 个工具调用")]
     NoSuchToolResult { message: MessageId, index: usize },
     #[error("没有给任何改动：要改就指明改哪一块")]
@@ -241,6 +272,22 @@ pub fn apply_edit(unit: &mut AtomicUnit, request: &EditRequest) -> Result<EditOu
                 message.set_tool_argument(call_index, request.content.clone());
                 (before, request.content.clone())
             }
+            BlockSelector::Part { ref id, output } => {
+                let before =
+                    message
+                        .part_field(id, output)
+                        .ok_or_else(|| EditError::NoSuchPart {
+                            message: message.id.clone(),
+                            part: id.clone(),
+                        })?;
+                if !message.set_part_field(id, output, request.content.clone()) {
+                    return Err(EditError::NoSuchPart {
+                        message: message.id.clone(),
+                        part: id.clone(),
+                    });
+                }
+                (before, request.content.clone())
+            }
             // 工具结果在**另一条消息**上：单消息的 `apply_edit` 到不了那儿。
             // 报出来而不是悄悄改成调用参数——"点结果卡、参数变了"是最难查的一种。
             BlockSelector::ToolResult { .. } => return Err(EditError::NeedsUnit),
@@ -298,6 +345,13 @@ pub fn block_label(block: BlockSelector) -> String {
         BlockSelector::Thinking => "思考块".into(),
         BlockSelector::ToolCall { index } => format!("工具参数 #{index}"),
         BlockSelector::ToolResult { index } => format!("工具结果 #{index}"),
+        BlockSelector::Part { id, output } => {
+            if output {
+                format!("{id} 的输出")
+            } else {
+                id
+            }
+        }
     }
 }
 
@@ -316,7 +370,7 @@ pub enum BlockOp {
 impl BlockOp {
     pub fn block(&self) -> BlockSelector {
         match self {
-            BlockOp::Set { block, .. } | BlockOp::Delete { block } => *block,
+            BlockOp::Set { block, .. } | BlockOp::Delete { block } => block.clone(),
         }
     }
 
@@ -414,7 +468,7 @@ pub fn plan_ops(
     let mut resolved: Vec<(MessageId, BlockSelector, &BlockOp)> = Vec::with_capacity(ops.len());
     for op in ops {
         let block = op.block();
-        let target = block_message(unit, anchor, block)?;
+        let target = block_message(unit, anchor, block.clone())?;
         if resolved
             .iter()
             .any(|(message, existing, _)| message == &target && *existing == block)
@@ -502,7 +556,10 @@ pub fn plan_ops(
                 .get(index)
                 .map(|call| call.arguments.clone())
                 .unwrap_or_default(),
-            BlockSelector::Output | BlockSelector::ToolResult { .. } => message.content().clone(),
+            BlockSelector::Output | BlockSelector::ToolResult { .. } => message.content(),
+            BlockSelector::Part { ref id, output } => {
+                message.part_field(id, output).unwrap_or_default()
+            }
         };
         let after = match op {
             BlockOp::Set { content, .. } => {
@@ -523,7 +580,7 @@ pub fn plan_ops(
         let red = block == BlockSelector::Output && message.role != Role::Tool;
         plan.ops.push(PlannedOp {
             message: target,
-            block,
+            block: block.clone(),
             label: block_label(block),
             before_hash: digest(&before),
             after_hash: digest(after.as_deref().unwrap_or_default()),
@@ -930,6 +987,89 @@ mod tests {
         assert!(
             error.to_string().contains("整条删"),
             "报错要说清怎么走：{error}"
+        );
+    }
+
+    /// 按 part id 改：删掉一个调用之后，另一个块的 id 不变，改的还是它（D257）。
+    #[test]
+    fn part_selector_survives_a_deleted_neighbour() {
+        let session = SessionId::new();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 1),
+            vec![
+                OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}"),
+                OutgoingToolCall::new("c2", "read_file", "{\"path\":\"b\"}"),
+            ],
+            8,
+            0,
+            LogicalClock::new(1),
+        );
+        let mut unit = AtomicUnit::tool_pair(head).unwrap();
+        let unit_id = unit.id.clone();
+        for (index, call) in ["c1", "c2"].iter().enumerate() {
+            let result = Message::tool_result(
+                MessageId::new(session, 2 + index as u64),
+                *call,
+                "内容",
+                2,
+                0,
+                LogicalClock::new(2 + index as u64),
+            )
+            .with_unit(unit_id.clone());
+            unit.add_result(result).unwrap();
+        }
+        let second = unit.messages[0].tool_calls()[1].part.clone();
+
+        // 把第一个调用连同它的结果摘掉（模拟"删了一块"），第二个的 id 不变。
+        let mut edited = unit.clone();
+        edited.messages[0].set_tool_calls(vec![OutgoingToolCall::new(
+            "c2",
+            "read_file",
+            "{\"path\":\"b\"}",
+        )]);
+        edited
+            .messages
+            .retain(|message| message.tool_call_id.as_deref() != Some("c1"));
+        assert_eq!(
+            edited.messages[0].tool_calls()[0].part,
+            second,
+            "留下的那一块 id 不该变"
+        );
+
+        let selector = BlockSelector::parse(&format!("part:{second}")).unwrap();
+        assert_eq!(
+            selector,
+            BlockSelector::Part {
+                id: second.clone(),
+                output: false
+            }
+        );
+        let request = EditRequest::new(unit_id, selector, String::from("{\"path\":\"c\"}"));
+        let outcome = apply_edit(&mut edited, &request).unwrap();
+        assert_eq!(outcome.block, format!("part:{second}"));
+        assert_eq!(
+            edited.messages[0].tool_calls()[0].arguments,
+            "{\"path\":\"c\"}"
+        );
+    }
+
+    /// 找不到的 part id 要报出来，不能悄悄改到别的块上。
+    #[test]
+    fn part_selector_refuses_an_unknown_id() {
+        let mut unit = pair_with_result();
+        let request = EditRequest::new(
+            unit.id.clone(),
+            BlockSelector::Part {
+                id: "p99".to_string(),
+                output: false,
+            },
+            String::from("x"),
+        );
+        let error = apply_edit(&mut unit, &request).unwrap_err();
+        assert!(matches!(error, EditError::NoSuchPart { .. }), "{error}");
+        assert_eq!(
+            unit.messages[0].tool_calls()[0].arguments,
+            "{\"path\":\"a\"}"
         );
     }
 

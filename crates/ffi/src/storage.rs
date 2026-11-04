@@ -787,6 +787,16 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 // 思考块（D158）：以前只存不发，界面上根本看不到它——
                                 // "存了但看不见"正是用户最反感的那种。这里带出去。
                                 "reasoning": message.reasoning(),
+                                // 块清单（D257）：编辑按 `part:p3` 定位，删一个调用不会
+                                // 让后面的块错位。只给 id 与种类，内容还在上面那几个字段里。
+                                "parts": message
+                                    .parts()
+                                    .iter()
+                                    .map(|part| json!({
+                                        "id": part.id(),
+                                        "kind": part.kind(),
+                                    }))
+                                    .collect::<Vec<_>>(),
                                 // 工具调用的参数原文：增强编辑要能在界面上指出"改的是哪一块"，
                                 // 只给个数是不够的。
                                 "tool_call_args": message
