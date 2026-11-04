@@ -91,7 +91,10 @@ fn migration_v4_to_v5_keeps_rows_and_zeroes_counts() {
         );
         let (content, count, active): (String, i64, i64) = conn
             .query_row(
-                "SELECT content, version_count, version_active FROM messages WHERE id = 'm1'",
+                "SELECT COALESCE((SELECT json_extract(body, '$.text') FROM message_parts
+                                   WHERE message_id = 'm1' AND kind = 'text' ORDER BY ord LIMIT 1), ''),
+                        version_count, version_active
+                   FROM messages WHERE id = 'm1'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )

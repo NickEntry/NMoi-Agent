@@ -180,15 +180,20 @@ impl Storage {
                 "消息 {message_id} 没有第 {version_no} 版"
             )));
         }
-        tx.execute(
-            "UPDATE messages SET content = ?1
-             WHERE id = ?2 AND version_active = ?3
-               AND EXISTS (
-                   SELECT 1 FROM message_versions
-                   WHERE message_id = ?2 AND version_no = ?3 AND active_view = 'edited'
-               )",
-            params![tooledit_message, id, version_no],
-        )?;
+        let showing_edited: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM messages WHERE id = ?1 AND version_active = ?2
+                   AND EXISTS (
+                       SELECT 1 FROM message_versions
+                       WHERE message_id = ?1 AND version_no = ?2 AND active_view = 'edited'
+                   )",
+                params![id, version_no],
+                |row| row.get(0),
+            )
+            .ok();
+        if showing_edited.is_some() {
+            crate::parts::set_part_text(&tx, &id, "text", tooledit_message)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -247,11 +252,11 @@ impl Storage {
             params![reasoning, id, active],
         )?;
         tx.execute(
-            "UPDATE messages SET content = ?1, tokens = ?2, reasoning = ?3,
-                                 revision = revision + 1
-             WHERE id = ?4",
-            params![text, nmoi_core::estimate_tokens(text), reasoning, id],
+            "UPDATE messages SET tokens = ?1, revision = revision + 1 WHERE id = ?2",
+            params![nmoi_core::estimate_tokens(text), id],
         )?;
+        crate::parts::set_part_text(&tx, &id, "text", text)?;
+        crate::parts::set_part_text(&tx, &id, "reasoning", reasoning.unwrap_or_default())?;
         tx.commit()?;
         Ok(())
     }
@@ -349,8 +354,15 @@ impl Storage {
         )?;
         // 切版本 = 连思考一起切（D250）：只换正文的话，屏幕上会是"这一版的话 + 上一版的思考"。
         tx.execute(
-            "UPDATE messages SET version_active = ?1, content = ?2, reasoning = ?3 WHERE id = ?4",
-            params![version_no, text, reasoning, id],
+            "UPDATE messages SET version_active = ?1 WHERE id = ?2",
+            params![version_no, id],
+        )?;
+        crate::parts::set_part_text(&tx, &id, "text", &text)?;
+        crate::parts::set_part_text(
+            &tx,
+            &id,
+            "reasoning",
+            reasoning.as_deref().unwrap_or_default(),
         )?;
         tx.commit()?;
         Ok(text)
@@ -403,10 +415,16 @@ impl Storage {
             ),
             params![text, id, version_no],
         )?;
-        tx.execute(
-            "UPDATE messages SET content = ?1 WHERE id = ?2 AND version_active = ?3",
-            params![text, id, version_no],
-        )?;
+        let showing: Option<i64> = tx
+            .query_row(
+                "SELECT version_active FROM messages WHERE id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .ok();
+        if showing == Some(version_no) {
+            crate::parts::set_part_text(&tx, &id, "text", text)?;
+        }
         tx.commit()?;
         Ok(text.to_string())
     }
@@ -495,9 +513,10 @@ impl Storage {
         );
 
         tx.execute(
-            "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3 WHERE id = ?4",
-            params![new_count, new_active, displayed, id],
+            "UPDATE messages SET version_count = ?1, version_active = ?2 WHERE id = ?3",
+            params![new_count, new_active, id],
         )?;
+        crate::parts::set_part_text(&tx, &id, "text", &displayed)?;
         tx.commit()?;
         Ok((new_count, new_active, displayed))
     }
@@ -613,13 +632,14 @@ pub(crate) fn seed_first_version(
     tx: &Transaction<'_>,
     message_id: &str,
 ) -> Result<bool, StorageError> {
-    let (count, content): (i64, String) = tx
+    let count: i64 = tx
         .query_row(
-            "SELECT version_count, content FROM messages WHERE id = ?1",
+            "SELECT version_count FROM messages WHERE id = ?1",
             [message_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .map_err(|_| StorageError::Inconsistent(format!("消息 {message_id} 不存在")))?;
+    let content = crate::parts::text_of(tx, message_id)?;
     if count > 0 {
         return Ok(false);
     }
@@ -685,11 +705,11 @@ fn push_version(
     // 思考跟着这一版走（D250）：`NULL` = 这一版没有思考，那就把旧的那份清掉——
     // 留着它，屏幕上就是"新正文 + 旧思考"。
     tx.execute(
-        "UPDATE messages SET version_count = ?1, version_active = ?2, content = ?3,
-                            reasoning = ?4
-         WHERE id = ?5",
-        params![count, active, origin_message, reasoning, id],
+        "UPDATE messages SET version_count = ?1, version_active = ?2 WHERE id = ?3",
+        params![count, active, id],
     )?;
+    crate::parts::set_part_text(tx, id, "text", origin_message)?;
+    crate::parts::set_part_text(tx, id, "reasoning", reasoning.unwrap_or_default())?;
     Ok((active, count))
 }
 

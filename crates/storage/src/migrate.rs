@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::schema;
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 pub struct Migration {
     pub version: i64,
@@ -70,6 +70,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 14,
         sql: schema::SCHEMA_V14,
+    },
+    Migration {
+        version: 15,
+        sql: schema::SCHEMA_V15,
     },
 ];
 
@@ -183,6 +187,59 @@ mod tests {
         assert_eq!(meta_version(&conn).unwrap(), Some(SCHEMA_VERSION));
         // 幂等
         assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// v14 → v15：三列回填成 blocks，顺序是**思考 → 正文 → 工具**（D256）。
+    #[test]
+    fn v14_rows_become_parts_in_display_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        assert_eq!(migrate(&mut conn, 14).unwrap(), 14);
+        conn.execute(
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
+             VALUES ('c1', 't', 0, 0, 14, 'dev')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                  content, reasoning, form, tokens, created_at, logical_clock, tool_calls)
+             VALUES ('m1', 'c1', 'u1', 'tool_pair', 1, 1, 'assistant', 'tool_call',
+                     '我先看看', '想一想', 'F1', 1, 0, 1,
+                     '[{\"id\":\"c1\",\"name\":\"read_file\",\"arguments\":\"{}\"}]')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+
+        let mut stmt = conn
+            .prepare("SELECT part_id, ord, kind, body FROM message_parts WHERE message_id = 'm1' ORDER BY ord")
+            .unwrap();
+        let rows: Vec<(String, i64, String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        let kinds: Vec<&str> = rows.iter().map(|(_, _, kind, _)| kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["reasoning", "text", "tool"],
+            "顺序就是界面上从上到下"
+        );
+        assert_eq!(rows[1].3, r#"{"text":"我先看看"}"#);
+        assert_eq!(rows[2].0, "p3", "工具块的 id 接在后面");
+        assert!(rows[2].3.contains("read_file"));
+
+        // 三列已经删掉：再插一条不带它们的消息应该成功。
+        conn.execute(
+            "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                  form, tokens, created_at, logical_clock)
+             VALUES ('m2', 'c1', 'u2', 'turn', 1, 2, 'user', 'history', 'F1', 1, 0, 2)",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]

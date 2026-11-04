@@ -250,6 +250,73 @@ impl Part {
     }
 }
 
+impl Part {
+    /// 落库的那一份（`message_parts.body`）：只放这一种块自己的字段。
+    pub fn body(&self) -> serde_json::Value {
+        match self {
+            Part::Text { text, .. } | Part::Reasoning { text, .. } => {
+                serde_json::json!({ "text": text })
+            }
+            Part::Notice { code, text, .. } => serde_json::json!({ "code": code, "text": text }),
+            Part::Tool(tool) => serde_json::json!({
+                "call_id": tool.call_id,
+                "name": tool.name,
+                "arguments": tool.arguments,
+            }),
+            Part::Image {
+                attachment,
+                mime,
+                size,
+                ..
+            } => serde_json::json!({ "attachment": attachment, "mime": mime, "size": size }),
+        }
+    }
+
+    /// 从库里那一行拼回来。`kind` 不认识就报错——猜一种块比报错危险得多。
+    pub fn from_body(part_id: String, kind: &str, body: &str) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(body)
+            .map_err(|error| format!("块 {part_id} 的 body 不是合法 JSON：{error}"))?;
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(|slot| slot.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        match kind {
+            "text" => Ok(Part::Text {
+                id: part_id,
+                text: text("text"),
+            }),
+            "reasoning" => Ok(Part::Reasoning {
+                id: part_id,
+                text: text("text"),
+            }),
+            "notice" => Ok(Part::Notice {
+                id: part_id,
+                code: text("code"),
+                text: text("text"),
+            }),
+            "tool" => Ok(Part::Tool(ToolPart {
+                part: part_id,
+                call_id: text("call_id"),
+                name: text("name"),
+                arguments: text("arguments"),
+            })),
+            "image" => Ok(Part::Image {
+                id: part_id,
+                attachment: text("attachment"),
+                mime: text("mime"),
+                size: value
+                    .get("size")
+                    .and_then(|slot| slot.as_u64())
+                    .unwrap_or(0),
+            }),
+            other => Err(format!("不认识的块类型 `{other}`")),
+        }
+    }
+}
+
 /// 一次工具调用那一块。
 ///
 /// `part` 与 `call_id` 是两样东西：前者是"这条消息里的第几块"，后者是模型给的调用 id
@@ -428,8 +495,24 @@ impl Message {
             .collect()
     }
 
+    /// 下一个 part id：取现有里最大的号 +1，**不是** `len()+1`。
+    ///
+    /// 用长度算的话，删掉中间一块之后新加的块会拿到一个已经用过的号，
+    /// 而 part id 是编辑与审计的定位手段（D255）——重号等于把两块认成一块。
     fn next_part_id(&self) -> String {
-        format!("p{}", self.parts.len() + 1)
+        let highest = self
+            .parts
+            .iter()
+            .filter_map(|part| part.id().strip_prefix('p'))
+            .filter_map(|digits| digits.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        format!("p{}", highest + 1)
+    }
+
+    /// 整份换掉（读库那条路用）。
+    pub fn set_parts(&mut self, parts: Vec<Part>) {
+        self.parts = parts;
     }
 
     /// 换掉正文：有 `Text` 块就改第一块，没有就补一块；空串等于把这一块去掉。

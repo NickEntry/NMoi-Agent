@@ -340,3 +340,54 @@ ALTER TABLE conversations DROP COLUMN workspace_mode;
 pub const SCHEMA_V14: &str = r#"
 ALTER TABLE message_versions ADD COLUMN reasoning TEXT;
 "#;
+
+/// v15（D256）：**消息的正文 / 思考 / 工具调用改成一张 parts 表**。
+///
+/// 为什么不是三列继续躺着：part 是编辑与版本定位的最小单位（`p3` 这种 id 稳定、不复用），
+/// 而"第几个工具调用"这种序号轴删一个就全错位。库里存的就是界面上画的那几块。
+///
+/// 迁移顺序：先建表 → 回填（思考 → 正文 → 工具，与内存里的顺序一致）→ 再删列。
+/// 删列放在最后：回填读的就是这三列，先删就读不到了。
+pub const SCHEMA_V15: &str = r#"
+CREATE TABLE message_parts (
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    part_id    TEXT NOT NULL,
+    ord        INTEGER NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('text','reasoning','tool','image','notice')),
+    body       TEXT NOT NULL,
+    PRIMARY KEY (message_id, part_id),
+    UNIQUE (message_id, ord)
+);
+
+CREATE INDEX message_parts_by_message ON message_parts(message_id, ord);
+
+INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+SELECT id, 'p1', 0, 'reasoning', json_object('text', reasoning)
+  FROM messages WHERE reasoning IS NOT NULL AND trim(reasoning) <> '';
+
+INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+SELECT id,
+       CASE WHEN reasoning IS NOT NULL AND trim(reasoning) <> '' THEN 'p2' ELSE 'p1' END,
+       CASE WHEN reasoning IS NOT NULL AND trim(reasoning) <> '' THEN 1 ELSE 0 END,
+       'text', json_object('text', content)
+  FROM messages WHERE trim(content) <> '';
+
+INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+SELECT m.id,
+       'p' || (b.n + j.key + 1),
+       b.n + j.key,
+       'tool',
+       json_object('call_id', json_extract(j.value, '$.id'),
+                   'name', json_extract(j.value, '$.name'),
+                   'arguments', json_extract(j.value, '$.arguments'))
+  FROM messages m
+  JOIN (SELECT id,
+               (CASE WHEN reasoning IS NOT NULL AND trim(reasoning) <> '' THEN 1 ELSE 0 END)
+             + (CASE WHEN trim(content) <> '' THEN 1 ELSE 0 END) AS n
+          FROM messages) b ON b.id = m.id
+  JOIN json_each(CASE WHEN json_valid(m.tool_calls) THEN m.tool_calls ELSE '[]' END) j;
+
+ALTER TABLE messages DROP COLUMN content;
+ALTER TABLE messages DROP COLUMN reasoning;
+ALTER TABLE messages DROP COLUMN tool_calls;
+"#;

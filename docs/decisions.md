@@ -1082,3 +1082,34 @@ v15 的表、折行、版本 `parts_json`、编辑按 part id 都在后面的批
 
 **测试**：`parts_are_the_only_source_of_text_reasoning_and_calls`（投影与顺序）、
 `set_text_replaces_instead_of_appending`（改正文是替换，不是追加）。
+
+## D256 schema v15：正文 / 思考 / 工具调用搬进 `message_parts`（2026-11-04）
+
+D255 把内存里的消息改成了 parts，这一条把**库**也换过去：`messages` 上的 `content` /
+`reasoning` / `tool_calls` 三列删掉，改由 `message_parts(message_id, part_id, ord, kind, body)` 存。
+
+**为什么删列而不是留着**：留着就是两份答案（铁律②）。旧版应用打开新库会被
+`SchemaError::SchemaTooNew` 挡住，不会读到半份数据——所以"回滚方便"这个理由不成立。
+
+**迁移的顺序**（`SCHEMA_V15`）：建表 → 回填 → 删列。回填读的就是那三列，先删就读不到了。
+回填的块顺序是 **思考 → 正文 → 工具**，与内存里 `set_reasoning` / `set_text` 的插入位置一致；
+`part_id` 按 `p1..pn` 顺排，工具块的 ord 接在正文后面。
+
+**写入路径收敛成一个函数**（`parts::write_parts`）：追加单元、块级编辑、切版本三条路都走它。
+三条各写一份 INSERT 迟早对不上——v11 那次 attachments 重建就是先例。
+
+**切版本现在改的是块**：`versions.rs` 里那七处 `UPDATE messages SET content = ...` 全改成
+`parts::set_part_text`（没有正文块就补一块，`ord` 按"思考在前、正文在后"挤位）。
+`seed_first_version` 读正文也改成读 `text` 块。
+
+**读路径**：`load_units` / `load_unit_in` 先取消息，再一次批量取 parts 挂上（不是每条一次，
+那是 N+1）。`message_content` 与会话列表的 `last_text` 都改成从 `text` 块里取。
+
+**校验**：`check_malformed_tool_calls` 从"`messages.tool_calls` 是不是合法 JSON"改成
+"每一块的 `body` 是不是合法 JSON"；两个"配对不上"的查询改成 join `message_parts`。
+
+**代价**：一行的正文/思考/工具调用拆成了 1–N 行，读一条消息要多一次 join；
+换来的是 part id 稳定、编辑能按块定位、版本能带着工具块一起切（下一步）。
+
+**测试**：`v14_rows_become_parts_in_display_order`（回填顺序 + 三列确实删了）、
+storage 13 个测试二进制全绿（含 roundtrip / block_edit / versions / window）。

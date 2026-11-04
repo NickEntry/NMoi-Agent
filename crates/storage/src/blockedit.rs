@@ -186,18 +186,11 @@ impl Storage {
                 )?;
             }
 
-            let calls = serde_json::to_string(&message.outgoing_calls())
-                .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
             let changed = tx.execute(
-                "UPDATE messages
-                 SET content = ?1, reasoning = ?2, tokens = ?3, revision = ?4, tool_calls = ?5
-                 WHERE id = ?6 AND conv_id = ?7",
+                "UPDATE messages SET tokens = ?1, revision = ?2 WHERE id = ?3 AND conv_id = ?4",
                 params![
-                    message.content(),
-                    message.reasoning(),
                     message.tokens,
                     message.revision,
-                    calls,
                     id.to_string(),
                     session.to_string(),
                 ],
@@ -207,6 +200,7 @@ impl Storage {
                     "消息 {id} 不存在或不属于会话 {session}"
                 )));
             }
+            crate::parts::write_parts(&tx, &message)?;
 
             // 3) 审计（`edits` 表）与 undo 日志：一块一行。
             for op in list {

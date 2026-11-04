@@ -17,6 +17,7 @@ pub mod blockedit;
 pub mod calibrate;
 pub mod heal;
 pub mod migrate;
+pub mod parts;
 pub mod recover;
 pub mod repo;
 pub mod schema;
@@ -514,10 +515,10 @@ mod tests {
             .conn
             .execute(
                 "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role,
-                                      source, content, form, tokens, created_at, logical_clock,
-                                      archived_ref, tool_calls)
-                 VALUES (?1, ?2, ?3, 'turn', 1, 99, 'assistant', 'history', 'ptr', 'F4', 1,
-                         1700000000000, 99, 'ref#aaaaaaaaaaaaaaaa', '[]')",
+                                      source, form, tokens, created_at, logical_clock,
+                                      archived_ref)
+                 VALUES (?1, ?2, ?3, 'turn', 1, 99, 'assistant', 'history', 'F4', 1,
+                         1700000000000, 99, 'ref#aaaaaaaaaaaaaaaa')",
                 rusqlite::params![
                     format!("{session}:99"),
                     session.to_string(),
