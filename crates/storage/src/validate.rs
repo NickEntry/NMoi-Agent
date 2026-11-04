@@ -215,9 +215,13 @@ fn check_orphans(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Error> {
     Ok(issues)
 }
 
+/// 块的 body 必须是合法 JSON（D256：工具调用从 `messages.tool_calls` 搬进了 `message_parts.body`）。
 fn check_malformed_tool_calls(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Error> {
-    let mut stmt = conn
-        .prepare("SELECT id, unit_id, tool_calls FROM messages WHERE json_valid(tool_calls) = 0")?;
+    let mut stmt = conn.prepare(
+        "SELECT p.message_id, m.unit_id, p.body
+           FROM message_parts p JOIN messages m ON m.id = p.message_id
+          WHERE json_valid(p.body) = 0",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -227,14 +231,14 @@ fn check_malformed_tool_calls(conn: &Connection) -> Result<Vec<Issue>, rusqlite:
     })?;
     let mut issues = Vec::new();
     for row in rows {
-        let (id, unit_id, calls) = row?;
+        let (id, unit_id, body) = row?;
         issues.push(Issue::new(
             IssueCode::MalformedToolCalls,
             Severity::Blocking,
-            "messages",
+            "message_parts",
             id.clone(),
             Some(unit_id),
-            format!("消息 {id} 的 tool_calls 不是合法 JSON: {calls}"),
+            format!("消息 {id} 有一块的 body 不是合法 JSON: {body}"),
             Repair::QuarantineUnit,
         ));
     }
@@ -270,10 +274,11 @@ fn check_unpaired_results(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Err
          FROM messages r
          WHERE r.role = 'tool' AND NOT EXISTS (
              SELECT 1
-             FROM messages a, json_each(CASE WHEN json_valid(a.tool_calls) THEN a.tool_calls ELSE '[]' END) j
+             FROM messages a
+             JOIN message_parts p ON p.message_id = a.id AND p.kind = 'tool'
              WHERE a.unit_id = r.unit_id
                AND a.role = 'assistant'
-               AND json_extract(j.value, '$.id') = r.tool_call_id
+               AND json_extract(p.body, '$.call_id') = r.tool_call_id
          )",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -304,14 +309,15 @@ fn check_unpaired_results(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Err
 
 fn check_unpaired_calls(conn: &Connection) -> Result<Vec<Issue>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT a.id, a.unit_id, json_extract(j.value, '$.id')
-         FROM messages a, json_each(CASE WHEN json_valid(a.tool_calls) THEN a.tool_calls ELSE '[]' END) j
+        "SELECT a.id, a.unit_id, json_extract(p.body, '$.call_id')
+         FROM messages a
+         JOIN message_parts p ON p.message_id = a.id AND p.kind = 'tool'
          WHERE a.role = 'assistant'
            AND a.unit_kind = 'tool_pair'
            AND NOT EXISTS (
                SELECT 1 FROM messages r
                WHERE r.unit_id = a.unit_id
-                 AND r.tool_call_id = json_extract(j.value, '$.id')
+                 AND r.tool_call_id = json_extract(p.body, '$.call_id')
            )",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -585,11 +591,12 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema;
 
     fn fresh() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(schema::SCHEMA_V1).unwrap();
+        // 跑完整条迁移链：夹具要造的是"现在的库"，不是 v1 的库。
+        // 只建 SCHEMA_V1 的话，`messages` 还带着 content 列、也还没有 `message_parts`。
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::migrate::migrate(&mut conn, crate::migrate::SCHEMA_VERSION).unwrap();
         conn.execute(
             "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
              VALUES ('c1', 't', 1700000000000, 1700000000000, 1, 'test')",
@@ -602,9 +609,15 @@ mod tests {
     fn insert_message(conn: &Connection, id: &str, seq: i64, clock: i64) {
         conn.execute(
             "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                                  content, form, tokens, created_at, logical_clock, tool_calls)
-             VALUES (?1, 'c1', ?2, 'turn', 1, ?3, 'user', 'history', 'hi', 'F1', 1, 1700000000000, ?4, '[]')",
+                                  form, tokens, created_at, logical_clock)
+             VALUES (?1, 'c1', ?2, 'turn', 1, ?3, 'user', 'history', 'F1', 1, 1700000000000, ?4)",
             rusqlite::params![id, format!("u:c1:{seq}"), seq, clock],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+             VALUES (?1, 'p1', 0, 'text', '{\"text\":\"hi\"}')",
+            rusqlite::params![id],
         )
         .unwrap();
     }
@@ -626,9 +639,9 @@ mod tests {
         let conn = fresh();
         let err = conn.execute(
             "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                                  content, form, tokens, created_at, logical_clock, tool_calls)
-             VALUES ('ghost:1', 'ghost', 'u:ghost:1', 'turn', 1, 1, 'user', 'history', 'hi', 'F1',
-                     1, 1700000000000, 1, '[]')",
+                                  form, tokens, created_at, logical_clock)
+             VALUES ('ghost:1', 'ghost', 'u:ghost:1', 'turn', 1, 1, 'user', 'history', 'F1',
+                     1, 1700000000000, 1)",
             [],
         );
         assert!(err.is_err(), "指向不存在会话的消息必须被外键挡住");
@@ -640,9 +653,9 @@ mod tests {
         conn.pragma_update(None, "foreign_keys", false).unwrap();
         conn.execute(
             "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                                  content, form, tokens, created_at, logical_clock, tool_calls)
-             VALUES ('ghost:1', 'ghost', 'u:ghost:1', 'turn', 1, 1, 'user', 'history', 'hi', 'F1',
-                     1, 1700000000000, 1, '[]')",
+                                  form, tokens, created_at, logical_clock)
+             VALUES ('ghost:1', 'ghost', 'u:ghost:1', 'turn', 1, 1, 'user', 'history', 'F1',
+                     1, 1700000000000, 1)",
             [],
         )
         .unwrap();
@@ -675,9 +688,9 @@ mod tests {
         let conn = fresh();
         conn.execute(
             "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                                  content, form, tokens, created_at, logical_clock, archived_ref, tool_calls)
-             VALUES ('c1:1', 'c1', 'u:c1:1', 'turn', 1, 1, 'assistant', 'history', 'ptr', 'F4', 1,
-                     1700000000000, 1, 'ref#aaaaaaaaaaaaaaaa', '[]')",
+                                  form, tokens, created_at, logical_clock, archived_ref)
+             VALUES ('c1:1', 'c1', 'u:c1:1', 'turn', 1, 1, 'assistant', 'history', 'F4', 1,
+                     1700000000000, 1, 'ref#aaaaaaaaaaaaaaaa')",
             [],
         )
         .unwrap();
@@ -693,9 +706,9 @@ mod tests {
         let conn = fresh();
         conn.execute(
             "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                                  content, form, tokens, created_at, logical_clock, tool_calls)
-             VALUES ('c1:1', 'c1', 'u:c1:1', 'turn', 1, 1, 'user', 'history', 'hi', 'F1', 1,
-                     0, 1, '[]')",
+                                  form, tokens, created_at, logical_clock)
+             VALUES ('c1:1', 'c1', 'u:c1:1', 'turn', 1, 1, 'user', 'history', 'F1', 1,
+                     0, 1)",
             [],
         )
         .unwrap();

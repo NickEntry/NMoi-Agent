@@ -16,9 +16,7 @@ use nmoi_core::divider::{self, ContextWindow, Divider, DividerId, DividerKind};
 use nmoi_core::edit::EditOutcome;
 use nmoi_core::edit::{apply_edit, BlockSelector, EditRequest};
 use nmoi_core::ids::{ArchiveRef, MessageId, SessionId, UnitId};
-use nmoi_core::message::{
-    AtomicUnit, ContentForm, Message, OutgoingToolCall, Role, UnitError, UnitKind,
-};
+use nmoi_core::message::{AtomicUnit, ContentForm, Message, Role, UnitError, UnitKind};
 use nmoi_core::source::SourceTag;
 
 use crate::Storage;
@@ -172,7 +170,11 @@ impl Storage {
     pub fn message_content(&self, message: &MessageId) -> Result<String, StorageError> {
         self.conn
             .query_row(
-                "SELECT content FROM messages WHERE id = ?1",
+                "SELECT COALESCE(
+                     (SELECT json_extract(p.body, '$.text') FROM message_parts p
+                       WHERE p.message_id = m.id AND p.kind = 'text' ORDER BY p.ord LIMIT 1),
+                     '')
+                   FROM messages m WHERE m.id = ?1",
                 [message.to_string()],
                 |row| row.get(0),
             )
@@ -594,7 +596,10 @@ impl Storage {
                     (SELECT COUNT(*) FROM messages WHERE conv_id = c.id AND incomplete = 1) AS incomplete,
                     (SELECT seq FROM messages WHERE conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last_seq,
                     (SELECT role FROM messages WHERE conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last_role,
-                    (SELECT content FROM messages WHERE conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last_text,
+                    (SELECT json_extract(p.body, '$.text') FROM message_parts p
+                      WHERE p.message_id = (SELECT id FROM messages WHERE conv_id = c.id
+                                             ORDER BY seq DESC LIMIT 1)
+                      ORDER BY p.ord LIMIT 1) AS last_text,
                     c.model,
                     c.assistant_id
              FROM conversations c
@@ -748,17 +753,13 @@ impl Storage {
         }
 
         for message in &unit.messages {
-            let calls = serde_json::to_string(&message.outgoing_calls())
-                .map_err(|e| StorageError::Inconsistent(e.to_string()))?;
             tx.execute(
                 "INSERT INTO messages(
                      id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                     content, reasoning, form, tokens, created_at, logical_clock, archived_ref,
-                     protected, pinned, locked, revision, tool_calls, tool_call_id, incomplete)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                     form, tokens, created_at, logical_clock, archived_ref,
+                     protected, pinned, locked, revision, tool_call_id, incomplete)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
                  ON CONFLICT(id) DO UPDATE SET
-                     content = excluded.content,
-                     reasoning = excluded.reasoning,
                      form = excluded.form,
                      tokens = excluded.tokens,
                      logical_clock = excluded.logical_clock,
@@ -767,7 +768,6 @@ impl Storage {
                      pinned = excluded.pinned,
                      locked = excluded.locked,
                      revision = excluded.revision,
-                     tool_calls = excluded.tool_calls,
                      tool_call_id = excluded.tool_call_id,
                      incomplete = excluded.incomplete,
                      unit_closed = excluded.unit_closed",
@@ -780,8 +780,6 @@ impl Storage {
                     message.id.seq() as i64,
                     message.role.as_str(),
                     message.source.as_str(),
-                    message.content(),
-                    message.reasoning(),
                     message.form.to_string(),
                     message.tokens,
                     message.created_at,
@@ -791,11 +789,11 @@ impl Storage {
                     if message.pinned { 1 } else { 0 },
                     if message.locked { 1 } else { 0 },
                     message.revision,
-                    calls,
                     message.tool_call_id,
                     if message.incomplete { 1 } else { 0 },
                 ],
             )?;
+            crate::parts::write_parts(&tx, message)?;
         }
 
         // 同一单元的所有行统一闭合状态。
@@ -822,15 +820,32 @@ impl Storage {
 
     pub fn load_units(&self, session: SessionId) -> Result<Vec<AtomicUnit>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source, content, reasoning,
+            "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                     form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                    locked, revision, tool_calls, tool_call_id, incomplete
+                    locked, revision, tool_call_id, incomplete
              FROM messages WHERE conv_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([session.to_string()], row_to_message)?;
-        let mut units: Vec<AtomicUnit> = Vec::new();
+        let mut messages: Vec<Message> = Vec::new();
         for row in rows {
-            let message = row?;
+            messages.push(row?);
+        }
+        drop(stmt);
+        let parts = crate::parts::read_parts(
+            &mut self.conn.prepare(
+                "SELECT p.message_id, p.part_id, p.kind, p.body
+                   FROM message_parts p JOIN messages m ON m.id = p.message_id
+                  WHERE m.conv_id = ?1 ORDER BY p.message_id, p.ord",
+            )?,
+            &session.to_string(),
+        )?;
+        for message in &mut messages {
+            if let Some(list) = parts.get(&message.id.to_string()) {
+                message.set_parts(list.clone());
+            }
+        }
+        let mut units: Vec<AtomicUnit> = Vec::new();
+        for message in messages {
             match units.last_mut() {
                 Some(unit) if unit.id == message.unit_id => unit.messages.push(message),
                 _ => {
@@ -1023,20 +1038,14 @@ impl Storage {
             .iter()
             .find(|message| message.id == outcome.message_id)
             .ok_or_else(|| StorageError::Inconsistent("编辑后的消息不在单元里".into()))?;
-        let calls = serde_json::to_string(&message.outgoing_calls())
-            .map_err(|e| StorageError::Inconsistent(e.to_string()))?;
-
         let tx = self.conn.transaction()?;
         let changed = tx.execute(
             "UPDATE messages
-             SET content = ?1, reasoning = ?2, tokens = ?3, revision = ?4, tool_calls = ?5
-             WHERE id = ?6 AND conv_id = ?7",
+             SET tokens = ?1, revision = ?2
+             WHERE id = ?3 AND conv_id = ?4",
             params![
-                message.content(),
-                message.reasoning(),
                 message.tokens,
                 message.revision,
-                calls,
                 message.id.to_string(),
                 session.to_string(),
             ],
@@ -1047,6 +1056,7 @@ impl Storage {
                 message.id, session
             )));
         }
+        crate::parts::write_parts(&tx, message)?;
         tx.execute(
             "INSERT INTO edits(id, conv_id, unit_id, message_id, block, before_hash, after_hash,
                                tokens_before, tokens_after, revision, at)
@@ -1383,9 +1393,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     let unit_text: String = row.get(1)?;
     let role_text: String = row.get(5)?;
     let source_text: String = row.get(6)?;
-    let form_text: String = row.get(9)?;
-    let ref_text: Option<String> = row.get(13)?;
-    let calls_text: String = row.get(18)?;
+    let form_text: String = row.get(7)?;
+    let ref_text: Option<String> = row.get(11)?;
 
     let parse_err = |what: &str, value: String| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -1413,32 +1422,26 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
         Some(text) => Some(ArchiveRef::parse(&text).map_err(|_| parse_err("archive_ref", text))?),
         None => None,
     };
-    let tool_calls: Vec<OutgoingToolCall> =
-        serde_json::from_str(&calls_text).map_err(|_| parse_err("tool_calls", calls_text))?;
-
-    // 列 → parts（D255）：正文、思考、工具调用各成一块，顺序与界面上从上到下一致。
-    let content: String = row.get(7)?;
-    let reasoning: Option<String> = row.get(8)?;
+    // parts 由调用方一次批量查出来再挂上（`parts_of_*`）：一条消息一次查询就是 N+1，
+    // 滚动会话时会一顿一顿的。
     let mut message = Message::text(
         id,
         role,
         source,
-        content,
-        row.get::<_, i64>(10)? as u32,
-        row.get(11)?,
-        LogicalClock::new(row.get::<_, i64>(12)? as u64),
+        String::new(),
+        row.get::<_, i64>(8)? as u32,
+        row.get(9)?,
+        LogicalClock::new(row.get::<_, i64>(10)? as u64),
     )
     .with_unit(unit_id);
-    message.set_reasoning(reasoning);
-    message.set_tool_calls(tool_calls);
     message.form = form;
     message.archived_ref = archived_ref;
-    message.protected = row.get::<_, i64>(14)? != 0;
-    message.pinned = row.get::<_, i64>(15)? != 0;
-    message.locked = row.get::<_, i64>(16)? != 0;
-    message.revision = row.get::<_, i64>(17)? as u32;
-    message.tool_call_id = row.get(19)?;
-    message.incomplete = row.get::<_, i64>(20)? != 0;
+    message.protected = row.get::<_, i64>(12)? != 0;
+    message.pinned = row.get::<_, i64>(13)? != 0;
+    message.locked = row.get::<_, i64>(14)? != 0;
+    message.revision = row.get::<_, i64>(15)? as u32;
+    message.tool_call_id = row.get(16)?;
+    message.incomplete = row.get::<_, i64>(17)? != 0;
     Ok(message)
 }
 
@@ -1482,15 +1485,29 @@ fn row_to_archive(row: &rusqlite::Row<'_>) -> Result<ArchiveEntry, rusqlite::Err
 
 fn load_unit_in(conn: &Connection, unit_id: &UnitId) -> Result<AtomicUnit, StorageError> {
     let mut stmt = conn.prepare(
-        "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source, content, reasoning,
+        "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                 form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                locked, revision, tool_calls, tool_call_id, incomplete
+                locked, revision, tool_call_id, incomplete
          FROM messages WHERE unit_id = ?1 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map([unit_id.to_string()], row_to_message)?;
     let mut messages = Vec::new();
     for row in rows {
         messages.push(row?);
+    }
+    drop(stmt);
+    let parts = crate::parts::read_parts(
+        &mut conn.prepare(
+            "SELECT p.message_id, p.part_id, p.kind, p.body
+               FROM message_parts p JOIN messages m ON m.id = p.message_id
+              WHERE m.unit_id = ?1 ORDER BY p.message_id, p.ord",
+        )?,
+        &unit_id.to_string(),
+    )?;
+    for message in &mut messages {
+        if let Some(list) = parts.get(&message.id.to_string()) {
+            message.set_parts(list.clone());
+        }
     }
     if messages.is_empty() {
         return Err(StorageError::Inconsistent(format!("单元 {unit_id} 不存在")));

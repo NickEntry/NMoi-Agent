@@ -394,8 +394,8 @@ mod tests {
             let tx = store.conn.transaction().unwrap();
             tx.execute(
                 "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role,
-                     source, content, form, tokens, created_at, logical_clock)
-                 VALUES ('half', ?1, 'u', 'turn', 1, 99, 'assistant', 'history', '半条', 'F1',
+                     source, form, tokens, created_at, logical_clock)
+                 VALUES ('half', ?1, 'u', 'turn', 1, 99, 'assistant', 'history', 'F1',
                      1, 0, 99)",
                 [session.to_string()],
             )
