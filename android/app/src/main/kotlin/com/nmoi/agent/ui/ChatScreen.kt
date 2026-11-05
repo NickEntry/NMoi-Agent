@@ -2409,7 +2409,33 @@ private fun ProcessGroupRow(
     }
 }
 
-/** 一个原子单元：`turn`（一条文本）或 `tool_pair`（assistant(tool_calls) + 全部 tool_result）。 */
+/**
+ * 一次工具往返的那张卡（D262）：圆角底色 + 左侧一个节点。
+ *
+ * 折行之后工具那半行从 `ProcessGroupRow` 里拆出来了（正文要单独一行），
+ * 拆出来就丢了那层壳——屏幕上只剩光秃秃几行。这里按同一形状补回去：
+ * 同一轮多次调用仍然在**一张卡**里，一行一次调用。
+ */
+@Composable
+private fun ToolCard(unit: ChatUnit, onOpen: (ToolCallArg) -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
+            ProcessNode(index = 0, last = true) {
+                ToolProcessRow(unit = unit, onOpen = onOpen)
+            }
+        }
+    }
+}
+
+/** 一个原子单元：`turn`（一条文本）或 `tool_pair`（assistant(tool_calls) + 全部 tool_result）。 *//** 一个原子单元：`turn`（一条文本）或 `tool_pair`（assistant(tool_calls) + 全部 tool_result）。 */
 @Composable
 private fun UnitBlock(
     unit: ChatUnit,
@@ -2465,7 +2491,9 @@ private fun UnitBlock(
             BrokenCard(declaration = broken.declaration, reason = broken.reason)
         }
         if (unit.isToolPair && slice != UnitSlice.TextOnly) {
-            ToolProcessRow(unit = unit, onOpen = { call -> onOpenTool(unit, call) })
+            // 旧版那个样子（D262）：圆角底色 + 左侧一个节点，工具行在里面。
+            // 折行之后这半行单独成行，`ProcessGroupRow` 那层壳没跟过来，这里补上。
+            ToolCard(unit = unit, onOpen = { call -> onOpenTool(unit, call) })
         } else {
             unit.messages.forEach { message ->
                 when {
@@ -2507,6 +2535,8 @@ private fun UnitBlock(
                             onOpenDoneCall = onOpenDoneCall,
                             finishedThinkingOpen = finishedThinkingOpen,
                             onToggleFinishedThinking = onToggleFinishedThinking,
+                            // 折行之后这一轮的动作行收在工具块后面（D262），这里不画。
+                            showActions = slice != UnitSlice.TextOnly,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -2931,6 +2961,11 @@ private fun AssistantMessage(
     /** 第 N 轮（已经收口的）思考展开没有。 */
     finishedThinkingOpen: (Int) -> Boolean = { false },
     onToggleFinishedThinking: (Int) -> Unit = {},
+    /**
+     * 动作行画不画在这一条里（D262）。折行之后一轮有正文也有工具：
+     * 正文那半行不画（动作行收在整个块的最后），整条消息只有正文时才在这里画。
+     */
+    showActions: Boolean = true,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -3020,19 +3055,21 @@ private fun AssistantMessage(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
-        MessageActionRow(
-            mine = false,
-            onCopy = {
-                putClipboard(context, "消息", message.content)
-                onCopied()
-            },
-            onShare = onShare,
-            onSelect = onLongPress,
-            onMore = onMore,
-            onRetry = onRetry,
-            retryNote = "重试这一轮",
-            versionControl = { VersionControl(message = message, onPick = onVersion) },
-        )
+        if (showActions) {
+            MessageActionRow(
+                mine = false,
+                onCopy = {
+                    putClipboard(context, "消息", message.content)
+                    onCopied()
+                },
+                onShare = onShare,
+                onSelect = onLongPress,
+                onMore = onMore,
+                onRetry = onRetry,
+                retryNote = "重试这一轮",
+                versionControl = { VersionControl(message = message, onPick = onVersion) },
+            )
+        }
     }
 }
 
