@@ -1214,3 +1214,27 @@ v2 文档里写 `index=` 直接拒（那等于把序号轴又抄一遍）。
 **测试**：`switching_versions_restores_tool_parts_too`（切回旧版工具块回来、切到新版走掉）、
 `v16_versions_gain_a_parts_snapshot`、`tool_blocks_use_part_ids_in_v2`、
 `v1_documents_still_parse`、`v2_document_refuses_index_tags`。
+
+## D260 迁移要能重复执行：加列挪到 Rust，事务里重读版本（2026-11-05）
+
+真机第一次打开 v17 时撞了：`迁移到版本 17 失败: duplicate column name: parts_json`。
+
+**根因**：`openStorageJson` 在四个地方被调（`ConversationRepository` ×2、`ChatRepository` ×2、`NmoiFfi`），
+两个连接同时从 v16 起跑：先到的把 `ALTER TABLE` 与 `user_version=17` 一起提交，
+后到的那份还拿着开头读到的 16，于是再 `ALTER` 一次——撞"列已经存在"。
+`ALTER` 本身是事务性的（本地验过：同一事务里 ALTER 之后报错，回滚后列不在了），
+所以问题不在回滚，在**版本号读得太早**。
+
+**两处修法**：
+
+1. `Migration` 多一个 `prepare: Option<fn(&Connection) -> Result<(), rusqlite::Error>>`。
+   SQLite 没有 `ADD COLUMN IF NOT EXISTS`，v17 的加列改在 Rust 里：先查 `pragma_table_info`，没有才加。
+   这样"列加上了、版本号没跟上"的半截库也能自己走过去。
+2. 每个迁移拿到写锁（`BEGIN IMMEDIATE`）之后**再读一次 `user_version`**；已经追上就空提交跳过。
+   这一条对**所有**迁移都成立，不只 v17。
+
+**判据**：`v17_heals_a_database_that_already_has_the_column`——造一个 v16 + 已有 `parts_json` 的库，
+迁移要成功、回填要走、版本落到 17。
+
+**没做的**：四个入口各开一次库这件事本身没动。SQLite 允许多连接，代价是每次都要跑一遍
+完整性检查与语义扫描；要不要收敛成一个单例，是另一件事（会牵动 UI 的初始化顺序）。

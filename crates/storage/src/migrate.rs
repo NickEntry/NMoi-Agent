@@ -9,79 +9,103 @@ use crate::schema;
 
 pub const SCHEMA_VERSION: i64 = 17;
 
+/// 迁移前先跑的一段 Rust（比如"列不存在才加"）。
+pub type Prepare = fn(&Connection) -> Result<(), rusqlite::Error>;
+
 pub struct Migration {
     pub version: i64,
     pub sql: &'static str,
+    /// 迁移前先跑的 Rust 步骤。SQLite 没有 `ADD COLUMN IF NOT EXISTS`，
+    /// 而"加列"这种动作在**并发打开**和**上次没跑完**两种情况下都会撞上"列已经存在"。
+    /// 先查再加，才谈得上重复执行安全。
+    pub prepare: Option<Prepare>,
 }
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
         sql: schema::SCHEMA_V1,
+        prepare: None,
     },
     Migration {
         version: 2,
         sql: schema::SCHEMA_V2,
+        prepare: None,
     },
     Migration {
         version: 3,
         sql: schema::SCHEMA_V3,
+        prepare: None,
     },
     Migration {
         version: 4,
         sql: schema::SCHEMA_V4,
+        prepare: None,
     },
     Migration {
         version: 5,
         sql: schema::SCHEMA_V5,
+        prepare: None,
     },
     Migration {
         version: 6,
         sql: schema::SCHEMA_V6,
+        prepare: None,
     },
     Migration {
         version: 7,
         sql: schema::SCHEMA_V7,
+        prepare: None,
     },
     Migration {
         version: 8,
         sql: schema::SCHEMA_V8,
+        prepare: None,
     },
     Migration {
         version: 9,
         sql: schema::SCHEMA_V9,
+        prepare: None,
     },
     Migration {
         version: 10,
         sql: schema::SCHEMA_V10,
+        prepare: None,
     },
     Migration {
         version: 11,
         sql: schema::SCHEMA_V11,
+        prepare: None,
     },
     Migration {
         version: 12,
         sql: schema::SCHEMA_V12,
+        prepare: None,
     },
     Migration {
         version: 13,
         sql: schema::SCHEMA_V13,
+        prepare: None,
     },
     Migration {
         version: 14,
         sql: schema::SCHEMA_V14,
+        prepare: None,
     },
     Migration {
         version: 15,
         sql: schema::SCHEMA_V15,
+        prepare: None,
     },
     Migration {
         version: 16,
         sql: schema::SCHEMA_V16,
+        prepare: None,
     },
     Migration {
         version: 17,
         sql: schema::SCHEMA_V17,
+        prepare: Some(add_version_parts_column),
     },
 ];
 
@@ -99,6 +123,24 @@ pub enum MigrateError {
     },
     #[error("读取/写入 schema_version 失败: {0}")]
     Meta(#[from] rusqlite::Error),
+}
+
+/// v17 的那一列：没有才加。
+///
+/// 为什么不在 SQL 里做：SQLite 的 `ALTER TABLE ... ADD COLUMN` 没有 `IF NOT EXISTS`。
+/// 上一次迁移如果"列加上了、版本号没跟上"（并发打开时后一个连接会这样），
+/// 或者两个连接同时从 v16 起跑，后到的那个就会撞 `duplicate column name`。
+/// 先查再加，这两种情况都能自己走过去。
+fn add_version_parts_column(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('message_versions') WHERE name = 'parts_json'",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute_batch("ALTER TABLE message_versions ADD COLUMN parts_json TEXT;")?;
+    }
+    Ok(())
 }
 
 /// 当前库的 `user_version`。
@@ -130,6 +172,29 @@ pub fn migrate(conn: &mut Connection, target: i64) -> Result<i64, MigrateError> 
                 version: migration.version,
                 source,
             })?;
+        // 拿到写锁之后再读一次版本：另一个连接（同一个 app 的两个进程/两个入口）
+        // 可能已经把这一版做完了。不重读的话，后到的那个会拿旧版本号重跑一遍，
+        // 撞上 "table already exists" / "duplicate column name"。
+        let now: i64 = tx
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|source| MigrateError::Failed {
+                version: migration.version,
+                source,
+            })?;
+        if now >= migration.version {
+            tx.commit().map_err(|source| MigrateError::Failed {
+                version: migration.version,
+                source,
+            })?;
+            continue;
+        }
+
+        if let Some(prepare) = migration.prepare {
+            prepare(&tx).map_err(|source| MigrateError::Failed {
+                version: migration.version,
+                source,
+            })?;
+        }
         tx.execute_batch(migration.sql)
             .map_err(|source| MigrateError::Failed {
                 version: migration.version,
@@ -467,6 +532,46 @@ mod tests {
             .unwrap();
         assert!(!old.contains("\"tool\""), "旧版本不回溯工具块：{old}");
         assert!(old.contains("换个说法"), "{old}");
+    }
+
+    /// 半截状态（列加上了、版本号还停在 16）要能自己走过去，不再报 duplicate column。
+    #[test]
+    fn v17_heals_a_database_that_already_has_the_column() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        assert_eq!(migrate(&mut conn, 16).unwrap(), 16);
+        conn.execute_batch("ALTER TABLE message_versions ADD COLUMN parts_json TEXT;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
+             VALUES ('c1', 't', 0, 0, 16, 'dev')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                  form, tokens, created_at, logical_clock, version_count, version_active)
+             VALUES ('m1', 'c1', 'u:01a1a7ed-0000-0000-0000-000000000000:1', 'turn', 1, 1,
+                     'assistant', 'history', 'F1', 1, 0, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
+                                          edited_by_tool, active_view, created_at)
+             VALUES ('m1', 1, '正文', NULL, 0, 'raw', 0)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+        let parts: String = conn
+            .query_row(
+                "SELECT parts_json FROM message_versions WHERE message_id='m1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(parts.contains("正文"), "{parts}");
     }
 
     #[test]

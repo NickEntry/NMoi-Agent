@@ -466,6 +466,9 @@ UPDATE messages SET unit_closed = 1 WHERE unit_kind = 'tool_pair';
 /// 折行之后一轮就是一条消息，工具块也在里面。版本只存正文的话，重试一轮带工具的回复会得到
 /// "新正文 + 旧工具块"——切版本也换不掉它们。这一列把整份块存下来。
 ///
+/// 加列那一步在 Rust 里（`migrate::add_version_parts_column`）：SQLite 没有
+/// `ADD COLUMN IF NOT EXISTS`，而这一步必须能重复执行。
+///
 /// 回填分两步：
 /// 1. **当前版且带工具块**的，快照现在的块——切走再切回来要回到眼前这一份；
 /// 2. 其余版本只有正文与思考（`origin_message` / `reasoning`）。旧版本本来就没存过工具块，
@@ -474,8 +477,6 @@ UPDATE messages SET unit_closed = 1 WHERE unit_kind = 'tool_pair';
 /// 正文与思考仍然以 `origin_message` / `reasoning` 两列为准（视图切换靠它们），
 /// `parts_json` 负责的是**其余那几块**（工具 / 图片 / 通知）。
 pub const SCHEMA_V17: &str = r#"
-ALTER TABLE message_versions ADD COLUMN parts_json TEXT;
-
 UPDATE message_versions
    SET parts_json = (
         SELECT json_group_array(json_object('id', part_id, 'kind', kind, 'body', json(body)))
