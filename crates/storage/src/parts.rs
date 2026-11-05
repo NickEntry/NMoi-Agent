@@ -11,26 +11,105 @@ use crate::StorageError;
 
 /// 把一条消息的全部块写进 `message_parts`（先删后写：数量与内容都可能变）。
 pub fn write_parts(tx: &Transaction<'_>, message: &Message) -> Result<(), StorageError> {
-    tx.execute(
-        "DELETE FROM message_parts WHERE message_id = ?1",
-        [message.id.to_string()],
-    )?;
-    for (ord, part) in message.parts().iter().enumerate() {
+    write_part_list(tx, &message.id.to_string(), message.parts())
+}
+
+/// 用一份块清单换掉某条消息的全部块（版本切回时用：块的数量与种类都可能变）。
+pub fn write_part_list(
+    tx: &Transaction<'_>,
+    message: &str,
+    parts: &[Part],
+) -> Result<(), StorageError> {
+    tx.execute("DELETE FROM message_parts WHERE message_id = ?1", [message])?;
+    for (ord, part) in parts.iter().enumerate() {
         let body = serde_json::to_string(&part.body())
             .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
         tx.execute(
             "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                message.id.to_string(),
-                part.id(),
-                ord as i64,
-                part.kind(),
-                body
-            ],
+            params![message, part.id(), ord as i64, part.kind(), body],
         )?;
     }
+    // 单元形状跟着块走（D258）：一条消息就是一个单元，`unit_kind` / `unit_closed`
+    // 不该有第二个答案。切版本会把工具块摘掉或放回来，这一行必须跟着改。
+    tx.execute(
+        "UPDATE messages
+            SET unit_kind = CASE
+                    WHEN EXISTS (SELECT 1 FROM message_parts
+                                  WHERE message_id = ?1 AND kind = 'tool') THEN 'tool_pair'
+                    ELSE 'turn' END,
+                unit_closed = CASE
+                    WHEN EXISTS (SELECT 1 FROM message_parts
+                                  WHERE message_id = ?1 AND kind = 'tool'
+                                    AND COALESCE(json_extract(body, '$.status'), 'pending') = 'pending')
+                    THEN 0 ELSE 1 END
+          WHERE id = ?1",
+        [message],
+    )?;
     Ok(())
+}
+
+/// 一份块清单的快照（版本用）。存 `[{id, kind, body}]` 而不是 `Part` 的 serde 形状：
+/// 前者与库里的列一一对应，读的人不用先猜 Rust 的枚举长什么样。
+pub fn snapshot(parts: &[Part]) -> Result<String, StorageError> {
+    let list: Vec<serde_json::Value> = parts
+        .iter()
+        .map(|part| {
+            serde_json::json!({
+                "id": part.id(),
+                "kind": part.kind(),
+                "body": part.body(),
+            })
+        })
+        .collect();
+    serde_json::to_string(&list).map_err(|error| StorageError::Inconsistent(error.to_string()))
+}
+
+/// 从快照拼回块清单。坏掉的一条直接报错——猜一种块比报错危险得多。
+pub fn restore(json: &str) -> Result<Vec<Part>, StorageError> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(json)
+        .map_err(|error| StorageError::Inconsistent(format!("版本里的块不是合法 JSON：{error}")))?;
+    let mut parts = Vec::with_capacity(list.len());
+    for item in list {
+        let id = item
+            .get("id")
+            .and_then(|slot| slot.as_str())
+            .ok_or_else(|| StorageError::Inconsistent("版本里的块缺少 id".into()))?;
+        let kind = item
+            .get("kind")
+            .and_then(|slot| slot.as_str())
+            .ok_or_else(|| StorageError::Inconsistent(format!("块 {id} 缺少 kind")))?;
+        let body = item
+            .get("body")
+            .ok_or_else(|| StorageError::Inconsistent(format!("块 {id} 缺少 body")))?;
+        parts.push(
+            Part::from_body(id.to_string(), kind, &body.to_string())
+                .map_err(StorageError::Inconsistent)?,
+        );
+    }
+    Ok(parts)
+}
+
+/// 一条消息现在的块清单快照（写版本时用）。
+pub fn snapshot_of(tx: &Transaction<'_>, message: &str) -> Result<String, StorageError> {
+    let mut stmt = tx.prepare(
+        "SELECT part_id, kind, body FROM message_parts
+          WHERE message_id = ?1 ORDER BY ord",
+    )?;
+    let rows = stmt.query_map([message], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut parts = Vec::new();
+    for row in rows {
+        let (id, kind, body) = row?;
+        parts.push(Part::from_body(id, &kind, &body).map_err(StorageError::Inconsistent)?);
+    }
+    drop(stmt);
+    snapshot(&parts)
 }
 
 /// 下一个可用的 part id：取现有里最大的号 +1。**不复用被删掉的号**。

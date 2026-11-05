@@ -556,6 +556,61 @@ fn deleting_a_tool_message_takes_the_whole_unit() {
     assert!(storage.load_units(session).unwrap().is_empty());
 }
 
+/// 切版本要连**工具块**一起换（D258）：重试一轮带工具的回复之后，
+/// 切回旧版工具块回来，切到新版工具块走掉——不然屏幕上就是"新正文 + 上一轮的工具"。
+#[test]
+fn switching_versions_restores_tool_parts_too() {
+    use nmoi_core::message::{OutgoingToolCall, ToolStatus};
+    use nmoi_core::source::SourceTag;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("app.db"));
+    let session = storage
+        .create_conversation("版本带工具", "device-a", "default")
+        .unwrap();
+
+    let mut head = Message::tool_call_message(
+        MessageId::new(session, 1),
+        vec![OutgoingToolCall::new("c1", "read_file", "{\"path\":\"a\"}")],
+        5,
+        1_700_000_000_000,
+        LogicalClock::new(1),
+    );
+    head.set_text("我先看看");
+    head.set_tool_output("c1", "文件内容", ToolStatus::Ok);
+    let unit = AtomicUnit::tool_pair(head).unwrap();
+    let id = unit.messages[0].id.clone();
+    storage.append_unit(session, &unit).unwrap();
+
+    // 重试：新的一版只有正文，旧那一版（带工具块）留着。
+    storage
+        .append_generated_version_with(&id, "文件里是 hello", Some("想一想"))
+        .unwrap();
+
+    let live = storage.load_unit(&unit.id).unwrap();
+    assert_eq!(live.messages[0].tool_calls().len(), 0, "新版本没有工具块");
+    assert_eq!(live.messages[0].content(), "文件里是 hello");
+
+    // 切回第 1 版：正文、思考、工具块一起回来。
+    let text = storage
+        .switch_message_version(&id, 1, VersionView::Raw)
+        .unwrap();
+    assert_eq!(text, "我先看看");
+    let old = storage.load_unit(&unit.id).unwrap();
+    assert_eq!(old.messages[0].tool_calls().len(), 1);
+    assert_eq!(old.messages[0].tool_output(0), Some("文件内容"));
+
+    // 再切到第 2 版：工具块跟着走掉，思考也是这一版的。
+    storage
+        .switch_message_version(&id, 2, VersionView::Raw)
+        .unwrap();
+    let next = storage.load_unit(&unit.id).unwrap();
+    assert_eq!(next.messages[0].tool_calls().len(), 0);
+    assert_eq!(next.messages[0].content(), "文件里是 hello");
+    assert_eq!(next.messages[0].reasoning().as_deref(), Some("想一想"));
+    let _ = SourceTag::History;
+}
+
 /// 一版只有 `origin_message` 时，**没有任何红蓝状态**（D154）。
 ///
 /// 用户原话："只有 origin 的时候就是正常的不显示红蓝的。"

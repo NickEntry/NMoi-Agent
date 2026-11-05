@@ -264,8 +264,8 @@ Kotlin 不重写。
 | 2 | schema **v15**：`message_parts` 建表 + 回填 + 删三列（**已落地**，D256） | 已完成 |
 | 3b | 编辑按 part id（`BlockSelector::Part`）+ part id 不再随重建换号 + FFI 给 `parts` 清单 | **已落地**（D257） |
 | 3 | 折行（`role=tool` 的行并进调用消息的 tool 块）+ wire 展开 + schema v16 | **已落地**（D258），2026-11-05 |
-| 3a | `message_versions.parts_json`（版本快照带工具块） | 试过，**撤回**：见下面"为什么它不能先做"；折行已落地，可以重做 |
-| 3c | 单框编辑器标记 v2（`tool index` → `part id`） | 未动工 |
+| 3a | `message_versions.parts_json`（版本快照带工具块） | **已落地**（D259，schema v17） |
+| 3c | 单框编辑器标记 v2（`tool index` → `part id`） | **已落地**（D259） |
 | 4 | UI 从 parts 渲染（过程块与正文来自同一条消息） | 工具那一半**已落地**（D258：一行读 `output` / `status`）；正文与过程块的分段渲染未动工 |
 
 第一批落地时定下的两条顺序规则（写进代码，不是口头）：

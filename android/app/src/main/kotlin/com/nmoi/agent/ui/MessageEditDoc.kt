@@ -15,7 +15,7 @@ package com.nmoi.agent.ui
  * <nmoi:thinking>
  * 思考
  * </nmoi:thinking>
- * <nmoi:tool index="0">
+ * <nmoi:tool part="p3">
  * <nmoi:name>read_file</nmoi:name>
  * <nmoi:input>{"path":"a"}</nmoi:input>
  * <nmoi:stdout>
@@ -37,8 +37,14 @@ package com.nmoi.agent.ui
  * （`android/app/src/test`），而本机没有 AGP。
  */
 data class EditToolBlock(
-    /** 第几个工具调用（0 起）。与 `tool_call_id` 的配对靠顺序，不靠名字。 */
+    /** 第几个工具调用（0 起）。只给旧文档（v1）用；新文档按 [part] 定位。 */
     val index: Int,
+    /**
+     * 这一块的 part id（`p3`）。删掉一个调用不会让别的块错位（D257）。
+     *
+     * `null` = 这份文档是 v1（按序号定位），或者是从老草稿里读出来的。
+     */
+    val part: String? = null,
     val name: String,
     val input: String,
     /** 结果原文。库里只有一份（`role=tool` 那条消息的 content），先放在 stdout 这一栏。 */
@@ -68,8 +74,14 @@ class EditDocException(
 ) : Exception(if (line > 0) "第 $line 行：$reason" else reason)
 
 object EditDocSyntax {
-    const val OPEN = """[□{<nmoi-edit v="1">"""
+    /** v1：按序号定位（`index="0"`）。旧草稿还是这个形状，解析要认。 */
+    const val OPEN_V1 = """[□{<nmoi-edit v="1">"""
+    /** v2：按 part id 定位（`part="p3"`）。删一个调用不再让后面的块错位。 */
+    const val OPEN = """[□{<nmoi-edit v="2">"""
     const val CLOSE = """</nmoi-edit>}□]"""
+
+    /** 开头那一行；两个版本都认。 */
+    val OPEN_ANY = Regex("""^\[□\{<nmoi-edit v="([12])">$""")
 
     const val OUTPUT_OPEN = "<nmoi:output>"
     const val OUTPUT_CLOSE = "</nmoi:output>"
@@ -87,10 +99,10 @@ object EditDocSyntax {
     const val TOOL_CLOSE = "</nmoi:tool>"
 
     /** 内容里出现这些串就没法无歧义地切块：序列化拒绝生成，解析会按第一个结束标签切。 */
-    val RESERVED = listOf("</nmoi:", "<nmoi:", OPEN, CLOSE)
+    val RESERVED = listOf("</nmoi:", "<nmoi:", OPEN, OPEN_V1, CLOSE)
 
-    /** `<nmoi:tool index="3">` */
-    private val TOOL_OPEN = Regex("""^<nmoi:tool index="(\d+)">$""")
+    /** `<nmoi:tool part="p3">`（v2）或 `<nmoi:tool index="3">`（v1）。 */
+    private val TOOL_OPEN = Regex("""^<nmoi:tool (?:part="([^"]+)"|index="(\d+)")>$""")
 
     /** 工具块里的四个子块，顺序即报错时提示的顺序。 */
     val SUBS = listOf(
@@ -100,11 +112,19 @@ object EditDocSyntax {
         Triple(STDERR_OPEN, STDERR_CLOSE, "stderr"),
     )
 
-    fun toolOpen(index: Int): String = """<nmoi:tool index="$index">"""
+    fun toolOpen(part: String?, index: Int): String = if (part != null) {
+        """<nmoi:tool part="$part">"""
+    } else {
+        """<nmoi:tool index="$index">"""
+    }
 
-    /** 这一行是不是工具块开头；是就返回序号，不是返回 null。 */
-    fun toolIndex(line: String): Int? =
-        TOOL_OPEN.find(line.trim())?.groupValues?.get(1)?.toIntOrNull()
+    /** 这一行是不是工具块开头；是就返回 (part, index)，不是返回 null。 */
+    fun toolTag(line: String): Pair<String?, Int?>? {
+        val hit = TOOL_OPEN.find(line.trim()) ?: return null
+        val part = hit.groupValues[1].ifEmpty { null }
+        val index = hit.groupValues[2].ifEmpty { null }?.toIntOrNull()
+        return part to index
+    }
 }
 
 /**
@@ -114,8 +134,14 @@ object EditDocSyntax {
  * [EditDocException]——生成一份解析不回来的文档，比直接说"这一块里有 `</nmoi:`" 糟得多。
  */
 fun serializeEditDocument(document: EditDocument): String {
+    // 有 part id 就写 v2；一份文档里不许混着两种定位方式（读的人会以为它们是两根轴）。
+    val byPart = document.tools.all { it.part != null }
+    val byIndex = document.tools.all { it.part == null }
+    if (!byPart && !byIndex) {
+        throw EditDocException(0, "工具块要按 part id 定位就全都给 part，要么全都按序号")
+    }
     val out = StringBuilder()
-    out.append(EditDocSyntax.OPEN).append('\n')
+    out.append(if (byPart) EditDocSyntax.OPEN else EditDocSyntax.OPEN_V1).append('\n')
 
     fun put(open: String, close: String, text: String) {
         out.append(open).append('\n')
@@ -134,10 +160,10 @@ fun serializeEditDocument(document: EditDocument): String {
     }
 
     document.tools.forEachIndexed { position, tool ->
-        if (tool.index != position) {
+        if (!byPart && tool.index != position) {
             throw EditDocException(0, "工具块序号要从 0 连续排：第 ${position + 1} 个是 #${tool.index}")
         }
-        out.append(EditDocSyntax.toolOpen(tool.index)).append('\n')
+        out.append(EditDocSyntax.toolOpen(tool.part, tool.index)).append('\n')
         checkReserved("工具名 #${tool.index}", tool.name)
         put(EditDocSyntax.NAME_OPEN, EditDocSyntax.NAME_CLOSE, tool.name)
         checkReserved("工具参数 #${tool.index}", tool.input)
@@ -171,12 +197,14 @@ fun parseEditDocument(text: String): EditDocument {
     }
     var first = 0
     while (first < lines.size && lines[first].isBlank()) first++
-    if (first >= lines.size || lines[first].trim() != EditDocSyntax.OPEN) {
+    val header = if (first < lines.size) EditDocSyntax.OPEN_ANY.find(lines[first].trim()) else null
+    if (header == null) {
         throw EditDocException(
             first + 1,
             "开头必须是 ${EditDocSyntax.OPEN}（少了它就没法确定这是哪种文档）",
         )
     }
+    val version = header.groupValues[1].toInt()
     var last = lines.size - 1
     while (last > first && lines[last].isBlank()) last--
     if (lines[last].trim() != EditDocSyntax.CLOSE) {
@@ -239,23 +267,31 @@ fun parseEditDocument(text: String): EditDocument {
                 thinking = joinLines(lines, cursor + 1, end)
                 cursor = end + 1
             }
-            EditDocSyntax.toolIndex(tag) != null -> {
-                val index = EditDocSyntax.toolIndex(tag)!!
-                if (index != tools.size) {
+            EditDocSyntax.toolTag(tag) != null -> {
+                val (part, rawIndex) = EditDocSyntax.toolTag(tag)!!
+                val index = rawIndex ?: tools.size
+                if (version == 1) {
+                    if (index != tools.size) {
+                        throw EditDocException(
+                            line,
+                            "工具块序号要从 0 连续排：这一块是 #$index，按顺序这里应该是 #${tools.size}",
+                        )
+                    }
+                } else if (part == null) {
                     throw EditDocException(
                         line,
-                        "工具块序号要从 0 连续排：这一块是 #$index，按顺序这里应该是 #${tools.size}",
+                        "v2 文档里的工具块要写 part=\"p3\" 这种 id（按序号定位会删一个就全错位）",
                     )
                 }
                 val end = indexOf(lines, cursor + 1, last, EditDocSyntax.TOOL_CLOSE, line)
-                tools += parseToolBlock(lines, cursor + 1, end, index, line)
+                tools += parseToolBlock(lines, cursor + 1, end, index, part, line)
                 cursor = end + 1
             }
             else -> {
                 throw EditDocException(
                     line,
                     "这一行不是能认的块开头（只认 ${EditDocSyntax.OUTPUT_OPEN} / " +
-                        "${EditDocSyntax.THINKING_OPEN} / <nmoi:tool index=\"N\">）",
+                        "${EditDocSyntax.THINKING_OPEN} / <nmoi:tool part=\"pN\">）",
                 )
             }
         }
@@ -277,6 +313,7 @@ private fun parseToolBlock(
     from: Int,
     end: Int,
     index: Int,
+    part: String?,
     openLine: Int,
 ): EditToolBlock {
     var name: String? = null
@@ -342,7 +379,7 @@ private fun parseToolBlock(
     }
     val resolvedInput = input
         ?: throw EditDocException(openLine, "工具块 #$index 没有参数（${EditDocSyntax.INPUT_OPEN}）")
-    return EditToolBlock(index, resolvedName, resolvedInput, stdout, stderr)
+    return EditToolBlock(index, part, resolvedName, resolvedInput, stdout, stderr)
 }
 
 /** 单行形 `<open>内容<close>`；不是这个形状就返回 null（交给多行分支）。 */

@@ -40,6 +40,67 @@ class MessageEditDocTest {
         assertEquals(original, parsed)
     }
 
+    /** v2：工具块按 part id 定位，写出来的文档里带 `part="p3"`。 */
+    @Test
+    fun tool_blocks_use_part_ids_in_v2() {
+        val original = EditDocument(
+            output = "正文",
+            thinking = null,
+            tools = listOf(
+                EditToolBlock(
+                    index = 0,
+                    part = "p3",
+                    name = "read_file",
+                    input = """{"path":"a.txt"}""",
+                    stdout = "文件内容",
+                    stderr = null,
+                ),
+            ),
+        )
+        val text = serializeEditDocument(original)
+        assertTrue(text, text.contains("""<nmoi:tool part="p3">"""))
+        assertTrue(text, text.contains("""v="2""""))
+        assertEquals(original, parseEditDocument(text))
+    }
+
+    /** 旧文档（v1，按序号）还要能读：草稿里存的就是它。 */
+    @Test
+    fun v1_documents_still_parse() {
+        val text = """
+            [□{<nmoi-edit v="1">
+            <nmoi:output>
+            正文
+            </nmoi:output>
+            <nmoi:tool index="0">
+            <nmoi:name>read_file</nmoi:name>
+            <nmoi:input>{"path":"a"}</nmoi:input>
+            </nmoi:tool>
+            </nmoi-edit>}□]
+        """.trimIndent()
+        val parsed = parseEditDocument(text)
+        assertEquals(1, parsed.tools.size)
+        assertNull(parsed.tools[0].part)
+        assertEquals(0, parsed.tools[0].index)
+    }
+
+    /** v2 文档里写 index 会删一个就全错位，直接拒。 */
+    @Test
+    fun v2_document_refuses_index_tags() {
+        val text = """
+            [□{<nmoi-edit v="2">
+            <nmoi:output>
+            正文
+            </nmoi:output>
+            <nmoi:tool index="0">
+            <nmoi:name>read_file</nmoi:name>
+            <nmoi:input>{}</nmoi:input>
+            </nmoi:tool>
+            </nmoi-edit>}□]
+        """.trimIndent()
+        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
+        assertTrue(error.message, error.message.orEmpty().contains("part"))
+    }
+
     @Test
     fun round_trip_keeps_blank_lines_and_trailing_newline() {
         // 正文尾随的空行是用户写的，不能因为"看起来多余"被 trim 掉。

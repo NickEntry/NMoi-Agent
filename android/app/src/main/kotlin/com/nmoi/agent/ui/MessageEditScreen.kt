@@ -209,6 +209,7 @@ private fun buildEditDocument(message: ChatMessage): EditDocument {
     val tools = message.toolArgs.mapIndexed { index, call ->
         EditToolBlock(
             index = index,
+            part = call.part.ifEmpty { null },
             name = call.name,
             input = call.arguments,
             // 库里只有一份结果原文，先放在 stdout 这一栏；stderr 留空。
@@ -267,22 +268,41 @@ private fun opsBetween(before: EditDocument, after: EditDocument): JSONArray {
                 "工具名不能改（第 ${index + 1} 个：${was.name} → ${tool.name}）：名字决定这一块怎么解释。",
             )
         }
+        // 有 part id 就按块定位（删一个调用不会让后面的块错位）；老文档退回序号轴。
+        val part = tool.part ?: was.part
         if (tool.input != was.input) {
             ops.put(
-                JSONObject()
-                    .put("action", "set")
-                    .put("block", "tool")
-                    .put("index", index)
-                    .put("content", tool.input),
+                if (part != null) {
+                    JSONObject()
+                        .put("action", "set")
+                        .put("block", "part")
+                        .put("id", part)
+                        .put("content", tool.input)
+                } else {
+                    JSONObject()
+                        .put("action", "set")
+                        .put("block", "tool")
+                        .put("index", index)
+                        .put("content", tool.input)
+                },
             )
         }
         if (tool.result() != was.result()) {
             ops.put(
-                JSONObject()
-                    .put("action", "set")
-                    .put("block", "tool_result")
-                    .put("index", index)
-                    .put("content", tool.result()),
+                if (part != null) {
+                    JSONObject()
+                        .put("action", "set")
+                        .put("block", "part")
+                        .put("id", part)
+                        .put("output", true)
+                        .put("content", tool.result())
+                } else {
+                    JSONObject()
+                        .put("action", "set")
+                        .put("block", "tool_result")
+                        .put("index", index)
+                        .put("content", tool.result())
+                },
             )
         }
     }

@@ -16,7 +16,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::ids::{MessageId, UnitId};
-use crate::message::{AtomicUnit, Message, Role, UnitError};
+use crate::message::{AtomicUnit, Message, Part, Role, UnitError};
 use crate::tokens::estimate_tokens;
 
 /// 一块内容的上限。**这是防呆，不是防攻击**：真被塞进 200 KB 的思考块，
@@ -210,6 +210,8 @@ pub enum EditError {
     CannotDeleteOutput,
     #[error("消息 {message} 里没有 `{part}` 这一块")]
     NoSuchPart { message: MessageId, part: String },
+    #[error("消息 {message} 的 `{part}` 是工具参数，不是 JSON 对象：参数会原样发给上游，坏了下一次请求直接 400")]
+    MalformedToolArguments { message: MessageId, part: String },
     #[error("第 {index} 项是工具结果，但消息 {message} 没有第 {index} 个工具调用")]
     NoSuchToolResult { message: MessageId, index: usize },
     #[error("没有给任何改动：要改就指明改哪一块")]
@@ -558,6 +560,22 @@ pub fn plan_ops(
         };
         let after = match op {
             BlockOp::Set { content, .. } => {
+                // 按 part 改工具参数时也要过 JSON 校验（以前只有 `tool:<i>` 那条路查）：
+                // 参数会原样发给上游，坏了下一次请求直接 400。
+                if let BlockSelector::Part { id, output: false } = &block {
+                    if let Some(Part::Tool(_)) = message.parts().iter().find(|part| part.id() == id)
+                    {
+                        let parsed = serde_json::from_str::<serde_json::Value>(content)
+                            .ok()
+                            .is_some_and(|value| value.is_object());
+                        if !parsed {
+                            return Err(EditError::MalformedToolArguments {
+                                message: target.clone(),
+                                part: id.clone(),
+                            });
+                        }
+                    }
+                }
                 // 思考块：空串等于删掉块（与 0.14x 一致）。
                 if block == BlockSelector::Thinking && content.trim().is_empty() {
                     None

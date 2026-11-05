@@ -1179,3 +1179,38 @@ D255/D256/D257 把消息拆成块、把块写进库、把编辑挪到块上；�
 **测试**：core 650（新增 `an_unfinished_tool_block_is_refused_instead_of_sent`、
 `an_old_role_tool_row_is_refused_instead_of_guessed`、`deleting_one_side_removes_the_whole_tool_part`）、
 ffi 59、storage 13 个测试二进制（新增 `v15_tool_rows_become_output_of_the_call_part`）。
+
+## D259 一版 = 这条消息全部块；单框编辑器升 v2（2026-11-05）
+
+折行（D258）之后一轮就是一条消息，工具块也在里面。版本只存正文的话，重试一轮带工具的回复
+会得到"新正文 + 旧工具块"——切版本也换不掉它们。这一条把整份块存进版本。
+
+**schema v17**：`message_versions.parts_json`。存 `[{id, kind, body}]`，与 `message_parts`
+的列一一对应，不是 `Part` 的 serde 形状（读的人不用先猜 Rust 的枚举）。
+
+**谁说了算**：正文与思考仍以 `origin_message` / `reasoning` 两列为准（视图切换靠它们），
+`parts_json` 负责**其余那几块**（工具 / 图片 / 通知）。所以切版本是"先恢复块，再铺正文"，
+不需要在快照里存两份正文。
+
+**写入**：
+- `seed_first_version` 快照消息现在的块（第一版就是眼前这一份）；
+- `push_version`（重试）写的是**新的一轮**：[思考?, 正文]，旧工具块跟着旧版本走；
+- `switch_message_version` / `delete_message_version` 走同一个 `apply_version`：恢复块 → 铺视图那一份正文。
+
+**回填**：当前版且带工具块的，快照现在的块；其余版本只有正文与思考。
+旧版本本来就没存过工具块，回溯等于编造。
+
+**顺带修掉一个"两份答案"**：`unit_kind` / `unit_closed` 以前由调用方写，切版本把工具块摘掉之后
+它们还停在 `tool_pair` / `1`，`load_units` 当场报 `ToolPairNotAssistant`。
+现在 `parts::write_part_list` 这个唯一写入口顺带把它们按块形状改掉——
+这两列从此是**派生值**，不再有第二个答案（离"删掉它们"只差一次重建表）。
+
+**单框编辑器升 v2**：`<nmoi:tool index="0">` → `<nmoi:tool part="p3">`，头是 `v="2"`。
+`part` 为空的文档按 v1 写、按 v1 读——草稿里存的老文档照样打得开。
+v2 文档里写 `index=` 直接拒（那等于把序号轴又抄一遍）。
+界面发来的 op 也从 `{block:"tool", index}` 换成 `{block:"part", id, output?}`；
+工具参数的 JSON 校验跟着**块的实际种类**走（以前只看选择器名字，`part` 这条路会漏）。
+
+**测试**：`switching_versions_restores_tool_parts_too`（切回旧版工具块回来、切到新版走掉）、
+`v16_versions_gain_a_parts_snapshot`、`tool_blocks_use_part_ids_in_v2`、
+`v1_documents_still_parse`、`v2_document_refuses_index_tags`。

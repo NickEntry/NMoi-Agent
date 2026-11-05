@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::schema;
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 pub struct Migration {
     pub version: i64,
@@ -78,6 +78,10 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 16,
         sql: schema::SCHEMA_V16,
+    },
+    Migration {
+        version: 17,
+        sql: schema::SCHEMA_V17,
     },
 ];
 
@@ -396,6 +400,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(closed, 1);
+    }
+
+    /// v16 → v17：版本带上整份块。当前版快照现在的块，其他版本只有正文与思考。
+    #[test]
+    fn v16_versions_gain_a_parts_snapshot() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        assert_eq!(migrate(&mut conn, 16).unwrap(), 16);
+        conn.execute(
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
+             VALUES ('c1', 't', 0, 0, 16, 'dev')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                                  form, tokens, created_at, logical_clock, version_count, version_active)
+             VALUES ('m1', 'c1', 'u:01a1a7ed-0000-0000-0000-000000000000:1', 'tool_pair', 1, 1,
+                     'assistant', 'tool_call', 'F1', 1, 0, 1, 2, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+             VALUES ('m1','p1',0,'text','{\"text\":\"我先看看\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_parts(message_id, part_id, ord, kind, body)
+             VALUES ('m1','p2',1,'tool',
+                     '{\"call_id\":\"c1\",\"name\":\"read_file\",\"arguments\":\"{}\",\"output\":\"x\",\"status\":\"ok\"}')",
+            [],
+        )
+        .unwrap();
+        for (no, text) in [(1, "我先看看"), (2, "换个说法")] {
+            conn.execute(
+                "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
+                                              edited_by_tool, active_view, created_at)
+                 VALUES ('m1', ?1, ?2, NULL, 0, 'raw', 0)",
+                rusqlite::params![no, text],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+
+        let active: String = conn
+            .query_row(
+                "SELECT parts_json FROM message_versions WHERE message_id='m1' AND version_no=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            active.contains("\"tool\""),
+            "当前版要快照现在的块：{active}"
+        );
+
+        let old: String = conn
+            .query_row(
+                "SELECT parts_json FROM message_versions WHERE message_id='m1' AND version_no=2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!old.contains("\"tool\""), "旧版本不回溯工具块：{old}");
+        assert!(old.contains("换个说法"), "{old}");
     }
 
     #[test]

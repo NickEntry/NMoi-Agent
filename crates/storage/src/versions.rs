@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use nmoi_core::ids::{MessageId, SessionId};
+use nmoi_core::message::Part;
 use rusqlite::{params, Transaction};
 
 use crate::repo::StorageError;
@@ -324,19 +325,12 @@ impl Storage {
     ) -> Result<String, StorageError> {
         let tx = self.conn.transaction()?;
         let id = message_id.to_string();
-        let (raw, edited, edited_by_tool, reasoning) = tx
+        let (edited, edited_by_tool) = tx
             .query_row(
-                "SELECT origin_message, tooledit_message, edited_by_tool, reasoning
+                "SELECT tooledit_message, edited_by_tool
                  FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
                 params![id, version_no],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
             )
             .map_err(|_| {
                 StorageError::Inconsistent(format!("消息 {message_id} 没有第 {version_no} 版"))
@@ -347,7 +341,6 @@ impl Storage {
         } else {
             view
         };
-        let text = shown_text(&raw, edited.as_deref(), effective);
         tx.execute(
             "UPDATE message_versions SET active_view = ?1 WHERE message_id = ?2 AND version_no = ?3",
             params![effective.as_str(), id, version_no],
@@ -357,13 +350,7 @@ impl Storage {
             "UPDATE messages SET version_active = ?1 WHERE id = ?2",
             params![version_no, id],
         )?;
-        crate::parts::set_part_text(&tx, &id, "text", &text)?;
-        crate::parts::set_part_text(
-            &tx,
-            &id,
-            "reasoning",
-            reasoning.as_deref().unwrap_or_default(),
-        )?;
+        let text = apply_version(&tx, &id, version_no, effective)?;
         tx.commit()?;
         Ok(text)
     }
@@ -500,23 +487,23 @@ impl Storage {
             active.min(new_count)
         };
 
-        let (raw, edited, view): (String, Option<String>, String) = tx.query_row(
-            "SELECT origin_message, tooledit_message, active_view FROM message_versions
+        let view: String = tx.query_row(
+            "SELECT active_view FROM message_versions
              WHERE message_id = ?1 AND version_no = ?2",
             params![id, new_active],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )?;
-        let displayed = shown_text(
-            &raw,
-            edited.as_deref(),
-            VersionView::parse(&view).unwrap_or(VersionView::Raw),
-        );
 
         tx.execute(
             "UPDATE messages SET version_count = ?1, version_active = ?2 WHERE id = ?3",
             params![new_count, new_active, id],
         )?;
-        crate::parts::set_part_text(&tx, &id, "text", &displayed)?;
+        let displayed = apply_version(
+            &tx,
+            &id,
+            new_active,
+            VersionView::parse(&view).unwrap_or(VersionView::Raw),
+        )?;
         tx.commit()?;
         Ok((new_count, new_active, displayed))
     }
@@ -643,11 +630,13 @@ pub(crate) fn seed_first_version(
     if count > 0 {
         return Ok(false);
     }
+    // 一版 = 这条消息全部块（D258）：先把它现在这一份存下来，切回来才回得到眼前这样。
+    let parts = crate::parts::snapshot_of(tx, message_id)?;
     tx.execute(
         "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
-                                      edited_by_tool, active_view, created_at)
-         VALUES (?1, 1, ?2, NULL, 0, 'raw', ?3)",
-        params![message_id, content, crate::validate::now_ms()],
+                                      edited_by_tool, active_view, created_at, parts_json)
+         VALUES (?1, 1, ?2, NULL, 0, 'raw', ?3, ?4)",
+        params![message_id, content, crate::validate::now_ms(), parts],
     )?;
     tx.execute(
         "UPDATE messages SET version_count = 1, version_active = 1 WHERE id = ?1",
@@ -669,16 +658,20 @@ fn push_version(
         |row| row.get(0),
     )?;
     let next = current + 1;
+    // 新的一版 = 这一轮全部块。重试是把**整轮**换掉：旧的工具块跟着旧版本走，
+    // 不留在新版本里（否则屏幕上就是"新正文 + 上一轮的工具"）。
+    let parts = crate::parts::snapshot(&version_parts(origin_message, reasoning))?;
     tx.execute(
         "INSERT INTO message_versions(message_id, version_no, origin_message, tooledit_message,
-                                      edited_by_tool, active_view, created_at, reasoning)
-         VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4, ?5)",
+                                      edited_by_tool, active_view, created_at, reasoning, parts_json)
+         VALUES (?1, ?2, ?3, NULL, 0, 'raw', ?4, ?5, ?6)",
         params![
             id,
             next,
             origin_message,
             crate::validate::now_ms(),
-            reasoning
+            reasoning,
+            parts
         ],
     )?;
 
@@ -708,9 +701,77 @@ fn push_version(
         "UPDATE messages SET version_count = ?1, version_active = ?2 WHERE id = ?3",
         params![count, active, id],
     )?;
-    crate::parts::set_part_text(tx, id, "text", origin_message)?;
-    crate::parts::set_part_text(tx, id, "reasoning", reasoning.unwrap_or_default())?;
+    crate::parts::write_part_list(tx, id, &version_parts(origin_message, reasoning))?;
     Ok((active, count))
+}
+
+/// 一版的块：思考（有的话）+ 正文。新生成的版本没有工具块。
+fn version_parts(text: &str, reasoning: Option<&str>) -> Vec<Part> {
+    let mut parts = Vec::new();
+    if let Some(reasoning) = reasoning.filter(|text| !text.trim().is_empty()) {
+        parts.push(Part::Reasoning {
+            id: "p1".to_string(),
+            text: reasoning.to_string(),
+        });
+    }
+    if !text.is_empty() {
+        let id = if parts.is_empty() { "p1" } else { "p2" };
+        parts.push(Part::Text {
+            id: id.to_string(),
+            text: text.to_string(),
+        });
+    }
+    parts
+}
+
+/// 把某一版的块换回消息上，再按视图铺正文。
+///
+/// `parts_json` 只管**其余那几块**（工具 / 图片 / 通知）：正文与思考仍以两列为准，
+/// 所以这里恢复完块之后还要把视图那一份正文写回去。
+fn apply_version(
+    tx: &Transaction<'_>,
+    id: &str,
+    version_no: i64,
+    view: VersionView,
+) -> Result<String, StorageError> {
+    let (raw, edited, edited_by_tool, reasoning, parts_json): (
+        String,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT origin_message, tooledit_message, edited_by_tool, reasoning, parts_json
+         FROM message_versions WHERE message_id = ?1 AND version_no = ?2",
+        params![id, version_no],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    if let Some(json) = parts_json.as_deref() {
+        let parts = crate::parts::restore(json)?;
+        crate::parts::write_part_list(tx, id, &parts)?;
+    }
+    let effective = if edited_by_tool == 0 || edited.is_none() {
+        VersionView::Raw
+    } else {
+        view
+    };
+    let text = shown_text(&raw, edited.as_deref(), effective);
+    crate::parts::set_part_text(tx, id, "text", &text)?;
+    crate::parts::set_part_text(
+        tx,
+        id,
+        "reasoning",
+        reasoning.as_deref().unwrap_or_default(),
+    )?;
+    Ok(text)
 }
 
 /// 把版本号重新压成 1..=n（删过之后会留空洞，而 UI 的 `n/n` 不该看到空洞）。

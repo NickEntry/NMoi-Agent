@@ -1032,9 +1032,30 @@ pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
                     BlockSelector::ToolCall { index }
                 }
             }
+            "part" => {
+                let id = item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        format!("第 {which} 项按 part 定位，必须给 `id`（例如 \"p3\"）")
+                    })?;
+                if id.len() > 32 || !id.starts_with('p') {
+                    return Err(format!("第 {which} 项的 `id` 不像 part id：{id}"));
+                }
+                let output = item
+                    .get("output")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                BlockSelector::Part {
+                    id: id.to_string(),
+                    output,
+                }
+            }
             other => {
                 return Err(format!(
-                    "第 {which} 项的 block `{other}` 不认识：只能是 output / thinking / tool / tool_result"
+                    "第 {which} 项的 block `{other}` 不认识：只能是 output / thinking / tool / tool_result / part"
                 ))
             }
         };
