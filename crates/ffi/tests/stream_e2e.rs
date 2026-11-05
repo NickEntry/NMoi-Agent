@@ -378,8 +378,13 @@ fn continuation_seeds_the_original_text_and_lands_joined() {
 
     let outcome = runner.join().expect("regen 线程没 panic");
     assert!(outcome["ok"].as_bool().unwrap_or(false), "{outcome}");
-    // 出参里 `text` 是**模型这一次给的续文**，拼接发生在落库那一步。
-    assert_eq!(NEXT, outcome["text"].as_str().unwrap_or(""), "{outcome}");
+    // 出参里的 `text` 就是**落库的那一份**（D263）：续话落的是接好的全文，
+    // 回一个"只有后半段"的 text 会让调用方以为库里也只有后半段。
+    assert_eq!(
+        format!("{ORIGINAL}{NEXT}"),
+        outcome["text"].as_str().unwrap_or(""),
+        "{outcome}"
+    );
     assert_eq!(
         target,
         outcome["target"].as_str().unwrap_or(""),

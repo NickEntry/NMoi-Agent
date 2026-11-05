@@ -878,14 +878,24 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     // 换哪一段：**这一轮** = 最后一条用户消息之后的全部行。
     // 重试时 `up_to` 就是那条用户消息；续话时 `up_to` 是目标消息自己，得往前找一条——
     // 不找的话旧的那条留在库里，屏幕上就是同一段话出现两遍。
+    let target_seq = target.map(|id| id.seq());
     let turn_start = units
         .iter()
         .flat_map(|unit| unit.messages.iter())
         .filter(|message| message.role == Role::User)
-        .filter(|message| message.id.seq() <= target.map(|id| id.seq()).unwrap_or(u64::MAX))
-        .last()
+        .filter(|message| target_seq.map_or(true, |seq| message.id.seq() <= seq))
+        .next_back()
         .map(|message| message.id.clone())
-        .unwrap_or_else(|| up_to.clone());
+        .unwrap_or_else(|| {
+            // 前面没有用户消息（导入的历史）：换的是"目标之前那条之后"；目标就是第一句时从头换。
+            units
+                .iter()
+                .flat_map(|unit| unit.messages.iter())
+                .filter(|message| target_seq.map_or(true, |seq| message.id.seq() < seq))
+                .next_back()
+                .map(|message| message.id.clone())
+                .unwrap_or_else(|| MessageId::new(session, 0))
+        });
 
     // 落库：**整轮**（D263）。重试换掉的是一整轮回答，不是最后那一条——
     // 折行之后一轮回答是 N 条消息，只换最后一条的话，前面几轮的工具块会留在库里，
