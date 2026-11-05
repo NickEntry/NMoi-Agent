@@ -19,13 +19,15 @@ class ProcessRowsTest {
         source: String = "history",
         closed: Boolean = true,
         reasoning: String? = null,
+        // 工具单元默认没有正文：有正文的那种（折行之后的一轮）由专门的用例造。
+        content: String = if (kind == "tool_pair") "" else "内容",
     ): ChatUnit {
         val message = ChatMessage(
             id = "$id-m",
             seq = 0,
             role = if (source == "user") "user" else "assistant",
             source = source,
-            content = "内容",
+            content = content,
             tokens = 0,
             createdAt = 0,
             incomplete = false,
@@ -47,6 +49,49 @@ class ProcessRowsTest {
     private fun tool(id: String, closed: Boolean = true) = unit(id, kind = "tool_pair", closed = closed)
     private fun text(id: String) = unit(id)
     private fun textWithReasoning(id: String) = unit(id, reasoning = "想了一会儿")
+
+    /**
+     * 折行之后，工具那一轮里还带着正文与思考（D258）：它们要各占一行，
+     * 不能被"工具块"那一条吞掉（2026-11-05 真机：每轮的"我先看看"和思考都不见了）。
+     */
+    @Test
+    fun `工具轮次里的正文与思考单独成行`() {
+        val message = ChatMessage(
+            id = "t-m",
+            seq = 0,
+            role = "assistant",
+            source = "tool_call",
+            content = "我先看看",
+            tokens = 0,
+            createdAt = 0,
+            incomplete = false,
+            locked = false,
+            toolCalls = 1,
+            reasoning = "想一想",
+            toolArgs = listOf(
+                ToolCallArg(
+                    callId = "c1",
+                    part = "p3",
+                    name = "read_file",
+                    arguments = "{}",
+                    output = "内容",
+                    status = "ok",
+                ),
+            ),
+        )
+        val unit = ChatUnit(
+            id = "t",
+            kind = "tool_pair",
+            closed = true,
+            createdAt = 0,
+            messages = listOf(message),
+            broken = null,
+        )
+        val rows = buildRows(listOf(unit))
+        assertEquals(2, rows.size)
+        assertEquals(UnitSlice.TextOnly, (rows[0] as ChatRow.Single).slice)
+        assertEquals(UnitSlice.ToolsOnly, (rows[1] as ChatRow.Single).slice)
+    }
 
     @Test
     fun `连续的思考与工具合成一组`() {

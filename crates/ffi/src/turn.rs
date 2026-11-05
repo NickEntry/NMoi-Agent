@@ -1229,7 +1229,16 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
         let done: Vec<Value> = if running {
             nmoi_core::kills::done(session)
                 .into_iter()
-                .map(|call| json!({ "name": call.name, "summary": call.summary }))
+                .map(|call| {
+                    json!({
+                        "call_id": call.call_id,
+                        "name": call.name,
+                        "arguments": call.arguments,
+                        "output": call.output,
+                        "ok": call.ok,
+                        "summary": call.summary,
+                    })
+                })
                 .collect()
         } else {
             Vec::new()

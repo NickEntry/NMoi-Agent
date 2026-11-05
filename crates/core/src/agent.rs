@@ -500,8 +500,11 @@ fn execute_batch(
                     if let Some(session) = ctx.call_session {
                         crate::kills::push_done(
                             session,
+                            &call.id,
                             &call.name,
-                            &crate::kills::summarize(&text),
+                            &call.arguments,
+                            &text,
+                            outcome.is_ok(),
                         );
                     }
                     let record = ToolRecord {

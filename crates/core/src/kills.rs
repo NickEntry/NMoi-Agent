@@ -168,7 +168,13 @@ pub fn summarize(outcome_text: &str) -> String {
 /// 用户只看到模型在思考，以为工具没在动（2026-11-04 真机就是这么报的）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoneCall {
+    pub call_id: String,
     pub name: String,
+    /// 参数原文（截断过）。跑完的这一行也要能点开看"它到底做了什么"。
+    pub arguments: String,
+    /// 结果原文（截断过）。整轮收尾前，这里是唯一能看的地方。
+    pub output: String,
+    pub ok: bool,
     /// 一眼能认出来的摘要：`exit 0 · 121ms` / `失败` / 空。
     pub summary: String,
 }
@@ -178,17 +184,36 @@ fn done_table() -> &'static Mutex<HashMap<String, Vec<DoneCall>>> {
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 结果原文最多留这么多字符。它只活到整轮收尾（之后库里那份才是准的），
+/// 但一轮里几十条调用乘上大输出会一直占着内存，给个上限。
+const OUTPUT_CAP: usize = 64 * 1024;
+
 /// 记一条跑完的调用（按发生顺序追加）。
-pub fn push_done(session: &str, name: &str, summary: &str) {
+pub fn push_done(
+    session: &str,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    output: &str,
+    ok: bool,
+) {
     let mut table = done_table()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    let mut text: String = output.chars().take(OUTPUT_CAP).collect();
+    if output.chars().count() > OUTPUT_CAP {
+        text.push_str("\n…（截断：完整输出在整轮收尾后落库）");
+    }
     table
         .entry(session.to_string())
         .or_default()
         .push(DoneCall {
+            call_id: call_id.to_string(),
             name: name.to_string(),
-            summary: summary.to_string(),
+            arguments: arguments.chars().take(ARGUMENTS_CAP).collect(),
+            output: text,
+            ok,
+            summary: summarize(output),
         });
 }
 

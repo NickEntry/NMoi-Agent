@@ -46,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -197,10 +198,9 @@ internal fun ChatScreen(
         }
     }
     // 工具块点开的那一条（D243）：半屏弹窗，不在聊天页里就地展开。
-    var toolSheet by remember(sessionId) { mutableStateOf<ChatUnit?>(null) }
+    var toolSheet by remember(sessionId) { mutableStateOf<ToolSheetTarget?>(null) }
     // 正在跑的那条调用点开的弹窗（0.15ak）。**只存 id**：对象是这一拍的副本，
     // 而秒数每 100 ms 在变——存对象的话弹窗里的时间会冻在点开那一刻。
-    var runningCallId by remember(sessionId) { mutableStateOf<String?>(null) }
     // 这一轮的上下文图片（D248）：`View-Image` 拉进来的那些。界面只读它、只能移出。
     var contextImages by remember(sessionId) { mutableStateOf(listOf<ContextImageRow>()) }
     var contextImagesOpen by remember(sessionId) { mutableStateOf(false) }
@@ -490,15 +490,6 @@ internal fun ChatScreen(
         }
     }
 
-    // 那条调用跑完了：弹窗自己收掉。留着它会变成一个"没有对象"的空壳，
-    // 而这时候屏幕上已经有库里那一份了（用户 2026-11-04：「结束时应该刷新掉」）。
-    LaunchedEffect(live?.calls) {
-        val id = runningCallId ?: return@LaunchedEffect
-        if (live?.calls.orEmpty().none { it.callId == id }) {
-            runningCallId = null
-        }
-    }
-
     // 换会话就把选择清掉：跨会话的选中集合没有任何意义，还容易误复制。
     LaunchedEffect(sessionId) {
         selecting = false
@@ -529,6 +520,30 @@ internal fun ChatScreen(
             settling = false
             live = null
             pending = null
+        }
+        // 用户那条**已经落库了**就把「发送中…」收掉（D261）。
+        //
+        // 以前只在一轮结束时收：一轮十个工具调用能跑二十几秒，这中间屏幕上一直写着
+        // 「发送中…」，像没发出去（2026-11-05 真机报的"发送后没有即时显示"）。
+        // 判据是"库里真有这一条"——按正文和发送时刻对，不按顺序猜。
+        val sending = pending ?: return@LaunchedEffect
+        val page = snapshot?.page ?: return@LaunchedEffect
+        val arrived = page.units
+            .flatMap { it.messages }
+            .any { it.role == "user" && it.content == sending.text && it.createdAt >= sending.at - 5_000 }
+        if (arrived) pending = null
+    }
+
+    // 发出去之后盯一小段：那条用户消息一进库就换掉乐观气泡。
+    //
+    // 为什么是轮询而不是等事件：`Started` 在**落库之前**就发出来了（TurnRunner 先报开场，
+    // 再进 native 那一轮），所以那一刻读库还读不到。每 300ms 重读一次，通常一两拍就够。
+    LaunchedEffect(pending, busy) {
+        if (pending == null || !busy) return@LaunchedEffect
+        repeat(12) {
+            delay(300)
+            if (pending == null) return@LaunchedEffect
+            reloadKey += 1
         }
     }
 
@@ -961,8 +976,16 @@ internal fun ChatScreen(
     LaunchedEffect(sessionId) {
         val sid = sessionId ?: return@LaunchedEffect
         if (!GeneratingTracker.isRunning(sid)) return@LaunchedEffect
-        val alive = withContext(Dispatchers.IO) {
-            NmoiFfi.turnBusy(sid).getOrNull()?.optBoolean("running") ?: true
+        // 刚点发送那一小段：native 还没登记，`turnBusy` 一定是 false。
+        // 一拍就判"没在跑"会把刚发出去的那一轮连 `pending` 一起清掉——屏幕上就是
+        // "发完什么都没有"（2026-11-05 真机第一张图）。跟 watchdog 一样连看三拍。
+        var alive = false
+        for (attempt in 0 until 3) {
+            alive = withContext(Dispatchers.IO) {
+                NmoiFfi.turnBusy(sid).getOrNull()?.optBoolean("running") ?: true
+            }
+            if (alive) break
+            delay(700)
         }
         if (GeneratingTracker.reconcile(sid, alive)) {
             // 这一轮在我们不在的时候结束了（或者根本没跑起来）。
@@ -1166,12 +1189,37 @@ internal fun ChatScreen(
                         // 过程块（D229）：展开状态只活在这个会话的这次浏览里。
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
-                        onOpenTool = { unit -> toolSheet = unit },
+                        onOpenTool = { _, call -> toolSheet = ToolSheetTarget(call) },
                         liveThinkingOpen = openGroups["live:think"] == true,
                         onToggleLiveThinking = {
                             openGroups["live:think"] = openGroups["live:think"] != true
                         },
-                        onOpenRunningCall = { call -> runningCallId = call.callId },
+                        onOpenRunningCall = { call ->
+                            toolSheet = ToolSheetTarget(
+                                call = ToolCallArg(
+                                    callId = call.callId,
+                                    part = "",
+                                    name = call.name,
+                                    arguments = call.arguments,
+                                    output = "",
+                                    status = "running",
+                                ),
+                                running = true,
+                                elapsedMs = call.elapsedMs,
+                            )
+                        },
+                        onOpenDoneCall = { done ->
+                            toolSheet = ToolSheetTarget(
+                                call = ToolCallArg(
+                                    callId = done.callId,
+                                    part = "",
+                                    name = done.name,
+                                    arguments = done.arguments,
+                                    output = done.output,
+                                    status = if (done.ok) "ok" else "error",
+                                ),
+                            )
+                        },
                         finishedThinkingOpen = { index -> openGroups["live:fin:$index"] == true },
                         onToggleFinishedThinking = { index ->
                             val key = "live:fin:$index"
@@ -1388,9 +1436,14 @@ internal fun ChatScreen(
             }
         }
 
-        // 工具块点开的那一条（D243）：半屏弹窗，看完就收。
-        toolSheet?.let { unit ->
-            ToolSheet(unit = unit, onDismiss = { toolSheet = null })
+        // 工具块点开的那一条（D243 / D261）：**一次调用一个弹窗**。
+        // 以前点开哪一行都弹同一个块、把这一轮的全部调用铺在一起，用户分不清自己点的是哪一条。
+        toolSheet?.let { target ->
+            ToolDetailSheet(
+                target = target,
+                onCancel = { cancelCall(target.call.callId) },
+                onDismiss = { toolSheet = null },
+            )
         }
 
         // 图片上下文（D248）：这一轮会发出去的图，能看、能移出一张、能清空。
@@ -1419,17 +1472,6 @@ internal fun ChatScreen(
                     }
                 },
                 onDismiss = { contextImagesOpen = false },
-            )
-        }
-
-        // 正在跑的那条调用（0.15ak）：弹窗底部才是「取消这次调用」。
-        // 找不到目标（已经跑完）就不画——那一瞬屏幕上已经有库里那份了。
-        val running = runningCallId?.let { id -> live?.calls?.firstOrNull { it.callId == id } }
-        if (running != null) {
-            RunningCallSheet(
-                call = running,
-                onCancel = { cancelCall(running.callId) },
-                onDismiss = { runningCallId = null },
             )
         }
 
@@ -1947,13 +1989,15 @@ private fun MessageArea(
     /** 过程块（D229）展开状态：键是组的第一项 id。 */
     openGroups: Map<String, Boolean> = emptyMap(),
     onToggleGroup: (String) -> Unit = {},
-    /** 工具块点开：在**半屏弹窗**里看细节（用户 2026-11-04 定），不在聊天页里就地展开。 */
-    onOpenTool: (ChatUnit) -> Unit = {},
+    /** 工具块点开：在**半屏弹窗**里看**那一次调用**（D261），不把整轮铺在一起。 */
+    onOpenTool: (ChatUnit, ToolCallArg) -> Unit = { _, _ -> },
     /** 这一轮正在写的思考展开没有（0.15ak）。 */
     liveThinkingOpen: Boolean = false,
     onToggleLiveThinking: () -> Unit = {},
     /** 点开一条正在跑的调用（0.15ak）。 */
     onOpenRunningCall: (RunningCall) -> Unit = {},
+    /** 点开一条**跑完了、还没落库**的调用（D261）：结果要等收尾才进库，这中间也得能看。 */
+    onOpenDoneCall: (DoneCall) -> Unit = {},
     /** 第 N 轮（已经收口的）思考展开没有。 */
     finishedThinkingOpen: (Int) -> Boolean = { false },
     onToggleFinishedThinking: (Int) -> Unit = {},
@@ -2088,10 +2132,12 @@ private fun MessageArea(
                 unit = unit,
                 showHeader = showHeader,
                 hideReasoning = row.hideReasoning,
+                slice = row.slice,
                 onOpenTool = onOpenTool,
                 liveThinkingOpen = liveThinkingOpen,
                 onToggleLiveThinking = onToggleLiveThinking,
                 onOpenRunningCall = onOpenRunningCall,
+                onOpenDoneCall = onOpenDoneCall,
                 finishedThinkingOpen = finishedThinkingOpen,
                 onToggleFinishedThinking = onToggleFinishedThinking,
                 maxBubble = maxBubble,
@@ -2156,6 +2202,7 @@ private fun MessageArea(
                     thinkingOpen = liveThinkingOpen,
                     onToggleThinking = onToggleLiveThinking,
                     onOpenCall = onOpenRunningCall,
+                    onOpenDoneCall = onOpenDoneCall,
                     finishedThinkingOpen = finishedThinkingOpen,
                     onToggleFinishedThinking = onToggleFinishedThinking,
                 )
@@ -2180,6 +2227,8 @@ private fun LiveReplyRow(
     thinkingOpen: Boolean = false,
     onToggleThinking: () -> Unit = {},
     onOpenCall: (RunningCall) -> Unit = {},
+    /** 点开一条跑完了、还没落库的调用（D261）。 */
+    onOpenDoneCall: (DoneCall) -> Unit = {},
     /** 第 N 轮（已经收口的那几轮）的思考展开没有。每轮各记各的，不共用一个开关。 */
     finishedThinkingOpen: (Int) -> Boolean = { false },
     onToggleFinishedThinking: (Int) -> Unit = {},
@@ -2224,6 +2273,7 @@ private fun LiveReplyRow(
             thinkingOpen = thinkingOpen,
             onToggleThinking = onToggleThinking,
             onOpenCall = onOpenCall,
+            onOpenDone = onOpenDoneCall,
         )
         if (reply.text.isNotBlank()) {
             MarkdownBody(
@@ -2295,7 +2345,7 @@ private fun ProcessGroupRow(
     gapAbove: Dp,
     expanded: Boolean,
     onToggle: () -> Unit,
-    onOpenTool: (ChatUnit) -> Unit,
+    onOpenTool: (ChatUnit, ToolCallArg) -> Unit,
     /** 某一项的思考展开没有。键由调用方加前缀（`think:`），这里只管问、只管翻。 */
     thinkingOpen: (String) -> Boolean = { false },
     onToggleThinking: (String) -> Unit = {},
@@ -2349,7 +2399,7 @@ private fun ProcessGroupRow(
                             }
                             ProcessItem.Kind.Tool -> ToolProcessRow(
                                 unit = item.unit,
-                                onOpen = { onOpenTool(item.unit) },
+                                onOpen = { call -> onOpenTool(item.unit, call) },
                             )
                         }
                     }
@@ -2367,13 +2417,17 @@ private fun UnitBlock(
     showHeader: Boolean,
     /** 思考已经并进上面那个大块了：这里别再画一遍（见 `ProcessRows.buildRows`）。 */
     hideReasoning: Boolean = false,
+    /** 这一行画单元的哪一半（D258 折行之后，工具那一轮里也有正文与思考）。 */
+    slice: UnitSlice = UnitSlice.Whole,
     /** 单独一条工具单元：点开也是弹窗，不是就地展开。 */
-    onOpenTool: (ChatUnit) -> Unit = {},
+    onOpenTool: (ChatUnit, ToolCallArg) -> Unit = { _, _ -> },
     /** 这一轮正在写的思考展开没有（0.15ak）。 */
     liveThinkingOpen: Boolean = false,
     onToggleLiveThinking: () -> Unit = {},
     /** 点开一条正在跑的调用（0.15ak）。 */
     onOpenRunningCall: (RunningCall) -> Unit = {},
+    /** 点开一条**跑完了、还没落库**的调用（D261）：结果要等收尾才进库，这中间也得能看。 */
+    onOpenDoneCall: (DoneCall) -> Unit = {},
     finishedThinkingOpen: (Int) -> Boolean = { false },
     onToggleFinishedThinking: (Int) -> Unit = {},
     maxBubble: Dp,
@@ -2410,8 +2464,8 @@ private fun UnitBlock(
         if (broken != null) {
             BrokenCard(declaration = broken.declaration, reason = broken.reason)
         }
-        if (unit.isToolPair) {
-            ToolProcessRow(unit = unit, onOpen = { onOpenTool(unit) })
+        if (unit.isToolPair && slice != UnitSlice.TextOnly) {
+            ToolProcessRow(unit = unit, onOpen = { call -> onOpenTool(unit, call) })
         } else {
             unit.messages.forEach { message ->
                 when {
@@ -2450,6 +2504,7 @@ private fun UnitBlock(
                             liveThinkingOpen = liveThinkingOpen,
                             onToggleLiveThinking = onToggleLiveThinking,
                             onOpenRunningCall = onOpenRunningCall,
+                            onOpenDoneCall = onOpenDoneCall,
                             finishedThinkingOpen = finishedThinkingOpen,
                             onToggleFinishedThinking = onToggleFinishedThinking,
                             selecting = selecting,
@@ -2871,6 +2926,8 @@ private fun AssistantMessage(
     onToggleLiveThinking: () -> Unit = {},
     /** 点开一条正在跑的调用（弹窗底部才有「取消这次调用」）。 */
     onOpenRunningCall: (RunningCall) -> Unit = {},
+    /** 点开一条跑完了、还没落库的调用（D261）。 */
+    onOpenDoneCall: (DoneCall) -> Unit = {},
     /** 第 N 轮（已经收口的）思考展开没有。 */
     finishedThinkingOpen: (Int) -> Boolean = { false },
     onToggleFinishedThinking: (Int) -> Unit = {},
@@ -2913,6 +2970,7 @@ private fun AssistantMessage(
                 thinkingOpen = liveThinkingOpen,
                 onToggleThinking = onToggleLiveThinking,
                 onOpenCall = onOpenRunningCall,
+                onOpenDone = onOpenDoneCall,
             )
             if (live.text.isNotBlank()) {
                 MarkdownBody(
@@ -3587,26 +3645,32 @@ private fun ThinkingBlock(message: ChatMessage) {
  * 只写"结果 N 条"。
  */
 @Composable
-private fun ToolProcessRow(unit: ChatUnit, onOpen: () -> Unit) {
+private fun ToolProcessRow(unit: ChatUnit, onOpen: (ToolCallArg) -> Unit) {
     val calls = unit.messages.flatMap { it.toolArgs }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpen)
-            .padding(vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
     ) {
-        // **一次调用一行**（D253）：同一轮里模型可能一次报三四个调用，它们都在同一个单元里。
-        // 结果就在这一块里（D258），不用再跨消息按 call_id 找。
+        // **一次调用一行、一行一个弹窗**（D261）：点哪一行就只看那一次调用。
+        // 以前点开的是整个单元，两条调用铺在同一个弹窗里，分不清自己点的是哪条。
         if (calls.isEmpty()) {
             ToolCallLine(name = "工具调用", summary = "", preview = "")
         } else {
-            calls.forEach { call ->
+            calls.forEachIndexed { index, call ->
+                // 两次调用之间留一条线：挨着排的时候看着像一次调用写了两行（D261）。
+                if (index > 0) {
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 24.dp, top = 2.dp, bottom = 2.dp),
+                    )
+                }
                 ToolCallLine(
                     name = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用",
                     summary = toolSummaryOf(call),
                     preview = toolArgumentPreview(call.arguments),
                     failed = call.status == "error" || call.status == "killed",
+                    onClick = { onOpen(call) },
                 )
             }
         }
@@ -3630,8 +3694,18 @@ private fun toolSummaryOf(call: ToolCallArg): String {
 
 /** 过程块里的一行：扳手 + 名字 + 结果摘要 + chevron，下面一行参数预览。 */
 @Composable
-private fun ToolCallLine(name: String, summary: String, preview: String, failed: Boolean = false) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+private fun ToolCallLine(
+    name: String,
+    summary: String,
+    preview: String,
+    failed: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = ActionIcons.Wrench,
@@ -3770,60 +3844,75 @@ private fun ThinkingProcessRow(message: ChatMessage, expanded: Boolean, onToggle
 }
 
 /**
- * 工具调用的详情弹窗（D243）：**初始最高半屏**，里面自己滚。
+ * 一次调用的详情弹窗（D243 / D261）：**初始最高半屏**，里面自己滚。
  *
  * 为什么半屏而不是整屏：它是"看一眼这次调用干了什么"，看完就收；
  * 整屏会让人以为换了一页，还得再找回去。
+ *
+ * 为什么是"一次"而不是"一轮"：点哪一行就该看哪一行。两条调用铺在同一个弹窗里，
+ * 用户分不清自己点的是哪一条（2026-11-05 真机报的"两个调用粘一块了"）。
  */
 @Composable
-private fun ToolSheet(unit: ChatUnit, onDismiss: () -> Unit) {
+private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDismiss: () -> Unit) {
+    val call = target.call
     val screen = LocalConfiguration.current.screenHeightDp
     val maxHeight = (screen * 0.5f).dp
-    SheetFrame(title = "工具调用", onDismiss = onDismiss) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxHeight)
-                .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
-        ) {
-            ToolPairBody(unit)
-        }
-    }
-}
-
-/**
- * 工具调用的正文：按"调用 ↔ 结果"配对列出来（调用参数与结果原文，等宽字体）。
- *
- * 只在**弹窗**里画（D243）。以前它挂在聊天页的可折叠卡里，一展开就顶掉三屏。
- * 配对靠 `call_id`——那是唯一能对上"这次调用"和"那条结果"的东西；
- * 配不上（断块、被取消的批）就照老样子单独列，不假装配上了。
- */
-@Composable
-private fun ToolPairBody(unit: ChatUnit) {
-    val calls = unit.messages.flatMap { it.toolArgs }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        if (!unit.closed) {
-            Text(
-                text = "这一批还没收全",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(bottom = 6.dp),
-            )
-        }
-        if (calls.isEmpty()) {
-            Text(
-                text = "这一轮没有工具调用",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            calls.forEach { call ->
-                ToolCallBlock(command = call, result = call)
+    SheetFrame(title = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用", onDismiss = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+            ) {
+                if (target.running) {
+                    Column {
+                        Text(
+                            text = "正在运行 · ${elapsedLabel(target.elapsedMs)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            text = "参数",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        )
+                        MonoBox(text = call.arguments.ifEmpty { "（空）" })
+                        Text(
+                            text = "结果回来之后，这一块会换成库里那次调用（带退出码与输出）。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
+                } else {
+                    ToolCallBlock(command = call, result = call)
+                }
+            }
+            if (target.running) {
+                Text(
+                    text = "取消这次调用",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable(onClick = onCancel)
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                )
             }
         }
     }
 }
+
+/** 弹窗要画的那一次调用：库里的、正在跑的、跑完还没落库的，都是这一份形状。 */
+private data class ToolSheetTarget(
+    val call: ToolCallArg,
+    val running: Boolean = false,
+    val elapsedMs: Int = 0,
+)
 
 /** 断块（P4.1 / D67）：声明行由 core 给，UI 不自己拼。 */
 @Composable
@@ -4614,7 +4703,16 @@ private fun doneCallsOf(info: JSONObject): List<DoneCall> {
             val row = array.optJSONObject(index) ?: continue
             val name = row.text("name")
             if (name.isEmpty()) continue
-            add(DoneCall(name = name, summary = row.text("summary")))
+            add(
+                DoneCall(
+                    callId = row.text("call_id"),
+                    name = name,
+                    arguments = row.text("arguments"),
+                    output = row.text("output"),
+                    ok = row.optBoolean("ok", true),
+                    summary = row.text("summary"),
+                ),
+            )
         }
     }
 }
@@ -4685,6 +4783,8 @@ private fun LiveProcessCard(
     onOpenCall: (RunningCall) -> Unit,
     /** 这一轮已经跑完的调用（D251）：跑完就消失的话，屏幕上只剩"模型在思考"。 */
     done: List<DoneCall> = emptyList(),
+    /** 点开一条跑完了、还没落库的调用（D261）。 */
+    onOpenDone: (DoneCall) -> Unit = {},
     /** 这一块是**当前这一轮**还是已经收口的那几轮（决定思考那行写不写"还在写"）。 */
     live: Boolean = true,
 ) {
@@ -4710,7 +4810,7 @@ private fun LiveProcessCard(
             }
             done.forEach { call ->
                 ProcessNode(index = index, last = index == total - 1) {
-                    DoneCallRow(call)
+                    DoneCallRow(call = call, onOpen = { onOpenDone(call) })
                 }
                 index += 1
             }
@@ -4779,9 +4879,12 @@ private fun LiveThinkingRow(
  * 这一行只回答"刚才那一串到底跑了什么"。
  */
 @Composable
-private fun DoneCallRow(call: DoneCall) {
+private fun DoneCallRow(call: DoneCall, onOpen: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -4861,86 +4964,6 @@ private fun RunningCallRow(call: RunningCall, onOpen: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 24.dp, top = 2.dp),
             )
-        }
-    }
-}
-
-/**
- * 正在跑的那次调用的弹窗（0.15ak）：**底部**才是「取消这次调用」。
- *
- * 为什么按钮在这里而不是聊天页那一行：那一行是"哪一次调用在跑"，动作属于"这一次调用"，
- * 点开它才看得见参数——不看参数就点取消，等于闭着眼关。取消只在**还没结束**时出现；
- * 结果回来这一层自己收掉（调用方在 `calls` 里找不到它就关）。
- */
-@Composable
-private fun RunningCallSheet(call: RunningCall, onCancel: () -> Unit, onDismiss: () -> Unit) {
-    val screen = LocalConfiguration.current.screenHeightDp
-    val maxHeight = (screen * 0.4f).dp
-    SheetFrame(title = call.name, onDismiss = onDismiss) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = maxHeight)
-                    .verticalScroll(rememberScrollState())
-                    .padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
-            ) {
-                Column {
-                    Text(
-                        text = if (call.cancelled) {
-                            "已请求关闭 · 等它退出（${elapsedLabel(call.elapsedMs)}）"
-                        } else {
-                            "正在运行 · ${elapsedLabel(call.elapsedMs)}"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (call.cancelled) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                    )
-                    if (call.arguments.isNotBlank()) {
-                        Text(
-                            text = "参数",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                text = call.arguments,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(10.dp),
-                            )
-                        }
-                    }
-                    Text(
-                        text = "结果回来之后，这一块会换成库里那次调用（带退出码与输出）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 10.dp),
-                    )
-                }
-            }
-            if (!call.cancelled) {
-                Text(
-                    text = "取消这次调用",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .clickable(onClick = onCancel)
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
-                )
-            }
         }
     }
 }

@@ -32,7 +32,14 @@ internal data class RunningCall(
  * 结果要等整轮收尾才落库，中间这一段界面上得能看见"它跑过什么"——
  * 否则用户只看到模型在思考，以为工具没动（2026-11-04 真机就是这么报的）。
  */
-internal data class DoneCall(val name: String, val summary: String)
+internal data class DoneCall(
+    val callId: String,
+    val name: String,
+    val arguments: String,
+    val output: String,
+    val ok: Boolean,
+    val summary: String,
+)
 
 internal data class LiveReply(
     val text: String = "",

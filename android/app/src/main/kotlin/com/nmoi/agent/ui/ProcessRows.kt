@@ -16,7 +16,12 @@ internal sealed interface ChatRow {
      * `hideReasoning`：这条消息的思考**已经并进上面那个大块**了（见 [buildRows]），
      * 这里就不要再画一遍——同一段思考出现两次，用户会以为模型想了两遍。
      */
-    data class Single(val unit: ChatUnit, val hideReasoning: Boolean = false) : ChatRow
+    data class Single(
+        val unit: ChatUnit,
+        val hideReasoning: Boolean = false,
+        /** 这一行画单元的哪一半（D258 折行之后，工具那一轮里也有正文与思考）。 */
+        val slice: UnitSlice = UnitSlice.Whole,
+    ) : ChatRow
 
     /** 连续的过程项（思考 / 工具），至少两个。 */
     data class Process(val items: List<ProcessItem>) : ChatRow {
@@ -29,6 +34,9 @@ internal sealed interface ChatRow {
         val key: String get() = items.first().id
     }
 }
+
+/** 一个单元被画成哪一半：整条 / 只有正文与思考 / 只有工具。 */
+internal enum class UnitSlice { Whole, TextOnly, ToolsOnly }
 
 /** 过程项：一个思考块，或一次工具往返。 */
 internal data class ProcessItem(
@@ -65,13 +73,29 @@ internal fun buildRows(units: List<ChatUnit>): List<ChatRow> {
 
     fun flush() {
         if (pending.isEmpty()) return
-        rows += if (pending.size == 1) ChatRow.Single(pending.first().unit) else ChatRow.Process(pending)
+        rows += if (pending.size == 1) {
+            val only = pending.first()
+            // 单独一项工具只画工具；单独一项思考照旧画整条。
+            ChatRow.Single(
+                only.unit,
+                slice = if (only.kind == ProcessItem.Kind.Tool) UnitSlice.ToolsOnly else UnitSlice.Whole,
+            )
+        } else {
+            ChatRow.Process(pending)
+        }
         pending = mutableListOf()
     }
 
     for (unit in units) {
         val item = processItemOf(unit)
         if (item != null) {
+            // 折行之后，工具那一轮里还带着正文与思考（D258）。以前这里只画工具，
+            // 于是每轮的"我先看看"和思考都被吞掉了（2026-11-05 真机报的）。
+            // 先把它当正文画一行，工具另起一项——顺序就是屏幕上的顺序。
+            if (unit.isToolPair && unitHasBody(unit)) {
+                flush()
+                rows += ChatRow.Single(unit, slice = UnitSlice.TextOnly)
+            }
             pending += item
             continue
         }
@@ -91,6 +115,12 @@ internal fun buildRows(units: List<ChatUnit>): List<ChatRow> {
     flush()
     return rows
 }
+
+/** 这个单元里除了工具之外，还有没有正文或思考要画。 */
+internal fun unitHasBody(unit: ChatUnit): Boolean =
+    unit.messages.any { message ->
+        !message.reasoning.isNullOrBlank() || message.content.isNotBlank()
+    }
 
 /**
  * 正文那条消息的思考，当成一个过程项。
