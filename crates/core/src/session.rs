@@ -105,34 +105,25 @@ pub trait HistoryStore {
             "这个历史实现不支持块级编辑，消息 {message_id} 没有改动"
         ))
     }
-    /// 记一版**新生成的**回复（D185 的重试）：这一版成为当前版，旧版留着。
+    /// 重试：把 `after` 之后的**整轮**换成 `units`（D263）。
     ///
-    /// 默认实现拒绝：内存实现没理由假装记了版本。
-    /// 重试落成新版本。`reasoning` 跟着这一版走（D250）：只换正文不换思考，
-    /// 屏幕上就是"新话 + 上一版的思考"——2026-11-04 真机上就是这么错的。
-    fn save_generated_version(
+    /// 为什么是"整轮"而不是"最后一条"：折行之后一轮回答是 N 条消息（每轮一条），
+    /// 只换最后一条的话，前面那几轮的工具块留在库里——重试完屏幕上就是
+    /// "新正文 + 上一轮的工具"（2026-11-06 真机报的）。
+    ///
+    /// `keep_version` = 应用设置里的「允许生成新版本」：开着就把旧那一轮留成一版，
+    /// 关着就直接丢。返回新的落点（这一轮最后一条消息的 id）。
+    ///
+    /// 默认实现拒绝：内存实现没理由假装换了库。
+    fn replace_turn(
         &mut self,
-        message_id: &MessageId,
-        text: &str,
-        reasoning: Option<&str>,
-    ) -> Result<(), String> {
-        let _ = (text, reasoning);
-        Err(format!(
-            "这个历史实现不支持记版本，消息 {message_id} 没有改动"
-        ))
-    }
-
-    /// 覆盖当前这一版的正文（D185："允许生成新版本"关着时走这条）。
-    fn overwrite_message_text(
-        &mut self,
-        message_id: &MessageId,
-        text: &str,
-        reasoning: Option<&str>,
-    ) -> Result<(), String> {
-        let _ = (text, reasoning);
-        Err(format!(
-            "这个历史实现不支持覆盖正文，消息 {message_id} 没有改动"
-        ))
+        session: SessionId,
+        after: &MessageId,
+        units: &[AtomicUnit],
+        keep_version: bool,
+    ) -> Result<Option<MessageId>, String> {
+        let _ = (session, after, units, keep_version);
+        Err("这个历史实现不支持整轮替换：这一轮没有落库".to_string())
     }
 
     /// 一次单元级编辑（0.15f / D188）：改块 / 删块 / 落红 / undo 全由实现方负责。
@@ -341,19 +332,6 @@ fn with_task_anchor(summary: Option<Message>, compacted: bool, user_text: &str) 
 ///
 /// 覆盖而不是追加：同一份 base 会被多轮复用（重试、队列），追加会让上一轮的图
 /// 跟着下一轮再发一遍——那既费钱又会让模型看到"你没发过的图"。
-/// 这一版的思考：空串就是"没有"，存 `NULL` 而不是 `""`（D250）。
-///
-/// 为什么要区分：`NULL` = 这一版没有思考（切过去时界面上那块该消失）；
-/// `""` 会被当成"有思考但内容为空"，界面上留一个空壳。
-fn reasoning_of(reasoning: &str) -> Option<&str> {
-    let trimmed = reasoning.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(reasoning)
-    }
-}
-
 fn attach_images<S: HistoryStore>(
     request: &mut ChatRequest,
     store: &S,
@@ -392,6 +370,94 @@ fn attach_images<S: HistoryStore>(
         }
     }
     Ok(())
+}
+
+/// 把这一轮模型的每一轮落成原子单元（D253 / D258）。
+///
+/// **不落库**：调用方决定是"追加"（新发一轮）还是"整轮替换"（重试，D263）。
+/// 顺序就是发生顺序：第 1 轮（正文 + 调用）→ 第 2 轮 → ……，一行不多一行不少。
+fn round_units(
+    session: SessionId,
+    first_seq: u64,
+    report: &TurnReport,
+    now: i64,
+) -> Result<Vec<AtomicUnit>, SessionError> {
+    let mut units = Vec::new();
+    let mut seq = first_seq;
+    let last_round = report.rounds_detail.len().saturating_sub(1);
+    for (index, round) in report.rounds_detail.iter().enumerate() {
+        // 只有最后那一轮才可能"没说完"（前面的轮次都以工具调用收尾了）。
+        let incomplete = index == last_round && !report.finished;
+        // 正文为空、又没有调用 → 这一轮什么都没说，不落（空消息进历史只是噪声）。
+        if round.text.trim().is_empty() && round.calls.is_empty() {
+            continue;
+        }
+        let mut message = if round.calls.is_empty() {
+            Message::text(
+                MessageId::new(session, seq),
+                Role::Assistant,
+                SourceTag::History,
+                round.text.clone(),
+                estimate_tokens(&round.text),
+                now,
+                LogicalClock::new(seq),
+            )
+        } else {
+            // 一轮 = 一条消息（D258）：调用与它的结果都在同一条里，不再另起 `role=tool` 的行。
+            let head_tokens = round
+                .calls
+                .iter()
+                .map(|call| estimate_tokens(&call.arguments))
+                .sum();
+            Message::tool_call_message(
+                MessageId::new(session, seq),
+                round.calls.clone(),
+                head_tokens,
+                now,
+                LogicalClock::new(seq),
+            )
+        };
+        if !round.text.trim().is_empty() {
+            message.set_text(round.text.clone());
+        }
+        if !round.reasoning.trim().is_empty() {
+            message.set_reasoning(Some(round.reasoning.clone()));
+        }
+        for call in &round.calls {
+            match report
+                .tool_calls
+                .iter()
+                .find(|record| record.call_id == call.id)
+            {
+                Some(record) => {
+                    let status = if record.ok {
+                        ToolStatus::Ok
+                    } else {
+                        ToolStatus::Error
+                    };
+                    message.set_tool_output(&call.id, record.outcome.clone(), status);
+                }
+                // 没跑成的那几条照样落一块：它发出去过，界面上要能指出来。
+                None => {
+                    message.set_tool_output(
+                        &call.id,
+                        "这一条没有执行（整轮被停）",
+                        ToolStatus::Killed,
+                    );
+                }
+            }
+        }
+        let message = message.mark_incomplete(incomplete);
+        let unit = if round.calls.is_empty() {
+            AtomicUnit::turn(message)
+        } else {
+            AtomicUnit::tool_pair(message)
+        }
+        .map_err(|error| SessionError::Save(error.to_string()))?;
+        units.push(unit);
+        seq += 1;
+    }
+    Ok(units)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -572,85 +638,15 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     // 每一轮先落正文（有的话），再落这一轮的全部调用与结果。以前是"所有工具对 + 最后一轮的
     // 正文"——多轮往返时前面几轮的正文只活在 `report.text` 的覆盖里：用户屏幕上看见过，
     // 库里没有，重开会话就没了。现在库里存的顺序与屏幕上看到的一致。
+    let units = round_units(session, next_seq + 2, &report, now)?;
     let mut persisted = Vec::new();
-    let mut seq = next_seq + 2;
     let mut assistant: Option<Message> = None;
-    let last_round = report.rounds_detail.len().saturating_sub(1);
-    for (index, round) in report.rounds_detail.iter().enumerate() {
-        // 只有最后那一轮才可能"没说完"（前面的轮次都以工具调用收尾了）。
-        let incomplete = index == last_round && !report.finished;
-        // 正文为空、又没有调用 → 这一轮什么都没说，不落（空消息进历史只是噪声）。
-        if round.text.trim().is_empty() && round.calls.is_empty() {
-            continue;
-        }
-        let mut message = if round.calls.is_empty() {
-            Message::text(
-                MessageId::new(session, seq),
-                Role::Assistant,
-                SourceTag::History,
-                round.text.clone(),
-                estimate_tokens(&round.text),
-                now,
-                LogicalClock::new(seq),
-            )
-        } else {
-            // 一轮 = 一条消息（D258）：调用与它的结果都在同一条里，不再另起 `role=tool` 的行。
-            let head_tokens = round
-                .calls
-                .iter()
-                .map(|call| estimate_tokens(&call.arguments))
-                .sum();
-            Message::tool_call_message(
-                MessageId::new(session, seq),
-                round.calls.clone(),
-                head_tokens,
-                now,
-                LogicalClock::new(seq),
-            )
-        };
-        if !round.text.trim().is_empty() {
-            message.set_text(round.text.clone());
-        }
-        if !round.reasoning.trim().is_empty() {
-            message.set_reasoning(Some(round.reasoning.clone()));
-        }
-        for call in &round.calls {
-            match report
-                .tool_calls
-                .iter()
-                .find(|record| record.call_id == call.id)
-            {
-                Some(record) => {
-                    let status = if record.ok {
-                        ToolStatus::Ok
-                    } else {
-                        ToolStatus::Error
-                    };
-                    message.set_tool_output(&call.id, record.outcome.clone(), status);
-                }
-                // 没跑成的那几条照样落一块：它发出去过，界面上要能指出来。
-                None => {
-                    message.set_tool_output(
-                        &call.id,
-                        "这一条没有执行（整轮被停）",
-                        ToolStatus::Killed,
-                    );
-                }
-            }
-        }
-        let message = message.mark_incomplete(incomplete);
-        let unit = if round.calls.is_empty() {
-            AtomicUnit::turn(message.clone())
-        } else {
-            AtomicUnit::tool_pair(message.clone())
-        }
-        .map_err(|error| SessionError::Save(error.to_string()))?;
+    for unit in &units {
         store
-            .append_unit(session, &unit)
+            .append_unit(session, unit)
             .map_err(SessionError::Save)?;
         persisted.push(unit.id.clone());
-        seq += 1;
-        assistant = Some(message);
+        assistant = unit.messages.last().cloned();
     }
 
     // 3.5 模型改消息（D177 / 0.14y）：工具在那边只说"已排队"，**这里**才真的落库。
@@ -829,7 +825,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         turn_config.truncate_at = Some(config.trigger.absolute.resolve(budget.usable()));
     }
 
-    let report = run_turn(
+    let mut report = run_turn(
         client,
         &frozen_base,
         &history,
@@ -861,59 +857,76 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         ));
     }
 
-    let appended = match target {
-        Some(target) => {
-            // 续话：正文 = 原正文 + 续文。位置取的是**屏幕上那一份**（`content`），
-            // 不是某一版的原文——用户接的是他看见的那一段。
-            let text = if append {
-                let before = units_all
-                    .iter()
-                    .flat_map(|unit| unit.messages.iter())
-                    .find(|message| &message.id == target)
-                    .map(|message| message.content())
-                    .unwrap_or_default();
-                join_continuation(&before, &report.text)
-            } else {
-                report.text.clone()
-            };
-            if config.allow_new_version {
-                store
-                    .save_generated_version(target, &text, reasoning_of(&report.reasoning))
-                    .map_err(SessionError::Save)?;
-            } else {
-                store
-                    .overwrite_message_text(target, &text, reasoning_of(&report.reasoning))
-                    .map_err(SessionError::Save)?;
+    // 续话：正文 = 原正文 + 续文。位置取的是**屏幕上那一份**（`content`），
+    // 不是某一版的原文——用户接的是他看见的那一段。
+    if append {
+        if let Some(target) = target {
+            let before = units_all
+                .iter()
+                .flat_map(|unit| unit.messages.iter())
+                .find(|message| &message.id == target)
+                .map(|message| message.content())
+                .unwrap_or_default();
+            let joined = join_continuation(&before, &report.text);
+            if let Some(last) = report.rounds_detail.last_mut() {
+                last.text = joined.clone();
             }
-            None
+            report.text = joined;
         }
+    }
+
+    // 换哪一段：**这一轮** = 最后一条用户消息之后的全部行。
+    // 重试时 `up_to` 就是那条用户消息；续话时 `up_to` 是目标消息自己，得往前找一条——
+    // 不找的话旧的那条留在库里，屏幕上就是同一段话出现两遍。
+    let turn_start = units
+        .iter()
+        .flat_map(|unit| unit.messages.iter())
+        .filter(|message| message.role == Role::User)
+        .filter(|message| message.id.seq() <= target.map(|id| id.seq()).unwrap_or(u64::MAX))
+        .last()
+        .map(|message| message.id.clone())
+        .unwrap_or_else(|| up_to.clone());
+
+    // 落库：**整轮**（D263）。重试换掉的是一整轮回答，不是最后那一条——
+    // 折行之后一轮回答是 N 条消息，只换最后一条的话，前面几轮的工具块会留在库里，
+    // 屏幕上就是"新正文 + 上一轮的工具"（2026-11-06 真机报的）。
+    //
+    // 序号从**这一轮的起点**接着排：换掉的那一段空出来了，新的就该落在原地。
+    // 轮数没变时消息 id 一个都不动，界面上那颗 `<n/n>` 也不会跳位置。
+    let first_seq = match target {
+        Some(_) => turn_start.seq() + 1,
         None => {
-            let next_seq = units
+            units
                 .iter()
                 .map(|unit| unit.last_message().id.seq())
                 .max()
                 .unwrap_or(0)
-                + 1;
-            let message = Message::text(
-                MessageId::new(session, next_seq),
-                Role::Assistant,
-                SourceTag::History,
-                report.text.clone(),
-                estimate_tokens(&report.text),
-                now,
-                LogicalClock::new(next_seq),
-            );
-            let message = if report.reasoning.trim().is_empty() {
-                message
-            } else {
-                message.with_reasoning(&report.reasoning)
-            };
-            let unit =
-                AtomicUnit::turn(message).map_err(|error| SessionError::Save(error.to_string()))?;
+                + 1
+        }
+    };
+    let fresh = round_units(session, first_seq, &report, now)?;
+    if fresh.is_empty() {
+        return Err(SessionError::Save("这一轮没有可落的内容".into()));
+    }
+    let anchor = fresh
+        .last()
+        .and_then(|unit| unit.messages.last())
+        .map(|message| message.id.clone());
+
+    let appended = match target {
+        Some(_) => {
             store
-                .append_unit(session, &unit)
+                .replace_turn(session, &turn_start, &fresh, config.allow_new_version)
                 .map_err(SessionError::Save)?;
-            Some(unit.id.clone())
+            None
+        }
+        None => {
+            for unit in &fresh {
+                store
+                    .append_unit(session, unit)
+                    .map_err(SessionError::Save)?;
+            }
+            fresh.last().map(|unit| unit.id.clone())
         }
     };
 
@@ -921,7 +934,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         text: report.text.clone(),
         reasoning: report.reasoning.clone(),
         report,
-        target: target.cloned(),
+        target: anchor,
         appended,
     })
 }
@@ -1348,10 +1361,107 @@ mod tests {
         assert_eq!(outcome.target.as_ref(), Some(&first_answer.id));
         assert_eq!(outcome.text, "新的回答");
         assert!(outcome.appended.is_none());
-        let landed = store.generated.lock().unwrap().clone();
-        assert_eq!(landed.len(), 1, "{landed:?}");
-        assert_eq!(landed[0].0, first_answer.id);
-        assert_eq!(landed[0].1, "新的回答");
+        let replaced = store.replaced.lock().unwrap().clone();
+        assert_eq!(replaced.len(), 1, "{replaced:?}");
+        assert_eq!(replaced[0].0, user.id, "换的是这条用户消息之后的一整轮");
+        assert_eq!(replaced[0].1, 1, "旧的那一条要被换掉");
+        assert_eq!(replaced[0].2, 1, "新的那一轮落一条");
+        let tail = store.units.last().expect("新的一轮在库里");
+        assert_eq!(tail.last_message().content(), "新的回答");
+    }
+
+    /// D263：重试换的是**整轮**，不是最后那一条。
+    ///
+    /// 2026-11-06 真机：重试完屏幕上"工具块是上一轮的、最后的思考是这一轮的"。
+    /// 折行之后一轮回答是 N 条消息，只换最后一条的话前面那几轮的工具块全留在库里。
+    #[test]
+    fn regenerate_replaces_the_whole_turn_not_only_the_last_message() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = EditStore::default();
+
+        let user = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "看看 a.txt",
+            3,
+            1,
+            LogicalClock::new(1),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(user.clone()).unwrap())
+            .unwrap();
+        let head = Message::tool_call_message(
+            MessageId::new(session, 2),
+            vec![OutgoingToolCall::new(
+                "c1",
+                "read_file",
+                r#"{"path":"a.txt"}"#,
+            )],
+            4,
+            2,
+            LogicalClock::new(2),
+        );
+        let mut pair = AtomicUnit::tool_pair(head).unwrap();
+        pair.set_output("c1", "hello", ToolStatus::Ok).unwrap();
+        store.append_unit(session, &pair).unwrap();
+        let answer = Message::text(
+            MessageId::new(session, 3),
+            Role::Assistant,
+            SourceTag::History,
+            "旧的回答",
+            3,
+            3,
+            LogicalClock::new(3),
+        );
+        store
+            .append_unit(session, &AtomicUnit::turn(answer.clone()).unwrap())
+            .unwrap();
+
+        let transport = Scripted::new(vec![
+            calls_body(&[("c9", "read_file", r#"{"path":"a.txt"}"#)]),
+            text_body("新的回答"),
+        ]);
+        let client = ChatClient::new(transport);
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+
+        regenerate_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            &user.id,
+            Some(&answer.id),
+            false,
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            4_000,
+        )
+        .unwrap();
+
+        let replaced = store.replaced.lock().unwrap().clone();
+        assert_eq!(replaced.len(), 1, "{replaced:?}");
+        assert_eq!(replaced[0].0, user.id, "换的是这条用户消息之后的一整轮");
+        assert_eq!(replaced[0].1, 2, "旧的两条（工具 + 正文）都要走");
+        assert_eq!(replaced[0].2, 2, "新的这一轮也是两条");
+
+        let units = store.load_units(session).unwrap();
+        let messages: Vec<Message> = units
+            .iter()
+            .flat_map(|unit| unit.messages.clone())
+            .collect();
+        assert_eq!(messages.len(), 3, "用户 + 新的两条");
+        assert_eq!(
+            messages[1].tool_calls()[0].call_id,
+            "c9",
+            "工具块必须是这一轮的"
+        );
+        assert_eq!(messages[2].content(), "新的回答");
     }
 
     /// 续话的拼接规则（D193）：中文直接接、英文之间留一个空格、换行不重复、空的那一侧原样。
@@ -1422,12 +1532,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(outcome.text, "山里有座庙", "续回来的只是后半段");
-        let landed = store.generated.lock().unwrap().clone();
-        assert_eq!(landed.len(), 1, "{landed:?}");
-        assert_eq!(landed[0].0, first_answer.id);
         assert_eq!(
-            landed[0].1, "从前有座山山里有座庙",
+            outcome.text, "从前有座山山里有座庙",
+            "回给界面的就是落库的那一份（接好的全文）"
+        );
+        let replaced = store.replaced.lock().unwrap().clone();
+        assert_eq!(replaced.len(), 1, "{replaced:?}");
+        let tail = store.units.last().expect("续话之后库里有一条");
+        assert_eq!(
+            tail.last_message().content(),
+            "从前有座山山里有座庙",
             "落库的应该是接好的全文，不是只有后半段"
         );
     }
@@ -1489,7 +1603,7 @@ mod tests {
             "要报「只有思考与工具调用、没有正文」：{text}"
         );
         assert!(
-            !text.contains("不支持记版本"),
+            !text.contains("不支持整轮替换"),
             "闸门要在碰 store 之前拦住：{text}"
         );
     }
@@ -2551,8 +2665,8 @@ mod tests {
     struct EditStore {
         units: Vec<AtomicUnit>,
         applied: Mutex<Vec<(MessageId, BlockSelector, String)>>,
-        /// `save_generated_version` 的调用记录（0.15h 的重试落库）。
-        generated: Mutex<Vec<(MessageId, String)>>,
+        /// `replace_turn` 的调用记录（D263 的整轮替换）：换掉了 `after` 之后几条、新的几条。
+        replaced: Mutex<Vec<(MessageId, usize, usize)>>,
     }
 
     impl HistoryStore for EditStore {
@@ -2587,17 +2701,26 @@ mod tests {
             })
         }
 
-        fn save_generated_version(
+        fn replace_turn(
             &mut self,
-            message_id: &MessageId,
-            text: &str,
-            _reasoning: Option<&str>,
-        ) -> Result<(), String> {
-            self.generated
+            _session: SessionId,
+            after: &MessageId,
+            units: &[AtomicUnit],
+            _keep_version: bool,
+        ) -> Result<Option<MessageId>, String> {
+            let before = self.units.len();
+            self.units
+                .retain(|unit| unit.last_message().id.seq() <= after.seq());
+            let removed = before - self.units.len();
+            self.units.extend(units.iter().cloned());
+            self.replaced
                 .lock()
                 .unwrap()
-                .push((message_id.clone(), text.to_string()));
-            Ok(())
+                .push((after.clone(), removed, units.len()));
+            Ok(units
+                .last()
+                .and_then(|unit| unit.messages.last())
+                .map(|message| message.id.clone()))
         }
 
         /// 0.15f：`edit_unit` 在收尾时走这一条。这里只记账，真落库由 `crates/storage` 的测试盯。

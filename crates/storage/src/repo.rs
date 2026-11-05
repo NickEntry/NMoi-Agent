@@ -759,53 +759,7 @@ impl Storage {
             return Err(StorageError::Inconsistent(format!("会话 {session} 不存在")));
         }
 
-        for message in &unit.messages {
-            tx.execute(
-                "INSERT INTO messages(
-                     id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
-                     form, tokens, created_at, logical_clock, archived_ref,
-                     protected, pinned, locked, revision, incomplete)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-                 ON CONFLICT(id) DO UPDATE SET
-                     form = excluded.form,
-                     tokens = excluded.tokens,
-                     logical_clock = excluded.logical_clock,
-                     archived_ref = excluded.archived_ref,
-                     protected = excluded.protected,
-                     pinned = excluded.pinned,
-                     locked = excluded.locked,
-                     revision = excluded.revision,
-                     incomplete = excluded.incomplete,
-                     unit_closed = excluded.unit_closed",
-                params![
-                    message.id.to_string(),
-                    session.to_string(),
-                    unit.id.to_string(),
-                    unit.kind.as_str(),
-                    if unit.is_closed() { 1 } else { 0 },
-                    message.id.seq() as i64,
-                    message.role.as_str(),
-                    message.source.as_str(),
-                    message.form.to_string(),
-                    message.tokens,
-                    message.created_at,
-                    message.logical_clock.value() as i64,
-                    message.archived_ref.as_ref().map(|r| r.to_string()),
-                    if message.protected { 1 } else { 0 },
-                    if message.pinned { 1 } else { 0 },
-                    if message.locked { 1 } else { 0 },
-                    message.revision,
-                    if message.incomplete { 1 } else { 0 },
-                ],
-            )?;
-            crate::parts::write_parts(&tx, message)?;
-        }
-
-        // 同一单元的所有行统一闭合状态。
-        tx.execute(
-            "UPDATE messages SET unit_closed = ?1 WHERE unit_id = ?2",
-            params![if unit.is_closed() { 1 } else { 0 }, unit.id.to_string()],
-        )?;
+        insert_unit_rows(&tx, session, unit)?;
         tx.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
             params![crate::validate::now_ms(), session.to_string()],
@@ -1373,7 +1327,10 @@ impl ArchiveStore for Storage {
     }
 }
 
-fn conversation_exists_in(conn: &Connection, session: SessionId) -> Result<bool, rusqlite::Error> {
+pub(crate) fn conversation_exists_in(
+    conn: &Connection,
+    session: SessionId,
+) -> Result<bool, rusqlite::Error> {
     let found: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM conversations WHERE id = ?1",
@@ -1391,6 +1348,119 @@ fn unit_kind_for(conn: &Connection, unit_id: &UnitId) -> Result<UnitKind, Storag
         |row| row.get(0),
     )?;
     UnitKind::parse(&kind).map_err(StorageError::Unit)
+}
+
+/// 写一个单元的全部行（消息 + 块）。调用方负责事务与"写后读回比对"。
+///
+/// 抽出来是为了让整轮替换（D263）与追加走同一条写入路径：两份 INSERT 迟早有一份忘了
+/// 写块、或者忘了同步 `unit_closed`。
+pub(crate) fn insert_unit_rows(
+    tx: &rusqlite::Transaction<'_>,
+    session: SessionId,
+    unit: &AtomicUnit,
+) -> Result<(), StorageError> {
+    for message in &unit.messages {
+        tx.execute(
+            "INSERT INTO messages(
+                 id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
+                 form, tokens, created_at, logical_clock, archived_ref,
+                 protected, pinned, locked, revision, incomplete)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             ON CONFLICT(id) DO UPDATE SET
+                 form = excluded.form,
+                 tokens = excluded.tokens,
+                 logical_clock = excluded.logical_clock,
+                 archived_ref = excluded.archived_ref,
+                 protected = excluded.protected,
+                 pinned = excluded.pinned,
+                 locked = excluded.locked,
+                 revision = excluded.revision,
+                 incomplete = excluded.incomplete,
+                 unit_closed = excluded.unit_closed",
+            params![
+                message.id.to_string(),
+                session.to_string(),
+                unit.id.to_string(),
+                unit.kind.as_str(),
+                if unit.is_closed() { 1 } else { 0 },
+                message.id.seq() as i64,
+                message.role.as_str(),
+                message.source.as_str(),
+                message.form.to_string(),
+                message.tokens,
+                message.created_at,
+                message.logical_clock.value() as i64,
+                message.archived_ref.as_ref().map(|r| r.to_string()),
+                if message.protected { 1 } else { 0 },
+                if message.pinned { 1 } else { 0 },
+                if message.locked { 1 } else { 0 },
+                message.revision,
+                if message.incomplete { 1 } else { 0 },
+            ],
+        )?;
+        crate::parts::write_parts(tx, message)?;
+    }
+    // 同一单元的所有行统一闭合状态。
+    tx.execute(
+        "UPDATE messages SET unit_closed = ?1 WHERE unit_id = ?2",
+        params![if unit.is_closed() { 1 } else { 0 }, unit.id.to_string()],
+    )?;
+    Ok(())
+}
+
+/// `after_seq` 之后的全部消息（含块），按 seq 升序。
+///
+/// 整轮替换（D263）与版本快照都用它：一轮回答在库里就是"最后一条用户消息之后的全部行"。
+pub(crate) fn load_tail_messages(
+    tx: &rusqlite::Transaction<'_>,
+    session: SessionId,
+    after_seq: u64,
+) -> Result<Vec<Message>, StorageError> {
+    let mut stmt = tx.prepare(
+        "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
+                form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
+                locked, revision, tool_call_id, incomplete
+         FROM messages WHERE conv_id = ?1 AND seq > ?2 ORDER BY seq ASC",
+    )?;
+    let rows = stmt.query_map(
+        params![session.to_string(), after_seq as i64],
+        row_to_message,
+    )?;
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row?);
+    }
+    drop(stmt);
+
+    let mut parts: std::collections::HashMap<String, Vec<nmoi_core::message::Part>> =
+        std::collections::HashMap::new();
+    let mut parts_stmt = tx.prepare(
+        "SELECT p.message_id, p.part_id, p.kind, p.body
+           FROM message_parts p JOIN messages m ON m.id = p.message_id
+          WHERE m.conv_id = ?1 AND m.seq > ?2 ORDER BY p.message_id, p.ord",
+    )?;
+    let part_rows =
+        parts_stmt.query_map(params![session.to_string(), after_seq as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+    for row in part_rows {
+        let (message, part_id, kind, body) = row?;
+        parts.entry(message).or_default().push(
+            nmoi_core::message::Part::from_body(part_id, &kind, &body)
+                .map_err(StorageError::Inconsistent)?,
+        );
+    }
+    for message in &mut messages {
+        if let Some(list) = parts.get(&message.id.to_string()) {
+            message.set_parts(list.clone());
+        }
+    }
+    Ok(messages)
 }
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
@@ -1644,30 +1714,15 @@ impl nmoi_core::session::HistoryStore for Storage {
             .map_err(|error| error.to_string())
     }
 
-    /// 重试落成新版本（D185）：这一版成为当前版，旧版留着。
-    ///
-    /// `reasoning` 跟着版本走（D250）：只换正文不换思考，屏幕上就会是"新话 + 上一版的思考"。
-    fn save_generated_version(
+    /// 重试：整轮替换（D263）。
+    fn replace_turn(
         &mut self,
-        message_id: &MessageId,
-        text: &str,
-        reasoning: Option<&str>,
-    ) -> Result<(), String> {
-        // **追加**而不是 save_generated_version：重试时消息里已经有一份旧回答，
-        // 不先把它落成第 1 版就被顶掉了（`<2/2>` 往回切会切到空白）。
-        Storage::append_generated_version_with(self, message_id, text, reasoning)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    /// 重试覆盖当前版（D185："允许生成新版本"关着时）。
-    fn overwrite_message_text(
-        &mut self,
-        message_id: &MessageId,
-        text: &str,
-        reasoning: Option<&str>,
-    ) -> Result<(), String> {
-        Storage::overwrite_message_text_with(self, message_id, text, reasoning)
+        session: SessionId,
+        after: &MessageId,
+        units: &[AtomicUnit],
+        keep_version: bool,
+    ) -> Result<Option<MessageId>, String> {
+        Storage::replace_turn(self, session, after, units, keep_version)
             .map_err(|error| error.to_string())
     }
 

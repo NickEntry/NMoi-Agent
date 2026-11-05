@@ -755,6 +755,25 @@ fn apply_version(
         },
     )?;
     if let Some(json) = parts_json.as_deref() {
+        let effective = if edited_by_tool == 0 || edited.is_none() {
+            VersionView::Raw
+        } else {
+            view
+        };
+        let text = shown_text(&raw, edited.as_deref(), effective);
+        // 一版 = 一整轮（D263）：快照里是这一轮的全部消息，整轮换回来。
+        if let Some(messages) = crate::turnreplace::restore_turn(json)? {
+            let landed = crate::turnreplace::restore_turn_rows(tx, id, version_no, messages)?;
+            // 视图那一份正文仍以两列为准（用户编辑过的那一组可能和快照不同）。
+            crate::parts::set_part_text(tx, &landed.to_string(), "text", &text)?;
+            crate::parts::set_part_text(
+                tx,
+                &landed.to_string(),
+                "reasoning",
+                reasoning.as_deref().unwrap_or_default(),
+            )?;
+            return Ok(text);
+        }
         let parts = crate::parts::restore(json)?;
         crate::parts::write_part_list(tx, id, &parts)?;
     }

@@ -2069,7 +2069,8 @@ private fun MessageArea(
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
     // 发出去那一刻 `pending` 会插在末尾，所以它也要进 key——否则新气泡在屏幕外面。
-    val liveItem = if (live != null && regenTarget == null) 1 else 0
+    // 重试那一轮的目标行被藏起来了，所以 live 一律画在底部——那个位置就是它要去的地方。
+    val liveItem = if (live != null) 1 else 0
     LaunchedEffect(rows.size, truncated, pending, live != null, regenTarget) {
         val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
@@ -2104,7 +2105,10 @@ private fun MessageArea(
             }
         }
         itemsIndexed(rows) { index, row ->
-            if (row is ChatRow.Process && regenFrom >= 0 && index > regenFrom) {
+            // 重试/续话期间（D263）：这一轮**整轮**都不画。
+            // 折行之后一轮回答是好几条消息，只藏「过程块」会把工具那半行留下——
+            // 屏幕上就是"新正文 + 上一轮的工具块"（2026-11-06 真机报的）。
+            if (regenFrom >= 0 && index > regenFrom) {
                 return@itemsIndexed
             }
             val previous = rows.getOrNull(index - 1)
@@ -2142,8 +2146,6 @@ private fun MessageArea(
                 onToggleFinishedThinking = onToggleFinishedThinking,
                 maxBubble = maxBubble,
                 gapAbove = gap,
-                live = live,
-                regenTarget = regenTarget,
                 selecting = selecting,
                 selected = selected,
                 onLongPressMessage = onLongPressMessage,
@@ -2192,9 +2194,9 @@ private fun MessageArea(
             }
         }
         val streaming = live
-        // 有目标消息时这一轮画在那条消息上（D227）；只有"结果会落成一条新消息"时
-        // 才在底部立一个占位——那个位置本来就是新消息要去的地方。
-        if (streaming != null && regenTarget == null) {
+        // 重试与发送同一个画法：这一轮画在**底部**。目标那一条属于旧的那一轮，
+        // 它已经整轮藏掉了（D263），再往它身上画就等于把旧的又放出来一半。
+        if (streaming != null) {
             item(key = "live-assistant") {
                 LiveReplyRow(
                     reply = streaming,
@@ -2458,10 +2460,6 @@ private fun UnitBlock(
     onToggleFinishedThinking: (Int) -> Unit = {},
     maxBubble: Dp,
     gapAbove: Dp,
-    /** 这一轮正在长的回复（就地渲染用，D227）。 */
-    live: LiveReply? = null,
-    /** 它长在哪条消息上；`null` = 不在这一轮里。 */
-    regenTarget: String? = null,
     selecting: Boolean,
     selected: Set<String>,
     onLongPressMessage: (String) -> Unit,
@@ -2527,8 +2525,6 @@ private fun UnitBlock(
                         AssistantMessage(
                             message = message,
                             showHeader = false,
-                            // 就地渲染（D227）：这一轮长在这条消息上。
-                            live = live?.takeIf { message.id == regenTarget },
                             liveThinkingOpen = liveThinkingOpen,
                             onToggleLiveThinking = onToggleLiveThinking,
                             onOpenRunningCall = onOpenRunningCall,
@@ -2933,14 +2929,6 @@ private fun AssistantMessage(
     message: ChatMessage,
     /** 抬头由 [UnitBlock] 统一画（思考卡/工具卡要排在它下面），所以这里默认不画。 */
     showHeader: Boolean = false,
-    /**
-     * 这一轮正在长出来的那一份（D227，就地渲染）。
-     *
-     * 非空时正文画的是**正在长的这一份**，不是库里那一版——重试期间库里还是旧回答，
-     * 画旧回答再加一行"正在生成"会让人以为它没动。动作行这时也不画：
-     * 复制/版本/编辑指的都是库里那份，而现在屏幕上这份还没落库。
-     */
-    live: LiveReply? = null,
     selecting: Boolean,
     isSelected: Boolean,
     onLongPress: () -> Unit,
@@ -2981,60 +2969,6 @@ private fun AssistantMessage(
         // 头像 + 名字/时间占一行；**正文在它们下面整行铺开**，
         // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
         if (showHeader) AssistantHeader(createdAt = message.createdAt)
-        if (live != null) {
-            live.finished.forEachIndexed { index, done ->
-                LiveProcessCard(
-                    reasoning = done.reasoning,
-                    calls = emptyList(),
-                    thinkingOpen = finishedThinkingOpen(index),
-                    onToggleThinking = { onToggleFinishedThinking(index) },
-                    onOpenCall = {},
-                )
-                if (done.text.isNotBlank()) {
-                    MarkdownBody(
-                        text = done.text,
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                    )
-                }
-            }
-            // 就地渲染：过程块与正文都取这一轮收到的增量，收尾时换成库里那份（形状一致，不跳）。
-            LiveProcessCard(
-                reasoning = live.reasoning,
-                calls = live.calls,
-                done = live.done,
-                thinkingOpen = liveThinkingOpen,
-                onToggleThinking = onToggleLiveThinking,
-                onOpenCall = onOpenRunningCall,
-                onOpenDone = onOpenDoneCall,
-            )
-            if (live.text.isNotBlank()) {
-                MarkdownBody(
-                    text = live.text,
-                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                )
-            }
-            val note = when {
-                live.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里）"
-                // 重试（D249）：旧的那一版还在库里，这一版写完才落成 `<n+1>/<n+1>`。
-                // 写清楚，否则用户看到正文"变空了"会以为刚才那条被删了。
-                live.regen && live.text.isBlank() && live.reasoning.isBlank() ->
-                    "正在重写这一版…（旧的留着，切得回去）"
-                live.regen -> "正在重写这一版…（旧的留着；停止键随时可用）"
-                live.text.isBlank() && live.reasoning.isBlank() -> "正在生成…"
-                else -> "正在生成…（停止键随时可用）"
-            }
-            Text(
-                text = note,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (live.cut) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier.padding(top = 6.dp),
-            )
-            return@Column
-        }
         MarkdownBody(
             text = message.content.ifEmpty { "（空消息）" },
             modifier = Modifier
@@ -3706,6 +3640,7 @@ private fun ToolProcessRow(unit: ChatUnit, onOpen: (ToolCallArg) -> Unit) {
                     name = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用",
                     summary = toolSummaryOf(call),
                     preview = toolArgumentPreview(call.arguments),
+                    icon = toolIcon(call.name),
                     failed = call.status == "error" || call.status == "killed",
                     onClick = { onOpen(call) },
                 )
@@ -3722,12 +3657,18 @@ private fun toolSummaryOf(call: ToolCallArg): String {
     if (text.isEmpty()) return "（空）"
     val exit = Regex("\"exit_code\"\\s*:\\s*(-?\\d+)").find(text)?.groupValues?.get(1)
     val millis = Regex("\"duration_ms\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
-    return when {
-        exit != null && millis != null -> "exit $exit · ${millis}ms"
-        exit != null -> "exit $exit"
-        else -> "${text.length} 字"
-    }
+    if (exit != null && millis != null) return "exit $exit · ${millis}ms"
+    if (exit != null) return "exit $exit"
+    // 查看图像：它没有退出码，写"N 字"等于什么都没说（2026-11-06 用户提的）。
+    val at = Regex("\"in_context\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
+    val limit = Regex("\"limit\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
+    if (at != null && limit != null) return "第 $at/$limit 张"
+    return "${text.length} 字"
 }
+
+/** 工具行的图标：图像类的不该挂一把扳手（图标是扫读锚点，不是装饰）。 */
+private fun toolIcon(name: String): androidx.compose.ui.graphics.vector.ImageVector =
+    if (name == "View-Image") ActionIcons.Image else ActionIcons.Wrench
 
 /** 过程块里的一行：扳手 + 名字 + 结果摘要 + chevron，下面一行参数预览。 */
 @Composable
@@ -3735,6 +3676,7 @@ private fun ToolCallLine(
     name: String,
     summary: String,
     preview: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector = ActionIcons.Wrench,
     failed: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
@@ -3745,7 +3687,7 @@ private fun ToolCallLine(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                imageVector = ActionIcons.Wrench,
+                imageVector = icon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),

@@ -22,6 +22,7 @@ pub mod recover;
 pub mod repo;
 pub mod schema;
 pub mod settings;
+pub mod turnreplace;
 pub mod validate;
 pub mod versions;
 
