@@ -63,6 +63,36 @@ pub struct TurnConfig {
     /// 上下文图片清单的上限（D248）。`0` = 用默认 20；硬上限 100（三家端点里最弱的
     /// Anthropic 就是 100 张/请求）。
     pub image_limit: u32,
+    /// 用户发的图怎么进请求（D270）。
+    pub image_mode: ImageMode,
+}
+
+/// 用户发的图怎么进请求（D270）。
+///
+/// 两种都成立，选哪种是用户的事：内联省一次工具往返，路径省 token。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageMode {
+    /// 把字节直接发给模型（默认，跟以前一样）。
+    #[default]
+    Inline,
+    /// 一张字节都不发，只把文件名告诉模型，让它自己调 `View-Image` 挑。
+    ///
+    /// 只在"真的能调 `View-Image`"时生效（要读权限，也就是会话绑了工作区）：
+    /// 否则图会变成"看得见文件名、永远读不到"，比内联更糟。
+    Path,
+}
+
+impl ImageMode {
+    /// 认两个词：`path` / 其余一律 `inline`。
+    ///
+    /// 不在这里报错：设置里那一格是开关，传进来的值只可能是这两个；
+    /// 真写错了，退回默认比让整轮发不出去好。
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "path" => Self::Path,
+            _ => Self::Inline,
+        }
+    }
 }
 
 /// 协作式取消（D58）：**在轮次边界上**问一次，不打断正在飞的网络往返。

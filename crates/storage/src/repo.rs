@@ -1696,6 +1696,26 @@ impl nmoi_core::session::HistoryStore for Storage {
         Ok(())
     }
 
+    /// 一条消息带的图片文件名（D270）：盘上的名字就是 `<附件 id>.<扩展名>`。
+    fn attachment_files(&self, message: &MessageId) -> Result<Vec<String>, String> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, mime FROM attachments WHERE message_id = ?1 ORDER BY rowid")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([message.to_string()], |row| {
+                let id: String = row.get(0)?;
+                let mime: String = row.get(1)?;
+                Ok(format!("{id}.{}", extension_for(&mime)))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut files = Vec::new();
+        for row in rows {
+            files.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(files)
+    }
+
     /// 认分界线的实现走 SQLite 那份（D149）：编排层只看到"窗口"，
     /// 不用自己知道 `archive` 里躺着摘要。
     fn load_window(&self, session: SessionId) -> Result<ContextWindow, String> {

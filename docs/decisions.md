@@ -1470,3 +1470,29 @@ kotlinc 全量只剩 9 个 `R`。
 
 判据：`an_image_added_by_a_tool_reaches_the_next_request_in_the_same_turn`
 （先在旧代码上红过：第 2 轮请求里没有 `data:image/png;base64,`）。
+
+## D270 图片模式：直发 / 路径信息（2026-11-06）
+
+用户 2026-11-06 定的第二件事：「设置里一个开关；打开且会话有工作区时，用户发的图**不内联**，
+只给路径，让模型自己调 `View-Image` 挑」。
+
+- 设置落在 `context.image_mode`（`inline` 默认 / `path`），应用设置里是**两颗 chip**，
+  不是开关——它有两个都成立的状态，不是"开/关一个功能"。
+- 生效条件是**两个**：设置选了 `path`，**而且**模型真的调得动 `View-Image`
+  （要读权限，也就是会话绑了工作区）。少第二个条件，图会变成"看得见文件名、永远读不到"，
+  比内联更糟；那种情况自动退回直发，设置页那一行写清了这件事。
+- 实现：`attach_images` 多一个 `skip_user_images`；`path_mode_on` 判条件；
+  `with_image_paths` 把文件名拼进**发出去的那一份**用户消息。库里那条一个字不动——
+  用户说的是他自己那句话，不该因为他开了个模式就多一段系统口吻的说明。
+- 文件名从 `HistoryStore::attachment_files` 来（新方法，只读名字不读字节）；
+  列表新的在前、去重、按 `image_limit` 截断，超出部分写"还有 N 张没列出来"。
+- **重试也走同一套**：不然"重试一次"就把用户想省的 token 全补回来了。
+
+没做：用户原话里还有一句「超过上下文上限时先不丢、留到这一轮结束前」。
+这一条没动工——图片上限是**每请求张数**的硬顶（100 是三家端点里最弱的 Anthropic），
+"先不丢"会直接把请求顶成 400。要落它，得先说清指的是哪一条上限（张数还是上下文 token），
+以及"这一轮结束前"之后这些图去哪。见 `docs/PLAN.md` 的 0.15al 那一行。
+
+判据：`path_mode_sends_the_file_names_instead_of_the_bytes`（先在旧行为上红过）、
+`path_mode_falls_back_to_inline_when_view_image_cannot_run`、
+`history_store_exposes_attachments_for_the_wire` 里新增的文件名断言。

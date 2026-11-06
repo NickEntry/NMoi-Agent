@@ -73,6 +73,7 @@ pub trait HistoryStore {
     ///
     /// 默认实现**什么都不存**（内存实现没有附件表），但这一轮的请求里仍然会带上它们——
     /// 落库失败不该让用户刚发的图凭空消失，只是下一轮重发时不会再带。
+    ///
     fn save_attachments(
         &mut self,
         message: &MessageId,
@@ -80,6 +81,15 @@ pub trait HistoryStore {
     ) -> Result<(), String> {
         let _ = (message, parts);
         Ok(())
+    }
+
+    /// 一条消息带的图片**文件名**（不读字节）。
+    ///
+    /// 图片模式（D270）只给模型路径：它要知道有哪些图可看，但这一轮一张字节都不发。
+    /// 默认空 = 这个实现没有盘上的附件。
+    fn attachment_files(&self, message: &MessageId) -> Result<Vec<String>, String> {
+        let _ = message;
+        Ok(Vec::new())
     }
 
     /// 当前窗口：最新分界线以下的单元 + 那条线的摘要（D149）。
@@ -336,9 +346,15 @@ fn attach_images<S: HistoryStore>(
     request: &mut ChatRequest,
     store: &S,
     history: &[Message],
+    skip_user_images: bool,
 ) -> Result<(), SessionError> {
     request.images.clear();
     for message in history {
+        // 图片模式（D270）：用户发的图一张都不内联，只给路径。
+        // 助手消息本来就不能带图（`build_body` 会拒），所以这里跳过用户消息就够了。
+        if skip_user_images && message.role == Role::User {
+            continue;
+        }
         let parts = store.attachments(&message.id).map_err(SessionError::Load)?;
         if !parts.is_empty() {
             request.images.push((message.id.clone(), parts));
@@ -347,6 +363,79 @@ fn attach_images<S: HistoryStore>(
     // 上下文图片（D248）**不在这里挂**：`View-Image` 可能就在这一轮的某一轮里把图加进清单，
     // 而这里整轮只跑一次。那份改由 `run_turn` 每轮发请求之前并（D269）。
     Ok(())
+}
+
+/// 图片模式要不要生效（D270）。
+///
+/// 两个条件：设置里选了路径，**而且**模型真的调得动 `View-Image`（要读权限，
+/// 也就是会话绑了工作区）。少第二个条件，图会变成"看得见文件名、永远读不到"——
+/// 那比内联更糟：用户以为模型看过，其实它一张都没看到。
+fn path_mode_on<S: HistoryStore>(
+    store: &S,
+    history: &[Message],
+    policy: &AssistantPolicy,
+    mode: crate::agent::ImageMode,
+) -> Result<bool, SessionError> {
+    if mode != crate::agent::ImageMode::Path {
+        return Ok(false);
+    }
+    if policy
+        .check(crate::policy::Capability::WorkspaceRead)
+        .is_err()
+    {
+        return Ok(false);
+    }
+    // 一张文件名都拿不到（内存实现没有盘上的附件）：照旧内联，别让模型两眼一抹黑。
+    Ok(!image_files(store, history)?.is_empty())
+}
+
+/// 历史里那些图片的文件名（新的在前，去重）。图片模式拿它写给模型看。
+fn image_files<S: HistoryStore>(
+    store: &S,
+    history: &[Message],
+) -> Result<Vec<String>, SessionError> {
+    let mut files: Vec<String> = Vec::new();
+    for message in history.iter().rev() {
+        if message.role != Role::User {
+            continue;
+        }
+        for file in store
+            .attachment_files(&message.id)
+            .map_err(SessionError::Load)?
+        {
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// 把"这一轮的图在哪"写进**发出去的那一份**用户消息（D270）。
+///
+/// 只改请求里的副本，库里那条一个字不动：用户说的是他自己那句话，
+/// 不该因为他开了个模式就多出一段系统口吻的说明。
+fn with_image_paths(message: &mut Message, files: &[String], limit: u32) {
+    let cap = crate::images::limit_of(limit);
+    let shown: Vec<&String> = files.iter().take(cap).collect();
+    let mut note =
+        String::from("\n\n[图片模式] 这一轮没有把图片内联给你。附件目录里有这些图（新的在前）：");
+    for file in &shown {
+        note.push_str(&format!("\n- /chat/images/{file}"));
+    }
+    if files.len() > shown.len() {
+        note.push_str(&format!(
+            "\n（还有 {} 张没列出来，清单上限 {} 张）",
+            files.len() - shown.len(),
+            cap
+        ));
+    }
+    note.push_str(
+        "\n要看哪张就调「查看图像」（View-Image，path 写文件名或这个完整路径）。\n\
+         先挑要紧的看；看完把结论写进正文或思考——工具结果不会替你记住它。",
+    );
+    message.set_text(format!("{}{note}", message.content()));
+    message.tokens = estimate_tokens(&message.content());
 }
 
 /// 把这一轮模型的每一轮落成原子单元（D253 / D258）。
@@ -568,13 +657,24 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     history.extend(crate::repair::normalize(&units_before));
     history.push(user.clone());
 
+    // 图片模式（D270）：只给路径，不内联。判据在 `path_mode_on` 里——模型得真的调得动
+    // `View-Image`，否则图会变成"看得见文件名、永远读不到"。
+    let path_mode = path_mode_on(store, &history, policy, config.turn.image_mode)?;
+    if path_mode {
+        let files = image_files(store, &history)?;
+        if let Some(last) = history.iter_mut().rev().find(|m| m.role == Role::User) {
+            with_image_paths(last, &files, config.turn.image_limit);
+        }
+    }
+
     // 一轮之内模型冻结（D76）：这一轮的每一次请求都用同一份模型与思考设置，
     // 工具声明也用同一份名单。冻结在**发出去的那一份**上生效，base 由调用方持有。
     let mut frozen_base = base.clone();
     // 图片（D208）：按消息 id 从**库里那一份**取，不经过界面缓存。
-    attach_images(&mut frozen_base, store, &history)?;
+    attach_images(&mut frozen_base, store, &history, path_mode)?;
     // 内存实现不存附件（`save_attachments` 默认空实现），这一轮仍要把刚发的图带上。
-    if !images.is_empty() && !frozen_base.images.iter().any(|(id, _)| id == &user.id) {
+    if !path_mode && !images.is_empty() && !frozen_base.images.iter().any(|(id, _)| id == &user.id)
+    {
         frozen_base.images.push((user.id.clone(), images.to_vec()));
     }
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
@@ -783,7 +883,15 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 
     let mut frozen_base = base.clone();
     // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
-    attach_images(&mut frozen_base, store, &history)?;
+    // 图片模式（D270）在重试里同样生效——不然"重试一次"就把用户想省的 token 全补回来了。
+    let path_mode = path_mode_on(store, &history, policy, config.turn.image_mode)?;
+    if path_mode {
+        let files = image_files(store, &history)?;
+        if let Some(last) = history.iter_mut().rev().find(|m| m.role == Role::User) {
+            with_image_paths(last, &files, config.turn.image_limit);
+        }
+    }
+    attach_images(&mut frozen_base, store, &history, path_mode)?;
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     let call_session = session.to_string();
     crate::kills::clear_done(&call_session);
@@ -2870,6 +2978,161 @@ mod tests {
             record.outcome.contains("output"),
             "要点名正确的三种：{}",
             record.outcome
+        );
+    }
+
+    /// 存了附件的内存实现：图片模式（D270）要能拿到文件名。
+    #[derive(Default)]
+    struct ImageStore {
+        units: Mutex<Vec<AtomicUnit>>,
+        files: Mutex<std::collections::HashMap<String, Vec<String>>>,
+        parts: Mutex<std::collections::HashMap<String, Vec<crate::message::ImagePart>>>,
+    }
+
+    impl HistoryStore for ImageStore {
+        fn append_unit(&mut self, _session: SessionId, unit: &AtomicUnit) -> Result<(), String> {
+            self.units.lock().unwrap().push(unit.clone());
+            Ok(())
+        }
+
+        fn load_units(&self, _session: SessionId) -> Result<Vec<AtomicUnit>, String> {
+            Ok(self.units.lock().unwrap().clone())
+        }
+
+        fn attachments(
+            &self,
+            message: &MessageId,
+        ) -> Result<Vec<crate::message::ImagePart>, String> {
+            Ok(self
+                .parts
+                .lock()
+                .unwrap()
+                .get(&message.to_string())
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn save_attachments(
+            &mut self,
+            message: &MessageId,
+            parts: &[crate::message::ImagePart],
+        ) -> Result<(), String> {
+            let mut files = Vec::with_capacity(parts.len());
+            for (index, part) in parts.iter().enumerate() {
+                let ext = if part.mime.contains("png") {
+                    "png"
+                } else {
+                    "jpg"
+                };
+                files.push(format!("img{index}.{ext}"));
+            }
+            self.files
+                .lock()
+                .unwrap()
+                .insert(message.to_string(), files);
+            self.parts
+                .lock()
+                .unwrap()
+                .insert(message.to_string(), parts.to_vec());
+            Ok(())
+        }
+
+        fn attachment_files(&self, message: &MessageId) -> Result<Vec<String>, String> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap()
+                .get(&message.to_string())
+                .cloned()
+                .unwrap_or_default())
+        }
+    }
+
+    /// 图片模式（D270）：一张字节都不发，只把文件名写进**发出去的那一份**用户消息。
+    #[test]
+    fn path_mode_sends_the_file_names_instead_of_the_bytes() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = ImageStore::default();
+        let transport = Scripted::new(vec![text_body("看到了").to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let mut config = SessionConfig::default();
+        config.turn.image_mode = crate::agent::ImageMode::Path;
+        let images = vec![crate::message::ImagePart {
+            mime: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }];
+
+        run_session_turn_with_images(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "看图",
+            &images,
+            &ToolRegistry::workspace_defaults(),
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let sent = transport.requests();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            !sent[0].contains("data:image/png;base64"),
+            "路径模式不该内联字节：{}",
+            sent[0]
+        );
+        assert!(
+            sent[0].contains("/chat/images/img0.png"),
+            "要把文件名告诉它：{}",
+            sent[0]
+        );
+        assert!(
+            sent[0].contains("查看图像"),
+            "还要说清用哪个工具看：{}",
+            sent[0]
+        );
+    }
+
+    /// 调不动「查看图像」（没绑工作区）时退回内联：只给路径等于让模型干看着。
+    #[test]
+    fn path_mode_falls_back_to_inline_when_view_image_cannot_run() {
+        let (_dir, workspace, _bound) = setup();
+        let policy = AssistantPolicy::locked_down();
+        let session = SessionId::new();
+        let mut store = ImageStore::default();
+        let transport = Scripted::new(vec![text_body("看到了").to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let mut config = SessionConfig::default();
+        config.turn.image_mode = crate::agent::ImageMode::Path;
+        let images = vec![crate::message::ImagePart {
+            mime: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }];
+
+        run_session_turn_with_images(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "看图",
+            &images,
+            &ToolRegistry::workspace_defaults(),
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let sent = transport.requests();
+        assert!(
+            sent[0].contains("data:image/png;base64,aGVsbG8="),
+            "没有读权限时必须照旧内联：{}",
+            sent[0]
         );
     }
 

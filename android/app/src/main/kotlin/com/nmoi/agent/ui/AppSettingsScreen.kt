@@ -57,6 +57,8 @@ internal fun AppSettingsScreen(
     var qualityText by remember { mutableStateOf(AppSettings.imageQuality(context).toString()) }
     var roundsText by remember { mutableStateOf(AppSettings.maxRounds(context).toString()) }
     var imageLimitText by remember { mutableStateOf(AppSettings.imageLimit(context).toString()) }
+    // 图片模式（D270）：直发 / 路径信息。
+    var imageMode by remember { mutableStateOf(AppSettings.imageMode(context)) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -234,6 +236,45 @@ internal fun AppSettingsScreen(
                                 AppSettings.setImageLimit(context, AppSettings.DEFAULT_IMAGE_LIMIT)
                                 imageLimitText = AppSettings.DEFAULT_IMAGE_LIMIT.toString()
                                 notice = "上下文图片上限恢复成 ${AppSettings.DEFAULT_IMAGE_LIMIT} 张"
+                            }
+                        }
+                    }
+                }
+
+                // —— 图片模式（D270）——
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "用户发的图怎么进请求",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "直发：图直接发给模型，省一次工具往返，但每张都占上下文。" +
+                                "路径信息：只把文件名告诉它，要看哪张由它自己调「查看图像」挑。" +
+                                "路径信息只在会话绑了工作区时生效——没绑的话它调不动「查看图像」，" +
+                                "图就白给了，那种情况会自动退回直发。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 10.dp)) {
+                            SettingChip(
+                                label = "直发",
+                                selected = imageMode == AppSettings.IMAGE_MODE_INLINE,
+                            ) {
+                                AppSettings.setImageMode(context, AppSettings.IMAGE_MODE_INLINE)
+                                imageMode = AppSettings.imageMode(context)
+                                notice = "图片改成直发：图直接发给模型"
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip(
+                                label = "路径信息",
+                                selected = imageMode == AppSettings.IMAGE_MODE_PATH,
+                            ) {
+                                AppSettings.setImageMode(context, AppSettings.IMAGE_MODE_PATH)
+                                imageMode = AppSettings.imageMode(context)
+                                notice = "图片改成路径信息：只给文件名，让它自己挑"
                             }
                         }
                     }

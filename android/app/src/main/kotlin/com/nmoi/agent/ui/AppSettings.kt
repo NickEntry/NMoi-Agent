@@ -18,6 +18,7 @@ internal object AppSettings {
     private const val KEY_IMAGE_QUALITY = "image.quality"
     private const val KEY_MAX_ROUNDS = "turn.max_rounds"
     private const val KEY_IMAGE_LIMIT = "context.image_limit"
+    private const val KEY_IMAGE_MODE = "context.image_mode"
 
     /**
      * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
@@ -52,6 +53,27 @@ internal object AppSettings {
 
     fun setImageLimit(context: Context, value: Int) {
         prefs(context).edit().putInt(KEY_IMAGE_LIMIT, value.coerceIn(1, MAX_IMAGE_LIMIT)).apply()
+    }
+
+    /** 图片模式（D270）：`inline` = 直发（默认），`path` = 只给路径，让模型自己挑。 */
+    const val IMAGE_MODE_INLINE = "inline"
+    const val IMAGE_MODE_PATH = "path"
+
+    /**
+     * 用户发的图怎么进请求。
+     *
+     * `path` 只在**这一轮真的能调「查看图像」**时才生效（要读权限，也就是会话绑了工作区）；
+     * 否则图会变成"看得见文件名、永远读不到"，比直发更糟——所以 `path` 是"能省就省"，
+     * 不是"一定不发"。
+     */
+    fun imageMode(context: Context): String {
+        val value = prefs(context).getString(KEY_IMAGE_MODE, IMAGE_MODE_INLINE).orEmpty()
+        return if (value == IMAGE_MODE_PATH) IMAGE_MODE_PATH else IMAGE_MODE_INLINE
+    }
+
+    fun setImageMode(context: Context, value: String) {
+        val mode = if (value == IMAGE_MODE_PATH) IMAGE_MODE_PATH else IMAGE_MODE_INLINE
+        prefs(context).edit().putString(KEY_IMAGE_MODE, mode).apply()
     }
 
     /**

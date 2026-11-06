@@ -882,6 +882,15 @@ mod tests {
             nmoi_core::base64::decode(&parts[0].data).unwrap(),
             b"\x89PNG"
         );
+
+        // 图片模式（D270）要的是**文件名**，不是字节：盘上就是 `<附件 id>.png`。
+        let files = HistoryStore::attachment_files(&storage, &message).unwrap();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].ends_with(".png"), "{files:?}");
+        assert!(
+            storage.attachment_dir(session).join(&files[0]).exists(),
+            "文件名必须指着盘上那个文件：{files:?}"
+        );
     }
 
     /// 副本还指着的归档，删原件时不能删掉：`ref` 是内容寻址的全局主键，
