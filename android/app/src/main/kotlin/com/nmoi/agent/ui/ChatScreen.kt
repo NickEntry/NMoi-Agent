@@ -206,6 +206,12 @@ internal fun ChatScreen(
     var contextImagesOpen by remember(sessionId) { mutableStateOf(false) }
     // 收尾之后还要等一次重读：库里那份到了才把内存里这条换掉，否则气泡会闪一下。
     var settling by remember(sessionId) { mutableStateOf(false) }
+    // 已经请求停止、这一轮还没真的收尾（2026-11-06 用户）：停止键灰着，别让他连点。
+    // 判据是"这一轮还在不在跑"，不是"点过没有"——收尾（`busy` 变 false）就恢复。
+    var stopping by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(busy) {
+        if (!busy) stopping = false
+    }
     // 重试落在哪条消息上（D227）：这一轮的部分正文**就地**画在它身上，不再在底部另起一个
     // 「助手 / 正在生成…」的块。`null` = 这一轮不是重试，或者目标为空（结果会落成新消息）。
     var regenTarget by remember(sessionId) { mutableStateOf<String?>(null) }
@@ -1297,6 +1303,7 @@ internal fun ChatScreen(
                     notice = notice,
                     canSend = !busy,
                     busy = busy,
+                    stopping = stopping,
                     unsaved = sessionId == null,
                     onHint = { notice = it },
                     onModel = { modelSheet = true },
@@ -1318,6 +1325,8 @@ internal fun ChatScreen(
                                 TurnRepository.cancel(running).fold(
                                     onSuccess = { cancelled ->
                                         if (cancelled) {
+                                            // 灰掉那颗键，直到这一轮真的收尾——连点只会重复请求同一次取消。
+                                            stopping = true
                                             notice = "已请求停止：当前这一次请求回来之后就不再往下走了"
                                         } else {
                                             // 点晚了一拍：原生那边没有在跑的这一轮。别把界面留在"生成中"。
@@ -4184,6 +4193,8 @@ private fun Composer(
     notice: String?,
     canSend: Boolean,
     busy: Boolean,
+    /** 已经请求停止、这一轮还没真的收尾：按钮灰着，别让他连点（2026-11-06 用户）。 */
+    stopping: Boolean = false,
     unsaved: Boolean,
     onHint: (String) -> Unit,
     onModel: () -> Unit,
@@ -4316,9 +4327,10 @@ private fun Composer(
                     SendStopButton(
                         enabled = canSend && draft.isNotBlank(),
                         busy = busy,
+                        stopping = stopping,
                         onSend = onSend,
-                    onQueue = onQueue,
-                    queued = queued,
+                        onQueue = onQueue,
+                        queued = queued,
                         onStop = onStop,
                         onSaveAssistant = onSaveAssistant,
                         onSaveUser = onSaveUser,
@@ -4353,6 +4365,7 @@ private fun Composer(
 private fun SendStopButton(
     enabled: Boolean,
     busy: Boolean,
+    stopping: Boolean = false,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onQueue: () -> Unit,
@@ -4362,20 +4375,23 @@ private fun SendStopButton(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val active = enabled && !busy
-    val background = if (active || busy) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f)
+    // 已经请求停止：灰着，直到这一轮真的收尾（`busy` 变 false）。
+    // 停止是"停在这一轮之后"，不是立刻断——这段窗口里再点几下都只是重复请求同一次取消。
+    val background = when {
+        stopping -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f)
+        active || busy -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f)
     }
 
     Box {
         Box(
             modifier = Modifier
                 .size(44.dp)
-                .pointerInput(active, busy) {
+                .pointerInput(active, busy, stopping) {
                     detectTapGestures(
                         onTap = {
                             when {
+                                stopping -> Unit
                                 busy -> onStop()
                                 active -> onSend()
                             }
@@ -4391,7 +4407,11 @@ private fun SendStopButton(
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (busy) ActionIcons.Square else ActionIcons.ArrowUp,
-                        contentDescription = if (busy) "停止" else "发送",
+                        contentDescription = when {
+                            stopping -> "正在停止"
+                            busy -> "停止"
+                            else -> "发送"
+                        },
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(18.dp),
                     )

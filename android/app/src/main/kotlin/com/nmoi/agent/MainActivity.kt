@@ -220,31 +220,26 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 草稿标记（0.15b）：抽屉打开时读一次就够——关闭期间改的是输入框，
-                // 下次打开会重新读。跟着 `drawerOpen` 刷新，不额外轮询。
-                // 置顶顺序（0.15d）：跟草稿同一个节奏，抽屉打开时读一次。
+                // 草稿标记（0.15b）与置顶顺序（0.15d）。
+                //
+                // 抽屉现在是**常驻组合**的（D266：只有一份，开合只移动它），关着的时候
+                // 也会被排一次——所以这里不能"没开就给空列表"。以前只在 `drawerOpen` 时读，
+                // 于是滑动呼出（松手才 open）时列表先按"没有置顶"排，松手那一刻两条置顶
+                // 跳到最上面（2026-11-06 真机）。跟着 `listReload` 读，开与不开都是同一份。
                 val pinnedIds by produceState(
                     initialValue = emptyList<String>(),
                     drawerOpen, listReload,
                 ) {
-                    value = if (drawerOpen) {
-                        withContext(Dispatchers.IO) {
-                            ConversationRepository.pinned(databasePath).getOrDefault(emptyList())
-                        }
-                    } else {
-                        emptyList()
+                    value = withContext(Dispatchers.IO) {
+                        ConversationRepository.pinned(databasePath).getOrDefault(emptyList())
                     }
                 }
 
                 val drafts by produceState(
                     initialValue = emptyMap<String, String>(),
-                    drawerOpen,
+                    drawerOpen, listReload,
                 ) {
-                    value = if (drawerOpen) {
-                        withContext(Dispatchers.IO) { DraftStore.all(context) }
-                    } else {
-                        emptyMap()
-                    }
+                    value = withContext(Dispatchers.IO) { DraftStore.all(context) }
                 }
 
                 // 返回键优先级（0.15j / D184）：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出。
