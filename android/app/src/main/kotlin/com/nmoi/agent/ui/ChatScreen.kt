@@ -3237,7 +3237,7 @@ private fun StopPromptDialog(
     onKeepThis: () -> Unit,
     onBackToPrevious: () -> Unit,
 ) {
-    var mode by remember(stopped) { mutableStateOf(KeepMode.Both) }
+    var back by remember(stopped) { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -3272,26 +3272,23 @@ private fun StopPromptDialog(
                     KeepChoice(
                         title = "留着这一版",
                         note = "当前显示的就是它；上一版切得回去。",
-                        selected = mode == KeepMode.Both,
+                        selected = !back,
                         enabled = true,
-                        onPick = { mode = KeepMode.Both },
+                        onPick = { back = false },
                     )
                     KeepChoice(
                         title = "回到上一版",
                         note = "删掉这一版，回到停止之前那一版。",
-                        selected = mode == KeepMode.Previous,
+                        selected = back,
                         enabled = true,
-                        onPick = { mode = KeepMode.Previous },
+                        onPick = { back = true },
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
                         horizontalArrangement = Arrangement.End,
                     ) {
                         DialogAction(label = "确定", primary = true) {
-                            when (mode) {
-                                KeepMode.Previous -> onBackToPrevious()
-                                else -> onKeepThis()
-                            }
+                            if (back) onBackToPrevious() else onKeepThis()
                         }
                     }
                 }
