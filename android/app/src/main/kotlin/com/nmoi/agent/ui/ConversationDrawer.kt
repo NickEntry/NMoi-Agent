@@ -150,15 +150,6 @@ internal fun ConversationDrawer(
     val focusManager = LocalFocusManager.current
     val view = LocalView.current
 
-    // 抽屉一开就收键盘：这是用户要的手感，不是可选项。
-    LaunchedEffect(open) {
-        if (open) {
-            focusManager.clearFocus(force = true)
-            val imm = view.context.getSystemService(InputMethodManager::class.java)
-            imm?.hideSoftInputFromWindow(view.windowToken, 0)
-        }
-    }
-
     // 拖动位移（px）。拖动阶段只能写普通 state：`awaitEachGesture` 是受限协程，
     // 里面挂起不了 Animatable 的方法（CI 会报 Restricted suspending functions...）。
     // 提示行与助手面板的状态放在最外层：面板要盖住整屏，不能缩在 300dp 的抽屉里。
@@ -171,6 +162,19 @@ internal fun ConversationDrawer(
     val inertia = remember { Animatable(0f) }
     var animating by remember { mutableStateOf(false) }
     val manual = dragging || animating
+
+    // 抽屉一开始露头就收键盘：这是用户要的手感，不是可选项。
+    // **拖动也算**（2026-11-06）：以前只在 `open` 变成 true 时收，于是从边缘拖出来的时候
+    // 键盘还在、面板矮一截，松手那一瞬窗口变高、列表跟着挪——按按钮开没有这一步，
+    // 所以只有"滑动呼出"看着会跳。
+    LaunchedEffect(open, dragging) {
+        if (open || dragging) {
+            focusManager.clearFocus(force = true)
+            val imm = view.context.getSystemService(InputMethodManager::class.java)
+            imm?.hideSoftInputFromWindow(view.windowToken, 0)
+        }
+    }
+
     // 开合位置（D266）：手动阶段看拖动/惯性；其余时候看 `open` 的动画值。
     // 以前"点开"走的是 `AnimatedVisibility` 的 slideIn，而抽屉**只在那条分支里**才被组合——
     // 于是第一次打开要现场排整个列表（卡一下），而且拖动与点开是两份 `DrawerPanel`，

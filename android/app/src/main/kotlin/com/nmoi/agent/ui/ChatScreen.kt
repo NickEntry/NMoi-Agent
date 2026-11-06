@@ -211,6 +211,9 @@ internal fun ChatScreen(
     var regenTarget by remember(sessionId) { mutableStateOf<String?>(null) }
     // 重试失败 → 三选一（D228）。它决定库里留下哪一版，所以是"必须处理"的那种，点外面不关。
     var regenFailure by remember { mutableStateOf<RegenFailure?>(null) }
+    // 手动停止（重试/续话）→ 问一句"这一版留不留"。停止不是失败，可它同样把残句写成了
+    // 新版本；不给一句话，用户只会发现"我明明按了停止，回答却变了"（2026-11-06 真机）。
+    var stopPrompt by remember { mutableStateOf<StoppedTurn?>(null) }
     // 过程块展开/收起（D229）：**只在本次浏览会话内记忆**——切到别的会话再回来，
     // 恢复默认（最新两个 + 其余折叠）。所以键里带 sessionId，换会话就是一张新表。
     val openGroups = remember(sessionId) { mutableStateMapOf<String, Boolean>() }
@@ -712,12 +715,15 @@ internal fun ChatScreen(
     // 优先级按叠放层次从高到低：编辑对话框 → 「更多」面板 → 分享面板 → 选择模式。
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
     val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen ||
-        selecting || modelSheet || thinkingSheet || queueSheet || plusMenu || regenFailure != null
+        selecting || modelSheet || thinkingSheet || queueSheet || plusMenu || regenFailure != null ||
+        stopPrompt != null
     BackHandler(enabled = overlayOpen) {
         when {
             // 三选一**必须处理**（D228）：它决定库里留下哪一版，返回键在这里什么也不做。
             // 点外面也不关——不是"关掉就回到原样"，关掉等于替用户选了"保留上一版"。
             regenFailure != null -> Unit
+            // 停止之后那一问同理：关掉等于替他选了"留着这一版"。
+            stopPrompt != null -> Unit
             // 顺序 = 叠放顺序，从上往下退：先关最后打开的那一层。
             plusMenu -> plusMenu = false
             queueSheet -> queueSheet = false
@@ -780,6 +786,14 @@ internal fun ChatScreen(
                 result.fold(
                     onSuccess = { outcome ->
                         notice = (if (append) "续话：" else "重试：") + outcome.describe()
+                        // 停止也会把残句写成新版本（core 已经落库）。留不留由用户定：
+                        // 有旧版可切的时候问一句；新发一条没有旧版可留，就只留提示行。
+                        if (outcome.cancelled && target != null) {
+                            stopPrompt = StoppedTurn(
+                                messageId = target,
+                                length = outcome.assistant?.length ?: 0,
+                            )
+                        }
                     },
                     onFailure = { error ->
                         // 残文要在清掉 `live` 之前取：三选一里「保留这一版」存的就是这一份。
@@ -1577,6 +1591,37 @@ internal fun ChatScreen(
                 },
                 onKeepThis = { keepPartial(pendingFailure, true) },
                 onKeepBoth = { keepPartial(pendingFailure, false) },
+            )
+        }
+
+        // 停止之后那一问：这一版是残的，留不留由用户定。
+        // 库里已经写进去了，所以「回到上一版」= 删掉刚落的那一版（版号现读，不猜）。
+        val pendingStop = stopPrompt
+        if (pendingStop != null) {
+            StopPromptDialog(
+                stopped = pendingStop,
+                onKeepThis = {
+                    stopPrompt = null
+                    notice = "留着这一版：第 ${pendingStop.length} 字那一段已经存进库里"
+                },
+                onBackToPrevious = {
+                    stopPrompt = null
+                    scope.launch {
+                        val info = ChatRepository.versions(databasePath, pendingStop.messageId).getOrNull()
+                        val active = (info?.active ?: 1).toLong()
+                        val dropped = if (active >= 2L) {
+                            ChatRepository.deleteVersion(databasePath, pendingStop.messageId, active)
+                        } else {
+                            Result.success(0)
+                        }
+                        reloadKey += 1
+                        notice = if (dropped.isSuccess) {
+                            "已回到上一版：这一版删掉了"
+                        } else {
+                            "上一版没切回去：${dropped.exceptionOrNull()?.message}"
+                        }
+                    }
+                },
             )
         }
 
@@ -2392,23 +2437,10 @@ private fun ProcessGroupRow(
                     )
                 }
                 visible.forEachIndexed { index, item ->
-                    // 正文不是"一步"：不画圆点、不缩进，整段铺在它下面那一步的上面
-                    // （用户 2026-11-06：「正文怎么也成节点了？……这些正文应该在这些块的上面」）。
-                    if (item.kind == ProcessItem.Kind.Text) {
-                        MarkdownBody(
-                            text = item.text,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 6.dp, bottom = 2.dp),
-                        )
-                        return@forEachIndexed
-                    }
                     // 每项前面一个圆点节点（用户 2026-11-04 给的截图）：原来那条贯穿整块的竖线
                     // 又长又直，看着像表格边框；圆点加短连线才看得出"这是几步"。
                     ProcessNode(index = index, last = index == visible.lastIndex) {
                         when (item.kind) {
-                            // 上面已经 `return@forEachIndexed` 了；写出来只为让 `when` 穷尽。
-                            ProcessItem.Kind.Text -> Unit
                             ProcessItem.Kind.Thinking -> item.thinking?.let { thinking ->
                                 // 思考**在聊天页里**展开（用户 2026-11-04 定的）：一行标题 + 一个竖标，
                                 // 点开就地长出来，不弹窗——它属于这条回答的一部分。
@@ -3178,6 +3210,95 @@ private data class RegenFailure(
 
 /** 失败三选一里选中的那一项。 */
 private enum class KeepMode { Previous, This, Both }
+
+/**
+ * 手动停止之后要问的那一份东西。
+ *
+ * 和 [RegenFailure] 的区别：这一版**已经落库了**（core 在停止时照样收尾落版本），
+ * 所以"回到上一版"是删掉刚落的那一版，不是"这次收到的内容不存"。
+ */
+private data class StoppedTurn(
+    val messageId: String,
+    val length: Int,
+)
+
+/**
+ * 停止之后问一句：这一版留着，还是回到上一版。
+ *
+ * 两条规矩：
+ *
+ * 1. **默认留着这一版**——它是库里此刻的状态，默认动作不该是删东西。
+ * 2. **必须处理**（和失败三选一同一套）：关掉等于替用户选了"留着"，而这一屏存在的
+ *    理由就是"别替他选"。
+ */
+@Composable
+private fun StopPromptDialog(
+    stopped: StoppedTurn,
+    onKeepThis: () -> Unit,
+    onBackToPrevious: () -> Unit,
+) {
+    var mode by remember(stopped) { mutableStateOf(KeepMode.Both) }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f)),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "已停止",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "你按了停止，这一轮写到一半就收了尾。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        text = "这一版已经存进库里（${stopped.length} 字），上一版还在。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    KeepChoice(
+                        title = "留着这一版",
+                        note = "当前显示的就是它；上一版切得回去。",
+                        selected = mode == KeepMode.Both,
+                        enabled = true,
+                        onPick = { mode = KeepMode.Both },
+                    )
+                    KeepChoice(
+                        title = "回到上一版",
+                        note = "删掉这一版，回到停止之前那一版。",
+                        selected = mode == KeepMode.Previous,
+                        enabled = true,
+                        onPick = { mode = KeepMode.Previous },
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        DialogAction(label = "确定", primary = true) {
+                            when (mode) {
+                                KeepMode.Previous -> onBackToPrevious()
+                                else -> onKeepThis()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /**
  * 重试失败：保留上一版 / 保留这一版 / 都保留（D228）。

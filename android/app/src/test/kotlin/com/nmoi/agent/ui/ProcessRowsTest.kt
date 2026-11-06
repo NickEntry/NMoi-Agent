@@ -90,29 +90,30 @@ class ProcessRowsTest {
     }
 
     /**
-     * 一行以内的正文跟着思考与工具合成**一张卡**（2026-11-06 用户："只隔一行的块可以自动吸附过去"）。
+     * 工具那一轮的正文**永远在卡外面**：卡一行、正文一行（2026-11-06 真机）。
      *
-     * 以前这一轮会被切成"思考 + 正文"一行、"工具"一行，中间还夹一句「（空消息）」。
+     * 以前一句短正文会吸进卡里（D264），可生成中那条路径一直把正文画在卡外面——
+     * 于是"跑的时候在外面、一落库就跳进大块"。同一个语义只能有一条渲染路径。
      */
     @Test
-    fun `工具轮次里的一行正文吸进同一张卡`() {
+    fun `工具轮次里的正文单独一行-卡在前`() {
         val rows = buildRows(listOf(toolWithBody("t", "我先看看", reasoning = "想一想")))
-        assertEquals(1, rows.size)
-        val group = rows.single() as ChatRow.Process
-        assertEquals(listOf("t#reasoning", "t#text", "t"), group.items.map { it.id })
-        assertEquals(ProcessItem.Kind.Text, group.items[1].kind)
-        assertEquals("我先看看", group.items[1].text)
+        assertEquals(2, rows.size)
+        val group = rows[0] as ChatRow.Process
+        assertEquals(listOf("t#reasoning", "t"), group.items.map { it.id })
+        val body = rows[1] as ChatRow.Single
+        assertEquals(UnitSlice.TextOnly, body.slice)
+        assertTrue(body.hideReasoning)
     }
 
-    /** 长正文是回答，不是过程：思考与正文一行，工具另起一张卡。 */
+    /** 正文长短不影响形状：短句也是一行，不吸进卡里。 */
     @Test
-    fun `工具轮次里的长正文把卡断开`() {
+    fun `工具轮次里的长正文也是同样两行`() {
         val long = "这一轮我先把目录列出来，再看看里面那个文件的前几行，然后决定要不要改。".repeat(2)
-        assertTrue(!absorbsIntoCard(long))
         val rows = buildRows(listOf(toolWithBody("t", long, reasoning = "想一想")))
         assertEquals(2, rows.size)
-        assertEquals(UnitSlice.TextOnly, (rows[0] as ChatRow.Single).slice)
-        assertEquals(UnitSlice.ToolsOnly, (rows[1] as ChatRow.Single).slice)
+        assertEquals(listOf("t#reasoning", "t"), (rows[0] as ChatRow.Process).items.map { it.id })
+        assertEquals(UnitSlice.TextOnly, (rows[1] as ChatRow.Single).slice)
     }
 
     /** 没有正文就什么都不画——「（空消息）」不该出现（2026-11-06 用户）。 */
@@ -122,15 +123,6 @@ class ProcessRowsTest {
         assertEquals(1, rows.size)
         val group = rows.single() as ChatRow.Process
         assertEquals(listOf("t#reasoning", "t"), group.items.map { it.id })
-    }
-
-    /** 吸附的判据是字节数：带换行、或者超过一行就不吸。 */
-    @Test
-    fun `吸附按字节算-带换行不吸`() {
-        assertTrue(absorbsIntoCard("好"))
-        assertTrue(absorbsIntoCard("我先看看这个文件里写了什么"))
-        assertTrue(!absorbsIntoCard("第一行\n第二行"))
-        assertTrue(!absorbsIntoCard("长".repeat(ABSORB_BYTES)))
     }
 
     @Test
