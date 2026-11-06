@@ -432,6 +432,53 @@ pub extern "C" fn nmoi_storage_move_conversation_json(
     })
 }
 
+/// 这条会话自己绑的工作区（D271）。`null` = 跟助手。
+///
+/// 返回 `{"session":"…","workspace":null|"w123"}`。会话不存在是数据不一致，不静默回 null——
+/// "这条会话没了"和"它没绑工作区"是两件事，混成一句会让界面显示"跟随助手"。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_conversation_workspace_json(
+    handle: u64,
+    session: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        with_storage(handle, |storage| {
+            let workspace = storage
+                .conversation_workspace(session_id)
+                .map_err(storage_error)?;
+            Ok(json!({ "session": session_id.to_string(), "workspace": workspace }))
+        })
+    })
+}
+
+/// 改这条会话自己的工作区（D271）。**空串 = 跟助手**。
+///
+/// 这里的空串是有意义的，和 `set_conversation_model` 那条相反：那条空串是调用方的 bug
+/// （"没有模型"不能靠空串表达），而这一列本来就有"没有"这个状态。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_set_conversation_workspace_json(
+    handle: u64,
+    session: *const c_char,
+    workspace: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let raw = read_str(workspace, "workspace")?;
+        let target = if raw.trim().is_empty() {
+            None
+        } else {
+            Some(raw.trim())
+        };
+        with_storage(handle, |storage| {
+            storage
+                .set_conversation_workspace(session_id, target)
+                .map_err(storage_error)?;
+            Ok(json!({ "session": session_id.to_string(), "workspace": target }))
+        })
+    })
+}
+
 /// 某个助手底下有几个会话（D174）：删助手之前那道闸要靠它。
 ///
 /// 界面要说的是"还有 3 个会话，先决定移到哪儿"，所以给的是**数**，不是"不止一个"。

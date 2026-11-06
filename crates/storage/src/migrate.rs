@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::schema;
 
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// 迁移前先跑的一段 Rust（比如"列不存在才加"）。
 pub type Prepare = fn(&Connection) -> Result<(), rusqlite::Error>;
@@ -106,6 +106,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 17,
         sql: schema::SCHEMA_V17,
         prepare: Some(add_version_parts_column),
+    },
+    Migration {
+        version: 18,
+        sql: schema::SCHEMA_V18,
+        prepare: None,
     },
 ];
 
@@ -259,6 +264,32 @@ mod tests {
         assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
         assert_eq!(meta_version(&conn).unwrap(), Some(SCHEMA_VERSION));
         // 幂等
+        assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// v17 → v18：会话多一列 `workspace_id`，老数据一条不少，默认是 `NULL`（跟助手）。
+    #[test]
+    fn v17_gains_a_nullable_workspace_column() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        assert_eq!(migrate(&mut conn, 17).unwrap(), 17);
+        conn.execute(
+            "INSERT INTO conversations(id, title, created_at, updated_at, schema_version, device_origin)
+             VALUES ('c1', 't', 0, 0, 17, 'dev')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
+
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT workspace_id FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, None, "老会话升级上来是\"跟助手\"");
+        // 再迁一次不出错（幂等）。
         assert_eq!(migrate(&mut conn, SCHEMA_VERSION).unwrap(), SCHEMA_VERSION);
     }
 

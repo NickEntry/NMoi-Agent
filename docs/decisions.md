@@ -1496,3 +1496,27 @@ kotlinc 全量只剩 9 个 `R`。
 判据：`path_mode_sends_the_file_names_instead_of_the_bytes`（先在旧行为上红过）、
 `path_mode_falls_back_to_inline_when_view_image_cannot_run`、
 `history_store_exposes_attachments_for_the_wire` 里新增的文件名断言。
+
+## D271 会话可以自己绑一个工作区（2026-11-06）
+
+用户 2026-11-06 定的第三件事：「工作区不是强制项；助手绑一个，单个会话可以覆盖它。
+入口放聊天页底部工具按钮那个面板里」。
+
+- schema **v18**：`conversations.workspace_id TEXT`。`NULL` = 跟助手。
+  为什么是覆盖而不是另开一张表：一个会话只有一个工作区，没有第二份要存的东西；
+  而"没有值"本身就是一个答案。不加 `NOT NULL DEFAULT ''`——空串和"没绑"会在读的时候
+  变成两种写法，这一列只有"有"和"没有"两种状态。
+- `Storage::conversation_workspace` / `set_conversation_workspace`；
+  FFI `nmoi_storage_conversation_workspace_json` / `..._set_conversation_workspace_json`
+  （**空串 = 跟助手**，和 `set_conversation_model` 那条相反：那条空串是调用方的 bug）。
+  JNI 符号 50 → **52**。
+- 解析顺序（`TurnRepository.runTurn`）：会话那一份优先，`null` 才用助手的。
+  读不到（库还没建）也退回助手——聊天不该因为一个工作区读不出来就发不出去。
+- 入口：聊天页输入区那排的「工具」图标（以前是一句"待接"的提示行）→ 半屏面板
+  「该会话独立绑定工作区」→ 选「跟随助手」或某个工作区。面板上写明两件事：
+  **换工作区不搬文件**；**原生命令 / 容器命令是全局开关**，在设置里改。
+- 未落库的新会话点这一行：显示「这条会话还没落库」，不给能点却什么也不发生的入口。
+
+判据：`conversation_workspace_overrides_the_assistant_one`（读写、清空、空串被拒、
+不存在的会话报错）、`v17_gains_a_nullable_workspace_column`（老数据一条不少、默认 NULL、
+再迁一次幂等）。

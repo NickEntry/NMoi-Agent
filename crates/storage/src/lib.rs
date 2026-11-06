@@ -863,6 +863,35 @@ mod tests {
             .is_err());
     }
 
+    /// v18（D271）：会话自己的工作区——`NULL` = 跟助手，写进去能读出来，空串被拒。
+    #[test]
+    fn conversation_workspace_overrides_the_assistant_one() {
+        use nmoi_core::ids::SessionId;
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("绑定工作区", "device-a", "default")
+            .unwrap();
+
+        assert_eq!(storage.conversation_workspace(session).unwrap(), None);
+        storage
+            .set_conversation_workspace(session, Some("w-42"))
+            .unwrap();
+        assert_eq!(
+            storage.conversation_workspace(session).unwrap().as_deref(),
+            Some("w-42")
+        );
+        // 改回跟助手。
+        storage.set_conversation_workspace(session, None).unwrap();
+        assert_eq!(storage.conversation_workspace(session).unwrap(), None);
+        // 空串是调用方的 bug：这一列只有"有"和"没有"两种状态。
+        assert!(storage
+            .set_conversation_workspace(session, Some("  "))
+            .is_err());
+        // 不存在的会话：报错，不静默回"跟助手"。
+        assert!(storage.conversation_workspace(SessionId::new()).is_err());
+    }
+
     /// 发请求时的取图路径（`HistoryStore::attachments`）也要通。
     #[test]
     fn history_store_exposes_attachments_for_the_wire() {

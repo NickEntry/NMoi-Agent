@@ -571,6 +571,47 @@ impl Storage {
         Ok(())
     }
 
+    /// 这条会话自己绑的工作区（D271）。`None` = 跟助手。
+    pub fn conversation_workspace(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<String>, StorageError> {
+        let found: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT workspace_id FROM conversations WHERE id = ?1",
+                [session.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        found.ok_or_else(|| StorageError::Inconsistent(format!("会话 {session} 不存在")))
+    }
+
+    /// 改这条会话自己的工作区（D271）。`None` = 改回跟助手。
+    ///
+    /// 空串按参数错误拒绝：这一列只有"有"和"没有"两种状态，空串会把它们混成第三种。
+    pub fn set_conversation_workspace(
+        &self,
+        session: SessionId,
+        workspace: Option<&str>,
+    ) -> Result<(), StorageError> {
+        if let Some(id) = workspace {
+            if id.trim().is_empty() {
+                return Err(StorageError::Inconsistent(
+                    "工作区 id 不能是空串：要跟助手就传 None".to_string(),
+                ));
+            }
+        }
+        let changed = self.conn.execute(
+            "UPDATE conversations SET workspace_id = ?1 WHERE id = ?2",
+            params![workspace, session.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::Inconsistent(format!("会话 {session} 不存在")));
+        }
+        Ok(())
+    }
+
     /// 会话列表（P6.2 / D61）：UI 第一屏要的就是这一页。
     ///
     /// 排序 `updated_at DESC, id DESC`——第二键让同一毫秒建的两个会话也有**确定**顺序

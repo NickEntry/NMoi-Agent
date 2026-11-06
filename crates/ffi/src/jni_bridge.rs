@@ -498,6 +498,66 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_renameConversationJso
     to_jstring(&mut env, text)
 }
 
+/// 这条会话自己绑的工作区（D271）。回 `{"session","workspace":null|"w123"}`。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_conversationWorkspaceJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let text = guarded(move || {
+        let Some(session_id) = session_id else {
+            return bad_string();
+        };
+        let Ok(c_session) = CString::new(session_id) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_conversation_workspace_json(
+            handle as u64,
+            c_session.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// 改这条会话自己的工作区（D271）。空串 = 跟助手。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_setConversationWorkspaceJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    workspace: JString<'local>,
+) -> jstring {
+    let session_id = read_string(&mut env, &session);
+    let workspace = read_string(&mut env, &workspace);
+    let text = guarded(move || {
+        let (Some(session_id), Some(workspace)) = (session_id, workspace) else {
+            return bad_string();
+        };
+        let (Ok(c_session), Ok(c_workspace)) = (CString::new(session_id), CString::new(workspace))
+        else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（session / workspace）",
+            ));
+        };
+        take_json(
+            crate::storage::nmoi_storage_set_conversation_workspace_json(
+                handle as u64,
+                c_session.as_ptr(),
+                c_workspace.as_ptr(),
+            ),
+        )
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 删会话（0.15d）：消息/版本/分界线/审计靠外键跟着走，archive 与 events 在这里手删。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteConversationJson<'local>(

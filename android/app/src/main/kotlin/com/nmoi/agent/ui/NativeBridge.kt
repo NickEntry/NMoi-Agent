@@ -75,6 +75,12 @@ internal object NativeBridge {
     /** 改会话标题（0.15d）。回 `{"renamed":true}`；不动 `updated_at`。 */
     external fun renameConversationJson(handle: Long, session: String, title: String): String
 
+    /** 这条会话自己绑的工作区（D271）。回 `{"session","workspace":null|"w123"}`；null = 跟助手。 */
+    external fun conversationWorkspaceJson(handle: Long, session: String): String
+
+    /** 改这条会话自己的工作区（D271）。**空串 = 跟助手**。 */
+    external fun setConversationWorkspaceJson(handle: Long, session: String, workspace: String): String
+
     /** 删会话（0.15d）。回 `{"deleted":bool}`；`false` = 本来就没有（不算错）。 */
     external fun deleteConversationJson(handle: Long, session: String): String
 

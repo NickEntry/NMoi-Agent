@@ -220,6 +220,9 @@ internal fun ChatScreen(
     // 手动停止（重试/续话）→ 问一句"这一版留不留"。停止不是失败，可它同样把残句写成了
     // 新版本；不给一句话，用户只会发现"我明明按了停止，回答却变了"（2026-11-06 真机）。
     var stopPrompt by remember { mutableStateOf<StoppedTurn?>(null) }
+    // 「工具」面板（D271）：这一条会话绑哪个工作区。
+    // 名字别叫 toolSheet——那是工具详情弹窗（D261）的 state，撞上就变成两个类型抢一个名字。
+    var toolsPanel by remember { mutableStateOf(false) }
     // 过程块展开/收起（D229）：**只在本次浏览会话内记忆**——切到别的会话再回来，
     // 恢复默认（最新两个 + 其余折叠）。所以键里带 sessionId，换会话就是一张新表。
     val openGroups = remember(sessionId) { mutableStateMapOf<String, Boolean>() }
@@ -722,7 +725,7 @@ internal fun ChatScreen(
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
     val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen ||
         selecting || modelSheet || thinkingSheet || queueSheet || plusMenu || regenFailure != null ||
-        stopPrompt != null
+        stopPrompt != null || toolsPanel
     BackHandler(enabled = overlayOpen) {
         when {
             // 三选一**必须处理**（D228）：它决定库里留下哪一版，返回键在这里什么也不做。
@@ -733,6 +736,7 @@ internal fun ChatScreen(
             // 顺序 = 叠放顺序，从上往下退：先关最后打开的那一层。
             plusMenu -> plusMenu = false
             queueSheet -> queueSheet = false
+            toolsPanel -> toolsPanel = false
             thinkingSheet -> thinkingSheet = false
             modelSheet -> modelSheet = false
             confirmDelete != null -> confirmDelete = null
@@ -1346,6 +1350,7 @@ internal fun ChatScreen(
                         pendingImages = pendingImages.filterIndexed { i, _ -> i != index }
                     },
                     onPlus = { plusMenu = true },
+                    onTools = { toolsPanel = true },
                     imageCapability = imageCapability,
                     contextImageCount = contextImages.size,
                     contextImageLimit = AppSettings.imageLimit(context),
@@ -1529,6 +1534,15 @@ internal fun ChatScreen(
                 },
                 onHint = { notice = it },
                 onDismiss = { thinkingSheet = false },
+            )
+        }
+
+        if (toolsPanel) {
+            ToolSheet(
+                sessionId = sessionId,
+                assistantWorkspaceId = assistant?.workspaceId,
+                onDismiss = { toolsPanel = false },
+                onNotice = { notice = it },
             )
         }
 
@@ -4211,6 +4225,8 @@ private fun Composer(
     /** 待发的图片（D208）：输入框上方那排缩略图。 */
     pending: List<PendingImage>,
     onRemovePending: (Int) -> Unit,
+    /** 「工具」面板（D271）：这一条会话绑哪个工作区。 */
+    onTools: () -> Unit = {},
     /** 「＋」面板：附件入口。 */
     onPlus: () -> Unit,
     /** `false` = 这个模型明确不收图（灰掉「图片」那一项并给原因）。 */
@@ -4307,8 +4323,8 @@ private fun Composer(
                     )
                     IconActionButton(
                         image = ActionIcons.Wrench,
-                        description = "工具开关",
-                        onClick = { onHint("工具开关待接：工具层（P7，两级门）") },
+                        description = "工具",
+                        onClick = onTools,
                         compact = true,
                     )
                     Spacer(Modifier.weight(1f))
@@ -5264,6 +5280,195 @@ private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
  * 能做的三件事：看（缩略图 / 格式 / 大小 / 附件 id）、移出一张、清空。
  * 移出**不删文件**，也不改消息：下一轮不带它而已。
  */
+/**
+ * 「工具」面板（D271）：**这一条会话**绑哪个工作区。
+ *
+ * 为什么入口在这里：工作区决定"这一轮的工具根在哪"，它跟工具是同一件事；
+ * 而它又是**会话的属性**（不是全局设置），所以放在聊天页的工具按钮里，
+ * 不放进设置页——放进设置页，用户改一次会以为全变了。
+ *
+ * 与助手那一份的关系：助手绑一个（默认），这条会话可以覆盖它。`null` = 跟助手。
+ */
+@Composable
+private fun ToolSheet(
+    sessionId: String?,
+    assistantWorkspaceId: String?,
+    onDismiss: () -> Unit,
+    onNotice: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val databasePath = remember(context) { ProviderRepository.databasePath(context) }
+    val scope = rememberCoroutineScope()
+    // `null` = 跟助手。**先当"读到了空"**，`loaded` 才决定要不要显示"读…"——
+    // 一上来就画"跟随助手"会让人以为这就是库里的答案。
+    var bound by remember(sessionId) { mutableStateOf<String?>(null) }
+    var loaded by remember(sessionId) { mutableStateOf(sessionId == null) }
+    var picking by remember(sessionId) { mutableStateOf(false) }
+    val workspaces = remember { WorkspaceRepository.list(context) }
+    val assistantName = remember(assistantWorkspaceId) {
+        WorkspaceRepository.resolve(context, assistantWorkspaceId).name
+    }
+    LaunchedEffect(sessionId) {
+        val sid = sessionId ?: return@LaunchedEffect
+        bound = withContext(Dispatchers.IO) {
+            ConversationRepository.workspaceOf(databasePath, sid)
+        }
+        loaded = true
+    }
+    val current = bound?.let { id -> workspaces.firstOrNull { it.id == id } }
+    val label = when {
+        sessionId == null -> "这条会话还没落库"
+        !loaded -> "读…"
+        bound == null -> "跟随助手 · $assistantName"
+        current == null -> "独立 · 那个工作区不在了"
+        else -> "独立 · ${current.name}"
+    }
+    SheetFrame(title = "工具", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.5f).dp)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+        ) {
+            if (!picking) {
+                Text(
+                    text = "这一轮的工具根",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .clickable(enabled = sessionId != null && loaded) { picking = true }
+                        .padding(top = 4.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "该会话独立绑定工作区",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (sessionId == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Icon(
+                        imageVector = ActionIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Text(
+                    text = "换工作区不搬文件：老文件留在原处，新的写到新的那个。" +
+                        "绑了哪个，这一轮的读写与命令就落在哪个目录里。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "原生命令 / 容器命令是**全局**开关，在 设置 → 工具与工作区 里改。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            } else {
+                Text(
+                    text = "这条会话用哪个工作区",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                WorkspaceChoice(
+                    title = "跟随助手",
+                    note = "现在跟的是「$assistantName」；助手换了它就跟着换。",
+                    selected = bound == null,
+                    onClick = {
+                        val sid = sessionId ?: return@WorkspaceChoice
+                        scope.launch {
+                            ConversationRepository.setWorkspace(databasePath, sid, null).fold(
+                                onSuccess = {
+                                    bound = null
+                                    picking = false
+                                    onNotice("这条会话改回跟随助手：${assistantName}")
+                                },
+                                onFailure = { onNotice("改回跟随助手失败：${it.message}") },
+                            )
+                        }
+                    },
+                )
+                workspaces.forEach { workspace ->
+                    WorkspaceChoice(
+                        title = workspace.name + if (workspace.isDefault) "（默认）" else "",
+                        note = "${workspace.files} 个文件 · ${formatBytes(workspace.bytes)}",
+                        selected = bound == workspace.id,
+                        onClick = {
+                            val sid = sessionId ?: return@WorkspaceChoice
+                            scope.launch {
+                                ConversationRepository.setWorkspace(databasePath, sid, workspace.id)
+                                    .fold(
+                                        onSuccess = {
+                                            bound = workspace.id
+                                            picking = false
+                                            onNotice("这条会话独立绑到「${workspace.name}」：老文件不搬")
+                                        },
+                                        onFailure = { onNotice("绑定失败：${it.message}") },
+                                    )
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 工作区选择里的一行：标题 + 一句说明 + 选中打勾。 */
+@Composable
+private fun WorkspaceChoice(
+    title: String,
+    note: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clickable(onClick = onClick)
+            .padding(top = 4.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = note,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (selected) {
+            Icon(
+                imageVector = ActionIcons.Check,
+                contentDescription = "当前",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun ContextImagesSheet(
     images: List<ContextImageRow>,

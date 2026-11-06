@@ -186,6 +186,33 @@ internal object ConversationRepository {
      * 存 `settings(scope=conversation)` 的一个键，不加列：这是"我怎么看这个列表"，
      * 不是会话本身的事实；换一台机器恢复库时它跟着走，正好。
      */
+    /**
+     * 这条会话自己绑的工作区（D271）。`null` = 跟助手。
+     *
+     * 读失败给 `null` 而不是抛：工作区是"能不能用工具"的事，不该让聊天页打不开。
+     * 但日志里留一句——真出问题时不能只剩一个"跟随助手"的假象。
+     */
+    suspend fun workspaceOf(databasePath: String, sessionId: String): String? =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.conversationWorkspace(handle, sessionId).map { envelope ->
+                if (envelope.isNull("workspace")) null else envelope.optString("workspace", "")
+                    .takeIf { it.isNotBlank() }
+            }
+        }.getOrElse { error ->
+            NLog.w("Storage", "读会话工作区失败：${error.message}")
+            null
+        }
+
+    /** 改这条会话自己的工作区（D271）。`null` = 跟助手。 */
+    suspend fun setWorkspace(
+        databasePath: String,
+        sessionId: String,
+        workspaceId: String?,
+    ): Result<Unit> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.setConversationWorkspace(handle, sessionId, workspaceId.orEmpty()).map { }
+        }
+
     suspend fun pinned(databasePath: String): Result<List<String>> =
         withStorageHandle(databasePath) { handle ->
             NmoiFfi.settingsGet(handle, SettingsScope.Conversation, PINNED_KEY).map { envelope ->

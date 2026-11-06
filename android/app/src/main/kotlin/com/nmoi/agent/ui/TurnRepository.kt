@@ -199,7 +199,14 @@ internal object TurnRepository {
         // 工具根是**助手绑的那个工作区**（D234）：用户建的、可复用、天生共享。
         // 会话自己的东西（附件、工具产物）在 `sessions/<id>/chat`，容器里是 `/chat`，
         // 由 `envir` 那段单独绑进去——它不是工具根。
-        val bound = WorkspaceRepository.resolve(context, assistant.workspaceId)
+        // 会话可以覆盖助手绑的那个（D271）：`null` = 跟助手。
+        // 读不到（库还没建）就退回助手那一份——聊天不该因为一个工作区读不出来就发不出去。
+        val override = if (sessionId.isNotBlank()) {
+            ConversationRepository.workspaceOf(databasePath, sessionId)
+        } else {
+            null
+        }
+        val bound = WorkspaceRepository.resolve(context, override ?: assistant.workspaceId)
         val workspace = ToolingRepository.open(context, bound.dir)
         if (workspace.isFailure) {
             NLog.w("Turn", "工作区绑不上：${workspace.exceptionOrNull()?.message}")

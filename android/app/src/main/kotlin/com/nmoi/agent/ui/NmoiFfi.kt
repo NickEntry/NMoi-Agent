@@ -70,6 +70,20 @@ internal object NmoiFfi {
     suspend fun renameConversation(handle: Long, session: String, title: String): Result<JSONObject> =
         call("rename_conversation") { NativeBridge.renameConversationJson(handle, session, title) }
 
+    /** 这条会话自己绑的工作区（D271）。`workspace` 为 null = 跟助手。 */
+    suspend fun conversationWorkspace(handle: Long, session: String): Result<JSONObject> =
+        call("conversation_workspace") { NativeBridge.conversationWorkspaceJson(handle, session) }
+
+    /** 改这条会话自己的工作区（D271）。空串 = 跟助手。 */
+    suspend fun setConversationWorkspace(
+        handle: Long,
+        session: String,
+        workspace: String,
+    ): Result<JSONObject> =
+        call("set_conversation_workspace") {
+            NativeBridge.setConversationWorkspaceJson(handle, session, workspace)
+        }
+
     /** 删会话（0.15d）。`deleted=false` 不算失败。 */
     suspend fun deleteConversation(handle: Long, session: String): Result<JSONObject> =
         call("delete_conversation") { NativeBridge.deleteConversationJson(handle, session) }

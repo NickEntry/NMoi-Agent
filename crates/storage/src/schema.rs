@@ -499,3 +499,14 @@ UPDATE message_versions
        END
  WHERE parts_json IS NULL;
 "#;
+
+/// v18（D271）：会话可以**自己绑一个工作区**，覆盖助手那一份。
+///
+/// `NULL` = 跟助手（默认）。为什么是覆盖而不是另开一张表：一个会话只有一个工作区，
+/// 没有第二份要存的东西；而"没有值"本身就是一个答案（跟助手），不需要第二列来表达。
+///
+/// 为什么不加 `NOT NULL DEFAULT ''`：空串和"没绑"会在读的时候变成两种写法，
+/// 而这一列只有"有"和"没有"两种状态——`NULL` 就是那个"没有"。
+pub const SCHEMA_V18: &str = r#"
+ALTER TABLE conversations ADD COLUMN workspace_id TEXT;
+"#;
