@@ -25,11 +25,15 @@ internal data class RunningCall(
     val arguments: String = "",
     val cancelled: Boolean = false,
     /**
-     * 到目前为止吐出来的东西（D264）。native 那边只留尾部 8 KiB，
-     * `outputCut` 说明前面被裁过——弹窗里要能看出来"这不是全部"。
+     * 到目前为止的 stdout / stderr（D264，**分开**：报错走 stderr）。
+     *
+     * native 那边每路只留尾部 8 KiB，`*Cut` 说明前面被裁过——
+     * 弹窗里要能看出来"这不是全部"。
      */
-    val output: String = "",
-    val outputCut: Boolean = false,
+    val stdout: String = "",
+    val stderr: String = "",
+    val stdoutCut: Boolean = false,
+    val stderrCut: Boolean = false,
 )
 
 /**

@@ -1362,3 +1362,21 @@ D261 把工具轮拆成"正文一行 + 工具一行"之后，两处走样：
 `cargo test -p nmoi-core --lib` 654 条（新增 `the_live_buffer_keeps_the_tail_and_says_it_was_cut`、
 `running_calls_carry_their_live_output`、`live_output_arrives_while_the_command_is_still_running`）；
 真机 V80。
+
+## D265 正文不是节点；实时输出分两页（2026-11-06）
+
+**1. 过程卡里的正文不画节点。**
+D264 把「一行以内的正文」吸进过程卡，但画成了和思考/工具一样的节点（圆点 + 缩进），
+看着像"正文也是一步"。用户原话：「正文怎么也成节点了？……这些正文应该在这些块的上面」。
+现在正文在卡里**整段铺开、没有圆点、不缩进**，排在它下面那一步的上方；
+折叠门槛仍然只数"步"，正文不算。
+
+**2. 实时输出分 stdout / stderr 两页。**
+用户原话：「正在运行过程中应该也有 stdout 和 stderr 两页，毕竟有些输出是抛出的错误输出」。
+`kills::Live` 从一份合并缓冲改成两路（各自 8 KiB 尾部、各自 `*_cut`），
+`drain` 按流写入，`turn_busy.calls[]` 带 `stdout` / `stderr` / `stdout_cut` / `stderr_cut`；
+弹窗里跑着的时候与结果那份用同一套页签（stdout 空、stderr 有东西就默认停在 stderr）。
+
+**顺带修掉一个自己撞出来的死锁**：`running()` 里四个字段各锁一次同一把锁，
+第一个守卫在结构体字面量结束前还没落，第二次 `lock()` 就撞上自己——四个 kills 用例当场挂死。
+现在一条调用只锁一次，取完四个字段再放。

@@ -30,15 +30,26 @@ pub struct RunningCall {
     ///
     /// 只留尾部（[`LIVE_CAP`]）：长任务里用户要看的是"现在在吐什么"，
     /// 不是十分钟前的第一行。`output_cut` 说明前面被裁过。
-    pub output: String,
-    pub output_cut: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_cut: bool,
+    pub stderr_cut: bool,
 }
 
-/// 一条调用到现在为止的输出。两个读线程共用一份（谁先读到谁写进去）。
+/// 哪一路输出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    Out,
+    Err,
+}
+
+/// 一条调用到现在为止的输出。两个读线程共用一份（各写各的那一路）。
 #[derive(Debug, Default)]
 struct Live {
-    text: String,
-    cut: bool,
+    out: String,
+    err: String,
+    out_cut: bool,
+    err_cut: bool,
 }
 
 /// 实时输出最多留这么多**字节**（尾部）。它每 100 ms 被读一次给界面，
@@ -53,32 +64,44 @@ pub struct LiveBuffer {
 
 impl LiveBuffer {
     /// 现在攒到哪儿了（`(文本, 前面裁过没有)`）。跑完之后再看一眼也用它。
-    pub fn snapshot(&self) -> (String, bool) {
+    pub fn snapshot(&self, stream: Stream) -> (String, bool) {
         let live = self
             .live
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        (live.text.clone(), live.cut)
+        match stream {
+            Stream::Out => (live.out.clone(), live.out_cut),
+            Stream::Err => (live.err.clone(), live.err_cut),
+        }
     }
 
     /// 追加一段。超上限就**从头部裁**（留尾部）——见 [`LIVE_CAP`]。
-    pub fn push(&self, chunk: &str) {
+    pub fn push(&self, stream: Stream, chunk: &str) {
         if chunk.is_empty() {
             return;
         }
-        let mut live = self
+        let mut guard = self
             .live
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        live.text.push_str(chunk);
-        if live.text.len() > LIVE_CAP {
-            let mut cut = live.text.len() - LIVE_CAP;
-            while !live.text.is_char_boundary(cut) {
-                cut += 1;
-            }
-            live.text.drain(..cut);
-            live.cut = true;
+        let live = &mut *guard;
+        match stream {
+            Stream::Out => append(&mut live.out, &mut live.out_cut, chunk),
+            Stream::Err => append(&mut live.err, &mut live.err_cut, chunk),
         }
+    }
+}
+
+/// 追加一段，超上限就从头部裁（留尾部）。
+fn append(text: &mut String, cut: &mut bool, chunk: &str) {
+    text.push_str(chunk);
+    if text.len() > LIVE_CAP {
+        let mut at = text.len() - LIVE_CAP;
+        while !text.is_char_boundary(at) {
+            at += 1;
+        }
+        text.drain(..at);
+        *cut = true;
     }
 }
 
@@ -308,27 +331,24 @@ pub fn running(session: &str) -> Vec<RunningCall> {
     let mut rows: Vec<(Instant, RunningCall)> = calls
         .iter()
         .map(|(call_id, entry)| {
-            (
-                entry.started,
-                RunningCall {
-                    call_id: call_id.clone(),
-                    name: entry.name.clone(),
-                    arguments: entry.arguments.clone(),
-                    elapsed_ms: entry.started.elapsed().as_millis() as u64,
-                    output: {
-                        let live = entry
-                            .live
-                            .lock()
-                            .unwrap_or_else(|poison| poison.into_inner());
-                        live.text.clone()
-                    },
-                    output_cut: entry
-                        .live
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner())
-                        .cut,
-                },
-            )
+            // 一条调用的四个字段**只锁一次**：分开锁四次，一个字段的守卫还没落，
+            // 下一次 lock 就撞上自己——同一把锁重入就是死锁（2026-11-06 本机撞到）。
+            let live = entry
+                .live
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let row = RunningCall {
+                call_id: call_id.clone(),
+                name: entry.name.clone(),
+                arguments: entry.arguments.clone(),
+                elapsed_ms: entry.started.elapsed().as_millis() as u64,
+                stdout: live.out.clone(),
+                stderr: live.err.clone(),
+                stdout_cut: live.out_cut,
+                stderr_cut: live.err_cut,
+            };
+            drop(live);
+            (entry.started, row)
         })
         .collect();
     rows.sort_by_key(|(started, _)| *started);
@@ -342,10 +362,10 @@ mod tests {
     fn the_live_buffer_keeps_the_tail_and_says_it_was_cut() {
         let handle = begin("s", "c", "System-Shell", "{}");
         let live = handle.live();
-        live.push("111\n");
-        assert_eq!(live.snapshot(), ("111\n".to_string(), false));
-        live.push(&"长".repeat(LIVE_CAP));
-        let (text, cut) = live.snapshot();
+        live.push(Stream::Out, "111\n");
+        assert_eq!(live.snapshot(Stream::Out), ("111\n".to_string(), false));
+        live.push(Stream::Out, &"长".repeat(LIVE_CAP));
+        let (text, cut) = live.snapshot(Stream::Out);
         assert!(cut, "裁过就要说裁过");
         assert!(
             text.len() <= LIVE_CAP,
@@ -361,11 +381,13 @@ mod tests {
     #[test]
     fn running_calls_carry_their_live_output() {
         let handle = begin("s2", "c2", "System-Shell", "{}");
-        handle.live().push("hello");
+        handle.live().push(Stream::Out, "hello");
+        handle.live().push(Stream::Err, "坏了");
         let rows = running("s2");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].output, "hello");
-        assert!(!rows[0].output_cut);
+        assert_eq!(rows[0].stdout, "hello");
+        assert_eq!(rows[0].stderr, "坏了", "两路要分开，报错不该混进 stdout");
+        assert!(!rows[0].stdout_cut);
         drop(handle);
         assert!(running("s2").is_empty(), "结果回来之后就不该还在跑");
     }

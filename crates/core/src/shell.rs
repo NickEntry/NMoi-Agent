@@ -492,8 +492,8 @@ fn execute(
     // 实时输出（D264）：两个流都往同一份缓冲里追加，界面每 100 ms 读一次。
     // 结果那份仍然是分开的 stdout / stderr——这里只是"它现在在吐什么"。
     let live = call.map(|call| call.live());
-    drain(stdout, out_tx, live.clone());
-    drain(stderr, err_tx, live);
+    drain(stdout, out_tx, live.clone(), crate::kills::Stream::Out);
+    drain(stderr, err_tx, live, crate::kills::Stream::Err);
 
     let mut timed_out = false;
     let mut killed_by_user = false;
@@ -563,6 +563,7 @@ fn drain<R: Read + Send + 'static>(
     mut reader: R,
     tx: mpsc::Sender<(String, bool)>,
     live: Option<crate::kills::LiveBuffer>,
+    stream: crate::kills::Stream,
 ) {
     std::thread::spawn(move || {
         let mut kept: Vec<u8> = Vec::new();
@@ -581,13 +582,13 @@ fn drain<R: Read + Send + 'static>(
                         };
                         if valid > 0 {
                             let piece = String::from_utf8_lossy(&carry[..valid]).into_owned();
-                            live.push(&piece);
+                            live.push(stream, &piece);
                             carry.drain(..valid);
                         }
                         // 一直凑不成一个字符（二进制输出）：按坏字节吐掉，别让 carry 长下去。
                         if carry.len() > 8 {
                             let piece = String::from_utf8_lossy(&carry).into_owned();
-                            live.push(&piece);
+                            live.push(stream, &piece);
                             carry.clear();
                         }
                     }
@@ -751,7 +752,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut early = String::new();
         while Instant::now() < deadline {
-            early = live.snapshot().0;
+            early = live.snapshot(crate::kills::Stream::Out).0;
             if early.contains("111") {
                 break;
             }
@@ -764,7 +765,10 @@ mod tests {
 
         let done = worker.join().expect("线程没 panic").expect("命令要能跑完");
         assert!(done.stdout.contains("222"));
-        assert!(live.snapshot().0.contains("222"), "第二段也要进缓冲");
+        assert!(
+            live.snapshot(crate::kills::Stream::Out).0.contains("222"),
+            "第二段也要进缓冲"
+        );
     }
 
     #[test]

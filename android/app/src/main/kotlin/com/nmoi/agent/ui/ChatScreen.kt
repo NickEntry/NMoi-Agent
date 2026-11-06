@@ -1202,12 +1202,11 @@ internal fun ChatScreen(
                                     part = "",
                                     name = call.name,
                                     arguments = call.arguments,
-                                    output = call.output,
+                                    output = "",
                                     status = "running",
                                 ),
                                 running = true,
                                 elapsedMs = call.elapsedMs,
-                                outputCut = call.outputCut,
                             )
                         },
                         onOpenDoneCall = { done ->
@@ -2393,10 +2392,23 @@ private fun ProcessGroupRow(
                     )
                 }
                 visible.forEachIndexed { index, item ->
+                    // 正文不是"一步"：不画圆点、不缩进，整段铺在它下面那一步的上面
+                    // （用户 2026-11-06：「正文怎么也成节点了？……这些正文应该在这些块的上面」）。
+                    if (item.kind == ProcessItem.Kind.Text) {
+                        MarkdownBody(
+                            text = item.text,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp, bottom = 2.dp),
+                        )
+                        return@forEachIndexed
+                    }
                     // 每项前面一个圆点节点（用户 2026-11-04 给的截图）：原来那条贯穿整块的竖线
                     // 又长又直，看着像表格边框；圆点加短连线才看得出"这是几步"。
                     ProcessNode(index = index, last = index == visible.lastIndex) {
                         when (item.kind) {
+                            // 上面已经 `return@forEachIndexed` 了；写出来只为让 `when` 穷尽。
+                            ProcessItem.Kind.Text -> Unit
                             ProcessItem.Kind.Thinking -> item.thinking?.let { thinking ->
                                 // 思考**在聊天页里**展开（用户 2026-11-04 定的）：一行标题 + 一个竖标，
                                 // 点开就地长出来，不弹窗——它属于这条回答的一部分。
@@ -2409,12 +2421,6 @@ private fun ProcessGroupRow(
                             ProcessItem.Kind.Tool -> ToolProcessRow(
                                 unit = item.unit,
                                 onOpen = { call -> onOpenTool(item.unit, call) },
-                            )
-                            // 夹在两次工具之间的一小段正文（2026-11-06 的"吸附"）：
-                            // 它属于这一轮的过程，单独摆一张卡会把同一轮切成三块。
-                            ProcessItem.Kind.Text -> MarkdownBody(
-                                text = item.text,
-                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
                             )
                         }
                     }
@@ -3870,7 +3876,11 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
     SheetFrame(title = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用", onDismiss = onDismiss) {
         val scroll = rememberScrollState()
         // 边跑边跟（D264）：输出在长的时候停在最底下，否则用户看到的是三分钟前的第一行。
-        LaunchedEffect(call.output.length, target.running) {
+        LaunchedEffect(
+            target.live?.stdout?.length ?: 0,
+            target.live?.stderr?.length ?: 0,
+            target.running,
+        ) {
             if (target.running && scroll.canScrollForward) scroll.scrollTo(scroll.maxValue)
         }
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -3895,13 +3905,30 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
                             modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                         )
                         MonoBox(text = call.arguments.ifEmpty { "（空）" })
+                        // 实时输出也分两页（用户 2026-11-06："有些输出是抛出的错误输出"）。
+                        // 默认页签的规则与结果那份一致：stdout 空、stderr 有东西就停在 stderr。
+                        val out = target.live?.stdout.orEmpty()
+                        val err = target.live?.stderr.orEmpty()
+                        var pickedTab by remember(target.callId) { mutableStateOf<Int?>(null) }
+                        val tab = pickedTab ?: if (out.isEmpty() && err.isNotBlank()) 1 else 0
                         Text(
                             text = "实时输出",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                         )
-                        if (call.output.isEmpty()) {
+                        Row(modifier = Modifier.padding(bottom = 4.dp)) {
+                            TabChip("stdout", selected = tab == 0) { pickedTab = 0 }
+                            Spacer(Modifier.width(6.dp))
+                            TabChip("stderr", selected = tab == 1) { pickedTab = 1 }
+                        }
+                        val body = if (tab == 0) out else err
+                        val cut = if (tab == 0) {
+                            target.live?.stdoutCut == true
+                        } else {
+                            target.live?.stderrCut == true
+                        }
+                        if (body.isEmpty()) {
                             Text(
                                 text = "（还没有输出）",
                                 style = MaterialTheme.typography.labelSmall,
@@ -3909,8 +3936,7 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
                             )
                         } else {
                             MonoBox(
-                                text = (if (target.outputCut) "…（只留了最近的 8 KiB）\n" else "") +
-                                    call.output,
+                                text = (if (cut) "…（只留了最近的 8 KiB）\n" else "") + body,
                             )
                         }
                         Text(
@@ -3947,7 +3973,8 @@ private data class ToolSheetTarget(
     val call: ToolCallArg,
     val running: Boolean = false,
     val elapsedMs: Int = 0,
-    val outputCut: Boolean = false,
+    /** 跑着的那一份（实时 stdout / stderr 在它身上）。 */
+    val live: RunningCall? = null,
 )
 
 /**
@@ -3971,12 +3998,12 @@ private fun resolveToolSheet(
                 part = "",
                 name = call.name,
                 arguments = call.arguments,
-                output = call.output,
+                output = "",
                 status = "running",
             ),
             running = true,
             elapsedMs = call.elapsedMs,
-            outputCut = call.outputCut,
+            live = call,
         )
     }
     done?.firstOrNull { it.callId == id }?.let { call ->
@@ -4774,8 +4801,10 @@ private fun runningCallsOf(info: JSONObject): List<RunningCall> {
                     name = row.text("name").ifBlank { "工具" },
                     elapsedMs = row.optInt("elapsed_ms", 0),
                     arguments = row.text("arguments"),
-                    output = row.text("output"),
-                    outputCut = row.optBoolean("output_cut", false),
+                    stdout = row.text("stdout"),
+                    stderr = row.text("stderr"),
+                    stdoutCut = row.optBoolean("stdout_cut", false),
+                    stderrCut = row.optBoolean("stderr_cut", false),
                 ),
             )
         }
