@@ -59,6 +59,8 @@ internal fun AppSettingsScreen(
     var imageLimitText by remember { mutableStateOf(AppSettings.imageLimit(context).toString()) }
     // 图片模式（D270）：直发 / 路径信息。
     var imageMode by remember { mutableStateOf(AppSettings.imageMode(context)) }
+    // 临时多留几张（D272）。
+    var imageTempText by remember { mutableStateOf(AppSettings.imageTempLimit(context).toString()) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -236,6 +238,58 @@ internal fun AppSettingsScreen(
                                 AppSettings.setImageLimit(context, AppSettings.DEFAULT_IMAGE_LIMIT)
                                 imageLimitText = AppSettings.DEFAULT_IMAGE_LIMIT.toString()
                                 notice = "上下文图片上限恢复成 ${AppSettings.DEFAULT_IMAGE_LIMIT} 张"
+                            }
+                        }
+
+                        // —— 临时多留几张（D272）——
+                        // 和上面那个数是同一件事的两半，所以放在同一张卡里：
+                        // 一个说"正常带几张"，一个说"满了还能多留几张"。
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 14.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "满了还能临时多留几张",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = "0 = 关（满了直接丢最旧的）。临时那几张活到**下一次思考结束**：\n" +
+                                        "模型还能看到它们一次，然后就收掉——这样它连看几张时，" +
+                                        "前面那几张不会在它还没说完结论的时候被挤走。\n" +
+                                        "两个数相加不能超过 ${AppSettings.MAX_IMAGE_LIMIT}（端点硬顶）。",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        SettingField(
+                            value = imageTempText,
+                            onChange = { imageTempText = it },
+                            placeholder = AppSettings.DEFAULT_IMAGE_TEMP.toString(),
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("用这个值", selected = false) {
+                                val parsed = imageTempText.trim().toIntOrNull()
+                                if (parsed == null || parsed < 0 || parsed > AppSettings.MAX_IMAGE_LIMIT) {
+                                    notice = "临时额度要填 0–${AppSettings.MAX_IMAGE_LIMIT} 张"
+                                } else {
+                                    AppSettings.setImageTempLimit(context, parsed)
+                                    imageTempText = AppSettings.imageTempLimit(context).toString()
+                                    notice = if (parsed == 0) {
+                                        "临时额度关掉了：满了直接丢最旧的"
+                                    } else {
+                                        "临时额度改成 ${AppSettings.imageTempLimit(context)} 张"
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setImageTempLimit(context, AppSettings.DEFAULT_IMAGE_TEMP)
+                                imageTempText = AppSettings.DEFAULT_IMAGE_TEMP.toString()
+                                notice = "临时额度恢复成 ${AppSettings.DEFAULT_IMAGE_TEMP} 张"
                             }
                         }
                     }

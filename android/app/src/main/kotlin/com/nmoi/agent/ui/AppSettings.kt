@@ -19,6 +19,7 @@ internal object AppSettings {
     private const val KEY_MAX_ROUNDS = "turn.max_rounds"
     private const val KEY_IMAGE_LIMIT = "context.image_limit"
     private const val KEY_IMAGE_MODE = "context.image_mode"
+    private const val KEY_IMAGE_TEMP = "context.image_temp_limit"
 
     /**
      * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
@@ -53,6 +54,22 @@ internal object AppSettings {
 
     fun setImageLimit(context: Context, value: Int) {
         prefs(context).edit().putInt(KEY_IMAGE_LIMIT, value.coerceIn(1, MAX_IMAGE_LIMIT)).apply()
+    }
+
+    /**
+     * 图片清单满了之后还能临时多留几张（D272）。
+     *
+     * `0` = 关（满了直接丢最旧的）。默认 4：一屏的量——模型连着看几张时，
+     * 前面那几张不会在它还没说完结论的时候就被挤掉。
+     * 临时那几张活到**下一次思考结束**，然后被收掉。
+     */
+    const val DEFAULT_IMAGE_TEMP = 4
+
+    fun imageTempLimit(context: Context): Int =
+        prefs(context).getInt(KEY_IMAGE_TEMP, DEFAULT_IMAGE_TEMP).coerceIn(0, MAX_IMAGE_LIMIT)
+
+    fun setImageTempLimit(context: Context, value: Int) {
+        prefs(context).edit().putInt(KEY_IMAGE_TEMP, value.coerceIn(0, MAX_IMAGE_LIMIT)).apply()
     }
 
     /** 图片模式（D270）：`inline` = 直发（默认），`path` = 只给路径，让模型自己挑。 */

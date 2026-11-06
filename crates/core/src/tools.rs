@@ -132,6 +132,8 @@ pub struct ToolContext<'a> {
     pub chat_images: Option<&'a std::path::Path>,
     /// 上下文图片清单的上限（0 = 用默认 20）。见 [`crate::images`]。
     pub image_limit: u32,
+    /// 满了之后还能临时多留几张（D272）：`0` = 关。见 [`crate::images::room_of`]。
+    pub image_temp_limit: u32,
 }
 
 impl<'a> ToolContext<'a> {
@@ -146,6 +148,7 @@ impl<'a> ToolContext<'a> {
             call: None,
             chat_images: None,
             image_limit: 0,
+            image_temp_limit: 0,
         }
     }
 
@@ -153,6 +156,12 @@ impl<'a> ToolContext<'a> {
     pub fn with_images(mut self, dir: Option<&'a std::path::Path>, limit: u32) -> Self {
         self.chat_images = dir;
         self.image_limit = limit;
+        self
+    }
+
+    /// 临时多留几张图（D272）：满了之后还能多放几张，那几张活到下一次思考结束。
+    pub fn with_image_room(mut self, temp: u32) -> Self {
+        self.image_temp_limit = temp;
         self
     }
 

@@ -256,6 +256,7 @@ internal object TurnRepository {
                     // 上下文图片上限（D248）：`View-Image` 拉图进来时的清单长度。
                     .put("image_limit", AppSettings.imageLimit(context))
                     .put("image_mode", AppSettings.imageMode(context))
+                    .put("image_temp_limit", AppSettings.imageTempLimit(context))
                     .also { row ->
                         maxTokens?.let { row.put("max_tokens", it) }
                         temperature?.let { row.put("temperature", it) }

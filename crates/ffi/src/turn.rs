@@ -246,6 +246,8 @@ struct TurnInput {
     image_limit: u32,
     /// 图片模式（D270）：`inline`（默认，直发）/ `path`（只给路径，让模型自己挑）。
     image_mode: nmoi_core::agent::ImageMode,
+    /// 图片清单满了之后还能临时多留几张（D272）：`0` = 关。
+    image_temp_limit: u32,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     budget: Option<Budget>,
@@ -492,6 +494,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         image_mode: nmoi_core::agent::ImageMode::parse(
             &optional_str(&root, "image_mode")?.unwrap_or_default(),
         ),
+        image_temp_limit: optional_u64(&root, "image_temp_limit")?.unwrap_or(0) as u32,
         max_tokens: optional_u64(&root, "max_tokens")?.map(|value| value as u32),
         temperature: optional_f32(&root, "temperature")?,
         budget,
@@ -1082,6 +1085,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
                 stream,
                 image_limit: input.image_limit,
                 image_mode: input.image_mode,
+                image_temp_limit: input.image_temp_limit,
                 ..TurnConfig::default()
             },
             // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
@@ -1405,6 +1409,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
                 stream,
                 image_limit: input.image_limit,
                 image_mode: input.image_mode,
+                image_temp_limit: input.image_temp_limit,
                 ..TurnConfig::default()
             },
             budget: input.budget.as_ref(),

@@ -65,6 +65,8 @@ pub struct TurnConfig {
     pub image_limit: u32,
     /// 用户发的图怎么进请求（D270）。
     pub image_mode: ImageMode,
+    /// 图片清单满了之后还能临时多留几张（D272）：`0` = 关。
+    pub image_temp_limit: u32,
 }
 
 /// 用户发的图怎么进请求（D270）。
@@ -299,6 +301,12 @@ pub fn run_turn<T: Transport>(
         };
         report.rounds += 1;
         report.finish = Some(completion.finish);
+        // 临时多留的图（D272）：这一轮的思考已经结束，它们该走了。
+        // 放在这里而不是"下一轮请求之前"：下一轮请求正是它们该被看到的那一次。
+        // 不收的话，一次对话里每多调一张图，上下文就永久涨一张。
+        if let Some(session) = ctx.call_session {
+            crate::images::trim(session, crate::images::limit_of(config.image_limit));
+        }
         // 行内思考标签（D212）：有些端点把思考塞进正文（`<think>…</think>`，
         // 还会重复收尾、留空块）。先切出来，再决定用哪一份思考。
         let inline = crate::thinkparse::split(&completion.text);
@@ -479,7 +487,11 @@ fn attach_context_images(
     else {
         return;
     };
-    for image in crate::images::list(session) {
+    // 清单是"这一轮要发哪几张"的**唯一**来源。缓存只省读盘，不决定发什么——
+    // 一张图被挤掉（或用户移出）之后，缓存里那一条不能再跟着发出去（D272 撞出来的）。
+    let listed = crate::images::list(session);
+    cache.retain(|(id, _)| listed.iter().any(|image| &image.id == id));
+    for image in &listed {
         if cache.iter().any(|(id, _)| id == &image.id) {
             continue;
         }
@@ -494,11 +506,18 @@ fn attach_context_images(
             },
         ));
     }
-    if cache.is_empty() {
+    let parts: Vec<crate::message::ImagePart> = listed
+        .iter()
+        .filter_map(|image| {
+            cache
+                .iter()
+                .find(|(id, _)| id == &image.id)
+                .map(|(_, part)| part.clone())
+        })
+        .collect();
+    if parts.is_empty() {
         return;
     }
-    let parts: Vec<crate::message::ImagePart> =
-        cache.iter().map(|(_, part)| part.clone()).collect();
     match request.images.iter_mut().find(|(id, _)| id == &target) {
         Some((_, existing)) => existing.extend(parts),
         None => request.images.push((target, parts)),
@@ -1000,6 +1019,66 @@ mod tests {
             seen[1].contains("data:image/png;base64,"),
             "第 2 轮就该带上它：{}",
             seen[1]
+        );
+    }
+
+    /// 临时额度（D272）：多留的那张**只多活一次请求**——下一次思考结束就收掉。
+    #[test]
+    fn a_temporarily_kept_image_survives_exactly_one_more_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let images_dir = dir.path().join("images");
+        std::fs::create_dir_all(&images_dir).unwrap();
+        for (name, body) in [("a.png", "AAA"), ("b.png", "BBB"), ("c.png", "CCC")] {
+            std::fs::write(images_dir.join(name), body.as_bytes()).unwrap();
+        }
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy =
+            AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_write("ws-1"));
+        let session = "s-images-room-turn";
+        crate::images::clear(session);
+        // 上限 1、临时 1：正常只带 1 张，满了还能多留 1 张。
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_images(Some(&images_dir), 1)
+            .with_image_room(1)
+            .with_call_session(session);
+        let transport = Scripted::new(vec![
+            calls_body(&[("c1", "View-Image", r#"{"path":"a.png"}"#)]),
+            calls_body(&[("c2", "View-Image", r#"{"path":"b.png"}"#)]),
+            calls_body(&[("c3", "View-Image", r#"{"path":"c.png"}"#)]),
+            text_body("看完了"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+
+        let report = run_turn(
+            &client,
+            &base_request(),
+            &history(),
+            &ToolRegistry::workspace_defaults(),
+            &ctx,
+            &TurnConfig::default(),
+            &NeverCancel,
+            None,
+        )
+        .unwrap();
+        crate::images::clear(session);
+
+        assert_eq!(report.rounds, 4, "{report:?}");
+        let seen = transport.requests();
+        let has = |index: usize, payload: &str| seen[index].contains(payload);
+        assert!(!has(0, "QUFB"), "第 1 轮还没看图");
+        assert!(has(1, "QUFB"), "第 2 轮带 a：{}", seen[1]);
+        // b 是临时多留的那张：第 3 轮它和 a 都在。
+        assert!(
+            has(2, "QUFB") && has(2, "QkJC"),
+            "第 3 轮两张都在：{}",
+            seen[2]
+        );
+        // 第 3 轮结束（思考结束）时 a 被收掉：第 4 轮只剩 b 和 c。
+        assert!(!has(3, "QUFB"), "临时额度到期后 a 该走了：{}", seen[3]);
+        assert!(
+            has(3, "QkJC") && has(3, "Q0ND"),
+            "第 4 轮是 b 和 c：{}",
+            seen[3]
         );
     }
 

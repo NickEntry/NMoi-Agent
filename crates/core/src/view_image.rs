@@ -42,7 +42,8 @@ impl Tool for ViewImageTool {
             "把一张图片加入**这一轮的上下文**，下一次请求就会带上它。\n",
             "path 是这个会话附件目录里的文件名（`/chat/images/xxx.jpg` 或只写 `xxx.jpg`）。\n",
             "它不返回图片内容——图是给模型看的，加进来之后你就能在下一轮里看到它。\n",
-            "清单有上限（默认 20 张，新的在前，满了先丢最旧的），结果里会点名丢了哪张。",
+            "清单有上限（默认 20 张，新的在前）；满了还能临时多留几张，那几张在下一次思考结束前有效。\n",
+            "结果里会写清这次是正常放进去、临时留着，还是真挤掉了谁。",
             "单张最大 5 MB；只认 jpg / jpeg / png / webp / gif。"
         )
     }
@@ -116,6 +117,7 @@ impl Tool for ViewImageTool {
         let id = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(&name);
 
         let limit = images::limit_of(ctx.image_limit);
+        let room = images::room_of(ctx.image_temp_limit);
         let (at, dropped) = images::add(
             session,
             ContextImage {
@@ -125,25 +127,37 @@ impl Tool for ViewImageTool {
                 bytes: meta.len(),
             },
             limit,
+            room,
         );
         let dropped_ids: Vec<&str> = dropped.iter().map(|image| image.id.as_str()).collect();
+        let count = images::list(session).len();
+        let temporary = images::temporary_count(session, limit);
         let mut value = json!({
             "file": name,
             "attachment": id,
             "in_context": at,
             "limit": limit,
-            "count": images::list(session).len(),
+            "count": count,
+            "temporary": temporary,
         });
         if !dropped_ids.is_empty() {
             value["dropped"] = json!(dropped_ids);
         }
-        value["note"] = json!(if dropped_ids.is_empty() {
-            format!("已加入上下文（第 {at}/{limit} 张）。下一轮请求就会带上它。")
-        } else {
+        // 三种话分开说（D272）：正常放进去了 / 临时多留了一张 / 真挤掉了谁。
+        // 合成一句"已加入"会让模型以为那张图会一直在。
+        value["note"] = json!(if !dropped_ids.is_empty() {
             format!(
-                "已加入上下文（第 {at}/{limit} 张）；清单满了，移出了最旧的：{}",
+                "已加入上下文（第 {at} 张，清单 {count} 张）；连临时额度也满了，移出了最旧的：{}",
                 dropped_ids.join("、")
             )
+        } else if temporary > 0 {
+            format!(
+                "已加入上下文（第 {at} 张，清单 {count} 张，其中 {temporary} 张是**临时**的：\n\
+                 正常上限是 {limit} 张，临时额度 {room} 张——临时这几张在**下一次思考结束**时就掉出去。\n\
+                 要留结论就现在写进正文或思考，别只留在工具结果里。"
+            )
+        } else {
+            format!("已加入上下文（第 {at}/{limit} 张）。下一轮请求就会带上它。")
         });
         ToolOutcome::Ok {
             text: value.to_string(),

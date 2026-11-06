@@ -1520,3 +1520,28 @@ kotlinc 全量只剩 9 个 `R`。
 判据：`conversation_workspace_overrides_the_assistant_one`（读写、清空、空串被拒、
 不存在的会话报错）、`v17_gains_a_nullable_workspace_column`（老数据一条不少、默认 NULL、
 再迁一次幂等）。
+
+## D272 图片临时额度：满了还能多留几张，活到下一次思考结束（2026-11-06）
+
+用户 2026-11-06 定的：「弄成两个参数，一个是图片限制张数，一个是图片临时允许限制
+（持续下一次思考结束）」。
+
+- `context.image_limit`（原有，默认 20）= 正常带几张。
+- `context.image_temp_limit`（新，默认 **4**，0 = 关）= 满了还能临时多留几张。
+- 实际能放 = `limit + room`，**压到硬上限 100**（三家端点里最弱的 Anthropic 就是 100 张/请求）。
+- 加入时（`images::add`）超出 `limit + room` 才真丢，丢最旧的；
+  超出 `limit` 的那几张就是"临时"的，`temporary_count` 数得出来。
+- **每一轮结束时**（`run_turn` 拿到这一轮的回答之后）`images::trim(limit)` 收掉临时的。
+  放在这里而不是"下一轮请求之前"：下一轮请求正是它们该被看到的那一次。
+  不收的话，一次对话里每多调一张图，上下文就永久涨一张。
+- 工具结果分三种话说：正常放进去了 / 临时多留了一张（并说清下一次思考结束就掉出去）/
+  连临时额度也满了、真挤掉了谁。
+
+**顺带修掉一个 D269 留下的 bug**：`attach_context_images` 的读盘缓存每轮把**整份缓存**
+挂上去，于是一张已经被挤掉（或用户移出）的图会跟着发到这一轮结束。
+现在清单是唯一来源，缓存只省读盘。这条是 `a_temporarily_kept_image_survives_exactly_one_more_request`
+撞出来的——写完先红，改完才绿。
+
+判据：`the_room_keeps_a_few_more_until_the_round_ends`、
+`the_room_never_pushes_the_list_past_the_hard_cap`、
+`a_temporarily_kept_image_survives_exactly_one_more_request`（第 3 轮两张都在、第 4 轮只剩两张新的）。

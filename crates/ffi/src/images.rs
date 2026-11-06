@@ -115,6 +115,7 @@ mod tests {
                 bytes: 10,
             },
             20,
+            0,
         );
 
         let config = CString::new(r#"{"session":"s-ffi-images"}"#).unwrap();

@@ -55,22 +55,69 @@ pub fn limit_of(raw: u32) -> usize {
     }
 }
 
+/// 临时多留几张（D272）：`0` = 关（满了直接丢最旧的）。
+///
+/// 与 [`limit_of`] 的区别：那个是"这一轮正常带几张"，这个是"满了之后还能临时多留几张"。
+/// 临时那几张活到**下一次思考结束**（模型看过一次），然后 [`trim`] 把它们收掉。
+///
+/// 两者相加不能超过 [`MAX_LIMIT`]：那是三家端点里最弱那家的每请求张数硬顶，
+/// 超了换一家就 400。
+pub fn room_of(raw: u32) -> usize {
+    (raw as usize).min(MAX_LIMIT)
+}
+
+/// 这一轮实际能放几张：正常上限 + 临时多留，压到硬上限。
+fn capacity_of(limit: usize, room: usize) -> usize {
+    (limit.max(1).saturating_add(room)).min(MAX_LIMIT)
+}
+
 /// 加一张图（新的在前）。返回它在清单里的位置（1 起）与被挤掉的那些。
 ///
 /// 同一张图重复加：**挪到最前面**，不产生第二份——重复发同一张图既费 token 又占位置。
-pub fn add(session: &str, image: ContextImage, limit: usize) -> (usize, Vec<ContextImage>) {
-    let limit = limit.max(1);
+///
+/// `room` 是临时多留的额度（D272）：满了之后还能多放几张，那几张活到下一次思考结束。
+/// 超出 `limit + room` 才真丢，丢的是最旧的那些。
+pub fn add(
+    session: &str,
+    image: ContextImage,
+    limit: usize,
+    room: usize,
+) -> (usize, Vec<ContextImage>) {
+    let capacity = capacity_of(limit, room);
     let mut table = table().lock().unwrap_or_else(|poison| poison.into_inner());
     let list = table.entry(session.to_string()).or_default();
     list.retain(|existing| existing.id != image.id);
     list.insert(0, image);
     let mut dropped = Vec::new();
-    while list.len() > limit {
+    while list.len() > capacity {
         if let Some(old) = list.pop() {
             dropped.push(old);
         }
     }
     (1, dropped)
+}
+
+/// 清单里**临时**留着的张数（超出正常上限的那几张）。界面与工具结果都读它。
+pub fn temporary_count(session: &str, limit: usize) -> usize {
+    let list = list(session);
+    list.len().saturating_sub(limit.max(1))
+}
+
+/// 把清单收到 `limit` 张（D272）：**每一轮结束时**叫一声。
+///
+/// 临时那几张的存在意义就是"让模型下一次请求还看得到"，看过一次就该走——
+/// 不收的话，一次对话里每多调一张图，上下文就永久涨一张。
+/// 返回被收掉的那些（调用方要能把这件事说出来）。
+pub fn trim(session: &str, limit: usize) -> Vec<ContextImage> {
+    let keep = limit.max(1);
+    let mut table = table().lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(list) = table.get_mut(session) else {
+        return Vec::new();
+    };
+    if list.len() <= keep {
+        return Vec::new();
+    }
+    list.split_off(keep)
 }
 
 /// 这一轮要发的图，新的在前。
@@ -112,15 +159,15 @@ mod tests {
     #[test]
     fn newest_comes_first_and_the_oldest_falls_off() {
         let session = "s-images-fifo";
-        add(session, image("a"), 3);
-        add(session, image("b"), 3);
-        add(session, image("c"), 3);
+        add(session, image("a"), 3, 0);
+        add(session, image("b"), 3, 0);
+        add(session, image("c"), 3, 0);
         // 新的在前。
         let ids: Vec<String> = list(session).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, ["c", "b", "a"]);
 
         // 第 4 张进来：最旧的 a 被挤掉，而且是**返回给调用方**的（界面要说清挤掉了谁）。
-        let (at, dropped) = add(session, image("d"), 3);
+        let (at, dropped) = add(session, image("d"), 3, 0);
         assert_eq!(at, 1);
         assert_eq!(dropped.len(), 1);
         assert_eq!(dropped[0].id, "a");
@@ -129,12 +176,51 @@ mod tests {
         clear(session);
     }
 
+    /// 临时额度（D272）：满了还能多留几张，超出 `limit + room` 才真丢。
+    #[test]
+    fn the_room_keeps_a_few_more_until_the_round_ends() {
+        let session = "s-images-room";
+        clear(session);
+        for id in ["a", "b", "c"] {
+            add(session, image(id), 2, 1);
+        }
+        // 2 + 1 = 3 张都在，一张都没丢。
+        let ids: Vec<String> = list(session).into_iter().map(|i| i.id).collect();
+        assert_eq!(ids, ["c", "b", "a"]);
+        assert_eq!(temporary_count(session, 2), 1, "多出来的那张是临时的");
+
+        // 第 4 张：连临时额度也满了，最旧的 a 才被挤掉。
+        let (_, dropped) = add(session, image("d"), 2, 1);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].id, "a");
+
+        // 一轮结束：临时那张收掉，回到正常上限。
+        let trimmed = trim(session, 2);
+        assert_eq!(trimmed.len(), 1);
+        assert_eq!(list(session).len(), 2);
+        assert_eq!(temporary_count(session, 2), 0);
+        clear(session);
+    }
+
+    /// 两个数相加压到硬上限：`limit + room` 不许超过 100（端点硬顶）。
+    #[test]
+    fn the_room_never_pushes_the_list_past_the_hard_cap() {
+        let session = "s-images-cap";
+        clear(session);
+        assert_eq!(room_of(500), MAX_LIMIT);
+        for index in 0..(MAX_LIMIT + 10) {
+            add(session, image(&format!("i{index}")), MAX_LIMIT, MAX_LIMIT);
+        }
+        assert_eq!(list(session).len(), MAX_LIMIT);
+        clear(session);
+    }
+
     #[test]
     fn adding_the_same_image_again_moves_it_up_instead_of_duplicating() {
         let session = "s-images-dup";
-        add(session, image("a"), 4);
-        add(session, image("b"), 4);
-        add(session, image("a"), 4);
+        add(session, image("a"), 4, 0);
+        add(session, image("b"), 4, 0);
+        add(session, image("a"), 4, 0);
         let ids: Vec<String> = list(session).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, ["a", "b"], "重复的那张挪到最前，不产生第二份");
         clear(session);
@@ -145,7 +231,7 @@ mod tests {
         let session = "s-images-empty";
         assert!(!remove(session, "nope"));
         assert_eq!(clear(session), 0);
-        let _ = add(session, image("a"), 2);
+        let _ = add(session, image("a"), 2, 0);
         assert!(remove(session, "a"));
         assert!(list(session).is_empty());
     }
