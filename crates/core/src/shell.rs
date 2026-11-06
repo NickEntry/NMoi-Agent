@@ -489,8 +489,11 @@ fn execute(
 
     let (out_tx, out_rx) = mpsc::channel();
     let (err_tx, err_rx) = mpsc::channel();
-    drain(stdout, out_tx);
-    drain(stderr, err_tx);
+    // 实时输出（D264）：两个流都往同一份缓冲里追加，界面每 100 ms 读一次。
+    // 结果那份仍然是分开的 stdout / stderr——这里只是"它现在在吐什么"。
+    let live = call.map(|call| call.live());
+    drain(stdout, out_tx, live.clone());
+    drain(stderr, err_tx, live);
 
     let mut timed_out = false;
     let mut killed_by_user = false;
@@ -553,15 +556,41 @@ fn execute(
 }
 
 /// 读一个管道，最多留 `STREAM_CAP` 字节；超出的照读不误（不然对方写满就卡住），只是丢掉。
-fn drain<R: Read + Send + 'static>(mut reader: R, tx: mpsc::Sender<(String, bool)>) {
+///
+/// 同时把**每一段**追加给 `live`（实时输出）。`carry` 存着"上一个读到的半个 UTF-8 字符"：
+/// 一次 `read` 可能正好切在一个汉字中间，直接 `from_utf8_lossy` 会在界面上闪一个 ``。
+fn drain<R: Read + Send + 'static>(
+    mut reader: R,
+    tx: mpsc::Sender<(String, bool)>,
+    live: Option<crate::kills::LiveBuffer>,
+) {
     std::thread::spawn(move || {
         let mut kept: Vec<u8> = Vec::new();
         let mut cut = false;
+        let mut carry: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 8192];
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(count) => {
+                    if let Some(live) = &live {
+                        carry.extend_from_slice(&chunk[..count]);
+                        let valid = match std::str::from_utf8(&carry) {
+                            Ok(_) => carry.len(),
+                            Err(error) => error.valid_up_to(),
+                        };
+                        if valid > 0 {
+                            let piece = String::from_utf8_lossy(&carry[..valid]).into_owned();
+                            live.push(&piece);
+                            carry.drain(..valid);
+                        }
+                        // 一直凑不成一个字符（二进制输出）：按坏字节吐掉，别让 carry 长下去。
+                        if carry.len() > 8 {
+                            let piece = String::from_utf8_lossy(&carry).into_owned();
+                            live.push(&piece);
+                            carry.clear();
+                        }
+                    }
                     let room = STREAM_CAP.saturating_sub(kept.len());
                     if room == 0 {
                         cut = true;
@@ -698,6 +727,44 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// 实时输出（D264）：命令还在跑的时候，第一段就已经在缓冲里了。
+    ///
+    /// 判据是"跑完之前读到"——跑完之后再读一遍谁都会，那证明不了流式。
+    #[cfg(unix)]
+    #[test]
+    fn live_output_arrives_while_the_command_is_still_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = crate::kills::begin("sess-live", "call-live", "System-Shell", "{}");
+        let live = handle.live();
+        let path = dir.path().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            run(
+                "echo 111; sleep 0.4; echo 222",
+                &path,
+                Some(Duration::from_secs(10)),
+                Some(&handle),
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut early = String::new();
+        while Instant::now() < deadline {
+            early = live.snapshot().0;
+            if early.contains("111") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            early.contains("111"),
+            "第一段输出要在命令结束之前就能看到：{early:?}"
+        );
+
+        let done = worker.join().expect("线程没 panic").expect("命令要能跑完");
+        assert!(done.stdout.contains("222"));
+        assert!(live.snapshot().0.contains("222"), "第二段也要进缓冲");
     }
 
     #[test]

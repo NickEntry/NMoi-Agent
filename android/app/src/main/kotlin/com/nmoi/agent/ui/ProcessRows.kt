@@ -38,15 +38,23 @@ internal sealed interface ChatRow {
 /** 一个单元被画成哪一半：整条 / 只有正文与思考 / 只有工具。 */
 internal enum class UnitSlice { Whole, TextOnly, ToolsOnly }
 
-/** 过程项：一个思考块，或一次工具往返。 */
+/** 过程项：一个思考块、一次工具往返，或者夹在两者之间的一小段正文。 */
 internal data class ProcessItem(
     val id: String,
     val kind: Kind,
     val unit: ChatUnit,
     /** 思考块的那条消息（`kind == Thinking` 时有）。 */
     val thinking: ChatMessage? = null,
+    /**
+     * 夹在过程之间的一小段正文（`kind == Text` 时有）。
+     *
+     * 为什么它能进过程卡：模型常在两次工具之间说一句"我先看看"。那一句只占一行，
+     * 单独摆一张卡会把同一轮切成三块（用户 2026-11-06："只隔一行的块可以自动吸附过去"）。
+     * 长正文不吸——那是回答，不是过程。
+     */
+    val text: String = "",
 ) {
-    enum class Kind { Thinking, Tool }
+    enum class Kind { Thinking, Tool, Text }
 
     /**
      * 还在跑：单元没闭合（工具结果还没回来）。
@@ -78,7 +86,11 @@ internal fun buildRows(units: List<ChatUnit>): List<ChatRow> {
             // 单独一项工具只画工具；单独一项思考照旧画整条。
             ChatRow.Single(
                 only.unit,
-                slice = if (only.kind == ProcessItem.Kind.Tool) UnitSlice.ToolsOnly else UnitSlice.Whole,
+                slice = when (only.kind) {
+                    ProcessItem.Kind.Tool -> UnitSlice.ToolsOnly
+                    ProcessItem.Kind.Text -> UnitSlice.TextOnly
+                    ProcessItem.Kind.Thinking -> UnitSlice.Whole
+                },
             )
         } else {
             ChatRow.Process(pending)
@@ -89,12 +101,31 @@ internal fun buildRows(units: List<ChatUnit>): List<ChatRow> {
     for (unit in units) {
         val item = processItemOf(unit)
         if (item != null) {
-            // 折行之后，工具那一轮里还带着正文与思考（D258）。以前这里只画工具，
-            // 于是每轮的"我先看看"和思考都被吞掉了（2026-11-05 真机报的）。
-            // 先把它当正文画一行，工具另起一项——顺序就是屏幕上的顺序。
-            if (unit.isToolPair && unitHasBody(unit)) {
-                flush()
-                rows += ChatRow.Single(unit, slice = UnitSlice.TextOnly)
+            if (unit.isToolPair) {
+                // 折行之后一轮 = 一条消息（思考 + 正文 + 工具）。三种画法：
+                // 1. 正文长（回答）：思考与正文一行，工具另起一张卡；
+                // 2. 正文短（一句"我先看看"）：整轮合成一张卡，正文夹在中间；
+                // 3. 没有正文：整轮合成一张卡。
+                // 用户 2026-11-06："只隔一行的块可以自动吸附过去"，判据按字节算，
+                // 不按屏幕上的行数——行数随字号和宽度变，字节数是数据自己的属性。
+                val body = unitBodyText(unit)
+                if (body.isNotBlank() && !absorbsIntoCard(body)) {
+                    flush()
+                    rows += ChatRow.Single(unit, slice = UnitSlice.TextOnly)
+                    pending += item
+                } else {
+                    reasoningItemOf(unit)?.let { pending += it }
+                    if (body.isNotBlank()) {
+                        pending += ProcessItem(
+                            id = unit.id + "#text",
+                            kind = ProcessItem.Kind.Text,
+                            unit = unit,
+                            text = body,
+                        )
+                    }
+                    pending += item
+                }
+                continue
             }
             pending += item
             continue
@@ -116,11 +147,25 @@ internal fun buildRows(units: List<ChatUnit>): List<ChatRow> {
     return rows
 }
 
-/** 这个单元里除了工具之外，还有没有正文或思考要画。 */
-internal fun unitHasBody(unit: ChatUnit): Boolean =
-    unit.messages.any { message ->
-        !message.reasoning.isNullOrBlank() || message.content.isNotBlank()
-    }
+/** 工具那一轮的正文（一条消息一轮，所以取第一条非思考消息）。 */
+internal fun unitBodyText(unit: ChatUnit): String =
+    unit.messages.firstOrNull { !it.isThinking }?.content.orEmpty()
+
+/**
+ * 一小段正文够不够短，短到可以留在过程卡里（"吸附"）。
+ *
+ * 判据是**字节数**，不是屏幕上的行数：同一段话在平板上是一行、在窄屏上是两行，
+ * 而"它是不是一句旁白"跟屏幕宽度无关。上限取一行正文的量级（中文 20 字上下），
+ * 并且**带换行就不吸**——多行的东西已经是段落了。
+ */
+internal fun absorbsIntoCard(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty() || trimmed.contains('\n')) return false
+    return trimmed.toByteArray(Charsets.UTF_8).size <= ABSORB_BYTES
+}
+
+/** 一行正文的量级：中文约 20 字（UTF-8 三字节一个）。 */
+internal const val ABSORB_BYTES: Int = 64
 
 /**
  * 正文那条消息的思考，当成一个过程项。
@@ -129,7 +174,6 @@ internal fun unitHasBody(unit: ChatUnit): Boolean =
  * 键撞在一起会让折叠状态串到另一条消息上。
  */
 internal fun reasoningItemOf(unit: ChatUnit): ProcessItem? {
-    if (unit.isToolPair) return null
     val only = unit.messages.singleOrNull() ?: return null
     if (only.isThinking) return null
     if (only.reasoning.isNullOrBlank()) return null
@@ -168,8 +212,9 @@ internal fun visibleItems(items: List<ProcessItem>, expanded: Boolean): List<Pro
     return if (expanded) items else items.takeLast(2)
 }
 
-/** 这一组够不够折叠的门槛（≥ 3）。 */
-internal fun foldable(items: List<ProcessItem>): Boolean = items.size >= 3
+/** 这一组够不够折叠的门槛（≥ 3 **步**）。夹在中间的正文不算一步——它不是过程。 */
+internal fun foldable(items: List<ProcessItem>): Boolean =
+    items.count { it.kind != ProcessItem.Kind.Text } >= 3
 
 /** 折叠时被收起来的步数（给"展开更多 N 步"那句用）。 */
 internal fun hiddenCount(items: List<ProcessItem>, expanded: Boolean): Int =

@@ -1189,27 +1189,30 @@ internal fun ChatScreen(
                         // 过程块（D229）：展开状态只活在这个会话的这次浏览里。
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
-                        onOpenTool = { _, call -> toolSheet = ToolSheetTarget(call) },
+                        onOpenTool = { _, call -> toolSheet = ToolSheetTarget(call.callId, call) },
                         liveThinkingOpen = openGroups["live:think"] == true,
                         onToggleLiveThinking = {
                             openGroups["live:think"] = openGroups["live:think"] != true
                         },
                         onOpenRunningCall = { call ->
                             toolSheet = ToolSheetTarget(
+                                callId = call.callId,
                                 call = ToolCallArg(
                                     callId = call.callId,
                                     part = "",
                                     name = call.name,
                                     arguments = call.arguments,
-                                    output = "",
+                                    output = call.output,
                                     status = "running",
                                 ),
                                 running = true,
                                 elapsedMs = call.elapsedMs,
+                                outputCut = call.outputCut,
                             )
                         },
                         onOpenDoneCall = { done ->
                             toolSheet = ToolSheetTarget(
+                                callId = done.callId,
                                 call = ToolCallArg(
                                     callId = done.callId,
                                     part = "",
@@ -1438,10 +1441,14 @@ internal fun ChatScreen(
 
         // 工具块点开的那一条（D243 / D261）：**一次调用一个弹窗**。
         // 以前点开哪一行都弹同一个块、把这一轮的全部调用铺在一起，用户分不清自己点的是哪一条。
-        toolSheet?.let { target ->
+        // 弹窗里的那一次调用**每一拍现查**（D264）：跑着的看实时输出，跑完了看结果，
+        // 整轮收尾之后看库里那一份。点开那一刻抓的那份只当兜底——
+        // 拿快照画，用户看到的就是"工具跑完了，小窗口还写着正在运行"。
+        toolSheet?.let { opened ->
+            val target = resolveToolSheet(opened, live?.calls, live?.done, allMessages)
             ToolDetailSheet(
                 target = target,
-                onCancel = { cancelCall(target.call.callId) },
+                onCancel = { cancelCall(target.callId) },
                 onDismiss = { toolSheet = null },
             )
         }
@@ -2403,6 +2410,12 @@ private fun ProcessGroupRow(
                                 unit = item.unit,
                                 onOpen = { call -> onOpenTool(item.unit, call) },
                             )
+                            // 夹在两次工具之间的一小段正文（2026-11-06 的"吸附"）：
+                            // 它属于这一轮的过程，单独摆一张卡会把同一轮切成三块。
+                            ProcessItem.Kind.Text -> MarkdownBody(
+                                text = item.text,
+                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
+                            )
                         }
                     }
                 }
@@ -2969,18 +2982,22 @@ private fun AssistantMessage(
         // 头像 + 名字/时间占一行；**正文在它们下面整行铺开**，
         // 左边缘和头像左边缘同一条线（用户 2026-10-24："消息要在头像下方，这样美观"）。
         if (showHeader) AssistantHeader(createdAt = message.createdAt)
-        MarkdownBody(
-            text = message.content.ifEmpty { "（空消息）" },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-                .pointerInput(selecting, message.id) {
-                    detectTapGestures(
-                        onTap = { onTap() },
-                        onLongPress = { onLongPress() },
-                    )
-                },
-        )
+        // 空正文什么都不画（2026-11-06 用户："（空消息）"不该出现）。
+        // 工具那一轮的正文本来就是空的——它只有思考与工具，那两样已经画在上面了。
+        if (message.content.isNotBlank()) {
+            MarkdownBody(
+                text = message.content,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .pointerInput(selecting, message.id) {
+                        detectTapGestures(
+                            onTap = { onTap() },
+                            onLongPress = { onLongPress() },
+                        )
+                    },
+            )
+        }
         if (message.incomplete) {
             Text(
                 text = "未完成 · 这一轮被中断",
@@ -3636,12 +3653,13 @@ private fun ToolProcessRow(unit: ChatUnit, onOpen: (ToolCallArg) -> Unit) {
                         modifier = Modifier.padding(start = 24.dp, top = 2.dp, bottom = 2.dp),
                     )
                 }
+                val summary = toolSummaryOf(call)
                 ToolCallLine(
                     name = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用",
-                    summary = toolSummaryOf(call),
+                    summary = summary.text,
                     preview = toolArgumentPreview(call.arguments),
                     icon = toolIcon(call.name),
-                    failed = call.status == "error" || call.status == "killed",
+                    failed = summary.failed,
                     onClick = { onOpen(call) },
                 )
             }
@@ -3649,21 +3667,31 @@ private fun ToolProcessRow(unit: ChatUnit, onOpen: (ToolCallArg) -> Unit) {
     }
 }
 
-/** 一行的摘要：从结果 JSON 里取 `exit_code` / `duration_ms`，拿不到就写"结果 N 字"。 */
-private fun toolSummaryOf(call: ToolCallArg): String {
-    if (call.status == "pending") return "还没结果"
-    if (call.status == "killed") return "没跑"
+/** 一行的摘要 + 它该不该标红。 */
+private data class ToolSummary(val text: String, val failed: Boolean)
+
+/**
+ * 一行的摘要：从结果 JSON 里取 `exit_code` / `duration_ms`，拿不到就写"结果 N 字"。
+ *
+ * `failed` 的判据是**退出码非 0**（用户 2026-11-06："状态码非 0，这个块的 exit 连着数字都显示红色，
+ * 这样比较直观能看出来哪个是正常退出"）。注意它跟 `status` 不是一回事——shell 跑完就是 `ok`，
+ * 退出码 1 只是命令自己这么退的；那一行照样该红，因为用户要一眼分出正常/不正常。
+ */
+private fun toolSummaryOf(call: ToolCallArg): ToolSummary {
+    if (call.status == "pending") return ToolSummary("还没结果", false)
+    if (call.status == "killed") return ToolSummary("没跑", true)
     val text = call.output.trim()
-    if (text.isEmpty()) return "（空）"
+    if (text.isEmpty()) return ToolSummary("（空）", false)
     val exit = Regex("\"exit_code\"\\s*:\\s*(-?\\d+)").find(text)?.groupValues?.get(1)
     val millis = Regex("\"duration_ms\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
-    if (exit != null && millis != null) return "exit $exit · ${millis}ms"
-    if (exit != null) return "exit $exit"
+    val failed = call.status == "error" || (exit != null && exit != "0")
+    if (exit != null && millis != null) return ToolSummary("exit $exit · ${millis}ms", failed)
+    if (exit != null) return ToolSummary("exit $exit", failed)
     // 查看图像：它没有退出码，写"N 字"等于什么都没说（2026-11-06 用户提的）。
     val at = Regex("\"in_context\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
     val limit = Regex("\"limit\"\\s*:\\s*(\\d+)").find(text)?.groupValues?.get(1)
-    if (at != null && limit != null) return "第 $at/$limit 张"
-    return "${text.length} 字"
+    if (at != null && limit != null) return ToolSummary("第 $at/$limit 张", false)
+    return ToolSummary("${text.length} 字", failed)
 }
 
 /** 工具行的图标：图像类的不该挂一把扳手（图标是扫读锚点，不是装饰）。 */
@@ -3784,6 +3812,9 @@ private fun toolArgumentPreview(arguments: String): String {
  */
 @Composable
 private fun ThinkingProcessRow(message: ChatMessage, expanded: Boolean, onToggle: () -> Unit) {
+    // 思考单独成单元时 `content` 就是思考；跟着正文一起进来时它在 `reasoning` 里。
+    // 以前一律读 `content`，于是"深度思考 · N 字"数的是正文——两类消息混在一张卡里时看不出来。
+    val body = message.reasoning?.takeIf { it.isNotBlank() } ?: message.content
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -3799,7 +3830,7 @@ private fun ThinkingProcessRow(message: ChatMessage, expanded: Boolean, onToggle
                 modifier = Modifier.size(16.dp),
             )
             Text(
-                text = "深度思考 · ${message.content.length} 字",
+                text = "深度思考 · ${body.length} 字",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
@@ -3813,7 +3844,7 @@ private fun ThinkingProcessRow(message: ChatMessage, expanded: Boolean, onToggle
         }
         if (expanded) {
             Text(
-                text = message.content,
+                text = body,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 24.dp, bottom = 6.dp),
@@ -3837,12 +3868,17 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
     val screen = LocalConfiguration.current.screenHeightDp
     val maxHeight = (screen * 0.5f).dp
     SheetFrame(title = call.name.takeIf { it.isNotBlank() }?.let { toolDisplayName(it) } ?: "工具调用", onDismiss = onDismiss) {
+        val scroll = rememberScrollState()
+        // 边跑边跟（D264）：输出在长的时候停在最底下，否则用户看到的是三分钟前的第一行。
+        LaunchedEffect(call.output.length, target.running) {
+            if (target.running && scroll.canScrollForward) scroll.scrollTo(scroll.maxValue)
+        }
         Column(modifier = Modifier.fillMaxWidth()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = maxHeight)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
                     .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
             ) {
                 if (target.running) {
@@ -3859,6 +3895,24 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
                             modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                         )
                         MonoBox(text = call.arguments.ifEmpty { "（空）" })
+                        Text(
+                            text = "实时输出",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        )
+                        if (call.output.isEmpty()) {
+                            Text(
+                                text = "（还没有输出）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            MonoBox(
+                                text = (if (target.outputCut) "…（只留了最近的 8 KiB）\n" else "") +
+                                    call.output,
+                            )
+                        }
                         Text(
                             text = "结果回来之后，这一块会换成库里那次调用（带退出码与输出）。",
                             style = MaterialTheme.typography.labelSmall,
@@ -3888,10 +3942,62 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
 
 /** 弹窗要画的那一次调用：库里的、正在跑的、跑完还没落库的，都是这一份形状。 */
 private data class ToolSheetTarget(
+    /** 按它现查：跑着的、跑完的、库里的，三处都认这一个键。 */
+    val callId: String,
     val call: ToolCallArg,
     val running: Boolean = false,
     val elapsedMs: Int = 0,
+    val outputCut: Boolean = false,
 )
+
+/**
+ * 弹窗这一刻该画什么（D264）。**现查**，不用点开那一刻的快照。
+ *
+ * 顺序就是事实的顺序：还在跑（带实时输出）→ 这一轮跑完了（还没落库）→ 库里那一份。
+ * 三处都没有（比如整轮失败、这一条没跑）就退回点开时那一份。
+ */
+private fun resolveToolSheet(
+    opened: ToolSheetTarget,
+    running: List<RunningCall>?,
+    done: List<DoneCall>?,
+    messages: List<ChatMessage>,
+): ToolSheetTarget {
+    val id = opened.callId
+    if (id.isEmpty()) return opened
+    running?.firstOrNull { it.callId == id }?.let { call ->
+        return opened.copy(
+            call = ToolCallArg(
+                callId = id,
+                part = "",
+                name = call.name,
+                arguments = call.arguments,
+                output = call.output,
+                status = "running",
+            ),
+            running = true,
+            elapsedMs = call.elapsedMs,
+            outputCut = call.outputCut,
+        )
+    }
+    done?.firstOrNull { it.callId == id }?.let { call ->
+        return opened.copy(
+            call = ToolCallArg(
+                callId = id,
+                part = "",
+                name = call.name,
+                arguments = call.arguments,
+                output = call.output,
+                status = if (call.ok) "ok" else "error",
+            ),
+            running = false,
+        )
+    }
+    messages.asSequence()
+        .flatMap { it.toolArgs.asSequence() }
+        .firstOrNull { it.callId == id }
+        ?.let { stored -> return opened.copy(call = stored, running = false) }
+    return opened
+}
 
 /** 断块（P4.1 / D67）：声明行由 core 给，UI 不自己拼。 */
 @Composable
@@ -4668,6 +4774,8 @@ private fun runningCallsOf(info: JSONObject): List<RunningCall> {
                     name = row.text("name").ifBlank { "工具" },
                     elapsedMs = row.optInt("elapsed_ms", 0),
                     arguments = row.text("arguments"),
+                    output = row.text("output"),
+                    outputCut = row.optBoolean("output_cut", false),
                 ),
             )
         }
@@ -4881,10 +4989,17 @@ private fun DoneCallRow(call: DoneCall, onOpen: () -> Unit) {
             modifier = Modifier.weight(1f).padding(start = 8.dp),
         )
         if (call.summary.isNotEmpty()) {
+            // 跑完还没落库的这一行：摘要里的退出码非 0 也标红（与库里那份同一套判据）。
+            val exit = Regex("exit (-?\\d+)").find(call.summary)?.groupValues?.get(1)
+            val failed = !call.ok || (exit != null && exit != "0")
             Text(
                 text = call.summary,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (failed) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
             )
         }
     }

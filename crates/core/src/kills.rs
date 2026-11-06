@@ -26,6 +26,60 @@ pub struct RunningCall {
     /// 一行名字加一个秒数，用户没法判断该不该关掉它。
     pub arguments: String,
     pub elapsed_ms: u64,
+    /// 到目前为止吐出来的东西（stdout / stderr 按到达顺序合在一起）。
+    ///
+    /// 只留尾部（[`LIVE_CAP`]）：长任务里用户要看的是"现在在吐什么"，
+    /// 不是十分钟前的第一行。`output_cut` 说明前面被裁过。
+    pub output: String,
+    pub output_cut: bool,
+}
+
+/// 一条调用到现在为止的输出。两个读线程共用一份（谁先读到谁写进去）。
+#[derive(Debug, Default)]
+struct Live {
+    text: String,
+    cut: bool,
+}
+
+/// 实时输出最多留这么多**字节**（尾部）。它每 100 ms 被读一次给界面，
+/// 留太多等于每拍搬一次几十 KB；弹窗里看最近几屏就够。
+const LIVE_CAP: usize = 8 * 1024;
+
+/// 写实时输出的把手：`CallHandle::live()` 拿一份，交给读管道的线程。
+#[derive(Debug, Clone)]
+pub struct LiveBuffer {
+    live: Arc<Mutex<Live>>,
+}
+
+impl LiveBuffer {
+    /// 现在攒到哪儿了（`(文本, 前面裁过没有)`）。跑完之后再看一眼也用它。
+    pub fn snapshot(&self) -> (String, bool) {
+        let live = self
+            .live
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        (live.text.clone(), live.cut)
+    }
+
+    /// 追加一段。超上限就**从头部裁**（留尾部）——见 [`LIVE_CAP`]。
+    pub fn push(&self, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        let mut live = self
+            .live
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        live.text.push_str(chunk);
+        if live.text.len() > LIVE_CAP {
+            let mut cut = live.text.len() - LIVE_CAP;
+            while !live.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            live.text.drain(..cut);
+            live.cut = true;
+        }
+    }
 }
 
 struct Entry {
@@ -33,6 +87,7 @@ struct Entry {
     name: String,
     arguments: String,
     started: Instant,
+    live: Arc<Mutex<Live>>,
 }
 
 type Table = HashMap<String, HashMap<String, Entry>>;
@@ -48,12 +103,20 @@ pub struct CallHandle {
     session: String,
     call_id: String,
     flag: Arc<AtomicBool>,
+    live: Arc<Mutex<Live>>,
 }
 
 impl CallHandle {
     /// 用户点过「关闭」没有。
     pub fn cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+
+    /// 实时输出的把手。读管道的线程拿它往里写，界面每 100 ms 读一次。
+    pub fn live(&self) -> LiveBuffer {
+        LiveBuffer {
+            live: Arc::clone(&self.live),
+        }
     }
 }
 
@@ -85,6 +148,7 @@ const ARGUMENTS_CAP: usize = 2_000;
 /// 登记一条调用开始跑。返回的凭据活到结果回来为止。
 pub fn begin(session: &str, call_id: &str, name: &str, arguments: &str) -> CallHandle {
     let flag = Arc::new(AtomicBool::new(false));
+    let live = Arc::new(Mutex::new(Live::default()));
     let mut table = table().lock().unwrap_or_else(|poison| poison.into_inner());
     table.entry(session.to_string()).or_default().insert(
         call_id.to_string(),
@@ -93,12 +157,14 @@ pub fn begin(session: &str, call_id: &str, name: &str, arguments: &str) -> CallH
             name: name.to_string(),
             arguments: arguments.chars().take(ARGUMENTS_CAP).collect(),
             started: Instant::now(),
+            live: Arc::clone(&live),
         },
     );
     CallHandle {
         session: session.to_string(),
         call_id: call_id.to_string(),
         flag,
+        live,
     }
 }
 
@@ -249,6 +315,18 @@ pub fn running(session: &str) -> Vec<RunningCall> {
                     name: entry.name.clone(),
                     arguments: entry.arguments.clone(),
                     elapsed_ms: entry.started.elapsed().as_millis() as u64,
+                    output: {
+                        let live = entry
+                            .live
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        live.text.clone()
+                    },
+                    output_cut: entry
+                        .live
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .cut,
                 },
             )
         })
@@ -259,6 +337,39 @@ pub fn running(session: &str) -> Vec<RunningCall> {
 
 #[cfg(test)]
 mod tests {
+    /// 实时输出只留尾部：长任务里用户要看的是"现在在吐什么"，不是十分钟前的第一行。
+    #[test]
+    fn the_live_buffer_keeps_the_tail_and_says_it_was_cut() {
+        let handle = begin("s", "c", "System-Shell", "{}");
+        let live = handle.live();
+        live.push("111\n");
+        assert_eq!(live.snapshot(), ("111\n".to_string(), false));
+        live.push(&"长".repeat(LIVE_CAP));
+        let (text, cut) = live.snapshot();
+        assert!(cut, "裁过就要说裁过");
+        assert!(
+            text.len() <= LIVE_CAP,
+            "留在缓冲里的不能超过上限：{}",
+            text.len()
+        );
+        assert!(text.ends_with('长'), "留下的是尾部：{text:?}");
+        // 裁的位置必须落在字符边界上，否则界面上会闪一个乱码。
+        assert!(text.chars().all(|c| c == '长'), "裁出了半个字符：{text:?}");
+    }
+
+    /// 一条调用登记之后，`running()` 里要带着它的实时输出。
+    #[test]
+    fn running_calls_carry_their_live_output() {
+        let handle = begin("s2", "c2", "System-Shell", "{}");
+        handle.live().push("hello");
+        let rows = running("s2");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].output, "hello");
+        assert!(!rows[0].output_cut);
+        drop(handle);
+        assert!(running("s2").is_empty(), "结果回来之后就不该还在跑");
+    }
+
     use super::*;
 
     /// 每个用例用自己的会话名：这张表是进程级的，并行的用例会互相看见。

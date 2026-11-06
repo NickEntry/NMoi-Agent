@@ -50,24 +50,24 @@ class ProcessRowsTest {
     private fun text(id: String) = unit(id)
     private fun textWithReasoning(id: String) = unit(id, reasoning = "想了一会儿")
 
-    /**
-     * 折行之后，工具那一轮里还带着正文与思考（D258）：它们要各占一行，
-     * 不能被"工具块"那一条吞掉（2026-11-05 真机：每轮的"我先看看"和思考都不见了）。
-     */
-    @Test
-    fun `工具轮次里的正文与思考单独成行`() {
+    /** 工具那一轮（折行之后一轮 = 一条消息：思考 + 正文 + 工具）。 */
+    private fun toolWithBody(
+        id: String,
+        content: String,
+        reasoning: String? = null,
+    ): ChatUnit {
         val message = ChatMessage(
-            id = "t-m",
+            id = "$id-m",
             seq = 0,
             role = "assistant",
             source = "tool_call",
-            content = "我先看看",
+            content = content,
             tokens = 0,
             createdAt = 0,
             incomplete = false,
             locked = false,
             toolCalls = 1,
-            reasoning = "想一想",
+            reasoning = reasoning,
             toolArgs = listOf(
                 ToolCallArg(
                     callId = "c1",
@@ -79,18 +79,58 @@ class ProcessRowsTest {
                 ),
             ),
         )
-        val unit = ChatUnit(
-            id = "t",
+        return ChatUnit(
+            id = id,
             kind = "tool_pair",
             closed = true,
             createdAt = 0,
             messages = listOf(message),
             broken = null,
         )
-        val rows = buildRows(listOf(unit))
+    }
+
+    /**
+     * 一行以内的正文跟着思考与工具合成**一张卡**（2026-11-06 用户："只隔一行的块可以自动吸附过去"）。
+     *
+     * 以前这一轮会被切成"思考 + 正文"一行、"工具"一行，中间还夹一句「（空消息）」。
+     */
+    @Test
+    fun `工具轮次里的一行正文吸进同一张卡`() {
+        val rows = buildRows(listOf(toolWithBody("t", "我先看看", reasoning = "想一想")))
+        assertEquals(1, rows.size)
+        val group = rows.single() as ChatRow.Process
+        assertEquals(listOf("t#reasoning", "t#text", "t"), group.items.map { it.id })
+        assertEquals(ProcessItem.Kind.Text, group.items[1].kind)
+        assertEquals("我先看看", group.items[1].text)
+    }
+
+    /** 长正文是回答，不是过程：思考与正文一行，工具另起一张卡。 */
+    @Test
+    fun `工具轮次里的长正文把卡断开`() {
+        val long = "这一轮我先把目录列出来，再看看里面那个文件的前几行，然后决定要不要改。".repeat(2)
+        assertTrue(!absorbsIntoCard(long))
+        val rows = buildRows(listOf(toolWithBody("t", long, reasoning = "想一想")))
         assertEquals(2, rows.size)
         assertEquals(UnitSlice.TextOnly, (rows[0] as ChatRow.Single).slice)
         assertEquals(UnitSlice.ToolsOnly, (rows[1] as ChatRow.Single).slice)
+    }
+
+    /** 没有正文就什么都不画——「（空消息）」不该出现（2026-11-06 用户）。 */
+    @Test
+    fun `工具轮次没有正文时不产生正文行`() {
+        val rows = buildRows(listOf(toolWithBody("t", "", reasoning = "想一想")))
+        assertEquals(1, rows.size)
+        val group = rows.single() as ChatRow.Process
+        assertEquals(listOf("t#reasoning", "t"), group.items.map { it.id })
+    }
+
+    /** 吸附的判据是字节数：带换行、或者超过一行就不吸。 */
+    @Test
+    fun `吸附按字节算-带换行不吸`() {
+        assertTrue(absorbsIntoCard("好"))
+        assertTrue(absorbsIntoCard("我先看看这个文件里写了什么"))
+        assertTrue(!absorbsIntoCard("第一行\n第二行"))
+        assertTrue(!absorbsIntoCard("长".repeat(ABSORB_BYTES)))
     }
 
     @Test

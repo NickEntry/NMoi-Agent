@@ -1252,6 +1252,9 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
                         "name": call.name,
                         "arguments": call.arguments,
                         "elapsed_ms": call.elapsed_ms,
+                        // 实时输出（D264）：弹窗里一边跑一边看，不用等结果回来。
+                        "output": call.output,
+                        "output_cut": call.output_cut,
                     })
                 })
                 .collect()

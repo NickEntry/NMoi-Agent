@@ -1323,3 +1323,42 @@ D261 把工具轮拆成"正文一行 + 工具一行"之后，两处走样：
 - `cargo test -p nmoi-storage --test turn_replace`（4 条：整轮替换 / 切回整轮 / 轮数变少 / 关掉新版本）；
 - `cargo test -p nmoi-core --lib regenerate_replaces_the_whole_turn_not_only_the_last_message`；
 - 真机 V79。
+
+## D264 过程卡吸附、空正文不画、工具弹窗实时（2026-11-06）
+
+四件事，都是真机上看得见的那种：
+
+**1. 「（空消息）」不该出现。**
+工具那一轮的正文本来就是空的（只有思考与工具），而 `AssistantMessage` 在正文为空时
+兜底画了一句「（空消息）」。那句兜底是调试期留下的：`Message::validate` 根本不收空消息，
+所以它只会出现在"这一轮没有正文"这种**正常**情况里。现在空正文什么都不画。
+
+**2. 只隔一行的块吸附成一张卡。**
+以前工具那一轮被切成「思考 + 正文」一行、「工具」一行，两张卡中间还夹一句空消息。
+现在：**正文短就留在卡里，长就断开**。判据按**字节**（`absorbsIntoCard`，上限 64 字节、
+带换行不吸），不按屏幕上的行数——同一段话在平板上是一行、在窄屏上是两行，
+而"它是不是一句旁白"跟屏幕宽度无关。吸附进卡里的正文作为 `ProcessItem.Kind.Text`
+排在思考与工具之间，折叠门槛只数"步"（思考 / 工具），正文不算一步。
+顺带修了 `ThinkingProcessRow`：它以前一律读 `message.content`，跟着正文一起进来的思考
+会把**正文**的字数当成思考的字数。
+
+**3. 工具弹窗每一拍现查。**
+点开时抓的那一份只当兜底：跑着的看实时输出，跑完了看这一轮的结果，整轮收尾之后看库里那一份
+（`resolveToolSheet`）。以前拿快照画，工具跑完了小窗口还写着「正在运行 · 586 毫秒」。
+
+**4. 实时输出。**
+`kills::CallHandle` 多一份 `LiveBuffer`（尾部 8 KiB，裁过就标 `output_cut`）；
+`shell::drain` 每读到一段就追加进去（带 UTF-8 半个字符的 carry，别让界面上闪乱码）；
+`turn_busy.calls[]` 带上 `output` / `output_cut`。弹窗里一边跑一边看，并且跟着滚到底。
+**注意**：命令自己缓冲 stdout 时（`python` 不加 `-u`、`grep` 等）仍然看不到逐行——
+那是它没 flush，不是这条通道没工作。
+
+**5. 退出码非 0 标红。**
+`toolSummaryOf` 返回 `ToolSummary(text, failed)`：`exit 1 · 2080ms` 整串变红。
+判据是**退出码**，不是工具成败——shell 跑完就是 `ok`，退出码 1 只是命令自己这么退的，
+而用户要一眼分出"正常退出"和"不正常退出"。跑完还没落库的那一行（`DoneCallRow`）同一套判据。
+
+**判据**：`ProcessRowsTest` 14 条（新增吸附 3 条 + 字节判据 1 条）；
+`cargo test -p nmoi-core --lib` 654 条（新增 `the_live_buffer_keeps_the_tail_and_says_it_was_cut`、
+`running_calls_carry_their_live_output`、`live_output_arrives_while_the_command_is_still_running`）；
+真机 V80。

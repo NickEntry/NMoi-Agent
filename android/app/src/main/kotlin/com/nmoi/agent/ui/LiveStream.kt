@@ -24,6 +24,12 @@ internal data class RunningCall(
     /** 参数原文（native 截到 2 000 字）。弹窗里要能看见"它到底在跑什么"。 */
     val arguments: String = "",
     val cancelled: Boolean = false,
+    /**
+     * 到目前为止吐出来的东西（D264）。native 那边只留尾部 8 KiB，
+     * `outputCut` 说明前面被裁过——弹窗里要能看出来"这不是全部"。
+     */
+    val output: String = "",
+    val outputCut: Boolean = false,
 )
 
 /**
