@@ -1,12 +1,9 @@
 package com.nmoi.agent.ui
 
 import android.view.inputmethod.InputMethodManager
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -174,7 +171,24 @@ internal fun ConversationDrawer(
     val inertia = remember { Animatable(0f) }
     var animating by remember { mutableStateOf(false) }
     val manual = dragging || animating
-    val shownPx = if (animating) inertia.value else dragPx
+    // 开合位置（D266）：手动阶段看拖动/惯性；其余时候看 `open` 的动画值。
+    // 以前"点开"走的是 `AnimatedVisibility` 的 slideIn，而抽屉**只在那条分支里**才被组合——
+    // 于是第一次打开要现场排整个列表（卡一下），而且拖动与点开是两份 `DrawerPanel`，
+    // 各有各的列表状态（真机上就是"拉出途中选中项高了两行"，2026-11-06 录屏量出来的）。
+    // 现在只有一份：内容按最终宽度排一次，开合只移动它。
+    val settle = remember { Animatable(if (open) widthPx else 0f) }
+    LaunchedEffect(open, manual) {
+        if (manual) return@LaunchedEffect
+        settle.animateTo(
+            targetValue = if (open) widthPx else 0f,
+            animationSpec = tween(durationMillis = 200, easing = LinearOutSlowInEasing),
+        )
+    }
+    val shownPx = when {
+        animating -> inertia.value
+        dragging -> dragPx
+        else -> settle.value
+    }
 
     // 助手面板盖在抽屉上面，返回键要先把这一层收掉，而不是把抽屉一起关掉（2026-10-26 报的同类问题）。
     // 这里后于 MainActivity 的 drawerOpen 处理器注册，所以内层先轮到。
@@ -274,6 +288,9 @@ internal fun ConversationDrawer(
                                 easing = LinearOutSlowInEasing,
                             ),
                         )
+                        // 交棒给 `settle`：先把它摆到同一个位置，再撤掉手动状态——
+                        // 顺序反了会闪一下（`shownPx` 从 inertia 切到 settle 的那一帧）。
+                        settle.snapTo(target)
                         animating = false
                         dragPx = 0f
                         inertia.snapTo(0f)
@@ -289,93 +306,50 @@ internal fun ConversationDrawer(
             content()
         }
 
-        if (manual) {
+        // 抽屉（D266）：**只有一份**，按最终宽度排好，开合只移动它。
+        if (shownPx > 0.5f) {
             val progress = (shownPx / widthPx).coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.60f * progress)),
+                    .background(Color.Black.copy(alpha = 0.60f * progress))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClose,
+                    ),
             )
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier
-                    .width(width)
-                    .fillMaxHeight()
-                    .offset { IntOffset((shownPx - widthPx).roundToInt(), 0) },
-            ) {
-                DrawerPanel(
-                    rows = rows,
-                    currentId = currentId,
-                    hint = hint,
-                    onHint = { hint = it },
-                    activeAssistant = activeAssistant,
-                    onOpenAssistantMenu = { assistantMenu = true },
-                    onOpenConversation = onOpenConversation,
-                    drafts = drafts,
-                    runningIds = runningIds,
-                    onMoveConversation = onMoveConversation,
-                    assistants = assistants,
-                    onOpenSettings = onOpenSettings,
-                    pinnedIds = pinnedIds,
-                    onTogglePin = onTogglePin,
-                    onRename = onRename,
-                    onDelete = onDelete,
-                    onCopy = onCopy,
-                    onPinMany = onPinMany,
-                    onMoveMany = onMoveMany,
-                    onDeleteMany = onDeleteMany,
-                    notice = notice,
-                )
-            }
-        } else {
-            if (open) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.60f))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onClose,
-                        ),
-                )
-            }
-
-            AnimatedVisibility(
-                visible = open,
-                enter = slideInHorizontally(initialOffsetX = { -it }),
-                exit = slideOutHorizontally(targetOffsetX = { -it }),
-                modifier = Modifier.align(Alignment.CenterStart),
-            ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.width(width).fillMaxHeight(),
-                ) {
-                    DrawerPanel(
-                        rows = rows,
-                        currentId = currentId,
-                        hint = hint,
-                        onHint = { hint = it },
-                        activeAssistant = activeAssistant,
-                        onOpenAssistantMenu = { assistantMenu = true },
-                        onOpenConversation = onOpenConversation,
-                        drafts = drafts,
-                        runningIds = runningIds,
-                        onMoveConversation = onMoveConversation,
-                        assistants = assistants,
-                        onOpenSettings = onOpenSettings,
-                        pinnedIds = pinnedIds,
-                        onTogglePin = onTogglePin,
-                        onRename = onRename,
-                        onDelete = onDelete,
-                        onCopy = onCopy,
-                        onPinMany = onPinMany,
-                        onMoveMany = onMoveMany,
-                        onDeleteMany = onDeleteMany,
-                        notice = notice,
-                    )
-                }
-            }
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .width(width)
+                .fillMaxHeight()
+                .offset { IntOffset((shownPx - widthPx).roundToInt(), 0) },
+        ) {
+            DrawerPanel(
+                rows = rows,
+                currentId = currentId,
+                hint = hint,
+                onHint = { hint = it },
+                activeAssistant = activeAssistant,
+                onOpenAssistantMenu = { assistantMenu = true },
+                onOpenConversation = onOpenConversation,
+                drafts = drafts,
+                runningIds = runningIds,
+                onMoveConversation = onMoveConversation,
+                assistants = assistants,
+                onOpenSettings = onOpenSettings,
+                pinnedIds = pinnedIds,
+                onTogglePin = onTogglePin,
+                onRename = onRename,
+                onDelete = onDelete,
+                onCopy = onCopy,
+                onPinMany = onPinMany,
+                onMoveMany = onMoveMany,
+                onDeleteMany = onDeleteMany,
+                notice = notice,
+            )
         }
 
         // 助手列表：自己画的底部面板（头像 + 名称 + 铅笔），不是下拉菜单。
