@@ -110,6 +110,7 @@ mod tests {
             session,
             images::ContextImage {
                 id: "a".into(),
+                file: "a.jpg".into(),
                 mime: "image/jpeg".into(),
                 bytes: 10,
             },

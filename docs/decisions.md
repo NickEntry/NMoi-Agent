@@ -1450,3 +1450,23 @@ kotlinc 全量只剩 9 个 `R`。
 
 同一条也适用于别处：**一次性的动作按下之后要先把自己关掉**，判据是"这件事还在不在飞"，
 不是"点过没有"。
+
+## D269 「查看图片」同轮生效（2026-11-06）
+
+用户 2026-11-06：「查看图片不是下一轮请求带上，是查看后下一次请求就带上」。
+
+原来 `attach_images` 只在**整轮开始前**跑一次（`run_session_turn_with_images` 里），
+`run_turn` 每一轮都是 `request = base.clone()`——第 1 轮 `View-Image` 登记的图，
+第 2 轮请求里没有，得等下一次对话。
+
+改法：
+
+- `attach_images` 只留"按消息取附件"那一半；清单那一半挪进 `run_turn`，
+  **每轮发请求之前**并一次（`agent::attach_context_images`）。
+- 字节按 id 缓存在这一轮的内存里：每轮都要重挂（`request` 每轮重建），
+  但同一张图只读一遍盘。
+- 读盘而不是查 `attachments` 表：工具自己写进 `/chat/images` 的图在表里没有行，
+  查表会静默少一张——`ContextImage` 因此多一个 `file`（盘上的文件名）。
+
+判据：`an_image_added_by_a_tool_reaches_the_next_request_in_the_same_turn`
+（先在旧代码上红过：第 2 轮请求里没有 `data:image/png;base64,`）。

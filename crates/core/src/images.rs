@@ -32,6 +32,12 @@ pub const MAX_LIMIT: usize = 100;
 pub struct ContextImage {
     /// 附件 id（`attachments.id`，也就是盘上的文件名去掉扩展名）。
     pub id: String,
+    /// 盘上那个文件名（带扩展名）。
+    ///
+    /// 为什么留着它：这张图**不一定在 `attachments` 表里**——工具自己写进
+    /// `/chat/images` 的图就没有那一行（D269）。发请求时按 id 查表会查空，
+    /// 按文件名去目录里读才拿得到字节。
+    pub file: String,
     pub mime: String,
     pub bytes: u64,
 }
@@ -97,6 +103,7 @@ mod tests {
     fn image(id: &str) -> ContextImage {
         ContextImage {
             id: id.to_string(),
+            file: format!("{id}.jpg"),
             mime: "image/jpeg".into(),
             bytes: 1024,
         }

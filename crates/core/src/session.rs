@@ -336,7 +336,6 @@ fn attach_images<S: HistoryStore>(
     request: &mut ChatRequest,
     store: &S,
     history: &[Message],
-    session: SessionId,
 ) -> Result<(), SessionError> {
     request.images.clear();
     for message in history {
@@ -345,30 +344,8 @@ fn attach_images<S: HistoryStore>(
             request.images.push((message.id.clone(), parts));
         }
     }
-    // 上下文图片（D248）：`View-Image` 拉进来的那些，挂在**最后一条用户消息**上。
-    // 为什么不另起一条消息：多一条 `role: user` 会改变对话的形状，模型会以为用户又说了句话；
-    // 图本来就属于"这一轮用户给的东西"。
-    let extra = crate::images::list(&session.to_string());
-    if !extra.is_empty() {
-        if let Some(last_user) = history.iter().rev().find(|m| m.role == Role::User) {
-            let mut parts = Vec::with_capacity(extra.len());
-            for image in extra {
-                if let Some(part) = store.attachment(&image.id).map_err(SessionError::Load)? {
-                    parts.push(part);
-                }
-            }
-            if !parts.is_empty() {
-                match request
-                    .images
-                    .iter_mut()
-                    .find(|(id, _)| id == &last_user.id)
-                {
-                    Some((_, existing)) => existing.extend(parts),
-                    None => request.images.push((last_user.id.clone(), parts)),
-                }
-            }
-        }
-    }
+    // 上下文图片（D248）**不在这里挂**：`View-Image` 可能就在这一轮的某一轮里把图加进清单，
+    // 而这里整轮只跑一次。那份改由 `run_turn` 每轮发请求之前并（D269）。
     Ok(())
 }
 
@@ -595,7 +572,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     // 工具声明也用同一份名单。冻结在**发出去的那一份**上生效，base 由调用方持有。
     let mut frozen_base = base.clone();
     // 图片（D208）：按消息 id 从**库里那一份**取，不经过界面缓存。
-    attach_images(&mut frozen_base, store, &history, session)?;
+    attach_images(&mut frozen_base, store, &history)?;
     // 内存实现不存附件（`save_attachments` 默认空实现），这一轮仍要把刚发的图带上。
     if !images.is_empty() && !frozen_base.images.iter().any(|(id, _)| id == &user.id) {
         frozen_base.images.push((user.id.clone(), images.to_vec()));
@@ -806,7 +783,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 
     let mut frozen_base = base.clone();
     // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
-    attach_images(&mut frozen_base, store, &history, session)?;
+    attach_images(&mut frozen_base, store, &history)?;
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     let call_session = session.to_string();
     crate::kills::clear_done(&call_session);

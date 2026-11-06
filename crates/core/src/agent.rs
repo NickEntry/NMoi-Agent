@@ -197,6 +197,9 @@ pub fn run_turn<T: Transport>(
     // 到上限之后**再给一轮**：这一轮不带工具，让它把话说完（D244）。
     // 直接返回的话，用户看到的是"回答被砍了一半"，而他什么都没做错。
     let mut wrap_up = false;
+    // 这一轮清单里那些图的字节（D269）：`request` 每轮从 `base` 重建，所以每轮都要重挂，
+    // 但**同一张图只读一遍盘**。键是附件 id。
+    let mut context_images: Vec<(String, crate::message::ImagePart)> = Vec::new();
     loop {
         // 取消的检查点之一：发请求之前。已经飞在路上的往返不会被打断（D58）。
         if cancel.is_cancelled() {
@@ -208,6 +211,9 @@ pub fn run_turn<T: Transport>(
         let mut request = base.clone();
         request.stream = config.stream;
         request.messages = messages.clone();
+        // 上下文图片（D248 / D269）：`View-Image` 可能就在**上一轮**里把图加进了清单，
+        // 所以每轮发请求之前并一次——不然要等下一次对话才带得上（用户 2026-11-06 报的）。
+        attach_context_images(&mut request, ctx, &mut context_images);
         // 冻结过就按冻结的名单，否则按 policy 现算（D76）。
         request.tools = if wrap_up {
             // 收尾那一轮不给工具：给了它就会继续调，永远收不了尾。
@@ -413,6 +419,59 @@ pub fn run_turn<T: Transport>(
             report.finished = false;
             return Ok(report);
         }
+    }
+}
+
+/// 把这一轮清单里的图并进请求（D248 / D269）。
+///
+/// 挂到**最后一条用户消息**上：图属于"这一轮用户给的东西"，另起一条 `role: user`
+/// 会改变对话的形状（模型会以为用户又说了句话）。`build_body` 也只认用户消息带图。
+///
+/// 字节按 id 缓存：`request` 每轮从 `base` 重建，所以每轮都要重挂一次，
+/// 但同一张图在这一轮里只读一遍盘。
+///
+/// 读盘而不是查 `attachments` 表：工具自己写进 `/chat/images` 的图在表里没有行，
+/// 查表会静默少一张——那正是"我明明让它看了图，它说没看到"的样子。
+fn attach_context_images(
+    request: &mut ChatRequest,
+    ctx: &ToolContext<'_>,
+    cache: &mut Vec<(String, crate::message::ImagePart)>,
+) {
+    let (Some(session), Some(dir)) = (ctx.call_session, ctx.chat_images) else {
+        return;
+    };
+    let Some(target) = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .map(|message| message.id.clone())
+    else {
+        return;
+    };
+    for image in crate::images::list(session) {
+        if cache.iter().any(|(id, _)| id == &image.id) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(dir.join(&image.file)) else {
+            continue;
+        };
+        cache.push((
+            image.id.clone(),
+            crate::message::ImagePart {
+                mime: image.mime.clone(),
+                data: crate::base64::encode(&bytes),
+            },
+        ));
+    }
+    if cache.is_empty() {
+        return;
+    }
+    let parts: Vec<crate::message::ImagePart> =
+        cache.iter().map(|(_, part)| part.clone()).collect();
+    match request.images.iter_mut().find(|(id, _)| id == &target) {
+        Some((_, existing)) => existing.extend(parts),
+        None => request.images.push((target, parts)),
     }
 }
 
@@ -862,6 +921,56 @@ mod tests {
     fn base_request() -> ChatRequest {
         let provider = ProviderConfig::new("smoke", ProviderKind::OpenAiCompatible, "http://x/v1");
         ChatRequest::new(provider, "test-model")
+    }
+
+    #[test]
+    fn an_image_added_by_a_tool_reaches_the_next_request_in_the_same_turn() {
+        // 第 1 轮调 `View-Image` 把图加进清单，第 2 轮请求里就该带上它——
+        // 不必等下一次对话（用户 2026-11-06：「查看后下一次请求就带上」）。
+        let dir = tempfile::tempdir().unwrap();
+        let images_dir = dir.path().join("images");
+        std::fs::create_dir_all(&images_dir).unwrap();
+        std::fs::write(images_dir.join("shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy =
+            AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_write("ws-1"));
+        let session = "s-images-same-turn";
+        crate::images::clear(session);
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_images(Some(&images_dir), 20)
+            .with_call_session(session);
+        let transport = Scripted::new(vec![
+            calls_body(&[("c1", "View-Image", r#"{"path":"shot.png"}"#)]),
+            text_body("看到了"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+
+        let report = run_turn(
+            &client,
+            &base_request(),
+            &history(),
+            &registry,
+            &ctx,
+            &TurnConfig::default(),
+            &NeverCancel,
+            None,
+        )
+        .unwrap();
+        crate::images::clear(session);
+
+        assert_eq!(report.rounds, 2, "{report:?}");
+        let seen = transport.requests();
+        assert!(
+            !seen[0].contains("data:image/png;base64,"),
+            "第 1 轮还没看图，不该带图：{}",
+            seen[0]
+        );
+        assert!(
+            seen[1].contains("data:image/png;base64,"),
+            "第 2 轮就该带上它：{}",
+            seen[1]
+        );
     }
 
     #[test]

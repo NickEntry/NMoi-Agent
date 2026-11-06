@@ -120,6 +120,7 @@ impl Tool for ViewImageTool {
             session,
             ContextImage {
                 id: id.to_string(),
+                file: name.clone(),
                 mime: mime.to_string(),
                 bytes: meta.len(),
             },
