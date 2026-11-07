@@ -124,6 +124,25 @@ internal object AppSettings {
     }
 
     /**
+     * 默认模型那六个角色（D289）。
+     *
+     * 三态：`disabled`（未启用）/ `follow`（跟着当前对话模型）/ `provider|model`（指定）。
+     * 每个角色的**初始值**不一样：标题总结 / 聊天建议 / 视觉覆盖 初始未启用；
+     * 摘要 / 压缩 / 翻译 初始跟随——这三样永远有活干，没有"关掉"这一说。
+     */
+    const val ROLE_DISABLED = "disabled"
+    const val ROLE_FOLLOW = "follow"
+
+    fun roleValue(context: Context, role: String, followByDefault: Boolean): String {
+        val fallback = if (followByDefault) ROLE_FOLLOW else ROLE_DISABLED
+        return prefs(context).getString("role.$role", fallback)?.takeIf { it.isNotBlank() } ?: fallback
+    }
+
+    fun setRoleValue(context: Context, role: String, value: String) {
+        prefs(context).edit().putString("role.$role", value).apply()
+    }
+
+    /**
      * 压缩的两条线（D274）：占"可用预算"的百分比。
      *
      * 建议线到了就发压缩信号（界面上是"该压了"），绝对线到了就**必须先压再发**。

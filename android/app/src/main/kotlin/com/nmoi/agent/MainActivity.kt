@@ -48,6 +48,7 @@ import com.nmoi.agent.ui.ProviderEditScreen
 import com.nmoi.agent.ui.ProviderListScreen
 import com.nmoi.agent.ui.ProxyContainer
 import com.nmoi.agent.ui.ProxyRepository
+import com.nmoi.agent.ui.ModelRolesScreen
 import com.nmoi.agent.ui.ProxyScreen
 import com.nmoi.agent.ui.PromptsScreen
 import com.nmoi.agent.ui.SettingsGroup
@@ -640,6 +641,14 @@ class MainActivity : ComponentActivity() {
                             // 应用设置（0.15m）：默认上下文窗口 + 重试是否留新版本。
                             SettingsGroup.App -> AppSettingsScreen(
                                 context = context,
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+
+                            SettingsGroup.Defaults -> ModelRolesScreen(
+                                context = context,
+                                databasePath = databasePath,
+                                onOpenPrompts = { backStack = backStack + Route.Prompts },
+                                onOpenPresets = { backStack = backStack + Route.Preset },
                                 onBack = { backStack = backStack.dropLast(1) },
                             )
 
