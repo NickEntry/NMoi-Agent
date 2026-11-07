@@ -157,13 +157,6 @@ internal fun ProviderListScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     )
                 }
-                Text(
-                    text = "这里只是目录：有什么端点、有什么模型。用哪一个由助手决定，" +
-                        "在聊天页顶部那条切换。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
-                )
             }
         }
     }
@@ -548,12 +541,6 @@ internal fun ProviderEditScreen(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = "只发一个 GET /models：证明地址、钥匙、网络三样都对。",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
                             TextAction(
                                 label = if (fetching) "测着…" else "测试连接",
                                 onClick = { pull("测试连接", merge = false) },

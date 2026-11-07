@@ -106,13 +106,6 @@ internal fun PresetScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                     )
                 }
-                Text(
-                    text = "只在这些工具真的声明出去的那一轮才会注入：工具关掉，它那几条规矩一起消失。" +
-                        "原文随包走；你改过的那一份存在库里，永不自动覆盖。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 24.dp),
-                )
             }
         }
     }
@@ -385,13 +378,6 @@ internal fun PresetEditScreen(
                             },
                         )
                     }
-                    Text(
-                        text = "基础版本 v${shown.version}：它记着'你上次同步时看到的是哪一版'，" +
-                            "只能靠同步往前推，界面上改不了（改了会让四态从此算不准）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    )
                 }
             }
         }

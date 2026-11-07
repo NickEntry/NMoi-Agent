@@ -333,7 +333,7 @@ impl fmt::Debug for SessionConfig<'_> {
     }
 }
 
-/// 默认触发策略（0.75 / 0.92）。**从 `TriggerPolicy::default()` 取，不在这儿抄一份数字**：
+/// 默认触发策略（0.45 / 0.55）。**从 `TriggerPolicy::default()` 取，不在这儿抄一份数字**：
 /// 抄过的那份迟早和真源对不上，而且是在别人改默认值之后才被发现。
 fn default_trigger() -> &'static TriggerPolicy {
     static CELL: std::sync::OnceLock<TriggerPolicy> = std::sync::OnceLock::new();

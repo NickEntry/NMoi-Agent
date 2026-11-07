@@ -311,9 +311,9 @@ pub fn decide(trigger: CompressionTrigger, point: TriggerPoint) -> CompressActio
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TriggerPolicy {
-    /// 建议线（默认 0.75）。
+    /// 建议线（默认 0.45）。
     pub suggest: Threshold,
-    /// 绝对线（默认 0.92）。必须 ≥ 建议线，否则建议线永远轮不到。
+    /// 绝对线（默认 0.55）。必须 ≥ 建议线，否则建议线永远轮不到。
     pub absolute: Threshold,
     /// 成本判据的安全系数。
     pub margin: f64,
@@ -323,8 +323,8 @@ pub struct TriggerPolicy {
 impl Default for TriggerPolicy {
     fn default() -> Self {
         Self {
-            suggest: Threshold::percent(0.75),
-            absolute: Threshold::percent(0.92),
+            suggest: Threshold::percent(0.45),
+            absolute: Threshold::percent(0.55),
             margin: 1.5,
             min_avg_per_turn: 2_000,
         }
@@ -760,7 +760,12 @@ mod tests {
 
     #[test]
     fn trigger_escalates_in_order() {
-        let policy = TriggerPolicy::default();
+        // 两条线在这里是**写死**的：这条测的是"升级顺序"，不是默认值是多少。
+        let policy = TriggerPolicy {
+            suggest: Threshold::percent(0.75),
+            absolute: Threshold::percent(0.92),
+            ..TriggerPolicy::default()
+        };
         let mut budget = Budget::new(100_000, 100_000, 0);
 
         budget.used = 10_000;
@@ -812,7 +817,11 @@ mod tests {
 
     #[test]
     fn policy_reports_insane_line_order() {
-        let mut policy = TriggerPolicy::default();
+        let mut policy = TriggerPolicy {
+            suggest: Threshold::percent(0.6),
+            absolute: Threshold::percent(0.7),
+            ..TriggerPolicy::default()
+        };
         assert!(policy.sane(100_000));
         // 绝对线压到建议线下面：建议线永远轮不到，UI 该拦住。
         policy.absolute = Threshold::percent(0.5);
@@ -1113,7 +1122,12 @@ mod tests {
 
     #[test]
     fn fixed_costs_make_threshold_fire_earlier() {
-        let policy = TriggerPolicy::default();
+        // 同样写死两条线：这条测的是"扣掉固定成本之后线上移"，不是默认值。
+        let policy = TriggerPolicy {
+            suggest: Threshold::percent(0.75),
+            absolute: Threshold::percent(0.92),
+            ..TriggerPolicy::default()
+        };
         let mut plain = Budget::new(128_000, 128_000, 4_000);
         plain.used = 80_000;
         let mut with_book = Budget::new(128_000, 128_000, 4_000).with_reserve_fixed(20_000);

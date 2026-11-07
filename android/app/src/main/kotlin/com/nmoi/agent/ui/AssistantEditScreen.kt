@@ -280,12 +280,6 @@ internal fun AssistantEditScreen(
                         hint = "显示名，随时可改",
                         onChange = { name = it.take(24) },
                     )
-                    Text(
-                        text = "名字只是显示用的；库里所有会话认的是 id（${assistantId}），改名字不会碰到它们。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
                 }
 
                 Card {
@@ -323,12 +317,6 @@ internal fun AssistantEditScreen(
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            Text(
-                                text = "文件工具的根，也是容器里的 /workspace；" +
-                                    "这个会话自己的 /chat 不受它影响",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -361,13 +349,6 @@ internal fun AssistantEditScreen(
                             }
                         }
                     }
-                    Text(
-                        text = "换工作区**不搬文件**：之前写下的还在原来那个目录里；" +
-                            "新建 / 改名 / 删除在「工具与工作区 → 工作区」。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
                 }
 
                 // —— 子 AGENT（D176）——
@@ -423,13 +404,6 @@ internal fun AssistantEditScreen(
                                 enabled = !busy,
                             ) { subSession = "reuse" }
                         }
-                        Text(
-                            text = "复用 = 两次调用互相看得见；怀疑串味就选「每次新建」。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-
                         // —— 被调用时用哪个模型（0.15x 后半）——
                         //
                         // 空 = 跟着这个助手自己的模型走；指定了就**钉死**，

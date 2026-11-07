@@ -61,14 +61,6 @@ internal fun LogSettingsScreen(onBack: () -> Unit) {
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                Text(
-                    text = "开关关掉之后那一类连 logcat 也不打。上限改了立即生效：下一次写入就按新上限轮转，" +
-                        "已经写下的内容不会因为改小上限被立刻删掉（要清就用子页的「清除日志」）。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-
                 LogKind.entries.forEach { kind ->
                     Text(
                         text = kind.label,

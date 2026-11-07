@@ -47,7 +47,7 @@ internal fun GroupScreen(
             add(GroupEntry(title = "开源许可", onClick = onOpenLicenses))
         }
         pendingRows(group).forEach { row ->
-            add(GroupEntry(title = row.title, subtitle = row.subtitle, pending = row.pending))
+            add(GroupEntry(title = row.title, pending = row.pending))
         }
     }
 
@@ -87,7 +87,6 @@ internal fun GroupScreen(
 /** 板上一行。`onClick == null` 就是"还没接"的那一种（右侧写阶段，不给箭头）。 */
 private data class GroupEntry(
     val title: String,
-    val subtitle: String? = null,
     val onClick: (() -> Unit)? = null,
     val pending: String? = null,
 )
@@ -122,15 +121,6 @@ private fun GroupRow(entry: GroupEntry) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val subtitle = entry.subtitle
-            if (subtitle != null) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
         }
         val tail = entry.pending
         if (tail != null) {

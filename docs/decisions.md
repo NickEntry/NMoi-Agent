@@ -1755,3 +1755,34 @@ F4 下连"小于阈值"的内容都会被换成指针。现在：
 ——点 a1 的重试，发出去的前缀只到 u1（u2 不进请求）、库里四条都在、只有 a1 变了、
 落的是"只换一条"（删 0 条写 1 条）。core 672 条全绿。
 存储层那条（`turn_replace::retrying_one_message_keeps_the_later_ones`）盯版本与行数，两条一起才算修好。
+
+## D285 压缩两条线与默认窗口的默认值（2026-11-08）
+
+- 两条线默认 **0.75 / 0.92 → 0.45 / 0.55**。两处一起改：`AppSettings.DEFAULT_SUGGEST/ABSOLUTE`
+  与 core 的 `TriggerPolicy::default`——只改一边就是"界面上写着 45、真跑起来按 75"。
+- 默认上下文窗口 **128_000 → 1_048_576**（`AppSettings.DEFAULT_WINDOW`）。
+- 三条 `budget` 用例原来吃的是"默认值"（`trigger_escalates_in_order` /
+  `policy_reports_insane_line_order` / `fixed_costs_make_threshold_fire_earlier`），
+  改成各自写死 0.75 / 0.92：它们测的是升级顺序、线序校验、固定成本，不是默认值是多少。
+  默认值以后再改，这三条不该跟着红。
+- 判据：core 672 / ffi 60 全绿。
+
+## D286 界面上的解释性小字清掉（2026-11-08）
+
+用户：「小字的话都清了吧，后面我会做文档的」「包括供应商这里的"这里只是目录…"这种也都清一下，
+现在也就聊天页面可以暂时留着测试用」。
+
+删了 **30 处**：AppSettings 10、ProviderScreens 2、ToolsScreen 2、AppearanceScreen 5、
+EnvirScreen 6、AssistantEditScreen 4、PresetScreen 2、AssistantScreen 1、PromptsScreen 1、
+LogSettingsScreen 1。另外两处压成一句定义（档位 F1–F4、路由器阈值），没整段删——
+那两格没有定义就看不懂该填什么。
+
+留下的只有三类，都不是"解释"：
+**值**（`默认 ${root}`、`默认 45%`、`45% / 55%` 那两行标签）、
+**状态**（自检通过 / 需要修复 / 这一格你自己填过 / 这一类还没有产生者）、
+**收不回来的确认**（删除卡里"会没掉什么"）。
+
+灰行的副标题也一起去掉了（`GroupScreen` 的 pending 行现在只有标题 + 「待接」），
+跟界面册 288 新写的那句一致。
+
+聊天页按用户要求暂时留着。

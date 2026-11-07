@@ -38,13 +38,6 @@ internal fun PromptsScreen(onBack: () -> Unit) {
                 )
             }
 
-            Text(
-                text = "只读。编辑与恢复默认要等 settings 表接上（D86 / D115）。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-            )
-
             Column(modifier = Modifier.fillMaxSize()) {
                 PROMPTS.forEach { prompt ->
                     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {

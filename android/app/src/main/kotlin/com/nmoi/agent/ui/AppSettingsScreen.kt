@@ -201,15 +201,6 @@ internal fun AppSettingsScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Text(
-                            text = "流式那一轮每这么久问一次原生层\"写到哪了\"，\"跑了多久\"也按这个节奏走。" +
-                                "默认 ${AppSettings.DEFAULT_UI_REFRESH} ms；可调 " +
-                                "${AppSettings.MIN_UI_REFRESH}–${AppSettings.MAX_UI_REFRESH}。\n" +
-                                "调小更跟手，但每一拍都要过 JNI 读一次，太小只是白烧电。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
                         SettingField(
                             value = refreshText,
                             onChange = { refreshText = it },
@@ -238,11 +229,6 @@ internal fun AppSettingsScreen(
                                 text = "允许生成新版本",
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = "重试时把结果记成一版新的；关着就覆盖当前这一版（D185）",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Spacer(Modifier.width(10.dp))
@@ -273,11 +259,6 @@ internal fun AppSettingsScreen(
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            Text(
-                                text = "点一条不是最新的消息上的重试时：只换这一条，还是把后面的删掉重跑",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                         }
                         Spacer(Modifier.width(10.dp))
                         SettingChip("只换这一条", selected = regenOld == AppSettings.REGEN_OLD_IN_PLACE) {
@@ -302,13 +283,6 @@ internal fun AppSettingsScreen(
                             text = "默认上下文窗口",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "模型自己没填窗口时用这个数算压缩判据（D90）。" +
-                                "填了窗口的模型仍然按它自己那份算。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
                         )
                         SettingField(
                             value = windowText,
@@ -336,14 +310,6 @@ internal fun AppSettingsScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Text(
-                            text = "留空或填 0 就是不限制：一句话里可以调任意多次工具，只要上下文还装得下。" +
-                                "真正的边界是上下文绝对线、你自己点停止、以及上游自己的限制。" +
-                                "填了正数就会在到顶后再给一轮（不带工具）让它收尾。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
                         SettingField(
                             value = roundsText,
                             onChange = { roundsText = it },
@@ -369,14 +335,6 @@ internal fun AppSettingsScreen(
                             text = "上下文里最多带几张图",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "「查看图像」把图拉进上下文时按这个数封顶：新的在前，满了先丢最旧的。" +
-                                "默认 ${AppSettings.DEFAULT_IMAGE_LIMIT}；上限 ${AppSettings.MAX_IMAGE_LIMIT}——" +
-                                "三家端点里最弱的那家（Anthropic）就是 100 张/请求，填得更大换一家就会 400。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
                         )
                         SettingField(
                             value = imageLimitText,
@@ -405,14 +363,6 @@ internal fun AppSettingsScreen(
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
-                                Text(
-                                    text = "0 = 关（满了直接丢最旧的）。临时那几张活到**下一次思考结束**：\n" +
-                                        "模型还能看到它们一次，然后就收掉——这样它连看几张时，" +
-                                        "前面那几张不会在它还没说完结论的时候被挤走。\n" +
-                                        "两个数相加不能超过 ${AppSettings.MAX_IMAGE_LIMIT}（端点硬顶）。",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
                             }
                         }
                         SettingField(
@@ -440,14 +390,6 @@ internal fun AppSettingsScreen(
                             text = "压缩的两条线",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "建议线：到了就提示该压了；绝对线：到了就**必须先压再发**（压不动就顶回来）。" +
-                                "两个都是占**可用预算**的百分比——可用 = 窗口 − 给输出留的那部分。" +
-                                "绝对线不许低于建议线，低了我按建议线算。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
                         )
                         Row(modifier = Modifier.padding(top = 10.dp)) {
                             SettingField(
@@ -488,12 +430,6 @@ internal fun AppSettingsScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(top = 14.dp),
                         )
-                        Text(
-                            text = "0 = 按模型算（模型自己填的 max_tokens，夹 1024–8192）。" +
-                                "填了就按这个数从窗口里扣掉——扣多少，留给上下文的就少多少。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                         SettingField(
                             value = reserveText,
                             onChange = { reserveText = it },
@@ -521,14 +457,9 @@ internal fun AppSettingsScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = "一条内容**最多**留到什么程度：F1 全文 / F2 截断（头尾各留一段）/ " +
-                                "F3 占位 / F4 只留一行指针。\n" +
-                                "它是上限：工具结果照常按大小与类型逐条判，结果不许超过档位。" +
-                                "**只作用于工具结果**——你说的话、系统提示、工具定义、报错永远全文。\n" +
-                                "切档位不改写历史：之后新进来的才按新档位，已经换过形态的保持原样（原文在归档里）。",
+                            text = "F1 全文 / F2 截断 / F3 占位 / F4 只留一行指针",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
                         )
                         Row(modifier = Modifier.padding(top = 10.dp)) {
                             listOf(
@@ -559,8 +490,7 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 14.dp),
                         )
                         Text(
-                            text = "小 / 大 / 超大：超过哪一档就按哪一档处理（必须递增，不递增我按递增夹平）。" +
-                                "头 / 尾：F2 截断时各留多少。",
+                            text = "小 / 大 / 超大 必须递增；头 / 尾 是 F2 截断各留多少",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -701,13 +631,6 @@ internal fun AppSettingsScreen(
                                 notice = "原图直发（大图会很慢，也占地方）"
                             }
                         }
-                        Text(
-                            text = "只缩不放：比上限小的图原样发。PNG 走 PNG（可能有透明），" +
-                                "其余走 JPEG——质量只对 JPEG 生效。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
                         Row(modifier = Modifier.padding(top = 10.dp)) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(

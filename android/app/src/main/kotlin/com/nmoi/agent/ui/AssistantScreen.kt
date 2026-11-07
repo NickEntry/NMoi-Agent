@@ -240,12 +240,6 @@ internal fun AssistantScreen(
                             }
                         }
 
-                        Text(
-                            text = "会话在抽屉里长按可以移动到别的助手；移动是改归属，不复制。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        )
                     }
                 }
 

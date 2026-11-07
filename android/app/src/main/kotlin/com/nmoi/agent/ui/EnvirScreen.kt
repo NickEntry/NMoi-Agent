@@ -172,14 +172,6 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            Text(
-                                text = "装一次 = 一个能在里面跑 Ubuntu 的私有目录。" +
-                                    "运行时（proot + 两个 .so，约 300 KB）随 APK 装好、不用联网，" +
-                                    "rootfs（33.4 MB）点安装时下载。",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
                         }
                     } else {
                         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -438,15 +430,6 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                     probing = false
                                 }
                             }
-                            Text(
-                                text = "装完自动跑；手动跑一次也会把结果写回 state.json",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier
-                                    .align(Alignment.CenterVertically)
-                                    .padding(start = 10.dp)
-                                    .weight(1f),
-                            )
                         }
                         Row(modifier = Modifier.padding(top = 8.dp)) {
                             DialogChip(
@@ -468,16 +451,6 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                                     probing = false
                                 }
                             }
-                            Text(
-                                text = "容器起不来时先点这个：老版本往 /etc/ld.so.preload 写过一行，" +
-                                    "那会让每个程序都起不来（D237）",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier
-                                    .align(Alignment.CenterVertically)
-                                    .padding(start = 10.dp)
-                                    .weight(1f),
-                            )
                         }
                         probe?.let { result ->
                             Text(
@@ -594,24 +567,12 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                 }
 
                 if (installed != null) {
-                    Text(
-                        text = "覆盖安装 = 保留已装的文件，只把基础层重解一遍，装完自动自检。" +
-                            "要重新下 33.4 MB（和装的时候一样）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    )
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(enabled = !running, onClick = { confirmReinstall = true })
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                     ) {
-                        Text(
-                            text = "重新安装（清空后重解）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
 
@@ -634,13 +595,6 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                     )
                     RowDivider()
-                    Text(
-                        text = "装好之后 `WorkSpace-EnvirShell` 才能接（下一步）；现在模型还用不到这个环境，" +
-                            "页面上也没有那个开关。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    )
                 }
 
                 Spacer(Modifier.height(28.dp))

@@ -107,13 +107,6 @@ internal fun ToolsScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp),
                             )
-                            Text(
-                                text = "每个助手指向一个工作区：AI 只能在里面读写文件，命令的起点也是它" +
-                                    "（容器里是 /workspace）。新建 / 改名 / 删除在那一页。",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 8.dp),
-                            )
                         }
                         Text(
                             text = "›",
@@ -211,13 +204,6 @@ internal fun ToolsScreen(
                     }
                 }
 
-                Text(
-                    text = "这两个开关**只存在本机**（SharedPreferences），不进库、不进导出/导入：" +
-                        "换台设备导入一个「开」，只会得到「看着开着、其实不能跑」。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 28.dp),
-                )
             }
         }
     }

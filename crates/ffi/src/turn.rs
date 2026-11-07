@@ -52,7 +52,7 @@ use std::path::PathBuf;
 use crate::handles::{storage_path, with_workspace};
 use crate::json::{read_str, run_json, FfiError, FfiResult};
 
-/// 压缩触发线（D90：0.75 / 0.92）。**不在这儿抄数字**——不传就用 core 的默认值，
+/// 压缩触发线（D90：0.45 / 0.55）。**不在这儿抄数字**——不传就用 core 的默认值，
 /// 抄一份的结果是改了默认值之后 FFI 那条路还按旧数走。
 ///
 /// 用户能改之后（D274）由界面传 `budget.suggest` / `budget.absolute`：
@@ -532,7 +532,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
             let window =
                 optional_u64(value, "window")?.ok_or_else(|| bad("budget.window", "是必填的"))?;
             let reserve = optional_u64(value, "reserve_output")?.unwrap_or(0);
-            // 两条线（D274）：`0.75` / `0.92` 这种百分比。给了才覆盖默认值——
+            // 两条线（D274）：`0.45` / `0.55` 这种百分比。给了才覆盖默认值——
             // 没给就还是 core 的默认，旧调用方一个字都不用改。
             suggest_line = optional_f64(value, "suggest")?.filter(|v| *v > 0.0);
             absolute_line = optional_f64(value, "absolute")?.filter(|v| *v > 0.0);
@@ -1768,10 +1768,10 @@ mod tests {
     /// 两条压缩线（D274）：给了就覆盖默认；绝对线不许低于建议线。
     #[test]
     fn the_two_compression_lines_come_from_the_input() {
-        // 不传 = core 的默认（0.75 / 0.92），旧调用方一个字都不用改。
+        // 不传 = core 的默认（0.45 / 0.55），旧调用方一个字都不用改。
         let defaults = trigger(None, None);
-        assert!((defaults.suggest.percent_of(1) - 0.75).abs() < 1e-9);
-        assert!((defaults.absolute.percent_of(1) - 0.92).abs() < 1e-9);
+        assert!((defaults.suggest.percent_of(1) - 0.45).abs() < 1e-9);
+        assert!((defaults.absolute.percent_of(1) - 0.55).abs() < 1e-9);
 
         let custom = trigger(Some(0.6), Some(0.85));
         assert!((custom.suggest.percent_of(1) - 0.6).abs() < 1e-9);

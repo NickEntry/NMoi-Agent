@@ -129,8 +129,8 @@ internal object AppSettings {
      * 建议线到了就发压缩信号（界面上是"该压了"），绝对线到了就**必须先压再发**。
      * 绝对线不许低于建议线——反过来的话建议线永远轮不到，等于把提前压这条线悄悄关掉。
      */
-    const val DEFAULT_SUGGEST = 0.75
-    const val DEFAULT_ABSOLUTE = 0.92
+    const val DEFAULT_SUGGEST = 0.45
+    const val DEFAULT_ABSOLUTE = 0.55
     const val MIN_SUGGEST = 0.30
     const val MAX_SUGGEST = 0.95
     const val MIN_ABSOLUTE = 0.40
@@ -231,7 +231,7 @@ internal object AppSettings {
      * 128k 是现在主流聊天模型的常见窗口。用户要求"没填也要算"——所以它会在压缩判据里
      * 当分母用；界面上也会说明"这个数是按默认值算的"，免得用户以为模型报了 128k。
      */
-    const val DEFAULT_WINDOW = 128_000
+    const val DEFAULT_WINDOW = 1_048_576
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)

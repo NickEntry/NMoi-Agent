@@ -62,12 +62,6 @@ internal fun AppearanceScreen(
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 // ---- 主题（D120）----
                 SectionLabel("主题")
-                Text(
-                    text = "「跟随系统」跟着手机的深/浅切换走，不用每天来手动点。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -134,13 +128,6 @@ internal fun AppearanceScreen(
                     }
                 }
 
-                Text(
-                    text = "没有做 monochrome 层；白底是中心纯白→外圈淡银的径向渐变（drawable，不是 @color）。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
-                )
-
                 // ---- 背景（D122–D124，未实现）----
                 SectionLabel("聊天页背景")
                 Text(
@@ -150,13 +137,6 @@ internal fun AppearanceScreen(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
-                Text(
-                    text = "待接 0.14d（先把「库存在哪、谁拥有、怎么清」定死再画）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                )
-
                 // ---- 自定义主题：只留位（D121）----
                 SectionLabel("自定义主题")
                 Row(
@@ -173,19 +153,7 @@ internal fun AppearanceScreen(
                                 .background(color),
                         )
                     }
-                    Text(
-                        text = "5 个颜色封顶（背景 / 卡片 / 主色 / 正文 / 次要文字）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 6.dp),
-                    )
                 }
-                Text(
-                    text = "待接：要先给 settings 加一个 appearance scope（D86 现在是四类）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
-                )
             }
         }
     }
