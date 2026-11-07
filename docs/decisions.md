@@ -1750,3 +1750,8 @@ F4 下连"小于阈值"的内容都会被换成指针。现在：
 
 判据：core 671 / ffi 60 / storage 14 个二进制全绿（`turn_replace` 新增
 `retrying_one_message_keeps_the_later_ones`）；clippy 零告警；kotlinc 只剩 9 个 `R`。真机 V96。
+
+**D284 补一条判据（2026-11-07 深夜）**：`regenerating_one_old_message_keeps_the_later_turns`
+——点 a1 的重试，发出去的前缀只到 u1（u2 不进请求）、库里四条都在、只有 a1 变了、
+落的是"只换一条"（删 0 条写 1 条）。core 672 条全绿。
+存储层那条（`turn_replace::retrying_one_message_keeps_the_later_ones`）盯版本与行数，两条一起才算修好。

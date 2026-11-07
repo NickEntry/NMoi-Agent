@@ -1716,6 +1716,84 @@ mod tests {
         assert_eq!(tail.last_message().content(), "新的回答");
     }
 
+    /// D284：重试一条**不是最新**的消息，只换那一条，后面的消息一条都不动。
+    ///
+    /// 2026-11-07 真机：u1 / a1 / u2 / a2 里点 a1 的重试，结果看着像"在 a2 的位置重试"，
+    /// u2 / a2 还不见了——整轮替换从 u1 之后全删。
+    #[test]
+    fn regenerating_one_old_message_keeps_the_later_turns() {
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = EditStore::default();
+
+        for (seq, role, text) in [
+            (1u64, Role::User, "u1"),
+            (2, Role::Assistant, "a1"),
+            (3, Role::User, "u2"),
+            (4, Role::Assistant, "a2"),
+        ] {
+            let message = Message::text(
+                MessageId::new(session, seq),
+                role,
+                SourceTag::History,
+                text,
+                text.len() as u32,
+                seq as i64,
+                LogicalClock::new(seq),
+            );
+            store
+                .append_unit(session, &AtomicUnit::turn(message).unwrap())
+                .unwrap();
+        }
+
+        let reply = r#"{"choices":[{"message":{"content":"a1 重写过"},"finish_reason":"stop"}]}"#;
+        let transport = Scripted::new(vec![reply.to_string()]);
+        let client = ChatClient::new(transport.clone());
+        let base = base_request();
+        let registry = ToolRegistry::workspace_defaults();
+        let config = SessionConfig::default();
+
+        let outcome = regenerate_turn(
+            &client,
+            &base,
+            &mut store,
+            session,
+            &MessageId::new(session, 1),
+            Some(&MessageId::new(session, 2)),
+            false,
+            RegenScope::Message,
+            &registry,
+            &policy,
+            Some(&workspace),
+            &config,
+            5_000,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.target.as_ref(), Some(&MessageId::new(session, 2)));
+        assert!(outcome.appended.is_none());
+
+        // 发出去的前缀只到 u1：u2 不能进这一轮的请求。
+        let body = transport.requests().join("\n");
+        assert!(!body.contains("u2"), "重试 a1 不该把 u2 发出去：{body}");
+
+        // 库里四条都在，只有 a1 变了。
+        let texts: Vec<String> = store
+            .units
+            .iter()
+            .flat_map(|unit| unit.messages.iter())
+            .map(|message| message.content())
+            .collect();
+        assert_eq!(texts, vec!["u1", "a1 重写过", "u2", "a2"], "{texts:?}");
+
+        // 落的是"只换一条"，不是整轮。
+        let replaced = store.replaced.lock().unwrap().clone();
+        assert_eq!(replaced.len(), 1, "{replaced:?}");
+        assert_eq!(replaced[0].0, MessageId::new(session, 2));
+        assert_eq!(replaced[0].1, 0, "一条都不删");
+        assert_eq!(replaced[0].2, 1);
+    }
+
     /// D263：重试换的是**整轮**，不是最后那一条。
     ///
     /// 2026-11-06 真机：重试完屏幕上"工具块是上一轮的、最后的思考是这一轮的"。
