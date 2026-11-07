@@ -1674,3 +1674,18 @@ F4 下连"小于阈值"的内容都会被换成指针。现在：
 
 判据：`both_spellings_import` / `an_unknown_position_names_the_entry` /
 `a_broken_file_says_so_without_an_entry_number`。
+
+## D279 世界书注入（0.15ap 第二块，core）
+
+`apply_lorebook`：按关键词激活、按位置插进历史，**插在档位之前**。
+
+- 位置由 `lorebook::plan` 决定（system 前 / system 后 / 对话顶 / 指定深度 / 对话底）；
+  这里只负责"先按原历史算好下标、再从后往前插"，前面那些下标就不会被打乱。
+- 注入的消息带 `SourceTag::WorldBook`：**档位的白名单不收它**（D276），
+  所以 F4 下设定也是全文；压缩那边也认得出它是设定、不是对话。
+- 重试也注入（`regenerate_turn` 同一处），不然"重试一次"设定就没了。
+
+**还没接**：FFI 那一层（`SessionConfig.lorebook` 现在传 `None`）、文件存储、导入页。
+三块要一起落，少一块就是"导得进去但不生效"或"有代码没入口"。
+
+判据：`the_lorebook_lands_after_the_system_prompt`（插在 system 后面、用户那句还在）。

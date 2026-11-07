@@ -1168,6 +1168,8 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             allow_new_version: true,
             form_level: input.form_level,
             router: input.router,
+            // 世界书（D279）：core 那边接好了，FFI 这一层还没接（下一批）。
+            lorebook: None,
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1498,6 +1500,8 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             envir: input.envir.as_ref(),
             form_level: input.form_level,
             router: input.router,
+            // 世界书（D279）：core 那边接好了，FFI 这一层还没接（下一批）。
+            lorebook: None,
         };
 
         let client = crate::proxy::client();

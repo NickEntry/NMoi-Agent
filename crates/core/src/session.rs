@@ -292,6 +292,11 @@ pub struct SessionConfig<'a> {
     pub form_level: crate::message::FormLevel,
     /// 内容形态的阈值（D275）：小 / 大 / 超大 + 头尾保留量。
     pub router: crate::router::RouterConfig,
+    /// 世界书（D279）：按关键词激活，按位置注入。`None` = 没导入过。
+    ///
+    /// 注入的消息 `SourceTag::WorldBook`——**档位不碰它**（`routable` 白名单），
+    /// 它是"模型该看到的设定"，不是可以省的对话历史。
+    pub lorebook: Option<&'a crate::lorebook::LorebookData>,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -335,6 +340,7 @@ impl Default for SessionConfig<'_> {
             envir: None,
             form_level: crate::message::FormLevel::Full,
             router: crate::router::RouterConfig::default(),
+            lorebook: None,
         }
     }
 }
@@ -454,6 +460,73 @@ fn apply_forms<S: HistoryStore>(
         message.tokens = estimate_tokens(&message.content());
     }
     Ok(())
+}
+
+/// 按世界书把该注入的内容插进历史（D279）。
+///
+/// 位置由 `lorebook::plan` 决定（system 前 / system 后 / 对话顶 / 指定深度 / 对话底），
+/// 这里只负责"算好下标再插"：先按原历史算好每个注入点的下标，**从后往前插**，
+/// 前面那些下标就不会被打乱。
+///
+/// 注入的消息带 `SourceTag::WorldBook`：档位不碰它（`routable` 白名单），
+/// 压缩那边也认得出它是设定、不是对话。
+fn apply_lorebook(
+    history: &mut Vec<Message>,
+    book: &crate::lorebook::LorebookData,
+    session: SessionId,
+    now: i64,
+) {
+    use crate::lorebook::{HistoryLine, Position};
+    if !book.enabled || book.entries.is_empty() {
+        return;
+    }
+    // 先各自拿一份 owned 文本，再借出去——`HistoryLine` 借的是 `&str`，
+    // 直接从 `content()` 的临时值借会活不过这一行。
+    let texts: Vec<String> = history.iter().map(|message| message.content()).collect();
+    let lines: Vec<HistoryLine<'_>> = history
+        .iter()
+        .zip(texts.iter())
+        .map(|(message, text)| HistoryLine::new(message.role, text))
+        .collect();
+    let injections = crate::lorebook::plan(book, &lines);
+    if injections.is_empty() {
+        return;
+    }
+    // system 那一段到哪儿为止：`AfterSystemPrompt` / `TopOfChat` 都按它算。
+    let system_end = history
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .count();
+    let mut placed: Vec<(usize, Message)> = Vec::with_capacity(injections.len());
+    for injection in injections {
+        let at = match injection.position {
+            Position::BeforeSystemPrompt => 0,
+            Position::AfterSystemPrompt => system_end,
+            Position::TopOfChat => system_end,
+            Position::AtDepth => history
+                .len()
+                .saturating_sub(injection.depth.unwrap_or(0))
+                .max(system_end),
+            Position::BottomOfChat => history.len(),
+        };
+        let role = injection.role.as_role();
+        let mut message = Message::text(
+            MessageId::new(session, 0),
+            role,
+            SourceTag::WorldBook,
+            &injection.content,
+            estimate_tokens(&injection.content),
+            now,
+            LogicalClock::new(0),
+        );
+        message.source = SourceTag::WorldBook;
+        placed.push((at, message));
+    }
+    // 从后往前插：后面的下标先落位，前面那些就不受影响。
+    placed.sort_by_key(|(at, _)| *at);
+    for (at, message) in placed.into_iter().rev() {
+        history.insert(at.min(history.len()), message);
+    }
 }
 
 /// 图片模式要不要生效（D270）。
@@ -748,6 +821,12 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     history.extend(crate::repair::normalize(&units_before));
     history.push(user.clone());
 
+    // 世界书（D279）：按关键词激活、按位置插进去。放在档位之前——
+    // 插进来的那几条 `SourceTag::WorldBook` 不在档位的白名单里，不会被降级。
+    if let Some(book) = config.lorebook {
+        apply_lorebook(&mut history, book, session, now);
+    }
+
     // 档位（D275）：历史里的大块工具结果按 F2–F4 换形态，原文进归档。
     // 放在这里而不是 `run_turn` 里：一轮只换一次，工具循环那几轮用的是同一份。
     apply_forms(
@@ -987,6 +1066,11 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 
     let mut frozen_base = base.clone();
     // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
+    // 世界书（D279）：重试也注入，不然"重试一次"设定就没了。
+    if let Some(book) = config.lorebook {
+        apply_lorebook(&mut history, book, session, now);
+    }
+
     // 档位（D275）：重试也走同一套——不然"重试一次"就把省下的 token 全补回来了。
     apply_forms(
         store,
@@ -3369,6 +3453,43 @@ mod tests {
         assert_eq!(history[2].content(), "最新那一条", "最新一条工具结果不动");
         assert_eq!(history[3].content(), big, "世界书永远全文");
         assert_eq!(history[4].content(), big, "指令注入永远全文");
+    }
+
+    /// 世界书（D279）：按关键词激活，插在 system 之后；档位不碰它。
+    #[test]
+    fn the_lorebook_lands_after_the_system_prompt() {
+        let session = SessionId::new();
+        let book = crate::lorebook::Lorebook::import(
+            r#"{"version":1,"type":"lorebook","data":{"enabled":true,"entries":[
+                {"id":"e1","name":"猫娘","position":"after_system_prompt","role":"system",
+                 "content":"她是猫娘，叫 Neko。","keywords":["猫娘"]}]}}"#,
+        )
+        .expect("导入该过");
+        let mut history = vec![
+            Message::text(
+                MessageId::new(session, 1),
+                Role::System,
+                SourceTag::System,
+                "你是助手",
+                4,
+                0,
+                LogicalClock::new(1),
+            ),
+            Message::text(
+                MessageId::new(session, 2),
+                Role::User,
+                SourceTag::History,
+                "猫娘在吗",
+                4,
+                0,
+                LogicalClock::new(2),
+            ),
+        ];
+        apply_lorebook(&mut history, &book.data, session, 1_000);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[1].source, SourceTag::WorldBook);
+        assert!(history[1].content().contains("Neko"));
+        assert_eq!(history[2].content(), "猫娘在吗");
     }
 
     /// 图片（D208）：这一轮带的图必须真的进请求体——`content` 变成多模态数组。
