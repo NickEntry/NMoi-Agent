@@ -126,3 +126,68 @@ CREATE TABLE lorebooks (
 5. 会话里说"关键词1"：对应条目进上下文（`summarize` 里能看到命中原因）；
    不说就只在常驻条目里。
 6. 上下文面板：命中/未命中条数与实际请求一致。
+
+## 9. 按 ST（SillyTavern World Info）的语义做（2026-11-07 定，计划稿）
+
+用户 2026-11-07：「按照 ST lorebook 的支持去做就行」。这一节是**增量**：§1–§8 已经落地的
+（读取层 / `plan` / 注入）不动，这里补 ST 有、我们还没有的那部分，以及"多册"。
+
+### 9.1 数据模型：多册
+
+```json
+{"books":[{"id":"b1","name":"主 AGENT","note":"槽位 200 起","enabled":true,
+           "entries":[ … ]}]}
+```
+
+- 老的 `files/lorebook.json`（单册）读进来当**一册**，不丢数据。
+- 册级 `enabled=false` = 整册不参与（列表上挂「已停用」）。
+- 注入 = 合并**所有启用册**里启用的条目，再走同一个 `plan`。
+
+### 9.2 条目字段：ST 有什么，我们怎么办
+
+| ST 字段 | 现在的我们 | 计划 |
+|---|---|---|
+| `key[]` / `keysecondary[]` / `selective` / `selectiveLogic` | 只有 `keywords` | **补**：主键命中后按 `selectiveLogic`（AND_ANY / AND_ALL / NOT_ANY / NOT_ALL）判次键 |
+| `constant` | 有 `constantActive`（常驻） | 保持 |
+| `caseSensitive` / `matchWholeWords` | 有大小写；**没有整词** | 补 `matchWholeWords`（按词边界匹配） |
+| `scanDepth` | 有 | 保持（ST 的 `scanDepth` 是"扫最近 N 条消息"） |
+| `useRegex` | 有 | 保持 |
+| `sticky` / `cooldown` / `delay` | **没有** | **补**（见 9.3） |
+| `order`（ST 里越小越前） | 有 `priority` | 语义相同，导入时直接映射 |
+| `position` 0–4 + `depth` | 有 5 个位置 + `injectDepth` | 映射表见 9.4 |
+| `role` | 有 | 保持 |
+| `probability` / `useProbability` / `group` / `groupWeight` | 没有 | **不做**（要随机与分组加权，先记在"以后"） |
+| `excludeRecursion` / `preventRecursion` / `delayUntilRecursion` | 没有 | **不做**（递归触发是另一层，先把非递归做对） |
+| `triggers`（按生成类型触发） | 没有 | **不做**（我们没有"生成类型"这个概念） |
+
+### 9.3 时序三条：要状态，`plan` 不再纯
+
+- `sticky`：触发后**保持** N 条消息（重复命中不延长）。
+- `cooldown`：触发后（含粘滞结束）N 条消息内不再触发。
+- `delay`：对话至少有 N 条消息才允许触发（按单条消息数，不是轮数）。
+
+实现：`plan(book, history, state)`，`state` 是**会话级**的"每条上次在哪条消息触发的"。
+来源两处：本进程里刚算过的（内存表）+ 库里存一份（`settings` 的 `lorebook_state`，
+跟着会话走，重启还能接上）。判据是"同一份历史两次调用给同一结果"，所以状态必须显式传。
+
+### 9.4 位置映射
+
+| ST `position` | 我们的 `Position` |
+|---|---|
+| 0（before char defs） | `BeforeSystemPrompt` |
+| 1（after char defs） | `AfterSystemPrompt` |
+| 2（before AN） | `TopOfChat` |
+| 3（after AN） | `TopOfChat` |
+| 4（at depth） | `AtDepth`（用 `depth`） |
+
+### 9.5 分批（每批都能单独验）
+
+1. **多册 + 页面**：存储改 `books[]`；页面按 Kelivo 的形状（册行六样：名称/副标题/已停用/启用数/四个动作；
+   展开是条目行：拖动柄 + 标题 + 位置徽标 + 常驻 + 开关；条目编辑与新建册都用底部面板）。
+   这一批**不改匹配行为**，只把"看得见、能开关"做出来。
+2. **匹配补全**：`keysecondary` + `selectiveLogic` + `matchWholeWords`。
+3. **时序**：`sticky` / `cooldown` / `delay` + 状态表。
+4. **ST 格式导入**：`entries` 是对象（键是 uid），字段名 camelCase，和 kelivo 的数组形状不同；
+   导入时按 9.2 的表映射，认不出的字段**忽略但计数**（在导入结果里写"跳过了 N 个不支持的字段"）。
+
+判据（每批）：core 单测 + 一条真机项；第 1 批的真机项是"两册、一册停用、条目开关各一次"。
