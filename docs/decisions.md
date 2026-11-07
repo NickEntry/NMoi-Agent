@@ -1802,3 +1802,15 @@ LogSettingsScreen 1。另外两处压成一句定义（档位 F1–F4、路由�
   （`saveEntry`），其余按 id 并进自制条目；**一条都不删**。
 - 判据：kotlinc 全量只剩 9 个 `R`。这一批是 JSON 树 + 界面，本机没有单测手段
   （`org.json` 在 JVM 单测里是桩，见 `pitfalls.md`），所以真机 **V98** 是它唯一的验收面。
+
+## D288 附件多选（2026-11-08）
+
+`GetContent("image/*")` → **`GetMultipleContents("image/*")`**：一次挑几张，逐张压缩、逐张算上限。
+
+- 上限按"这一轮**总共**几张"算（`MAX_PENDING_IMAGES = 4`），不是"这一次挑了几张"——
+  分两次挑也不该超。
+- 逐张失败不影响其他张：读不出来/压缩后为空/超 8 MB 的那张跳过，回话写「已加 N 张，有 M 张没读出来」。
+- 挑多了（超过剩余额度）只取前几张，回话写「一轮最多 4 张，多出来的没加」。
+- 管道本来就支持多张（`TurnRepository` 把 `List<PendingImage>` 编成数组），这次只动了选图那一段。
+
+判据：kotlinc 只剩 9 个 `R`；真机 **V99**。文件附件还没做，见 `docs/model-roles.md` §6 第 5 批。

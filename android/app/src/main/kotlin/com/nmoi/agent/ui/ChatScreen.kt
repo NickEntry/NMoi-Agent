@@ -298,49 +298,66 @@ internal fun ChatScreen(
      * 图片跟着那条消息一起落——先落一条再补图，中间断掉就会留下"一条没有图的空消息"。
      */
     var pendingImages by remember { mutableStateOf(listOf<PendingImage>()) }
-    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            when {
-                pendingImages.size >= 4 -> notice = "一轮最多带 4 张图"
-                else -> scope.launch {
-                    val picked = withContext(Dispatchers.IO) {
-                        runCatching {
-                            val mime = context.contentResolver.getType(uri)
-                                ?.takeIf { it.startsWith("image/") }
-                                ?: "image/jpeg"
-                            val raw = context.contentResolver.openInputStream(uri)
-                                ?.use { it.readBytes() }
-                                ?: error("读不到这张图")
-                            if (raw.isEmpty()) error("这张图是空的")
-                            // 压缩在**选图这一刻**做（D241）：这张图后面还要落库、落盘、
-                            // base64 编进请求，三处都按同一份字节算，压得越早越省。
-                            val packed = ImageCompress.apply(raw, mime, ImageLimits.of(context))
-                            when {
-                                packed.bytes.isEmpty() -> error("压缩之后是空的")
-                                packed.bytes.size > MAX_IMAGE_BYTES -> error(
-                                    "图片 ${packed.bytes.size / 1024 / 1024} MB，超过 8 MB 上限",
+    // 图片可以**多选**（2026-11-08）：一次挑几张，逐张压缩、逐张算上限。
+    // 上限按"这一轮总共几张"算，不是"这一次挑了几张"——分两次挑也不该超。
+    val pickImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        val room = MAX_PENDING_IMAGES - pendingImages.size
+        if (room <= 0) {
+            notice = "一轮最多带 $MAX_PENDING_IMAGES 张图"
+            return@rememberLauncherForActivityResult
+        }
+        val take = uris.take(room)
+        scope.launch {
+            val picked = withContext(Dispatchers.IO) {
+                val loaded = ArrayList<PendingImage>()
+                var failure: String? = null
+                for (uri in take) {
+                    runCatching {
+                        val mime = context.contentResolver.getType(uri)
+                            ?.takeIf { it.startsWith("image/") }
+                            ?: "image/jpeg"
+                        val raw = context.contentResolver.openInputStream(uri)
+                            ?.use { it.readBytes() }
+                            ?: error("读不到这张图")
+                        if (raw.isEmpty()) error("这张图是空的")
+                        // 压缩在**选图这一刻**做（D241）：这张图后面还要落库、落盘、
+                        // base64 编进请求，三处都按同一份字节算，压得越早越省。
+                        val packed = ImageCompress.apply(raw, mime, ImageLimits.of(context))
+                        when {
+                            packed.bytes.isEmpty() -> error("压缩之后是空的")
+                            packed.bytes.size > MAX_IMAGE_BYTES -> error(
+                                "图片 ${packed.bytes.size / 1024 / 1024} MB，超过 8 MB 上限",
+                            )
+                        }
+                        PendingImage(
+                            mime = packed.mime,
+                            data = Base64.encodeToString(packed.bytes, Base64.NO_WRAP),
+                            bytes = packed.bytes.size,
+                        ).also {
+                            if (packed.reencoded) {
+                                NLog.i(
+                                    "Chat",
+                                    "图片已压缩：${raw.size / 1024} KB → ${packed.bytes.size / 1024} KB" +
+                                        "（${packed.mime}）",
                                 )
                             }
-                            PendingImage(
-                                mime = packed.mime,
-                                data = Base64.encodeToString(packed.bytes, Base64.NO_WRAP),
-                                bytes = packed.bytes.size,
-                            ).also {
-                                if (packed.reencoded) {
-                                    NLog.i(
-                                        "Chat",
-                                        "图片已压缩：${raw.size / 1024} KB → ${packed.bytes.size / 1024} KB" +
-                                            "（${packed.mime}）",
-                                    )
-                                }
-                            }
                         }
-                    }
-                    picked.fold(
-                        onSuccess = { pendingImages = pendingImages + it },
-                        onFailure = { notice = "选图失败：${it.message}" },
-                    )
+                    }.onSuccess { loaded.add(it) }
+                        .onFailure { failure = it.message }
                 }
+                loaded to failure
+            }
+            val (loaded, failure) = picked
+            if (loaded.isNotEmpty()) pendingImages = pendingImages + loaded
+            notice = when {
+                loaded.isEmpty() -> "选图失败：${failure ?: "没有可用的图"}"
+                uris.size > take.size ->
+                    "已加 ${loaded.size} 张；一轮最多 $MAX_PENDING_IMAGES 张，多出来的没加"
+                failure != null -> "已加 ${loaded.size} 张，有 ${uris.size - loaded.size} 张没读出来"
+                else -> "已加 ${loaded.size} 张（这一轮共 ${pendingImages.size + loaded.size} 张）"
             }
         }
     }
@@ -2775,6 +2792,9 @@ private const val USER_NAME = "我"
 
 /** 单张图片的上限（D208）：与存储层 `MAX_ATTACHMENT_BYTES` 同一个数，界面先挡一次。 */
 private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+/** 一轮最多带几张图（多选之后按总数算，不是按"这一次挑了几张"）。 */
+private const val MAX_PENDING_IMAGES = 4
 private const val ASSISTANT_NAME = "助手"
 
 /**
