@@ -293,6 +293,116 @@ impl Storage {
     }
 }
 
+impl Storage {
+    /// 只换**一条**消息（D284）：重试一条"不是最新"的消息时用它。
+    ///
+    /// 与 [`Storage::replace_turn`] 的区别只有一个：删除范围。这里只删目标那一条，
+    /// 后面的消息一条都不动——用户点的是 a1，他要的是 a1 换个说法，不是把 u2 / a2 弄没。
+    ///
+    /// 因此 `unit` 必须**正好一条消息**，而且它的 id 就是目标的 id（seq 不变，
+    /// 界面上那颗 `<n/n>` 与分界线也都不跳）。这一轮要是调了工具（多行），
+    /// 就放不下——调用方应当退回整轮替换，并把"后面会没掉几条"问过用户。
+    pub fn replace_message(
+        &mut self,
+        session: SessionId,
+        id: &MessageId,
+        unit: &AtomicUnit,
+        keep_version: bool,
+    ) -> Result<Option<MessageId>, StorageError> {
+        unit.validate()?;
+        if let Some(call) = unit.pending_calls().first() {
+            return Err(StorageError::Inconsistent(format!(
+                "单元 {} 的调用 {call} 还没有结果：只存结束，不存进行时",
+                unit.id
+            )));
+        }
+        if unit.messages.len() != 1 {
+            return Err(StorageError::Inconsistent(format!(
+                "只换一条：这次给了 {} 条消息（这一轮调了工具，得整轮替换）",
+                unit.messages.len()
+            )));
+        }
+        if unit.id.session() != session {
+            return Err(StorageError::Inconsistent(format!(
+                "单元 {} 不属于会话 {}",
+                unit.id, session
+            )));
+        }
+        let fresh_id = unit.messages[0].id.clone();
+        if &fresh_id != id {
+            return Err(StorageError::Inconsistent(format!(
+                "新消息 {fresh_id} 不是目标 {id}：seq 没对齐，换上去会串位"
+            )));
+        }
+
+        let tx = self.conn.transaction()?;
+        if !crate::repo::conversation_exists_in(&tx, session)? {
+            return Err(StorageError::Inconsistent(format!("会话 {session} 不存在")));
+        }
+
+        // 旧的那一条：先读出它的版本行，再快照一版（删消息时版本会跟着级联走）。
+        let old = crate::repo::load_tail_messages(&tx, session, id.seq().saturating_sub(1))?
+            .into_iter()
+            .find(|message| &message.id == id)
+            .ok_or_else(|| StorageError::Inconsistent(format!("消息 {id} 不在库里")))?;
+        let carried = if keep_version {
+            read_versions(&tx, &id.to_string())?
+        } else {
+            Vec::new()
+        };
+        let old_version = if keep_version {
+            Some(version_of(std::slice::from_ref(&old), 1)?)
+        } else {
+            None
+        };
+
+        tx.execute(
+            "DELETE FROM messages WHERE conv_id = ?1 AND id = ?2",
+            params![session.to_string(), id.to_string()],
+        )?;
+        crate::repo::insert_unit_rows(&tx, session, unit)?;
+
+        if keep_version {
+            let mut rows = carried;
+            if rows.is_empty() {
+                if let Some(version) = old_version {
+                    rows.push(version);
+                }
+            }
+            let next = rows.last().map(|row| row.no + 1).unwrap_or(1);
+            rows.push(version_of(std::slice::from_ref(&unit.messages[0]), next)?);
+            while rows.len() as i64 > crate::versions::MAX_VERSIONS {
+                rows.remove(0);
+            }
+            for (index, row) in rows.iter_mut().enumerate() {
+                row.no = index as i64 + 1;
+            }
+            tx.execute(
+                "DELETE FROM message_versions WHERE message_id = ?1",
+                [id.to_string()],
+            )?;
+            for row in &rows {
+                write_version(&tx, &id.to_string(), row)?;
+            }
+            tx.execute(
+                "UPDATE messages SET version_count = ?1, version_active = ?2 WHERE id = ?3",
+                params![
+                    rows.len() as i64,
+                    rows.last().map(|row| row.no).unwrap_or(0),
+                    id.to_string()
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![crate::validate::now_ms(), session.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(Some(id.clone()))
+    }
+}
+
 /// 切版本时把**整轮**换回来：删掉现在这一轮，再按快照写回去。
 ///
 /// 位置会重排（两版的轮数可能不一样），所以消息 id 也跟着重排——版本行要搬到新的落点上，

@@ -237,3 +237,49 @@ fn without_new_versions_the_old_turn_is_simply_gone() {
     assert_eq!(now.len(), 2, "用户 + 这一轮一条：{now:?}");
     assert_eq!(now[1].1, "覆盖后的回答");
 }
+
+/// 只换一条（D284）：点 a1 的重试只该动 a1，u2 / a2 一个都不能少。
+///
+/// 2026-11-07 真机：点 a1 的重试，结果看着像"在 a2 的位置重试"，而且新消息没了——
+/// 因为整轮替换从 u1 之后全删了。这一条钉的是"后面的行一条都不动"。
+#[test]
+fn retrying_one_message_keeps_the_later_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let session = storage
+        .create_conversation("只换一条", "device-a", "default")
+        .unwrap();
+    storage
+        .append_unit(session, &user_unit(session, 1, "u1"))
+        .unwrap();
+    storage
+        .append_unit(session, &text_unit(session, 2, "a1"))
+        .unwrap();
+    storage
+        .append_unit(session, &user_unit(session, 3, "u2"))
+        .unwrap();
+    storage
+        .append_unit(session, &text_unit(session, 4, "a2"))
+        .unwrap();
+
+    let fresh = text_unit(session, 2, "a1 重写过");
+    let anchor = storage
+        .replace_message(session, &MessageId::new(session, 2), &fresh, true)
+        .expect("单条替换要能落库")
+        .expect("有落点");
+    assert_eq!(anchor, MessageId::new(session, 2), "落点还是原来那一条");
+
+    let rows = shown(&storage, session);
+    assert_eq!(rows.len(), 4, "后面两条不能少：{rows:?}");
+    assert_eq!(rows[1].1, "a1 重写过");
+    assert_eq!(rows[2].1, "u2");
+    assert_eq!(rows[3].1, "a2");
+
+    // 版本：旧的那一版留着，`<2/2>` 能切回去。
+    let versions = storage
+        .list_message_versions(&MessageId::new(session, 2))
+        .expect("读版本");
+    assert_eq!(versions.count, 2, "旧的一版 + 新的一版");
+    assert_eq!(versions.active, 2);
+    assert_eq!(versions.shown, "a1 重写过");
+}

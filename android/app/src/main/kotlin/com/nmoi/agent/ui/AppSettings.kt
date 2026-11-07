@@ -19,6 +19,7 @@ internal object AppSettings {
     private const val KEY_MAX_ROUNDS = "turn.max_rounds"
     private const val KEY_IMAGE_LIMIT = "context.image_limit"
     private const val KEY_IMAGE_MODE = "context.image_mode"
+    private const val KEY_REGEN_OLD = "turn.regen_old"
     private const val KEY_IMAGE_TEMP = "context.image_temp_limit"
     private const val KEY_SUGGEST = "context.suggest"
     private const val KEY_ABSOLUTE = "context.absolute"
@@ -101,6 +102,25 @@ internal object AppSettings {
     fun setImageMode(context: Context, value: String) {
         val mode = if (value == IMAGE_MODE_PATH) IMAGE_MODE_PATH else IMAGE_MODE_INLINE
         prefs(context).edit().putString(KEY_IMAGE_MODE, mode).apply()
+    }
+
+    /**
+     * 重试一条**不是最新**的消息时落在哪儿（D284）。
+     *
+     * `in_place`（默认）= 只换这一条，后面的消息一条都不动——用户点的是 a1，他要的是 a1 换个说法。
+     * `truncate` = 整轮替换（删掉后面的），动手前会问一句"会没掉几条"。
+     */
+    const val REGEN_OLD_IN_PLACE = "in_place"
+    const val REGEN_OLD_TRUNCATE = "truncate"
+
+    fun regenOldMessage(context: Context): String {
+        val value = prefs(context).getString(KEY_REGEN_OLD, REGEN_OLD_IN_PLACE).orEmpty()
+        return if (value == REGEN_OLD_TRUNCATE) REGEN_OLD_TRUNCATE else REGEN_OLD_IN_PLACE
+    }
+
+    fun setRegenOldMessage(context: Context, value: String) {
+        val mode = if (value == REGEN_OLD_TRUNCATE) REGEN_OLD_TRUNCATE else REGEN_OLD_IN_PLACE
+        prefs(context).edit().putString(KEY_REGEN_OLD, mode).apply()
     }
 
     /**

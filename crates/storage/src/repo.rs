@@ -1796,6 +1796,18 @@ impl nmoi_core::session::HistoryStore for Storage {
             .map_err(|error| error.to_string())
     }
 
+    /// 只换一条消息（D284）：删一条、写一条，后面的行一个都不动。
+    fn replace_message(
+        &mut self,
+        session: SessionId,
+        id: &MessageId,
+        unit: &AtomicUnit,
+        keep_version: bool,
+    ) -> Result<Option<MessageId>, String> {
+        Storage::replace_message(self, session, id, unit, keep_version)
+            .map_err(|error| error.to_string())
+    }
+
     /// 单元级编辑（0.15f / D188）：落红、成对删、undo 日志都在 `blockedit` 那边。
     ///
     /// 与 `apply_block_edit` 的分工：那条是"用户手动改一块"的老路（就地改列），

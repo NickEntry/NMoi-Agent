@@ -1427,6 +1427,22 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             .unwrap_or(true);
         // 续话（D193）：`true` = 落库的正文接在原正文后面；默认 `false` = 重试（整段换掉）。
         let append = root.get("append").and_then(Value::as_bool).unwrap_or(false);
+        // 重试落在哪儿（D284）：`message` = 只换点的那一条（后面的不动），其余 = 整轮替换。
+        let regen_scope = match optional_str(&root, "regen_scope")?
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "message" | "one" | "in_place" => nmoi_core::session::RegenScope::Message,
+            "" | "turn" | "last_turn" => nmoi_core::session::RegenScope::Turn,
+            other => {
+                return Err(FfiError::new(
+                    "regen_scope",
+                    format!("regen_scope 是「{other}」：只收 turn / message"),
+                ))
+            }
+        };
         // 流式（D227）：重试也要"就地长"。默认关——老调用方（脚本、测试）行为一个字都不变；
         // 界面显式传 `true`，这样"边上屏边看"与"结果回来再换"是同一条路，不是两条。
         let stream = root.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -1565,6 +1581,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
                 &up_to,
                 target.as_ref(),
                 append,
+                regen_scope,
                 &registry,
                 &policy,
                 workspace.as_ref(),

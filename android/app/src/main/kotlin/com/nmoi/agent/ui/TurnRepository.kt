@@ -126,6 +126,11 @@ internal object TurnRepository {
          * 不再有"发送逐字长、重试只能干等"这种两套行为。
          */
         stream: Boolean = true,
+        /**
+         * 重试落在哪儿（D284）：`in_place` = 只换 `target` 这一条，后面的消息不动；
+         * 空 = 整轮替换（跟以前一样）。只有重试"不是最新"的那条时才会传 `in_place`。
+         */
+        regenScope: String? = null,
     ): Result<TurnOutcome> = runTurn(
         context = context,
         databasePath = databasePath,
@@ -134,6 +139,7 @@ internal object TurnRepository {
             config.put("up_to", upTo).put("allow_new_version", allowNewVersion)
             config.put("stream", stream)
             if (append) config.put("append", true)
+            regenScope?.let { config.put("regen_scope", it) }
             target?.let { config.put("target", it) }
         },
         invoke = { config -> NmoiFfi.turnRegen(config) },

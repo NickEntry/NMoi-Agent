@@ -215,8 +215,13 @@ internal fun ChatScreen(
     // 重试落在哪条消息上（D227）：这一轮的部分正文**就地**画在它身上，不再在底部另起一个
     // 「助手 / 正在生成…」的块。`null` = 这一轮不是重试，或者目标为空（结果会落成新消息）。
     var regenTarget by remember(sessionId) { mutableStateOf<String?>(null) }
+    // 这一轮是"只换这一条"（D284）：只藏目标那一条、正文就画在它自己的位置上，
+    // 后面的消息一条都不动。整轮替换时仍然是"整轮不画 + 底部画"（D263）。
+    var regenInPlace by remember(sessionId) { mutableStateOf(false) }
     // 重试失败 → 三选一（D228）。它决定库里留下哪一版，所以是"必须处理"的那种，点外面不关。
     var regenFailure by remember { mutableStateOf<RegenFailure?>(null) }
+    // 重试一条旧消息、而设置里选的是"删掉后面的"（D284）：先问一句会没掉几条。
+    var truncateAsk by remember { mutableStateOf<RegenAsk?>(null) }
     // 手动停止（重试/续话）→ 问一句"这一版留不留"。停止不是失败，可它同样把残句写成了
     // 新版本；不给一句话，用户只会发现"我明明按了停止，回答却变了"（2026-11-06 真机）。
     var stopPrompt by remember { mutableStateOf<StoppedTurn?>(null) }
@@ -764,7 +769,8 @@ internal fun ChatScreen(
      * 所以真会话里目前只有一段；等线能插了，core 会用 `NotInWindow` 把跨段的请求顶回来
      * （不泄漏别的段），界面上再补"这条是这段的第一条"那种前置判断。
      */
-    val runRegen: (String, String, String?, Boolean) -> Unit = { sid, upTo, target, append ->
+    val runRegen: (String, String, String?, Boolean, String?) -> Unit =
+        { sid, upTo, target, append, regenScope ->
         scope.launch {
             busy = true
             notice = null
@@ -773,6 +779,7 @@ internal fun ChatScreen(
             // 目标为空（用户消息重试、下面没有回答可挂）时仍然在底部——结果会落成一条新消息，
             // 那个位置就是它要去的地方，提前摆一个气泡在那里不算撒谎。
             regenTarget = target
+            regenInPlace = regenScope == AppSettings.REGEN_OLD_IN_PLACE
             // 续话（0.15av）：落库那份是「原正文 + 续文」，流里只有续文那一截。
             // 这里把原正文预置成起点——native 那边的缓冲也垫了同一段，两边的字数才对得上。
             val before = if (append && target != null) {
@@ -797,6 +804,7 @@ internal fun ChatScreen(
                     // 关着"允许生成新版本"的话，成功之后由下面把上一版删掉（覆盖语义不变）。
                     allowNewVersion = true,
                     append = append,
+                    regenScope = regenScope,
                     stream = assistant.stream,
                 )
                 result.fold(
@@ -857,16 +865,29 @@ internal fun ChatScreen(
                 busy = false
                 live = null
                 regenTarget = null
+        regenInPlace = false
+                regenInPlace = false
                 settling = false
                 reloadKey += 1
             }
         }
     }
 
-    /** 点「重试」：按这一条在列表里的位置算出 `upTo` / `target`，算不出来就说原因。 */
+    /**
+     * 点「重试」：按这一条在列表里的位置算出 `upTo` / `target`，算不出来就说原因。
+     *
+     * **落在哪儿**（D284）：这一条之后还有没有新的一轮。
+     * - 没有（它就是最新的那条）→ 整轮替换，跟以前一样。
+     * - 有（点的是中间某条）→ 默认**只换这一条**，后面的消息一条都不动；
+     *   应用设置里选成「删掉后面的」才走整轮替换，而且先问一句"会没掉几条"。
+     *
+     * 以前一律整轮替换：点 a1 会把 u2 / a2 一起删掉，屏幕上还看着像"在 a2 的位置重试"。
+     */
     val retryTurn: (ChatMessage) -> Unit = { message ->
         val sid = sessionId
         val index = allMessages.indexOfFirst { it.id == message.id }
+        val hasLaterTurn = allMessages.drop(index + 1).any { it.isUser }
+        val truncate = AppSettings.regenOldMessage(context) == AppSettings.REGEN_OLD_TRUNCATE
         when {
             busy -> notice = "上一轮还没结束（要打断就先点停止）"
             sid == null -> notice = "这条会话还没落库，没法重发"
@@ -874,7 +895,16 @@ internal fun ChatScreen(
             message.isUser -> {
                 // 用户消息重试：这一句自己就是最后一条发出去的东西。
                 val reply = allMessages.getOrNull(index + 1)?.takeIf { !it.isUser }
-                runRegen(sid, message.id, reply?.id, false)
+                val scope = if (hasLaterTurn && !truncate) {
+                    AppSettings.REGEN_OLD_IN_PLACE
+                } else {
+                    null
+                }
+                if (hasLaterTurn && truncate) {
+                    truncateAsk = RegenAsk(sid, message.id, reply?.id, allMessages.size - index - 1)
+                } else {
+                    runRegen(sid, message.id, reply?.id, false, scope)
+                }
             }
 
             else -> {
@@ -882,10 +912,17 @@ internal fun ChatScreen(
                 // 列表里上一条很可能是这一轮自己的工具结果——那样重发等于把"已经跑过的 9 步"
                 // 一起递过去，模型看见结果就只补一句总结，看着像"根本没重测"（用户 2026-11-04 报的）。
                 val user = allMessages.take(index).lastOrNull { it.isUser }
-                if (user == null) {
-                    notice = "这条前面没有用户消息，没法重发"
-                } else {
-                    runRegen(sid, user.id, message.id, false)
+                when {
+                    user == null -> notice = "这条前面没有用户消息，没法重发"
+                    hasLaterTurn && truncate ->
+                        truncateAsk = RegenAsk(sid, user.id, message.id, allMessages.size - index - 1)
+                    else -> runRegen(
+                        sid,
+                        user.id,
+                        message.id,
+                        false,
+                        if (hasLaterTurn) AppSettings.REGEN_OLD_IN_PLACE else null,
+                    )
                 }
             }
         }
@@ -906,8 +943,8 @@ internal fun ChatScreen(
         when {
             busy -> notice = "上一轮还没结束（要打断就先点停止）"
             sid == null -> notice = "这条会话还没落库，没法接着说"
-            message.isUser -> runRegen(sid, message.id, null, false)
-            else -> runRegen(sid, message.id, message.id, true)
+            message.isUser -> runRegen(sid, message.id, null, false, null)
+            else -> runRegen(sid, message.id, message.id, true, null)
         }
     }
 
@@ -970,6 +1007,7 @@ internal fun ChatScreen(
         settling = false
         live = null
         regenTarget = null
+        regenInPlace = false
         pending = null
         reloadKey += 1
         notice = when (val missed = TurnRunner.takeRecent(sid)) {
@@ -1226,6 +1264,7 @@ internal fun ChatScreen(
                         live = live,
                         // 重试就地渲染（D227）：这一轮的正文画在它身上，不在底部另起一块。
                         regenTarget = regenTarget,
+                        inPlaceRegen = regenInPlace,
                         // 过程块（D229）：展开状态只活在这个会话的这次浏览里。
                         openGroups = openGroups,
                         onToggleGroup = { key -> openGroups[key] = openGroups[key] != true },
@@ -1630,6 +1669,28 @@ internal fun ChatScreen(
                 },
                 onKeepThis = { keepPartial(pendingFailure, true) },
                 onKeepBoth = { keepPartial(pendingFailure, false) },
+            )
+        }
+
+        val pendingTruncate = truncateAsk
+        if (pendingTruncate != null) {
+            ConfirmDialog(
+                title = "重试这一条会删掉后面的对话？",
+                detail = "这条之后还有 ${pendingTruncate.later} 条消息：整轮替换会把它们删掉，" +
+                    "重跑出来的回答落在这里。只想换这一条的话，去设置 → 应用设置 → 生成，" +
+                    "把「重试旧消息」改成「只换这一条」。",
+                confirmLabel = "删掉并重试",
+                onCancel = { truncateAsk = null },
+                onConfirm = {
+                    truncateAsk = null
+                    runRegen(
+                        pendingTruncate.sessionId,
+                        pendingTruncate.upTo,
+                        pendingTruncate.target,
+                        false,
+                        null,
+                    )
+                },
             )
         }
 
@@ -2094,6 +2155,8 @@ private fun MessageArea(
      * 而是画在这条消息的正文位置——重试看着像"这条回答在重写"，不是"又开了一个气泡"。
      */
     regenTarget: String?,
+    /** 这一轮是"只换这一条"（D284）：只藏目标那一条，正文画在它自己的位置。 */
+    inPlaceRegen: Boolean = false,
     /** 过程块（D229）展开状态：键是组的第一项 id。 */
     openGroups: Map<String, Boolean> = emptyMap(),
     onToggleGroup: (String) -> Unit = {},
@@ -2165,7 +2228,7 @@ private fun MessageArea(
     // 用户 2026-11-04：「UI 上在生成的时候不显示旧的」。那些块属于上一版的那一轮，
     // 而屏幕上正在写的是新的一版——旧的挂在那儿，看起来就像"新版本带着旧块"。
     // 判据：目标消息之前、最后一条用户消息之后的那几块就是这一轮的。
-    val regenFrom = if (regenTarget == null) {
+    val regenFrom = if (regenTarget == null || inPlaceRegen) {
         -1
     } else {
         rows.indexOfLast { row -> row is ChatRow.Single && row.unit.messages.any { it.isUser } }
@@ -2217,6 +2280,22 @@ private fun MessageArea(
             // 折行之后一轮回答是好几条消息，只藏「过程块」会把工具那半行留下——
             // 屏幕上就是"新正文 + 上一轮的工具块"（2026-11-06 真机报的）。
             if (regenFrom >= 0 && index > regenFrom) {
+                return@itemsIndexed
+            }
+            // 只换这一条（D284）：目标那一条让位给正在长的那份，其余照常画。
+            val streamingHere = inPlaceRegen && live != null &&
+                (row as? ChatRow.Single)?.unit?.messages?.any { it.id == regenTarget } == true
+            if (streamingHere) {
+                LiveReplyRow(
+                    reply = live,
+                    onDismissCut = onDismissCut,
+                    thinkingOpen = liveThinkingOpen,
+                    onToggleThinking = onToggleLiveThinking,
+                    onOpenCall = onOpenRunningCall,
+                    onOpenDoneCall = onOpenDoneCall,
+                    finishedThinkingOpen = finishedThinkingOpen,
+                    onToggleFinishedThinking = onToggleFinishedThinking,
+                )
                 return@itemsIndexed
             }
             val previous = rows.getOrNull(index - 1)
@@ -2301,9 +2380,10 @@ private fun MessageArea(
                 )
             }
         }
-        val streaming = live
+        val streaming = if (inPlaceRegen) null else live
         // 重试与发送同一个画法：这一轮画在**底部**。目标那一条属于旧的那一轮，
         // 它已经整轮藏掉了（D263），再往它身上画就等于把旧的又放出来一半。
+        // 「只换这一条」（D284）是例外：那份已经画在目标自己的位置上了，底部不再重复。
         if (streaming != null) {
             item(key = "live-assistant") {
                 LiveReplyRow(
@@ -3272,6 +3352,15 @@ private fun DialogAction(
  * 存的是**内存里这一轮收到的正文**：它还没落过库，所以这不是"点开那一刻的副本"，
  * 而是唯一的一份。用户选「保留这一版」时才把它写进库里。
  */
+/** 重试一条旧消息、而设置是「删掉后面的」时的那一问（D284）。 */
+private data class RegenAsk(
+    val sessionId: String,
+    val upTo: String,
+    val target: String?,
+    /** 这条之后还有几条消息会一起没掉。 */
+    val later: Int,
+)
+
 private data class RegenFailure(
     val messageId: String,
     val text: String,

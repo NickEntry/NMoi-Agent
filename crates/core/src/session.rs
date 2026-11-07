@@ -148,6 +148,23 @@ pub trait HistoryStore {
         Err("这个历史实现不支持整轮替换：这一轮没有落库".to_string())
     }
 
+    /// 只换**一条**消息（D284）：重试一条不是最新的消息时用它。
+    ///
+    /// 与 [`HistoryStore::replace_turn`] 的区别只有删除范围：这里只删目标那一条，
+    /// 后面的消息一条都不动。`unit` 必须正好一条消息，且 id 就是目标的 id。
+    ///
+    /// 默认实现拒绝：内存实现没理由假装换了库。
+    fn replace_message(
+        &mut self,
+        session: SessionId,
+        id: &MessageId,
+        unit: &AtomicUnit,
+        keep_version: bool,
+    ) -> Result<Option<MessageId>, String> {
+        let _ = (session, id, unit, keep_version);
+        Err("这个历史实现不支持单条替换：这一条没有落库".to_string())
+    }
+
     /// 一次单元级编辑（0.15f / D188）：改块 / 删块 / 落红 / undo 全由实现方负责。
     ///
     /// 默认实现**拒绝**（和 `apply_block_edit` 同一个理由）：内存实现没理由假装写了库。
@@ -1014,6 +1031,19 @@ pub fn join_continuation(before: &str, next: &str) -> String {
 /// | 助手消息 A | A **之前**那条 | A 的新版本 |
 /// | 续话 | 段内最后一条 | 最新是助手消息就并进那条 |
 ///
+/// 重试落在哪儿（D284）。
+///
+/// 用户点的是哪一条，重试就该动哪一条。以前只有"整轮替换"一种：点 a1 会把 u2 / a2
+/// 一起删掉，屏幕上还看着像"在 a2 的位置重试"（2026-11-07 真机报的）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RegenScope {
+    /// 整轮替换：删掉这一轮的用户消息之后的全部行，再写新的这一轮。默认，跟以前一样。
+    #[default]
+    Turn,
+    /// 只换这一条：后面的消息一条都不动。重试"不是最新"的那条时用它。
+    Message,
+}
+
 /// `target` 给 `Some(助手消息)` 就落成它的新版本；`config.allow_new_version` 关着时覆盖它。
 /// 给 `None` 就**追加**一条新的助手消息——只有"那条消息下面本来没有助手消息"时才该这么用，
 /// 否则新消息会落到会话末尾，和用户看到的顺序对不上。
@@ -1031,6 +1061,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     // 仍然走版本落点：旧那版留着，切回 <1/2> 就能看见接之前长什么样；
     // 原地改写会把前一段正文毁掉，而续话的用途恰好是"接上"。
     append: bool,
+    // 重试落在哪儿（D284）：整轮替换 / 只换这一条。
+    scope: RegenScope,
     registry: &ToolRegistry,
     policy: &AssistantPolicy,
     workspace: Option<&Workspace>,
@@ -1189,6 +1221,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     // 序号从**这一轮的起点**接着排：换掉的那一段空出来了，新的就该落在原地。
     // 轮数没变时消息 id 一个都不动，界面上那颗 `<n/n>` 也不会跳位置。
     let first_seq = match target {
+        // 只换这一条：新的那条用**目标自己的 seq**，id 不变、`<n/n>` 不跳、后面的行不用挪。
+        Some(id) if scope == RegenScope::Message => id.seq(),
         Some(_) => turn_start.seq() + 1,
         None => {
             units
@@ -1199,6 +1233,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
                 + 1
         }
     };
+    let in_place = scope == RegenScope::Message && target.is_some();
     let fresh = round_units(session, first_seq, &report, now)?;
     if fresh.is_empty() {
         return Err(SessionError::Save("这一轮没有可落的内容".into()));
@@ -1209,6 +1244,21 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .map(|message| message.id.clone());
 
     let appended = match target {
+        Some(id) if in_place => {
+            // 只换一条：这一轮要是调了工具（落下来不止一条），就放不下——后面还有对话，
+            // 多出来的行没地方站。说清楚，让调用方退回整轮替换（并先问过用户）。
+            if fresh.len() != 1 || fresh[0].messages.len() != 1 {
+                return Err(SessionError::Save(
+                    "这一轮调了工具，落下来不止一条消息：这条不是最新的，放不下 \
+                     （先删掉后面的，或者重试最新那条）"
+                        .into(),
+                ));
+            }
+            store
+                .replace_message(session, id, &fresh[0], config.allow_new_version)
+                .map_err(SessionError::Save)?;
+            None
+        }
         Some(_) => {
             store
                 .replace_turn(session, &turn_start, &fresh, config.allow_new_version)
@@ -1636,6 +1686,7 @@ mod tests {
             &user.id,
             Some(&first_answer.id),
             false,
+            RegenScope::Turn,
             &registry,
             &policy,
             Some(&workspace),
@@ -1731,6 +1782,7 @@ mod tests {
             &user.id,
             Some(&answer.id),
             false,
+            RegenScope::Turn,
             &registry,
             &policy,
             Some(&workspace),
@@ -1819,6 +1871,7 @@ mod tests {
             &first_answer.id,
             Some(&first_answer.id),
             true,
+            RegenScope::Turn,
             &registry,
             &policy,
             Some(&workspace),
@@ -1885,6 +1938,7 @@ mod tests {
             &MessageId::new(session, 1),
             None,
             false,
+            RegenScope::Turn,
             &registry,
             &policy,
             Some(&workspace),
@@ -1929,6 +1983,7 @@ mod tests {
             &stray,
             None,
             false,
+            RegenScope::Turn,
             &registry,
             &policy,
             Some(&workspace),
@@ -3016,6 +3071,28 @@ mod tests {
                 .last()
                 .and_then(|unit| unit.messages.last())
                 .map(|message| message.id.clone()))
+        }
+
+        /// 只换一条（D284）：在这里就是"把那一格换掉"，后面的单元一个都不动。
+        fn replace_message(
+            &mut self,
+            _session: SessionId,
+            id: &MessageId,
+            unit: &AtomicUnit,
+            _keep_version: bool,
+        ) -> Result<Option<MessageId>, String> {
+            for existing in self.units.iter_mut() {
+                if let Some(slot) = existing
+                    .messages
+                    .iter_mut()
+                    .find(|message| &message.id == id)
+                {
+                    *slot = unit.messages[0].clone();
+                    self.replaced.lock().unwrap().push((id.clone(), 0, 1));
+                    return Ok(Some(id.clone()));
+                }
+            }
+            Err(format!("消息 {id} 不在库里"))
         }
 
         /// 0.15f：`edit_unit` 在收尾时走这一条。这里只记账，真落库由 `crates/storage` 的测试盯。

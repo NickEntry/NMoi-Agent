@@ -63,6 +63,7 @@ internal fun AppSettingsScreen(
     onBack: () -> Unit,
 ) {
     var allowNewVersion by remember { mutableStateOf(AppSettings.allowNewVersion(context)) }
+    var regenOld by remember { mutableStateOf(AppSettings.regenOldMessage(context)) }
     var windowText by remember {
         mutableStateOf(AppSettings.defaultContextWindow(context).toString())
     }
@@ -255,6 +256,40 @@ internal fun AppSettingsScreen(
                             allowNewVersion = false
                             AppSettings.setAllowNewVersion(context, false)
                             notice = "重试会覆盖当前这一版"
+                        }
+                    }
+                }
+                }
+
+                if (section == SettingsSection.Generation) {
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "重试旧消息",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "点一条不是最新的消息上的重试时：只换这一条，还是把后面的删掉重跑",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        SettingChip("只换这一条", selected = regenOld == AppSettings.REGEN_OLD_IN_PLACE) {
+                            regenOld = AppSettings.REGEN_OLD_IN_PLACE
+                            AppSettings.setRegenOldMessage(context, AppSettings.REGEN_OLD_IN_PLACE)
+                            notice = "重试旧消息只换那一条，后面的不动"
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        SettingChip("删掉后面的", selected = regenOld == AppSettings.REGEN_OLD_TRUNCATE) {
+                            regenOld = AppSettings.REGEN_OLD_TRUNCATE
+                            AppSettings.setRegenOldMessage(context, AppSettings.REGEN_OLD_TRUNCATE)
+                            notice = "重试旧消息会先问一句：后面几条会没掉"
                         }
                     }
                 }
