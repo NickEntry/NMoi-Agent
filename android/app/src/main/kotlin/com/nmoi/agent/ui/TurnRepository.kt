@@ -334,6 +334,18 @@ internal object TurnRepository {
                         )
                     }
 
+                // 上下文档位与内容形态阈值（D275）。F1 = 跟以前一模一样。
+                .put("context_form", AppSettings.formLevel(context))
+                .put(
+                    "router",
+                    JSONObject()
+                        .put("small", AppSettings.routerValue(context, "context.router.small", AppSettings.DEFAULT_ROUTER_SMALL))
+                        .put("large", AppSettings.routerValue(context, "context.router.large", AppSettings.DEFAULT_ROUTER_LARGE))
+                        .put("huge", AppSettings.routerValue(context, "context.router.huge", AppSettings.DEFAULT_ROUTER_HUGE))
+                        .put("head", AppSettings.routerValue(context, "context.router.head", AppSettings.DEFAULT_ROUTER_HEAD))
+                        .put("tail", AppSettings.routerValue(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)),
+                )
+
                 // 这一轮特有的字段（`user_text` / `up_to` + `target`…）在基础配置之后加。
                 decorate(config)
 

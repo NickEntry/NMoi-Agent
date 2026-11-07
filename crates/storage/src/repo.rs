@@ -1737,6 +1737,15 @@ impl nmoi_core::session::HistoryStore for Storage {
         Ok(())
     }
 
+    /// 写归档（D275）：F2–F4 换掉的原文都在这儿，模型要能取回来。
+    fn archive_put(
+        &mut self,
+        entry: nmoi_core::archive::ArchiveEntry,
+    ) -> Result<nmoi_core::ids::ArchiveRef, String> {
+        let session = entry.origin.session;
+        Storage::put_archive(self, session, entry).map_err(|error| error.to_string())
+    }
+
     /// 一条消息带的图片文件名（D270）：盘上的名字就是 `<附件 id>.<扩展名>`。
     fn attachment_files(&self, message: &MessageId) -> Result<Vec<String>, String> {
         let mut statement = self

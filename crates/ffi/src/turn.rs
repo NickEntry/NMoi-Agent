@@ -260,6 +260,10 @@ struct TurnInput {
     image_mode: nmoi_core::agent::ImageMode,
     /// 图片清单满了之后还能临时多留几张（D272）：`0` = 关。
     image_temp_limit: u32,
+    /// 上下文档位（D275）：`F1`–`F4`。默认 F1（跟以前一模一样）。
+    form_level: nmoi_core::message::FormLevel,
+    /// 内容形态阈值（D275）：小 / 大 / 超大 + 头尾保留量。
+    router: nmoi_core::router::RouterConfig,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     budget: Option<Budget>,
@@ -401,6 +405,39 @@ fn optional_i64(root: &Value, field_name: &str) -> FfiResult<Option<i64>> {
     }
 }
 
+/// 内容形态阈值（D275）：`router: {small, large, huge, head, tail}`。
+///
+/// 三个阈值必须**递增**（小 < 大 < 超大）：不递增的话后面两条规则永远轮不到，
+/// 而界面上看不出这件事——所以这里直接夹平，并在文档里写清。
+fn parse_router(root: &Value) -> FfiResult<nmoi_core::router::RouterConfig> {
+    use nmoi_core::router::RouterConfig;
+    let mut config = RouterConfig::default();
+    let Some(value) = field(root, "router") else {
+        return Ok(config);
+    };
+    if !value.is_object() {
+        return Err(bad("router", "必须是对象"));
+    }
+    if let Some(v) = optional_u64(value, "small")? {
+        config.small_threshold = v as u32;
+    }
+    if let Some(v) = optional_u64(value, "large")? {
+        config.large_threshold = v as u32;
+    }
+    if let Some(v) = optional_u64(value, "huge")? {
+        config.huge_threshold = v as u32;
+    }
+    if let Some(v) = optional_u64(value, "head")? {
+        config.truncate_head = v as u32;
+    }
+    if let Some(v) = optional_u64(value, "tail")? {
+        config.truncate_tail = v as u32;
+    }
+    config.large_threshold = config.large_threshold.max(config.small_threshold);
+    config.huge_threshold = config.huge_threshold.max(config.large_threshold);
+    Ok(config)
+}
+
 /// 0–1 的百分比（D274）：两条压缩线用它。超出范围夹住，NaN 当没给。
 fn optional_f64(root: &Value, field_name: &str) -> FfiResult<Option<f64>> {
     match field(root, field_name) {
@@ -528,6 +565,10 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
             &optional_str(&root, "image_mode")?.unwrap_or_default(),
         ),
         image_temp_limit: optional_u64(&root, "image_temp_limit")?.unwrap_or(0) as u32,
+        form_level: nmoi_core::message::FormLevel::parse(
+            &optional_str(&root, "context_form")?.unwrap_or_default(),
+        ),
+        router: parse_router(&root)?,
         max_tokens: optional_u64(&root, "max_tokens")?.map(|value| value as u32),
         temperature: optional_f32(&root, "temperature")?,
         budget,
@@ -1125,6 +1166,8 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             },
             // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
             allow_new_version: true,
+            form_level: input.form_level,
+            router: input.router,
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1453,6 +1496,8 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             cancel: &cancel,
             plan: None,
             envir: input.envir.as_ref(),
+            form_level: input.form_level,
+            router: input.router,
         };
 
         let client = crate::proxy::client();

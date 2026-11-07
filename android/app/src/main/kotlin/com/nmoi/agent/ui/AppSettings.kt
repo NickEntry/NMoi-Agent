@@ -23,6 +23,12 @@ internal object AppSettings {
     private const val KEY_SUGGEST = "context.suggest"
     private const val KEY_ABSOLUTE = "context.absolute"
     private const val KEY_RESERVE = "context.reserve_output"
+    private const val KEY_FORM = "context.form"
+    private const val KEY_ROUTER_SMALL = "context.router.small"
+    private const val KEY_ROUTER_LARGE = "context.router.large"
+    private const val KEY_ROUTER_HUGE = "context.router.huge"
+    private const val KEY_ROUTER_HEAD = "context.router.head"
+    private const val KEY_ROUTER_TAIL = "context.router.tail"
 
     /**
      * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
@@ -144,6 +150,38 @@ internal object AppSettings {
 
     fun setReserveOutput(context: Context, value: Int) {
         prefs(context).edit().putInt(KEY_RESERVE, value.coerceIn(0, MAX_RESERVE)).apply()
+    }
+
+    /**
+     * 上下文档位（D275）：一条内容**最多**留到什么程度。F1 全文 / F2 截断 / F3 占位 / F4 指针。
+     *
+     * 它是**上限**：`router` 照常按内容类型逐条判，结果不许超过它。
+     * 只作用于**工具结果**——用户说的话、系统提示、工具定义、报错永远全文。
+     */
+    const val DEFAULT_FORM = "F1"
+    val FORMS = listOf("F1", "F2", "F3", "F4")
+
+    fun formLevel(context: Context): String {
+        val value = prefs(context).getString(KEY_FORM, DEFAULT_FORM).orEmpty()
+        return if (value in FORMS) value else DEFAULT_FORM
+    }
+
+    fun setFormLevel(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_FORM, if (value in FORMS) value else DEFAULT_FORM).apply()
+    }
+
+    /** 内容形态阈值（D275）：小 / 大 / 超大 + 头尾保留量。三个阈值必须递增。 */
+    const val DEFAULT_ROUTER_SMALL = 2_000
+    const val DEFAULT_ROUTER_LARGE = 8_000
+    const val DEFAULT_ROUTER_HUGE = 32_000
+    const val DEFAULT_ROUTER_HEAD = 1_000
+    const val DEFAULT_ROUTER_TAIL = 1_000
+
+    fun routerValue(context: Context, key: String, fallback: Int): Int =
+        prefs(context).getInt(key, fallback).coerceIn(0, 1_000_000)
+
+    fun setRouterValue(context: Context, key: String, value: Int) {
+        prefs(context).edit().putInt(key, value.coerceIn(0, 1_000_000)).apply()
     }
 
     /**

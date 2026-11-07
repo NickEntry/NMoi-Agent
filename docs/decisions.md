@@ -1596,3 +1596,23 @@ kotlinc 全量只剩 9 个 `R`。
 那台设备的模型重算，跟着库走的意义不大。等档位那一批真要写进 settings 表时一起搬。
 
 判据：`the_two_compression_lines_come_from_the_input`（默认值 / 覆盖 / 绝对线被抬）。
+
+## D275 上下文档位 F1–F4 真的生效了（2026-11-06，0.15aq-b）
+
+D274 只把参数放进了设置；这一批把 `router` / `form` / `archive` 接进请求组装，
+F2–F4 才不是假开关。
+
+- `FormLevel`（`message.rs`）：`F1`–`F4`，`cap()` 把路由结论**夹**到档位以内——
+  结论比档位轻就照结论，比档位重就退到档位那一档（档位自己的头尾预算，不用结论那份）。
+- `session::apply_forms`：一轮请求组装时，把历史里的**工具结果**按档位换形态，
+  原文进归档（`HistoryStore::archive_put`，storage 那边就是 `put_archive`）。
+  两条兜底：**最新一条工具结果不动**（模型正要读它）；**归档失败退回全文**
+  （宁可多花 token，也不要换成一句取不回来的话）。
+- `router` 自己的规则 1/2 已经兜住"永不路由"：用户 / 系统 / 工具定义 / 报错都是全文，
+  所以 `apply_forms` 不用再判一遍——只筛 `SourceTag::ToolResult` 就够。
+- 设置页：F1–F4 四颗 chip + 五个数（小 / 大 / 超大 / 头 / 尾）。阈值必须递增，
+  界面先拦、FFI 再夹平（脚本也能直接调 FFI）。
+- 默认 F1 = 跟以前一模一样：不设这一项的用户，行为一个字都没变。
+
+判据：`the_form_level_caps_what_old_tool_results_look_like`（F1 不动 / F4 变指针 /
+用户那句与最新一条工具结果不动 / 归档只写一条）。

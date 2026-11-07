@@ -66,6 +66,13 @@ internal fun AppSettingsScreen(
     var suggestText by remember { mutableStateOf(percentText(AppSettings.suggestLine(context))) }
     var absoluteText by remember { mutableStateOf(percentText(AppSettings.absoluteLine(context))) }
     var reserveText by remember { mutableStateOf(AppSettings.reserveOutput(context).toString()) }
+    // 上下文档位与内容形态阈值（D275）。
+    var formLevel by remember { mutableStateOf(AppSettings.formLevel(context)) }
+    var smallText by remember { mutableStateOf(routerText(context, "context.router.small", AppSettings.DEFAULT_ROUTER_SMALL)) }
+    var largeText by remember { mutableStateOf(routerText(context, "context.router.large", AppSettings.DEFAULT_ROUTER_LARGE)) }
+    var hugeText by remember { mutableStateOf(routerText(context, "context.router.huge", AppSettings.DEFAULT_ROUTER_HUGE)) }
+    var headText by remember { mutableStateOf(routerText(context, "context.router.head", AppSettings.DEFAULT_ROUTER_HEAD)) }
+    var tailText by remember { mutableStateOf(routerText(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -422,6 +429,149 @@ internal fun AppSettingsScreen(
                     }
                 }
 
+                // —— 上下文档位（D275）——
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "上下文档位",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "一条内容**最多**留到什么程度：F1 全文 / F2 截断（头尾各留一段）/ " +
+                                "F3 占位 / F4 只留一行指针。\n" +
+                                "它是上限：工具结果照常按大小与类型逐条判，结果不许超过档位。" +
+                                "**只作用于工具结果**——你说的话、系统提示、工具定义、报错永远全文。\n" +
+                                "切档位不改写历史：之后新进来的才按新档位，已经换过形态的保持原样（原文在归档里）。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 10.dp)) {
+                            listOf(
+                                "F1" to "全文",
+                                "F2" to "截断",
+                                "F3" to "占位",
+                                "F4" to "指针",
+                            ).forEachIndexed { index, (level, label) ->
+                                if (index > 0) Spacer(Modifier.width(8.dp))
+                                SettingChip(label = "$level $label", selected = formLevel == level) {
+                                    AppSettings.setFormLevel(context, level)
+                                    formLevel = AppSettings.formLevel(context)
+                                    notice = when (level) {
+                                        "F1" -> "档位 F1：工具结果一律全文"
+                                        "F2" -> "档位 F2：大的工具结果只留头尾"
+                                        "F3" -> "档位 F3：大的工具结果换成占位符"
+                                        else -> "档位 F4：大的工具结果只留一行指针"
+                                    }
+                                }
+                            }
+                        }
+
+                        // 内容形态阈值：F1 时用不上，但值留着（切回 F2 还是上次那份）。
+                        Text(
+                            text = "内容形态阈值（token）",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(top = 14.dp),
+                        )
+                        Text(
+                            text = "小 / 大 / 超大：超过哪一档就按哪一档处理（必须递增，不递增我按递增夹平）。" +
+                                "头 / 尾：F2 截断时各留多少。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingField(
+                                value = smallText,
+                                onChange = { smallText = it },
+                                placeholder = AppSettings.DEFAULT_ROUTER_SMALL.toString(),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            SettingField(
+                                value = largeText,
+                                onChange = { largeText = it },
+                                placeholder = AppSettings.DEFAULT_ROUTER_LARGE.toString(),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            SettingField(
+                                value = hugeText,
+                                onChange = { hugeText = it },
+                                placeholder = AppSettings.DEFAULT_ROUTER_HUGE.toString(),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingField(
+                                value = headText,
+                                onChange = { headText = it },
+                                placeholder = AppSettings.DEFAULT_ROUTER_HEAD.toString(),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            SettingField(
+                                value = tailText,
+                                onChange = { tailText = it },
+                                placeholder = AppSettings.DEFAULT_ROUTER_TAIL.toString(),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.weight(1f))
+                        }
+                        Text(
+                            text = "左：小 / 大 / 超大　右：头 / 尾（默认 " +
+                                "${AppSettings.DEFAULT_ROUTER_SMALL} / ${AppSettings.DEFAULT_ROUTER_LARGE} / " +
+                                "${AppSettings.DEFAULT_ROUTER_HUGE}，头尾 ${AppSettings.DEFAULT_ROUTER_HEAD}）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("用这些值", selected = false) {
+                                val small = smallText.trim().toIntOrNull()
+                                val large = largeText.trim().toIntOrNull()
+                                val huge = hugeText.trim().toIntOrNull()
+                                val head = headText.trim().toIntOrNull()
+                                val tail = tailText.trim().toIntOrNull()
+                                when {
+                                    listOf(small, large, huge, head, tail).any { it == null || it < 0 } ->
+                                        notice = "五个数都要填非负整数"
+                                    small!! > large!! || large > huge!! ->
+                                        notice = "阈值要递增：小 ≤ 大 ≤ 超大（现在 $small / $large / $huge）"
+                                    else -> {
+                                        AppSettings.setRouterValue(context, "context.router.small", small)
+                                        AppSettings.setRouterValue(context, "context.router.large", large)
+                                        AppSettings.setRouterValue(context, "context.router.huge", huge)
+                                        AppSettings.setRouterValue(context, "context.router.head", head!!)
+                                        AppSettings.setRouterValue(context, "context.router.tail", tail!!)
+                                        smallText = routerText(context, "context.router.small", AppSettings.DEFAULT_ROUTER_SMALL)
+                                        largeText = routerText(context, "context.router.large", AppSettings.DEFAULT_ROUTER_LARGE)
+                                        hugeText = routerText(context, "context.router.huge", AppSettings.DEFAULT_ROUTER_HUGE)
+                                        headText = routerText(context, "context.router.head", AppSettings.DEFAULT_ROUTER_HEAD)
+                                        tailText = routerText(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)
+                                        notice = "内容形态阈值改成 $small / $large / $huge，头尾 $head / $tail"
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setRouterValue(context, "context.router.small", AppSettings.DEFAULT_ROUTER_SMALL)
+                                AppSettings.setRouterValue(context, "context.router.large", AppSettings.DEFAULT_ROUTER_LARGE)
+                                AppSettings.setRouterValue(context, "context.router.huge", AppSettings.DEFAULT_ROUTER_HUGE)
+                                AppSettings.setRouterValue(context, "context.router.head", AppSettings.DEFAULT_ROUTER_HEAD)
+                                AppSettings.setRouterValue(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)
+                                smallText = AppSettings.DEFAULT_ROUTER_SMALL.toString()
+                                largeText = AppSettings.DEFAULT_ROUTER_LARGE.toString()
+                                hugeText = AppSettings.DEFAULT_ROUTER_HUGE.toString()
+                                headText = AppSettings.DEFAULT_ROUTER_HEAD.toString()
+                                tailText = AppSettings.DEFAULT_ROUTER_TAIL.toString()
+                                notice = "内容形态阈值恢复默认"
+                            }
+                        }
+                    }
+                }
+
                 // —— 图片模式（D270）——
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -685,3 +835,7 @@ internal fun percentText(value: Double): String = (value * 100).roundToInt().toS
 /** "75" → 75.0；带小数也认（"72.5"）。填不成数就返回 null，由调用方说清哪里不对。 */
 internal fun parsePercent(raw: String): Double? =
     raw.trim().removeSuffix("%").trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+
+/** 阈值那一格读出来（没存过就用默认值）。 */
+private fun routerText(context: Context, key: String, fallback: Int): String =
+    AppSettings.routerValue(context, key, fallback).toString()

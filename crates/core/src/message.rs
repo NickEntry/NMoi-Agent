@@ -75,6 +75,79 @@ pub enum ContentForm {
     IndexOnly,
 }
 
+/// 上下文档位（D275）：一条内容**最多**能留到什么程度。
+///
+/// 这不是"一律按这个来"：`router` 仍然按内容类型逐条判，只是**结果不许超过档位**。
+/// 比如档位 F2 时，40k 的日志按规则本该给 F4，被夹到 F2（头 1k + 尾 1k）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FormLevel {
+    /// F1：全文。默认，也是"不管"的那一档。
+    #[default]
+    Full,
+    /// F2：截断 + 尾注。
+    Truncate,
+    /// F3：占位符。
+    Mask,
+    /// F4：只留一行指针。
+    Pointer,
+}
+
+impl FormLevel {
+    /// 认 `F1`–`F4`（大小写都行）；认不出就是 F1——宁可多花 token，也别把内容悄悄换掉。
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "F2" => Self::Truncate,
+            "F3" => Self::Mask,
+            "F4" => Self::Pointer,
+            _ => Self::Full,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "F1",
+            Self::Truncate => "F2",
+            Self::Mask => "F3",
+            Self::Pointer => "F4",
+        }
+    }
+
+    /// 这个档位最多允许到哪种形态。
+    pub fn ceiling(self, head_tokens: u32, tail_tokens: u32) -> ContentForm {
+        match self {
+            Self::Full => ContentForm::Full,
+            Self::Truncate => ContentForm::Truncated {
+                head_tokens,
+                tail_tokens,
+            },
+            Self::Mask => ContentForm::Masked,
+            Self::Pointer => ContentForm::Pointer,
+        }
+    }
+
+    /// 把路由结论**夹**到档位以内：结论比档位轻就照结论，比档位重就退到档位那一档。
+    ///
+    /// 判据按"留多少原文"排：Full > Truncated > Masked > Pointer > IndexOnly。
+    /// 夹的时候用档位自己的头尾预算，不用结论里那份——结论可能是按 40k 算的。
+    pub fn cap(self, form: ContentForm, head_tokens: u32, tail_tokens: u32) -> ContentForm {
+        fn rank(form: ContentForm) -> u8 {
+            match form {
+                ContentForm::Full => 4,
+                ContentForm::Truncated { .. } => 3,
+                ContentForm::Masked => 2,
+                ContentForm::Pointer => 1,
+                ContentForm::IndexOnly => 0,
+            }
+        }
+        let ceiling = self.ceiling(head_tokens, tail_tokens);
+        if rank(form) <= rank(ceiling) {
+            form
+        } else {
+            ceiling
+        }
+    }
+}
+
 impl ContentForm {
     /// 是否仍是"原文形态"。F1/F2 保留了原文片段，F3–F5 只留指针。
     pub fn retains_content(self) -> bool {

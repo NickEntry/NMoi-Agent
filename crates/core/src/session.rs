@@ -83,6 +83,18 @@ pub trait HistoryStore {
         Ok(())
     }
 
+    /// 把一段原文写进归档（D275）。返回它的 ref。
+    ///
+    /// 默认**拒绝**：没有归档就别做 F2–F4——截断/指针必须能换回原文，
+    /// 换不回来等于把内容丢了（那正是"存了但看不见"的反面：看得见但取不回来）。
+    fn archive_put(
+        &mut self,
+        entry: crate::archive::ArchiveEntry,
+    ) -> Result<crate::ids::ArchiveRef, String> {
+        let _ = entry;
+        Err("这个历史实现没有归档：F2–F4 不生效".to_string())
+    }
+
     /// 一条消息带的图片**文件名**（不读字节）。
     ///
     /// 图片模式（D270）只给模型路径：它要知道有哪些图可看，但这一轮一张字节都不发。
@@ -274,6 +286,12 @@ pub struct SessionConfig<'a> {
     /// 容器运行时的坐标（D172）。`None` = 这一轮没有隔离环境可用，
     /// `WorkSpace-EnvirShell` 不会被声明（门控也没开）。
     pub envir: Option<&'a crate::shell::EnvirSpec>,
+    /// 上下文档位（D275）：F1 全文 / F2 截断 / F3 占位 / F4 指针。
+    ///
+    /// 它是**上限**：`router` 照常逐条判，结果不许超过它。默认 F1 = 跟以前一模一样。
+    pub form_level: crate::message::FormLevel,
+    /// 内容形态的阈值（D275）：小 / 大 / 超大 + 头尾保留量。
+    pub router: crate::router::RouterConfig,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -315,6 +333,8 @@ impl Default for SessionConfig<'_> {
             suppress_compression: false,
             plan: None,
             envir: None,
+            form_level: crate::message::FormLevel::Full,
+            router: crate::router::RouterConfig::default(),
         }
     }
 }
@@ -362,6 +382,58 @@ fn attach_images<S: HistoryStore>(
     }
     // 上下文图片（D248）**不在这里挂**：`View-Image` 可能就在这一轮的某一轮里把图加进清单，
     // 而这里整轮只跑一次。那份改由 `run_turn` 每轮发请求之前并（D269）。
+    Ok(())
+}
+
+/// 按档位把历史里的大块内容换成更小的形态（D275）。
+///
+/// 只碰**工具结果**：用户说的话、系统提示、工具定义、报错（protected）由 `router` 的
+/// 规则 1/2 直接判成全文，这里不用再拦一遍。
+///
+/// 两条兜底：
+///
+/// 1. **最新那一条工具结果不动**——它可能正是模型这一轮要读的东西，换成指针等于没给它。
+/// 2. **归档失败就退回全文**——宁可多花 token，也不要把内容换成一句取不回来的话。
+fn apply_forms<S: HistoryStore>(
+    store: &mut S,
+    session: SessionId,
+    history: &mut [Message],
+    level: crate::message::FormLevel,
+    config: &crate::router::RouterConfig,
+    now: i64,
+) -> Result<(), SessionError> {
+    if level == crate::message::FormLevel::Full {
+        return Ok(());
+    }
+    let last = history.len().saturating_sub(1);
+    for (index, message) in history.iter_mut().enumerate() {
+        if message.source != SourceTag::ToolResult || index == last {
+            continue;
+        }
+        let text = message.content();
+        if text.trim().is_empty() {
+            continue;
+        }
+        let input =
+            crate::router::RouteInput::new(message.role, message.source, &text, message.tokens);
+        let decision = crate::router::route(&input, config);
+        let form = level.cap(decision.form, config.truncate_head, config.truncate_tail);
+        if form == crate::message::ContentForm::Full {
+            continue;
+        }
+        let (entry, _) = crate::archive::ArchiveEntry::capture(
+            &text,
+            message.source,
+            crate::archive::Origin::new(session, message.id.clone(), 0),
+            message.tokens,
+            now,
+        );
+        if store.archive_put(entry.clone()).is_err() {
+            continue;
+        }
+        message.set_text(crate::form::render_for_form(&entry, form));
+        message.tokens = estimate_tokens(&message.content());
+    }
     Ok(())
 }
 
@@ -657,6 +729,17 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     history.extend(crate::repair::normalize(&units_before));
     history.push(user.clone());
 
+    // 档位（D275）：历史里的大块工具结果按 F2–F4 换形态，原文进归档。
+    // 放在这里而不是 `run_turn` 里：一轮只换一次，工具循环那几轮用的是同一份。
+    apply_forms(
+        store,
+        session,
+        &mut history,
+        config.form_level,
+        &config.router,
+        now,
+    )?;
+
     // 图片模式（D270）：只给路径，不内联。判据在 `path_mode_on` 里——模型得真的调得动
     // `View-Image`，否则图会变成"看得见文件名、永远读不到"。
     let path_mode = path_mode_on(store, &history, policy, config.turn.image_mode)?;
@@ -885,6 +968,16 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 
     let mut frozen_base = base.clone();
     // 重试也要带图：用户重试的往往正是"这张图它没看懂"那一轮。
+    // 档位（D275）：重试也走同一套——不然"重试一次"就把省下的 token 全补回来了。
+    apply_forms(
+        store,
+        session,
+        &mut history,
+        config.form_level,
+        &config.router,
+        now,
+    )?;
+
     // 图片模式（D270）在重试里同样生效——不然"重试一次"就把用户想省的 token 全补回来了。
     let path_mode = path_mode_on(store, &history, policy, config.turn.image_mode)?;
     if path_mode {
@@ -3138,6 +3231,96 @@ mod tests {
             "没有读权限时必须照旧内联：{}",
             sent[0]
         );
+    }
+
+    /// 档位（D275）：F1 什么都不动；F4 把旧工具结果换成指针，用户那句与**最新一条**工具结果不动。
+    #[test]
+    fn the_form_level_caps_what_old_tool_results_look_like() {
+        #[derive(Default)]
+        struct ArchiveStore {
+            saved: Vec<crate::archive::ArchiveEntry>,
+        }
+        impl HistoryStore for ArchiveStore {
+            fn append_unit(&mut self, _: SessionId, _: &AtomicUnit) -> Result<(), String> {
+                Ok(())
+            }
+            fn load_units(&self, _: SessionId) -> Result<Vec<AtomicUnit>, String> {
+                Ok(Vec::new())
+            }
+            fn archive_put(
+                &mut self,
+                entry: crate::archive::ArchiveEntry,
+            ) -> Result<crate::ids::ArchiveRef, String> {
+                self.saved.push(entry.clone());
+                Ok(entry.rf)
+            }
+        }
+
+        let session = SessionId::new();
+        let big = "日志行\n".repeat(8_000);
+        let mut history = vec![
+            Message::text(
+                MessageId::new(session, 1),
+                Role::User,
+                SourceTag::History,
+                "看看这份日志",
+                8,
+                0,
+                LogicalClock::new(1),
+            ),
+            Message::text(
+                MessageId::new(session, 2),
+                Role::Tool,
+                SourceTag::ToolResult,
+                &big,
+                40_000,
+                0,
+                LogicalClock::new(2),
+            ),
+            Message::text(
+                MessageId::new(session, 3),
+                Role::Tool,
+                SourceTag::ToolResult,
+                "最新那一条",
+                4,
+                0,
+                LogicalClock::new(3),
+            ),
+        ];
+        let mut store = ArchiveStore::default();
+        let config = crate::router::RouterConfig::default();
+
+        // F1：一条都不动（默认就是它，行为与以前完全一致）。
+        apply_forms(
+            &mut store,
+            session,
+            &mut history,
+            crate::message::FormLevel::Full,
+            &config,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(history[1].content(), big);
+        assert!(store.saved.is_empty());
+
+        // F4：旧工具结果只剩一行指针。
+        apply_forms(
+            &mut store,
+            session,
+            &mut history,
+            crate::message::FormLevel::Pointer,
+            &config,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(store.saved.len(), 1, "只有那一条旧的进了归档");
+        assert!(
+            history[1].content().starts_with("[archived "),
+            "{}",
+            history[1].content()
+        );
+        assert_eq!(history[0].content(), "看看这份日志", "用户说的话永远全文");
+        assert_eq!(history[2].content(), "最新那一条", "最新一条工具结果不动");
     }
 
     /// 图片（D208）：这一轮带的图必须真的进请求体——`content` 变成多模态数组。
