@@ -322,7 +322,15 @@ internal object TurnRepository {
                             "budget",
                             JSONObject()
                                 .put("window", window.toLong())
-                                .put("reserve_output", reserveOutput(maxTokens, window)),
+                                .put(
+                                    "reserve_output",
+                                    AppSettings.reserveOutput(context)
+                                        .takeIf { it > 0 }
+                                        ?: reserveOutput(maxTokens, window),
+                                )
+                                // 两条线（D274）：用户在 应用设置 → 压缩 里能改。
+                                .put("suggest", AppSettings.suggestLine(context))
+                                .put("absolute", AppSettings.absoluteLine(context)),
                         )
                     }
 

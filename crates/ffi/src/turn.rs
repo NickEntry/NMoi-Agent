@@ -52,10 +52,22 @@ use std::path::PathBuf;
 use crate::handles::{storage_path, with_workspace};
 use crate::json::{read_str, run_json, FfiError, FfiResult};
 
-/// 压缩触发线（D90：0.75 / 0.92）。**不在这儿抄数字**——直接用 core 的默认值，
+/// 压缩触发线（D90：0.75 / 0.92）。**不在这儿抄数字**——不传就用 core 的默认值，
 /// 抄一份的结果是改了默认值之后 FFI 那条路还按旧数走。
-fn trigger() -> TriggerPolicy {
-    TriggerPolicy::default()
+///
+/// 用户能改之后（D274）由界面传 `budget.suggest` / `budget.absolute`：
+/// 两个都是"占可用预算的百分比"（0–1）。绝对线不许低于建议线——反过来的话
+/// 建议线永远轮不到，等于把"提前压"这条线悄悄关掉。
+fn trigger(suggest: Option<f64>, absolute: Option<f64>) -> TriggerPolicy {
+    let mut policy = TriggerPolicy::default();
+    if let Some(value) = suggest {
+        policy.suggest = nmoi_core::budget::Threshold::percent(value);
+    }
+    if let Some(value) = absolute {
+        let floor = policy.suggest.percent_of(1);
+        policy.absolute = nmoi_core::budget::Threshold::percent(value.max(floor));
+    }
+    policy
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +263,9 @@ struct TurnInput {
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     budget: Option<Budget>,
+    /// 压缩触发线（D274）：`budget.suggest` / `budget.absolute`，0–1 的百分比。
+    suggest_line: Option<f64>,
+    absolute_line: Option<f64>,
     avg_per_turn: Option<u64>,
     /// 原生命令（`System-Shell`）这一轮开不开。**默认关**：它是这个 App 能跑的最危险的一把。
     native_shell: bool,
@@ -386,6 +401,18 @@ fn optional_i64(root: &Value, field_name: &str) -> FfiResult<Option<i64>> {
     }
 }
 
+/// 0–1 的百分比（D274）：两条压缩线用它。超出范围夹住，NaN 当没给。
+fn optional_f64(root: &Value, field_name: &str) -> FfiResult<Option<f64>> {
+    match field(root, field_name) {
+        Some(Value::Number(number)) => match number.as_f64() {
+            Some(value) if value.is_finite() => Ok(Some(value.clamp(0.0, 1.0))),
+            _ => Err(bad(field_name, "必须是数字")),
+        },
+        Some(_) => Err(bad(field_name, "必须是数字")),
+        None => Ok(None),
+    }
+}
+
 fn optional_f32(root: &Value, field_name: &str) -> FfiResult<Option<f32>> {
     match field(root, field_name) {
         Some(Value::Number(number)) => number
@@ -454,6 +481,8 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
     // 撞上会把话截断。真正的边界是绝对线（`budget`）与取消。
     let max_rounds = optional_u64(&root, "max_rounds")?.unwrap_or(0);
 
+    let mut suggest_line = None;
+    let mut absolute_line = None;
     let budget = match field(&root, "budget") {
         None => None,
         Some(value) => {
@@ -463,6 +492,10 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
             let window =
                 optional_u64(value, "window")?.ok_or_else(|| bad("budget.window", "是必填的"))?;
             let reserve = optional_u64(value, "reserve_output")?.unwrap_or(0);
+            // 两条线（D274）：`0.75` / `0.92` 这种百分比。给了才覆盖默认值——
+            // 没给就还是 core 的默认，旧调用方一个字都不用改。
+            suggest_line = optional_f64(value, "suggest")?.filter(|v| *v > 0.0);
+            absolute_line = optional_f64(value, "absolute")?.filter(|v| *v > 0.0);
             Some(Budget::new(window, window, reserve))
         }
     };
@@ -498,6 +531,8 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         max_tokens: optional_u64(&root, "max_tokens")?.map(|value| value as u32),
         temperature: optional_f32(&root, "temperature")?,
         budget,
+        suggest_line,
+        absolute_line,
         avg_per_turn: optional_u64(&root, "avg_per_turn")?,
         native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
@@ -1091,7 +1126,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             // 这条路只跑新的一轮，不涉及"重试落成哪一版"；重试走 `regenerate_turn`。
             allow_new_version: true,
             budget: input.budget.as_ref(),
-            trigger: &trigger(),
+            trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
             cancel: &cancel,
             // FFI 这条路径还没有设置面，冻结等 `nmoi_turn_*` 接上设置之后再做。
@@ -1413,7 +1448,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
                 ..TurnConfig::default()
             },
             budget: input.budget.as_ref(),
-            trigger: &trigger(),
+            trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
             cancel: &cancel,
             plan: None,
@@ -1651,6 +1686,23 @@ mod tests {
 
     fn parse(text: &str) -> FfiResult<TurnInput> {
         parse_config(text)
+    }
+
+    /// 两条压缩线（D274）：给了就覆盖默认；绝对线不许低于建议线。
+    #[test]
+    fn the_two_compression_lines_come_from_the_input() {
+        // 不传 = core 的默认（0.75 / 0.92），旧调用方一个字都不用改。
+        let defaults = trigger(None, None);
+        assert!((defaults.suggest.percent_of(1) - 0.75).abs() < 1e-9);
+        assert!((defaults.absolute.percent_of(1) - 0.92).abs() < 1e-9);
+
+        let custom = trigger(Some(0.6), Some(0.85));
+        assert!((custom.suggest.percent_of(1) - 0.6).abs() < 1e-9);
+        assert!((custom.absolute.percent_of(1) - 0.85).abs() < 1e-9);
+
+        // 绝对线写低了：抬到建议线，不然建议线永远轮不到。
+        let inverted = trigger(Some(0.8), Some(0.5));
+        assert!((inverted.absolute.percent_of(1) - 0.8).abs() < 1e-9);
     }
 
     /// `envir` 要五个路径，缺一个就点名（D172）。这条不是洁癖：

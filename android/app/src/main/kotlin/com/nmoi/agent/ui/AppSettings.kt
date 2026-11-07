@@ -20,6 +20,9 @@ internal object AppSettings {
     private const val KEY_IMAGE_LIMIT = "context.image_limit"
     private const val KEY_IMAGE_MODE = "context.image_mode"
     private const val KEY_IMAGE_TEMP = "context.image_temp_limit"
+    private const val KEY_SUGGEST = "context.suggest"
+    private const val KEY_ABSOLUTE = "context.absolute"
+    private const val KEY_RESERVE = "context.reserve_output"
 
     /**
      * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
@@ -91,6 +94,56 @@ internal object AppSettings {
     fun setImageMode(context: Context, value: String) {
         val mode = if (value == IMAGE_MODE_PATH) IMAGE_MODE_PATH else IMAGE_MODE_INLINE
         prefs(context).edit().putString(KEY_IMAGE_MODE, mode).apply()
+    }
+
+    /**
+     * 压缩的两条线（D274）：占"可用预算"的百分比。
+     *
+     * 建议线到了就发压缩信号（界面上是"该压了"），绝对线到了就**必须先压再发**。
+     * 绝对线不许低于建议线——反过来的话建议线永远轮不到，等于把提前压这条线悄悄关掉。
+     */
+    const val DEFAULT_SUGGEST = 0.75
+    const val DEFAULT_ABSOLUTE = 0.92
+    const val MIN_SUGGEST = 0.30
+    const val MAX_SUGGEST = 0.95
+    const val MIN_ABSOLUTE = 0.40
+    const val MAX_ABSOLUTE = 0.99
+
+    fun suggestLine(context: Context): Double =
+        prefs(context).getFloat(KEY_SUGGEST, DEFAULT_SUGGEST.toFloat()).toDouble()
+            .coerceIn(MIN_SUGGEST, MAX_SUGGEST)
+
+    fun setSuggestLine(context: Context, value: Double) {
+        prefs(context).edit()
+            .putFloat(KEY_SUGGEST, value.coerceIn(MIN_SUGGEST, MAX_SUGGEST).toFloat())
+            .apply()
+    }
+
+    fun absoluteLine(context: Context): Double =
+        prefs(context).getFloat(KEY_ABSOLUTE, DEFAULT_ABSOLUTE.toFloat()).toDouble()
+            .coerceIn(MIN_ABSOLUTE, MAX_ABSOLUTE)
+
+    fun setAbsoluteLine(context: Context, value: Double) {
+        prefs(context).edit()
+            .putFloat(KEY_ABSOLUTE, value.coerceIn(MIN_ABSOLUTE, MAX_ABSOLUTE).toFloat())
+            .apply()
+    }
+
+    /**
+     * 给输出留多少 token（D274）。**0 = 按模型算**（`max_tokens`，夹 1024–8192）。
+     *
+     * 为什么留 0 这个档：大多数模型自己那份 `max_tokens` 就是对的，
+     * 硬塞一个数只会让"预留"和模型实际能写多少对不上。
+     */
+    const val DEFAULT_RESERVE = 0
+    const val MIN_RESERVE = 1024
+    const val MAX_RESERVE = 8192
+
+    fun reserveOutput(context: Context): Int =
+        prefs(context).getInt(KEY_RESERVE, DEFAULT_RESERVE).coerceIn(0, MAX_RESERVE)
+
+    fun setReserveOutput(context: Context, value: Int) {
+        prefs(context).edit().putInt(KEY_RESERVE, value.coerceIn(0, MAX_RESERVE)).apply()
     }
 
     /**

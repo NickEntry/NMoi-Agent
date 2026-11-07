@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import android.content.Context
+import kotlin.math.roundToInt
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +62,10 @@ internal fun AppSettingsScreen(
     var imageMode by remember { mutableStateOf(AppSettings.imageMode(context)) }
     // 临时多留几张（D272）。
     var imageTempText by remember { mutableStateOf(AppSettings.imageTempLimit(context).toString()) }
+    // 压缩的两条线与输出预留（D274）：界面上是百分数，存的是 0–1。
+    var suggestText by remember { mutableStateOf(percentText(AppSettings.suggestLine(context))) }
+    var absoluteText by remember { mutableStateOf(percentText(AppSettings.absoluteLine(context))) }
+    var reserveText by remember { mutableStateOf(AppSettings.reserveOutput(context).toString()) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -290,6 +295,128 @@ internal fun AppSettingsScreen(
                                 AppSettings.setImageTempLimit(context, AppSettings.DEFAULT_IMAGE_TEMP)
                                 imageTempText = AppSettings.DEFAULT_IMAGE_TEMP.toString()
                                 notice = "临时额度恢复成 ${AppSettings.DEFAULT_IMAGE_TEMP} 张"
+                            }
+                        }
+                    }
+                }
+
+                // —— 压缩（D274）——
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "压缩的两条线",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "建议线：到了就提示该压了；绝对线：到了就**必须先压再发**（压不动就顶回来）。" +
+                                "两个都是占**可用预算**的百分比——可用 = 窗口 − 给输出留的那部分。" +
+                                "绝对线不许低于建议线，低了我按建议线算。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 10.dp)) {
+                            SettingField(
+                                value = suggestText,
+                                onChange = { suggestText = it },
+                                placeholder = percentText(AppSettings.DEFAULT_SUGGEST),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            SettingField(
+                                value = absoluteText,
+                                onChange = { absoluteText = it },
+                                placeholder = percentText(AppSettings.DEFAULT_ABSOLUTE),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Text(
+                            text = "左：建议线（默认 ${percentText(AppSettings.DEFAULT_SUGGEST)}）　" +
+                                "右：绝对线（默认 ${percentText(AppSettings.DEFAULT_ABSOLUTE)}）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("用这两个值", selected = false) {
+                                val suggest = parsePercent(suggestText)
+                                val absolute = parsePercent(absoluteText)
+                                if (suggest == null || absolute == null) {
+                                    notice = "两条线都要填 1–99 之间的百分数，例如 75"
+                                } else if (suggest < AppSettings.MIN_SUGGEST * 100 ||
+                                    suggest > AppSettings.MAX_SUGGEST * 100
+                                ) {
+                                    notice = "建议线要填 ${(AppSettings.MIN_SUGGEST * 100).toInt()}–" +
+                                        "${(AppSettings.MAX_SUGGEST * 100).toInt()} 之间"
+                                } else if (absolute < AppSettings.MIN_ABSOLUTE * 100 ||
+                                    absolute > AppSettings.MAX_ABSOLUTE * 100
+                                ) {
+                                    notice = "绝对线要填 ${(AppSettings.MIN_ABSOLUTE * 100).toInt()}–" +
+                                        "${(AppSettings.MAX_ABSOLUTE * 100).toInt()} 之间"
+                                } else if (absolute <= suggest) {
+                                    notice = "绝对线要高于建议线（现在 $suggest ≥ $absolute）"
+                                } else {
+                                    AppSettings.setSuggestLine(context, suggest / 100.0)
+                                    AppSettings.setAbsoluteLine(context, absolute / 100.0)
+                                    suggestText = percentText(AppSettings.suggestLine(context))
+                                    absoluteText = percentText(AppSettings.absoluteLine(context))
+                                    notice = "压缩两条线改成 $suggest / $absolute（下一轮生效）"
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setSuggestLine(context, AppSettings.DEFAULT_SUGGEST)
+                                AppSettings.setAbsoluteLine(context, AppSettings.DEFAULT_ABSOLUTE)
+                                suggestText = percentText(AppSettings.suggestLine(context))
+                                absoluteText = percentText(AppSettings.absoluteLine(context))
+                                notice = "两条线恢复成默认"
+                            }
+                        }
+
+                        // —— 给输出留（D274）——
+                        Text(
+                            text = "给输出留多少 token",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(top = 14.dp),
+                        )
+                        Text(
+                            text = "0 = 按模型算（模型自己填的 max_tokens，夹 1024–8192）。" +
+                                "填了就按这个数从窗口里扣掉——扣多少，留给上下文的就少多少。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        SettingField(
+                            value = reserveText,
+                            onChange = { reserveText = it },
+                            placeholder = AppSettings.DEFAULT_RESERVE.toString(),
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("用这个值", selected = false) {
+                                val parsed = reserveText.trim().toIntOrNull()
+                                if (parsed == null || parsed < 0 ||
+                                    (parsed in 1 until AppSettings.MIN_RESERVE) ||
+                                    parsed > AppSettings.MAX_RESERVE
+                                ) {
+                                    notice = "要么填 0（按模型算），要么填 " +
+                                        "${AppSettings.MIN_RESERVE}–${AppSettings.MAX_RESERVE}"
+                                } else {
+                                    AppSettings.setReserveOutput(context, parsed)
+                                    reserveText = AppSettings.reserveOutput(context).toString()
+                                    notice = if (parsed == 0) {
+                                        "输出预留恢复成按模型算"
+                                    } else {
+                                        "输出预留改成 $parsed token"
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setReserveOutput(context, AppSettings.DEFAULT_RESERVE)
+                                reserveText = AppSettings.DEFAULT_RESERVE.toString()
+                                notice = "输出预留恢复成按模型算"
                             }
                         }
                     }
@@ -551,3 +678,10 @@ internal fun SettingChip(
         )
     }
 }
+
+/** 0.75 → "75"：界面上是百分数，存的是 0–1。 */
+internal fun percentText(value: Double): String = (value * 100).roundToInt().toString()
+
+/** "75" → 75.0；带小数也认（"72.5"）。填不成数就返回 null，由调用方说清哪里不对。 */
+internal fun parsePercent(raw: String): Double? =
+    raw.trim().removeSuffix("%").trim().toDoubleOrNull()?.takeIf { it.isFinite() }
