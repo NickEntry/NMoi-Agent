@@ -53,7 +53,6 @@ import androidx.compose.ui.unit.sp
 internal fun ToolsScreen(
     onBack: () -> Unit,
     onOpenEnvir: () -> Unit,
-    onOpenProxy: () -> Unit,
     onOpenWorkspace: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -170,37 +169,6 @@ internal fun ToolsScreen(
                             }
                         },
                     )
-                }
-
-                SectionLabel("网络")
-                GroupCard {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(onClick = onOpenProxy)
-                            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "网络代理",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = ProxyRepository.load(context).summary(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                        }
-                        Text(
-                            text = "›",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
 
                 SectionLabel("隔离环境")

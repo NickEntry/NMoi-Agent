@@ -18,26 +18,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * 设置索引页：**只摆分组入口和"现在是什么"**，不摆任何开关。
+ * 设置根页（2026-11-07 重排）。
  *
- * 这样做的理由写在 `docs/ui/structure.md` §2：一页堆四类东西，用户就得在滚动里找，
- * 找不到时分不清"我没滚到"还是"根本没有"。索引页每行右侧写当前值——
- * 不该为了知道"现在图标是哪一个"而点进去。
+ * 三条：**搜索在根页**（不在应用设置里）、**每行只有标题与当前值**（下面不再挂一句小字）、
+ * **行高压到 52**——一行一个入口，密度高才扫得快。
  *
- * ## 骨架（0.16：按 ui-controls-layout 的 **B. 分组列表** 重排，混 M3 的皮）
- *
- * - **一张连续的板**，不拆成七张卡：七行各套一个圆角卡就是那个"卡片汤"反模式，
- *   而且七张卡之间的空隙会让"这里还有几项"看不出来。
- * - 行高 ≥ 64、页边距 16、面板圆角 16、行线 1px 且**从文字起点**缩进（不从图标起点）。
- * - 右侧只有三样：当前值（可省略，最长 140dp 后省略号）、chevron（**只在真能进下一层时**出现）。
- * - 一屏一个 filled 主按钮——这一页没有主按钮，它是导航页（设置页带"保存"是反模式）。
- * - 图标位留空：七行的标题已经够扫读，加七个凑数的图标只会变成装饰（"图标是扫读锚点，不是装饰"）。
+ * 助手 / 供应商 / 世界书 / 网络代理直接摆在根页：它们各自是一整件事，
+ * 藏在中间层里用户得先猜在哪一组。
  */
 @Composable
 internal fun SettingsIndexScreen(
@@ -48,6 +45,14 @@ internal fun SettingsIndexScreen(
     onOpen: (SettingsGroup) -> Unit,
     onBack: () -> Unit,
 ) {
+    var query by remember { mutableStateOf("") }
+    val needle = query.trim()
+    val matched = SettingsGroup.entries.filter { group ->
+        needle.isEmpty() ||
+            group.title.contains(needle, ignoreCase = true) ||
+            group.keywords.contains(needle, ignoreCase = true)
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
@@ -64,41 +69,54 @@ internal fun SettingsIndexScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                Spacer(Modifier.height(8.dp))
-                // 一整块面板：七行在里面靠行线分隔，行线从文字起点缩进 16。
-                // 左右各留 24（用户 2026-10-31："每一项的横向长度可以稍微短一点"）：
-                // 这一页每行只有"标题 + 一句说明 + 当前值"，行太长会让字和右边挤在一起，
-                // 也让整块板看着像把屏幕填满了。24 是"短一点"又不至于窄到字换行的位置。
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp),
                 ) {
-                    Column {
-                        SettingsGroup.entries.forEachIndexed { index, group ->
-                            if (index > 0) {
-                                RowLine(leading = 16.dp)
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                        SettingField(
+                            value = query,
+                            onChange = { query = it },
+                            placeholder = "搜索设置项",
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                if (matched.isEmpty()) {
+                    Text(
+                        text = "没有匹配「$needle」的设置项",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
+                    )
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    ) {
+                        Column {
+                            matched.forEachIndexed { index, group ->
+                                if (index > 0) RowLine(leading = 16.dp)
+                                GroupRow(
+                                    group = group,
+                                    summary = summaryFor(
+                                        group,
+                                        iconSummary,
+                                        logSummary,
+                                        toolsSummary,
+                                        appSummary,
+                                    ),
+                                    onClick = { onOpen(group) },
+                                )
                             }
-                            GroupRow(
-                                group = group,
-                                summary = summaryFor(
-                                    group,
-                                    iconSummary,
-                                    logSummary,
-                                    toolsSummary,
-                                    appSummary,
-                                ),
-                                onClick = { onOpen(group) },
-                            )
                         }
                     }
                 }
-                Text(
-                    text = "灰底分组里还有没接的功能，点进去会写清差什么（不给假开关、不给假表单）。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 14.dp, bottom = 24.dp),
-                )
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
@@ -110,50 +128,39 @@ private fun summaryFor(
     logSummary: String,
     toolsSummary: String,
     appSummary: String,
-): String =
-    when (group) {
-        SettingsGroup.Appearance -> iconSummary
-        SettingsGroup.App -> appSummary
-        SettingsGroup.Context -> "75% / 92% · 未接"
-        SettingsGroup.Models -> "供应商 · 助手 · 七条提示词"
-        SettingsGroup.Tools -> toolsSummary
-        SettingsGroup.Storage -> "图片附件 · 查看 / 导出 / 删除"
-        SettingsGroup.Debug -> logSummary
-        SettingsGroup.About -> "GPL-3.0-only · 0.0.1-dev"
-    }
+): String = when (group) {
+    SettingsGroup.Appearance -> iconSummary
+    SettingsGroup.App -> appSummary
+    SettingsGroup.Defaults -> "每个助手一套"
+    SettingsGroup.Providers -> "端点与密钥"
+    SettingsGroup.Assistants -> "模型与子 AGENT"
+    SettingsGroup.Lorebook -> "册与条目"
+    SettingsGroup.Proxy -> "开关与端口"
+    SettingsGroup.Tools -> toolsSummary
+    SettingsGroup.Storage -> "附件"
+    SettingsGroup.Debug -> logSummary
+    SettingsGroup.About -> "GPL-3.0-only"
+}
 
-/**
- * 一行入口：标题 + 一句说明，右侧是"现在是什么"，最后是 chevron。
- *
- * 行高下限 64（两行文字 + 12 上下内距），点整行；chevron 只在能进下一层时出现，
- * 这一页每一行都能进，所以都有。
- */
+/** 一行入口：标题 + 当前值 + chevron。行高 52，不再挂第二行小字。 */
 @Composable
 private fun GroupRow(group: SettingsGroup, summary: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 64.dp)
+            .heightIn(min = 52.dp)
             .clickable(onClick = onClick)
-            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+            .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = group.title,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = group.hint,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        }
-        // 当前值：先被压缩的那一项。标题永远比"现在是什么"重要。
+        Text(
+            text = group.title,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
         Text(
             text = summary,
             style = MaterialTheme.typography.labelMedium,
@@ -171,7 +178,7 @@ private fun GroupRow(group: SettingsGroup, summary: String, onClick: () -> Unit)
     }
 }
 
-/** 行线：1px，从文字起点缩进。和面板圆角同色系里最浅的一档。 */
+/** 行线：1px，从文字起点缩进。 */
 @Composable
 private fun RowLine(leading: androidx.compose.ui.unit.Dp) {
     Spacer(

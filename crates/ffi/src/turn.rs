@@ -262,8 +262,9 @@ struct TurnInput {
     image_temp_limit: u32,
     /// 上下文档位（D275）：`F1`–`F4`。默认 F1（跟以前一模一样）。
     form_level: nmoi_core::message::FormLevel,
-    /// 世界书（D279）：整份 JSON。`None` = 没导入过。
-    lorebook: Option<nmoi_core::lorebook::Lorebook>,
+    /// 世界书（D279 / D281）：整份 JSON 解析后**合并成一册**再往下走。
+    /// 多册与单册在这一层看不出差别，`plan` 只认条目。
+    lorebook: Option<nmoi_core::lorebook::LorebookData>,
     /// 内容形态阈值（D275）：小 / 大 / 超大 + 头尾保留量。
     router: nmoi_core::router::RouterConfig,
     max_tokens: Option<u32>,
@@ -571,10 +572,12 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
             &optional_str(&root, "context_form")?.unwrap_or_default(),
         ),
         // 世界书：解析失败**点名报错**，不静默跳过——用户会以为设定生效了。
+        // 多册（`{"books":[…]}`）与老的单册在这里都收；多册只合并启用册的条目。
         lorebook: match optional_str(&root, "lorebook")? {
             Some(text) if !text.trim().is_empty() => Some(
-                nmoi_core::lorebook::Lorebook::import(&text)
-                    .map_err(|error| bad("lorebook", &error.to_string()))?,
+                nmoi_core::lorebook::Library::import(&text)
+                    .map_err(|error| bad("lorebook", &error.to_string()))?
+                    .merged(),
             ),
             _ => None,
         },
@@ -1178,7 +1181,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             allow_new_version: true,
             form_level: input.form_level,
             router: input.router,
-            lorebook: input.lorebook.as_ref().map(|book| &book.data),
+            lorebook: input.lorebook.as_ref(),
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1509,7 +1512,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             envir: input.envir.as_ref(),
             form_level: input.form_level,
             router: input.router,
-            lorebook: input.lorebook.as_ref().map(|book| &book.data),
+            lorebook: input.lorebook.as_ref(),
         };
 
         let client = crate::proxy::client();

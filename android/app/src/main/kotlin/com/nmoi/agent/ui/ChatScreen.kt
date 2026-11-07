@@ -1405,9 +1405,9 @@ internal fun ChatScreen(
                         hint = "文件附件待接：这一批只做了图片（D208）",
                     ),
                     SheetItem(
-                        label = "技能 / 世界书",
+                        label = "技能",
                         icon = ActionIcons.GitBranch,
-                        hint = "技能与世界书入口待接：预设（P4）之后",
+                        hint = "技能待接（P5.5）；世界书已经能用：设置 → 世界书",
                     ),
                 ),
                 onHint = { notice = it },

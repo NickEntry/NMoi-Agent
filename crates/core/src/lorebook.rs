@@ -209,7 +209,8 @@ pub struct LorebookData {
     pub id: String,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
+    /// 副标题（Kelivo 那边叫 `note`，两个名字都收）。
+    #[serde(default, alias = "note")]
     pub description: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -252,6 +253,8 @@ impl Lorebook {
 /// 几百条的 JSON，那一行对他没有意义。这里说"第几条、哪个字段、填的是什么、能填什么"。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportError {
+    /// 哪一册（`第 2 册（主 AGENT）`）；空 = 单册文件或整个文件的问题。
+    pub book: String,
     /// 第几条（1 起；0 = 整个文件的问题）。
     pub index: usize,
     pub entry: String,
@@ -262,6 +265,9 @@ pub struct ImportError {
 
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.book.is_empty() {
+            write!(f, "{} · ", self.book)?;
+        }
         if self.index == 0 {
             write!(f, "{}", self.message)
         } else {
@@ -288,6 +294,7 @@ impl Lorebook {
     pub fn import(text: &str) -> Result<Self, ImportError> {
         let mut root: serde_json::Value =
             serde_json::from_str(text).map_err(|error| ImportError {
+                book: String::new(),
                 index: 0,
                 entry: String::new(),
                 field: "文件",
@@ -301,32 +308,11 @@ impl Lorebook {
             .and_then(|data| data.get_mut("entries"))
             .and_then(|value| value.as_array_mut())
         {
-            for (index, entry) in entries.iter_mut().enumerate() {
-                let name = entry
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                for (field, allowed) in [("position", POSITION_NAMES), ("role", ROLE_NAMES)] {
-                    let Some(raw) = entry.get(field).and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    let upper = raw.trim().to_ascii_uppercase();
-                    if !allowed.contains(&upper.as_str()) {
-                        return Err(ImportError {
-                            index: index + 1,
-                            entry: name,
-                            field,
-                            value: raw.to_string(),
-                            message: format!("认不出；只收 {}", allowed.join(" / ")),
-                        });
-                    }
-                    entry[field] = serde_json::Value::String(upper);
-                }
-            }
+            normalize_entries(entries, "")?;
         }
 
         serde_json::from_value(root).map_err(|error| ImportError {
+            book: String::new(),
             index: 0,
             entry: String::new(),
             field: "文件",
@@ -334,6 +320,38 @@ impl Lorebook {
             message: format!("结构不对：{error}"),
         })
     }
+}
+
+/// 把一份 `entries` 里的 `position` / `role` 统一成大写蛇形；认不出的点名报错。
+///
+/// `book` 是"哪一册"的标签（单册文件传空串）：多册之后同一个错误得说清是哪一册的，
+/// 否则用户手上三册、几十条，只看到"第 3 条的 position 认不出"，还得自己翻。
+fn normalize_entries(entries: &mut [serde_json::Value], book: &str) -> Result<(), ImportError> {
+    for (index, entry) in entries.iter_mut().enumerate() {
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        for (field, allowed) in [("position", POSITION_NAMES), ("role", ROLE_NAMES)] {
+            let Some(raw) = entry.get(field).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let upper = raw.trim().to_ascii_uppercase();
+            if !allowed.contains(&upper.as_str()) {
+                return Err(ImportError {
+                    book: book.to_string(),
+                    index: index + 1,
+                    entry: name,
+                    field,
+                    value: raw.to_string(),
+                    message: format!("认不出；只收 {}", allowed.join(" / ")),
+                });
+            }
+            entry[field] = serde_json::Value::String(upper);
+        }
+    }
+    Ok(())
 }
 
 const POSITION_NAMES: &[&str] = &[
@@ -345,6 +363,120 @@ const POSITION_NAMES: &[&str] = &[
 ];
 
 const ROLE_NAMES: &[&str] = &["SYSTEM", "USER", "ASSISTANT"];
+
+/// 多册世界书（D281 第 1 批）：`{"version":2,"type":"lorebooks","books":[…]}`。
+///
+/// 为什么要多册：Kelivo 那边一册 = 一组设定（主 AGENT / 子 AGENT / 界面），
+/// 界面上是一行一册、点开是条目。单册装不下这个形状，换一组设定就得整份重导。
+///
+/// 老的单册文件（`{"type":"lorebook","data":{…}}`）读进来当**一册**，不丢数据——
+/// 上一版把整份 JSON 存在 `files/lorebook.json` 里，用户手上可能就那一份。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Library {
+    #[serde(default = "default_library_version")]
+    pub version: u32,
+    /// 固定为 `lorebooks`（单册是 `lorebook`）。
+    #[serde(default = "default_library_kind", rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub books: Vec<LorebookData>,
+}
+
+fn default_library_version() -> u32 {
+    2
+}
+
+fn default_library_kind() -> String {
+    "lorebooks".to_string()
+}
+
+impl Library {
+    /// 读一份文件：有 `books` 就当多册，没有就按单册读进来当一册。
+    ///
+    /// 判据是**形状**，不是 `type` 字段——用户手改过 `type` 的文件也该读得出来。
+    pub fn import(text: &str) -> Result<Self, ImportError> {
+        let mut root: serde_json::Value =
+            serde_json::from_str(text).map_err(|error| ImportError {
+                book: String::new(),
+                index: 0,
+                entry: String::new(),
+                field: "文件",
+                value: String::new(),
+                message: format!("不是合法的 JSON：{error}"),
+            })?;
+
+        let Some(books) = root.get_mut("books").and_then(|value| value.as_array_mut()) else {
+            return Ok(Self::from_one(Lorebook::import(text)?.data));
+        };
+
+        for (index, book) in books.iter_mut().enumerate() {
+            let name = book
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let label = if name.trim().is_empty() {
+                format!("第 {} 册", index + 1)
+            } else {
+                format!("第 {} 册（{}）", index + 1, name)
+            };
+            if let Some(entries) = book
+                .get_mut("entries")
+                .and_then(|value| value.as_array_mut())
+            {
+                normalize_entries(entries, &label)?;
+            }
+        }
+
+        serde_json::from_value(root).map_err(|error| ImportError {
+            book: String::new(),
+            index: 0,
+            entry: String::new(),
+            field: "文件",
+            value: String::new(),
+            message: format!("结构不对：{error}"),
+        })
+    }
+
+    /// 单册包成一份一册的库；名字与 id 空着就补一个（界面上要有个能点的行）。
+    pub fn from_one(mut data: LorebookData) -> Self {
+        if data.name.trim().is_empty() {
+            data.name = "导入的世界书".to_string();
+        }
+        if data.id.trim().is_empty() {
+            data.id = "b1".to_string();
+        }
+        Self {
+            version: default_library_version(),
+            kind: default_library_kind(),
+            books: vec![data],
+        }
+    }
+
+    /// 合并**所有启用册**里的条目，交给 `plan`。
+    ///
+    /// 册级 `enabled=false` = 整册不参与（条目自己的开关仍由 `plan` 判）。
+    /// 这一层只做合并，不改匹配行为。
+    pub fn merged(&self) -> LorebookData {
+        let entries = self
+            .books
+            .iter()
+            .filter(|book| book.enabled)
+            .flat_map(|book| book.entries.iter().cloned())
+            .collect();
+        LorebookData {
+            id: String::new(),
+            name: String::new(),
+            description: None,
+            enabled: true,
+            entries,
+        }
+    }
+
+    pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+}
 
 /// 一条待注入的内容。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -722,5 +854,87 @@ mod import_tests {
         let error = Lorebook::import("{oops").unwrap_err();
         assert_eq!(error.index, 0);
         assert!(error.to_string().contains("不是合法的 JSON"));
+    }
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+
+    fn two_books(second_enabled: bool, second_position: &str) -> String {
+        format!(
+            r#"{{"version":2,"type":"lorebooks","books":[
+                {{"id":"b1","name":"主 AGENT","note":"槽位 200 起","enabled":true,"entries":[
+                    {{"id":"e1","name":"猫娘","position":"AFTER_SYSTEM_PROMPT","content":"她是猫"}}]}},
+                {{"id":"b2","name":"界面","enabled":{second_enabled},"entries":[
+                    {{"id":"e2","name":"布局","position":"{second_position}","content":"左边是抽屉"}}]}}]}}"#
+        )
+    }
+
+    /// 老的单册文件（上一版存的就是这个形状）读进来当一册，条目一条不少。
+    #[test]
+    fn a_single_book_file_reads_as_one_book() {
+        let text = r#"{"version":1,"type":"lorebook","data":{"name":"主 AGENT","enabled":true,
+            "entries":[
+                {"id":"e1","name":"猫娘","position":"AFTER_SYSTEM_PROMPT","content":"她是猫"},
+                {"id":"e2","name":"酒馆","position":"top_of_chat","content":"酒馆在北街"}]}}"#;
+        let library = Library::import(text).expect("单册该读得出来");
+        assert_eq!(library.books.len(), 1);
+        assert_eq!(library.books[0].name, "主 AGENT");
+        assert_eq!(library.books[0].entries.len(), 2);
+        assert_eq!(
+            library.books[0].entries[1].position,
+            Position::TopOfChat,
+            "小写 position 也要收"
+        );
+    }
+
+    /// 册级停用 = 整册不参与；条目自己的开关仍由 `plan` 判。
+    #[test]
+    fn a_disabled_book_stays_out_of_the_merge() {
+        let on = Library::import(&two_books(true, "TOP_OF_CHAT")).expect("two books");
+        assert_eq!(on.merged().entries.len(), 2);
+
+        let off = Library::import(&two_books(false, "TOP_OF_CHAT")).expect("two books");
+        let merged = off.merged();
+        assert_eq!(merged.entries.len(), 1);
+        assert_eq!(merged.entries[0].id, "e1");
+    }
+
+    /// 报错要点名**哪一册、第几条**：三册几十条的时候，"第 3 条"没有意义。
+    #[test]
+    fn an_unknown_position_names_the_book_and_the_entry() {
+        let error = Library::import(&two_books(true, "BEFORE_CHAR")).unwrap_err();
+        assert_eq!(error.index, 1, "册内的第几条");
+        assert_eq!(error.field, "position");
+        let text = error.to_string();
+        assert!(text.contains("第 2 册（界面）"), "{text}");
+        assert!(text.contains("布局"), "{text}");
+        assert!(text.contains("BEFORE_CHAR"), "{text}");
+    }
+
+    /// 导出要用这条路：写出去再读回来，册数、名字、条目、位置都对得上。
+    #[test]
+    fn a_library_round_trips_through_json() {
+        let library = Library::import(&two_books(true, "AT_DEPTH")).expect("two books");
+        let text = library.to_json_pretty().expect("serialize");
+        let again = Library::import(&text).expect("re-import");
+        assert_eq!(again, library);
+    }
+
+    /// `note` 与 `description` 是两个名字一件事（Kelivo 的副标题、我们的 description）。
+    #[test]
+    fn note_is_the_same_field_as_description() {
+        let library = Library::import(&two_books(true, "TOP_OF_CHAT")).expect("two books");
+        assert_eq!(library.books[0].description.as_deref(), Some("槽位 200 起"));
+    }
+
+    /// 单册包成一册时补名字与 id：界面上要有能点的行。
+    #[test]
+    fn a_nameless_single_book_gets_a_name() {
+        let text = r#"{"type":"lorebook","data":{"entries":[]}}"#;
+        let library = Library::import(text).expect("empty book");
+        assert_eq!(library.books[0].name, "导入的世界书");
+        assert_eq!(library.books[0].id, "b1");
     }
 }

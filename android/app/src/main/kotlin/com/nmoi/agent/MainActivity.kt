@@ -37,6 +37,7 @@ import com.nmoi.agent.ui.LogChannelScreen
 import com.nmoi.agent.ui.LogKind
 import com.nmoi.agent.ui.LogListScreen
 import com.nmoi.agent.ui.LogSettingsScreen
+import com.nmoi.agent.ui.LorebookScreen
 import com.nmoi.agent.ui.DraftStore
 import com.nmoi.agent.ui.MessageEditScreen
 import com.nmoi.agent.ui.NLog
@@ -91,8 +92,11 @@ private sealed interface Route {
     /** 工作区（D234）：列 / 新建 / 改名 / 删除。入口在「工具与工作区」里。 */
     data object Workspace : Route
 
-    /** 网络代理（D226）：开关 / 类型 / 地址 / 凭证 / 绕过。入口在「工具与工作区」里。 */
+    /** 网络代理（D226）：开关 / 类型 / 地址 / 凭证 / 绕过。入口在设置根页。 */
     data object Proxy : Route
+
+    /** 世界书（D281）：册 → 条目两级。入口在设置根页。 */
+    data object Lorebook : Route
 
     /** 助手列表页（D174）。点铅笔进编辑页。 */
     data object Assistant : Route
@@ -607,13 +611,26 @@ class MainActivity : ComponentActivity() {
 
                         Route.Proxy -> ProxyScreen(onBack = { backStack = backStack.dropLast(1) })
 
+                        Route.Lorebook -> LorebookScreen(
+                            context = context,
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         Route.Settings -> SettingsIndexScreen(
                             iconSummary = "${iconChoice.design.label} · ${iconChoice.plate.label} · ${themeMode.label}",
                             logSummary = logSummary,
                             // 这一行要能回答"环境装没装"，不能为了知道点进去；route 变了就重读一次。
                             toolsSummary = (if (envirStatus.isEmpty()) "工作区" else envirStatus) + " · 原生命令",
                             appSummary = AppSettings.summary(context),
-                            onOpen = { group -> backStack = backStack + Route.SettingsGroupRoute(group) },
+                            onOpen = { group ->
+                                backStack = backStack + when (group) {
+                                    SettingsGroup.Providers -> Route.Provider
+                                    SettingsGroup.Assistants -> Route.Assistant
+                                    SettingsGroup.Lorebook -> Route.Lorebook
+                                    SettingsGroup.Proxy -> Route.Proxy
+                                    else -> Route.SettingsGroupRoute(group)
+                                }
+                            },
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
@@ -648,7 +665,6 @@ class MainActivity : ComponentActivity() {
                             SettingsGroup.Tools -> ToolsScreen(
                                 onBack = { backStack = backStack.dropLast(1) },
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
-                                onOpenProxy = { backStack = backStack + Route.Proxy },
                                 onOpenWorkspace = { backStack = backStack + Route.Workspace },
                             )
 

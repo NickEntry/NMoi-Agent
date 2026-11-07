@@ -49,38 +49,12 @@ import androidx.compose.ui.unit.dp
  * - **默认上下文窗口**：模型自己没填窗口时，压缩判据拿它当分母。
  *   这一项存在的前提是"没填也要算"——用户 2026-10-31 定的。
  */
-/**
- * 应用设置的分页（D276）：项太多，一页铺下来要滚好几屏。
- *
- * 三页按"改这件事的时候会一起改"分：生成（重试与轮数）、上下文（窗口 / 压缩 / 档位）、
- * 图片（上限 / 模式 / 压缩）。搜索只搜这三页的标题与关键词，点一行就进那一页。
- */
-private enum class SettingsSection(val title: String, val note: String, val keywords: String) {
-    Generation(
-        title = "生成",
-        note = "允许生成新版本 · 工具轮数上限",
-        keywords = "生成 版本 重试 覆盖 轮数 工具 上限 循环",
-    ),
-    Context(
-        title = "上下文",
-        note = "默认窗口 · 压缩两条线 · 输出预留 · 档位与阈值",
-        keywords = "上下文 窗口 压缩 建议线 绝对线 输出 预留 档位 F1 F2 F3 F4 阈值 路由 截断 指针 占位",
-    ),
-    Images(
-        title = "图片",
-        note = "上限与临时额度 · 直发/路径 · 发图前压缩",
-        keywords = "图片 上限 张数 临时 额度 模式 直发 路径 压缩 质量 长边 短边",
-    ),
-    Lorebook(
-        title = "世界书",
-        note = "导入 JSON · 条数与启用数",
-        keywords = "世界书 lorebook 导入 设定 词条 关键词 注入",
-    ),
-    Ui(
-        title = "界面",
-        note = "刷新周期（流式与计时）",
-        keywords = "界面 刷新 周期 毫秒 流式 轮询 卡顿 频率",
-    ),
+/** 应用设置的四个子页：生成 / 上下文 / 图片 / 界面。一页一件事，行高 52。 */
+private enum class SettingsSection(val title: String) {
+    Generation("生成"),
+    Context("上下文"),
+    Images("图片"),
+    Ui("界面"),
 }
 
 @Composable
@@ -116,11 +90,7 @@ internal fun AppSettingsScreen(
     var tailText by remember { mutableStateOf(routerText(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)) }
     // 当前在哪一页（`null` = 索引页）+ 搜索词（D276）。
     var section by remember { mutableStateOf<SettingsSection?>(null) }
-    var query by remember { mutableStateOf("") }
     var refreshText by remember { mutableStateOf(AppSettings.uiRefreshMs(context).toString()) }
-    // 世界书（D280）：粘贴框里的原文 + 导入结果。
-    var loreText by remember { mutableStateOf(LorebookStore.text(context)) }
-    var loreStatus by remember { mutableStateOf<String?>(null) }
     // 输入框自动保存（D277）：停手 **100 ms** 就写，不用再点"用这个值"。
     //
     // 只在这一页**显示时**监听：`LaunchedEffect` 跟着组合走，离开页面就取消，
@@ -220,71 +190,8 @@ internal fun AppSettingsScreen(
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 if (section == null) {
-                    SettingsIndex(
-                        query = query,
-                        onQuery = { query = it },
-                        onPick = { picked ->
-                            section = picked
-                            query = ""
-                        },
-                    )
+                    SettingsIndex(onPick = { picked -> section = picked })
                 } else {
-                if (section == SettingsSection.Lorebook) {
-                SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                        Text(
-                            text = "导入世界书",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "把 kelivo / RikkaHub 导出的 JSON 整份贴进来，点「导入」。\n" +
-                                "导入之后**每一轮**都会按关键词激活、按位置插进请求；" +
-                                "它属于设定，档位再高也不会被截断（F4 下也是全文）。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                        LorebookField(
-                            value = loreText,
-                            onChange = { loreText = it },
-                            modifier = Modifier.padding(top = 10.dp),
-                        )
-                        Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("导入", selected = false) {
-                                if (loreText.isBlank()) {
-                                    loreStatus = "框里还是空的：先贴一份 JSON 进来"
-                                } else {
-                                    // 真正的解析在 core（`Lorebook::import`）：这里只落盘，
-                                    // 下一轮发请求时由 FFI 解析并点名报错。
-                                    LorebookStore.save(context, loreText).fold(
-                                        onSuccess = {
-                                            loreStatus = "已存下（${loreText.length} 字符）；" +
-                                                "下一轮请求会用它，解析不过会在提示里点名"
-                                        },
-                                        onFailure = { loreStatus = "存盘失败：${it.message}" },
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            SettingChip("清空", selected = false) {
-                                LorebookStore.clear(context)
-                                loreText = ""
-                                loreStatus = "已清空：之后不再注入任何设定"
-                            }
-                        }
-                        loreStatus?.let { line ->
-                            Text(
-                                text = line,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 6.dp),
-                            )
-                        }
-                    }
-                }
-                }
-
                 if (section == SettingsSection.Ui) {
                 SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -840,76 +747,32 @@ internal fun AppSettingsScreen(
     }
 }
 
-/**
- * 应用设置的索引页（D276）：搜索框 + 三行入口。
- *
- * 为什么要有搜索：项一多，"改哪个"就变成翻页找。搜索按**标题与关键词**匹配
- * （关键词里放了同义词：张数 / 上限、档位 / F1 / 截断），点一行直接进那一页。
- */
+/** 应用设置的索引页：四行入口，一行一件事，行高 52，没有小字。 */
 @Composable
-private fun SettingsIndex(
-    query: String,
-    onQuery: (String) -> Unit,
-    onPick: (SettingsSection) -> Unit,
-) {
-    val needle = query.trim()
-    val matched = SettingsSection.entries.filter { section ->
-        needle.isEmpty() ||
-            section.title.contains(needle, ignoreCase = true) ||
-            section.note.contains(needle, ignoreCase = true) ||
-            section.keywords.contains(needle, ignoreCase = true)
-    }
-    Column(modifier = Modifier.fillMaxSize()) {
-        SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                SettingField(
-                    value = query,
-                    onChange = onQuery,
-                    placeholder = "搜设置项（例如 压缩 / 图片 / 档位）",
-                )
+private fun SettingsIndex(onPick: (SettingsSection) -> Unit) {
+    SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+        SettingsSection.entries.forEachIndexed { index, section ->
+            if (index > 0) RowDivider(leading = 14.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .clickable { onPick(section) }
+                    .padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            ) {
                 Text(
-                    text = if (needle.isEmpty()) {
-                        "三页：生成 · 上下文 · 图片。点一行进去改；返回一次回到这里。"
-                    } else if (matched.isEmpty()) {
-                        "没有匹配「$needle」的设置项"
-                    } else {
-                        "匹配到 ${matched.size} 页"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp),
+                    text = section.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
                 )
-            }
-        }
-        SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
-            matched.forEach { section ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 64.dp)
-                        .clickable { onPick(section) }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = section.title,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = section.note,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Icon(
-                        imageVector = ActionIcons.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                Icon(
+                    imageVector = ActionIcons.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
     }
@@ -1017,42 +880,3 @@ internal fun parsePercent(raw: String): Double? =
 private fun routerText(context: Context, key: String, fallback: Int): String =
     AppSettings.routerValue(context, key, fallback).toString()
 
-/** 世界书的粘贴框：多行、等宽、限高。 */
-@Composable
-private fun LorebookField(
-    value: String,
-    onChange: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(160.dp)
-            .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
-                shape = RoundedCornerShape(12.dp),
-            )
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-    ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            textStyle = MaterialTheme.typography.bodySmall.copy(
-                color = MaterialTheme.colorScheme.onSurface,
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-            ),
-            modifier = Modifier.fillMaxSize(),
-            decorationBox = { inner ->
-                if (value.isEmpty()) {
-                    Text(
-                        text = "{\"version\":1,\"type\":\"lorebook\",\"data\":{…}}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    )
-                }
-                inner()
-            },
-        )
-    }
-}

@@ -1,0 +1,824 @@
+package com.nmoi.agent.ui
+
+import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * 世界书（D281 第 1 批）：**册 → 条目**两级。
+ *
+ * 为什么是两级：一册 = 一组设定（主 AGENT / 子 AGENT / 界面）。册行上要能一眼看出
+ * 这一册多少条、几条常驻、是不是停用了；点开才是条目，条目上只有"开关"和"位置徽标"。
+ *
+ * 这一批**不改匹配行为**：位置、角色、关键词、正则、扫描深度、常驻都是 core 已经支持的字段，
+ * 这里只是让它们看得见、能改。时序（sticky / cooldown / delay）还没做，所以面板里没有那几格——
+ * 摆一个拨了不生效的开关，比不摆更坏。
+ */
+@Composable
+internal fun LorebookScreen(context: Context, onBack: () -> Unit) {
+    var root by remember { mutableStateOf(LorebookStore.library(context)) }
+    var expanded by remember { mutableStateOf(setOf<String>()) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<EditTarget?>(null) }
+    var deleting by remember { mutableStateOf<DeleteTarget?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<List<JSONObject>?>(null) }
+    var exportTarget by remember { mutableStateOf<JSONObject?>(null) }
+    val scope = rememberCoroutineScope()
+
+    // 每次改动都从**当前树**拷一份再改：`JSONObject` 是可变对象，原地改不会触发重组，
+    // 界面上就会出现"点了没反应"。拷一份还顺手拿到了要落盘的那份文本。
+    fun commit(block: (JSONObject) -> JSONObject) {
+        val next = runCatching { block(JSONObject(root.toString())) }.getOrElse { error ->
+            notice = "改不动：${error.message ?: error.javaClass.simpleName}"
+            return
+        }
+        root = next
+        LorebookStore.save(context, next).onFailure { notice = "存盘失败：${it.message}" }
+    }
+
+    fun book(id: String): JSONObject? = LorebookStore.book(root, id)
+
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) {
+            notice = "已取消导入"
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes().toString(Charsets.UTF_8)
+                    }
+                }.getOrNull()
+            }
+            if (text == null) {
+                notice = "读不出这个文件"
+                return@launch
+            }
+            LorebookStore.importBooks(text).fold(
+                onSuccess = { books -> preview = books },
+                onFailure = { notice = "导入失败：${it.message ?: it.javaClass.simpleName}" },
+            )
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        val target = exportTarget
+        exportTarget = null
+        if (uri == null || target == null) {
+            notice = "已取消导出"
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(target.toString(2).toByteArray(Charsets.UTF_8))
+                    } ?: error("打不开目标文件")
+                }
+            }
+            notice = result.fold(
+                onSuccess = { "已导出 ${target.toString(2).length} 字符" },
+                onFailure = { "导出失败：${it.message ?: it.javaClass.simpleName}" },
+            )
+        }
+    }
+
+    val books = LorebookStore.books(root)
+
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BackButton(onBack = onBack)
+            Text(
+                text = "世界书",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+            )
+        }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ChipButton("导入 JSON", primary = false) { pickFile.launch("application/json") }
+                ChipButton("新建一册", primary = true) { creating = true }
+            }
+
+            notice?.let { line ->
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
+                )
+            }
+
+            if (books.length() == 0) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = if (LorebookStore.text(context).isNotBlank()) {
+                            "这份文件读不出来（不是合法的 JSON）：先导一份新的，或者清掉它"
+                        } else {
+                            "还没有世界书。导入一份 kelivo / RikkaHub 导出的 JSON，或者先建一册手写条目"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    ChipButton("导入 JSON", primary = true) { pickFile.launch("application/json") }
+                }
+            }
+
+            for (index in 0 until books.length()) {
+                val book = books.optJSONObject(index) ?: continue
+                val bookId = book.optString("id")
+                BookCard(
+                    book = book,
+                    expanded = expanded.contains(bookId),
+                    onToggleExpand = {
+                        expanded = if (expanded.contains(bookId)) {
+                            expanded - bookId
+                        } else {
+                            expanded + bookId
+                        }
+                    },
+                    onToggleEnabled = { on ->
+                        commit { LorebookStore.setBookEnabled(it, bookId, on) }
+                    },
+                    onAddEntry = {
+                        commit { LorebookStore.addEntry(it, bookId) }
+                        expanded = expanded + bookId
+                    },
+                    onExport = {
+                        exportTarget = singleBookDocument(book)
+                        exportLauncher.launch("${book.optString("name").ifBlank { "lorebook" }}.json")
+                    },
+                    onDelete = { deleting = DeleteTarget(bookId, null) },
+                    onEditEntry = { entryId -> editing = EditTarget(bookId, entryId) },
+                    onToggleEntry = { entryId, on ->
+                        commit { LorebookStore.setEntryEnabled(it, bookId, entryId, on) }
+                    },
+                )
+            }
+
+            Text(
+                text = "注入规则：常驻条目每轮都进上下文；其余按关键词命中（看最近 N 条消息）。" +
+                    "位置决定它插在系统提示前 / 后、对话顶、倒数第几条前、对话底。" +
+                    "世界书属于设定，档位再高也不会被截断。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+
+        val target = editing
+        if (target != null) {
+            val currentBook = book(target.bookId)
+            val entry = currentBook?.let { LorebookStore.entry(it, target.entryId) }
+            if (currentBook != null && entry != null) {
+                EntrySheet(
+                    entry = entry,
+                    onApply = { fields ->
+                        commit { next ->
+                            LorebookStore.updateEntry(next, target.bookId, target.entryId) { targetEntry ->
+                                val keys = fields.keys()
+                                while (keys.hasNext()) {
+                                    val key = keys.next()
+                                    targetEntry.put(key, fields.get(key))
+                                }
+                            }
+                        }
+                    },
+                    onDelete = {
+                        editing = null
+                        deleting = DeleteTarget(target.bookId, target.entryId)
+                    },
+                    onDismiss = { editing = null },
+                )
+            } else {
+                LaunchedEffect(target) { editing = null }
+            }
+        }
+
+        if (creating) {
+            NewBookSheet(
+                onCreate = { name, note ->
+                    commit { LorebookStore.addBook(it, name, note) }
+                    creating = false
+                },
+                onDismiss = { creating = false },
+            )
+        }
+
+        preview?.let { incoming ->
+            ImportPreviewSheet(
+                books = incoming,
+                existing = existingNames(root),
+                onImport = { overwrite ->
+                    commit { next ->
+                        var out = next
+                        incoming.forEach { book ->
+                            val name = book.optString("name")
+                            if (overwrite) {
+                                LorebookStore.books(out).let { array ->
+                                    for (i in 0 until array.length()) {
+                                        val old = array.optJSONObject(i) ?: continue
+                                        if (old.optString("name") == name) {
+                                            out = LorebookStore.deleteBook(out, old.optString("id"))
+                                        }
+                                    }
+                                }
+                            }
+                            out = LorebookStore.addBookObject(out, book)
+                        }
+                        out
+                    }
+                    preview = null
+                    notice = "已导入 ${incoming.size} 册"
+                },
+                onDismiss = { preview = null },
+            )
+        }
+
+        deleting?.let { target ->
+            val targetBook = book(target.bookId)
+            val entryName = target.entryId?.let { id ->
+                targetBook?.let { LorebookStore.entry(it, id)?.optString("name") }
+            }
+            ConfirmDialog(
+                title = if (target.entryId == null) "删除这一册？" else "删除这一条？",
+                detail = if (target.entryId == null) {
+                    "「${targetBook?.optString("name").orEmpty()}」里的 " +
+                        "${targetBook?.let { LorebookStore.entries(it).length() } ?: 0} 条会一起没掉。" +
+                        "删完这一册不再参与注入。"
+                } else {
+                    "「${entryName.orEmpty().ifBlank { "这一条" }}」会从册里没掉，删完不再参与注入。"
+                },
+                confirmLabel = "删除",
+                onCancel = { deleting = null },
+                onConfirm = {
+                    commit { next ->
+                        if (target.entryId == null) {
+                            LorebookStore.deleteBook(next, target.bookId)
+                        } else {
+                            LorebookStore.deleteEntry(next, target.bookId, target.entryId)
+                        }
+                    }
+                    deleting = null
+                },
+            )
+        }
+    }
+    }
+    }
+}
+
+private data class EditTarget(val bookId: String, val entryId: String)
+
+private data class DeleteTarget(val bookId: String, val entryId: String?)
+
+/** 一册导出去用 kelivo 的单册形状：导回 kelivo 不会变样。 */
+private fun singleBookDocument(book: JSONObject): JSONObject = JSONObject()
+    .put("version", 1)
+    .put("type", "lorebook")
+    .put("data", JSONObject(book.toString()))
+
+private fun existingNames(root: JSONObject): Set<String> {
+    val books = LorebookStore.books(root)
+    val names = LinkedHashSet<String>()
+    for (index in 0 until books.length()) {
+        books.optJSONObject(index)?.optString("name")?.takeIf { it.isNotBlank() }?.let { names.add(it) }
+    }
+    return names
+}
+
+@Composable
+private fun BookCard(
+    book: JSONObject,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggleEnabled: (Boolean) -> Unit,
+    onAddEntry: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit,
+    onEditEntry: (String) -> Unit,
+    onToggleEntry: (String, Boolean) -> Unit,
+) {
+    val enabled = book.optBoolean("enabled", true)
+    val entries = LorebookStore.entries(book)
+    SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggleExpand)
+                .padding(start = 10.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (expanded) ActionIcons.ChevronDown else ActionIcons.ChevronRight,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = book.optString("name").ifBlank { "未命名" },
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (!enabled) {
+                        Spacer(Modifier.width(6.dp))
+                        Badge("已停用")
+                    }
+                }
+                val note = book.optString("note")
+                Text(
+                    text = listOf(note, LorebookStore.summary(book))
+                        .filter { it.isNotBlank() }
+                        .joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = onToggleEnabled)
+        }
+
+        if (expanded) {
+            RowDivider(leading = 36.dp)
+            if (entries.length() == 0) {
+                Text(
+                    text = "这一册还没有条目",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 36.dp, top = 10.dp, bottom = 2.dp),
+                )
+            }
+            for (index in 0 until entries.length()) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val entryId = entry.optString("id")
+                EntryRow(
+                    entry = entry,
+                    onClick = { onEditEntry(entryId) },
+                    onToggle = { on -> onToggleEntry(entryId, on) },
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 36.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChipButton("新建条目", primary = false, onClick = onAddEntry)
+                Spacer(Modifier.weight(1f))
+                IconActionButton(ActionIcons.Share2, "导出这一册", onExport, compact = true)
+                IconActionButton(ActionIcons.Trash2, "删除这一册", onDelete, compact = true)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EntryRow(
+    entry: JSONObject,
+    onClick: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+) {
+    val enabled = entry.optBoolean("enabled", true)
+    val constant = entry.optBoolean("constantActive", false)
+    val keywords = entry.optJSONArray("keywords") ?: JSONArray()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 36.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = entry.optString("name").ifBlank { "（未命名）" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                },
+                maxLines = 1,
+            )
+            Row(
+                modifier = Modifier.padding(top = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Badge(LorebookStore.positionLabel(entry.optString("position", "AFTER_SYSTEM_PROMPT")))
+                if (constant) {
+                    Spacer(Modifier.width(6.dp))
+                    Badge("常驻")
+                } else if (keywords.length() > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "关键词 ${keywords.length()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!enabled) {
+                    Spacer(Modifier.width(6.dp))
+                    Badge("已停用")
+                }
+            }
+        }
+        Switch(checked = enabled, onCheckedChange = onToggle)
+    }
+}
+
+@Composable
+private fun Badge(text: String) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * 条目编辑面板（底部面板，D281 第 1 批）。
+ *
+ * 停手 100 ms 就写回（跟应用设置页同一条规矩）：面板上没有"保存"按钮，
+ * 遮罩点掉也不会丢改动——丢改动才是那种"我明明改了"的来源。
+ */
+@Composable
+private fun EntrySheet(
+    entry: JSONObject,
+    onApply: (JSONObject) -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(entry.optString("name")) }
+    var content by remember { mutableStateOf(entry.optString("content")) }
+    var position by remember {
+        mutableStateOf(entry.optString("position", "AFTER_SYSTEM_PROMPT").trim().uppercase())
+    }
+    var role by remember { mutableStateOf(entry.optString("role", "USER").trim().uppercase()) }
+    var keywords by remember { mutableStateOf(LorebookStore.joinKeywords(entry)) }
+    var useRegex by remember { mutableStateOf(entry.optBoolean("useRegex", false)) }
+    var caseSensitive by remember { mutableStateOf(entry.optBoolean("caseSensitive", false)) }
+    var constant by remember { mutableStateOf(entry.optBoolean("constantActive", false)) }
+    var injectDepth by remember { mutableStateOf(entry.optInt("injectDepth", 4).toString()) }
+    var scanDepth by remember { mutableStateOf(entry.optInt("scanDepth", 4).toString()) }
+    var priority by remember { mutableStateOf(entry.optInt("priority", 0).toString()) }
+
+    val key = listOf(
+        name, content, position, role, keywords, useRegex, caseSensitive, constant,
+        injectDepth, scanDepth, priority,
+    )
+    LaunchedEffect(key) {
+        delay(100)
+        onApply(
+            JSONObject()
+                .put("name", name.trim())
+                .put("content", content)
+                .put("position", position)
+                .put("role", role)
+                .put("keywords", LorebookStore.splitKeywords(keywords))
+                .put("useRegex", useRegex)
+                .put("caseSensitive", caseSensitive)
+                .put("constantActive", constant)
+                .put("injectDepth", injectDepth.trim().toIntOrNull()?.coerceIn(0, 999) ?: 4)
+                .put("scanDepth", scanDepth.trim().toIntOrNull()?.coerceIn(0, 999) ?: 4)
+                .put("priority", priority.trim().toIntOrNull()?.coerceIn(0, 9999) ?: 0),
+        )
+    }
+
+    SheetFrame(title = "条目", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 520.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            LoreField(name, { name = it }, "名称")
+            Spacer(Modifier.height(8.dp))
+            LoreField(
+                value = content,
+                onChange = { content = it },
+                placeholder = "内容：注入进上下文的就是这一段",
+                singleLine = false,
+                minHeight = 96.dp,
+            )
+
+            SheetLabel("位置")
+            ChipRows(LorebookStore.POSITIONS, position) { position = it }
+            SheetLabel("角色")
+            ChipRows(LorebookStore.ROLES, role) { role = it }
+
+            Spacer(Modifier.height(8.dp))
+            LoreField(keywords, { keywords = it }, "关键词（逗号分隔；空 = 只有常驻时生效）")
+
+            if (position == "AT_DEPTH") {
+                Spacer(Modifier.height(8.dp))
+                LoreField(
+                    value = injectDepth,
+                    onChange = { injectDepth = it },
+                    placeholder = "倒数第几条消息之前",
+                    number = true,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            LoreField(
+                value = scanDepth,
+                onChange = { scanDepth = it },
+                placeholder = "扫描最近几条消息",
+                number = true,
+            )
+            Spacer(Modifier.height(8.dp))
+            LoreField(
+                value = priority,
+                onChange = { priority = it },
+                placeholder = "同一位置内的先后（小的先注入）",
+                number = true,
+            )
+
+            ToggleLine("正则", "关键词按正则解释", useRegex) { useRegex = it }
+            ToggleLine("区分大小写", "关着 = 不区分", caseSensitive) { caseSensitive = it }
+            ToggleLine("常驻", "不看关键词，每一轮都注入", constant) { constant = it }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChipButton("删除这一条", primary = false, onClick = onDelete)
+                Spacer(Modifier.weight(1f))
+                ChipButton("完成", primary = true, onClick = onDismiss)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NewBookSheet(onCreate: (String, String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    SheetFrame(title = "新建一册", onDismiss = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            LoreField(name, { name = it }, "名称（例如：主 AGENT）")
+            Spacer(Modifier.height(8.dp))
+            LoreField(note, { note = it }, "副标题（可选，例如：槽位 200 起）")
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChipButton("取消", primary = false, onClick = onDismiss)
+                Spacer(Modifier.weight(1f))
+                ChipButton(
+                    label = "建这一册",
+                    primary = true,
+                    enabled = name.isNotBlank(),
+                    onClick = { onCreate(name, note) },
+                )
+            }
+        }
+    }
+}
+
+/** 导入预览：先看再落库（几条、几常驻、几关键词、和现有哪一册重名）。 */
+@Composable
+private fun ImportPreviewSheet(
+    books: List<JSONObject>,
+    existing: Set<String>,
+    onImport: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val clashes = books.map { it.optString("name") }.filter { existing.contains(it) }
+    SheetFrame(title = "导入预览", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            books.forEach { book ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = book.optString("name").ifBlank { "未命名" },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = LorebookStore.summary(book),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (existing.contains(book.optString("name"))) {
+                        Badge("同名")
+                    }
+                }
+            }
+            if (clashes.isNotEmpty()) {
+                Text(
+                    text = "有 ${clashes.size} 册和现有的同名：导入会覆盖同名那一册（旧的那一册没了）。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChipButton("取消", primary = false, onClick = onDismiss)
+                Spacer(Modifier.weight(1f))
+                ChipButton(
+                    label = if (clashes.isEmpty()) "导入" else "覆盖并导入",
+                    primary = true,
+                    onClick = { onImport(clashes.isNotEmpty()) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 6.dp, top = 10.dp, bottom = 4.dp),
+    )
+}
+
+/** 互斥选项：两三个全摆出来（不做下拉），一行放不下就换行。 */
+@Composable
+private fun ChipRows(
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    val rows = options.chunked(3)
+    Column(modifier = Modifier.padding(horizontal = 4.dp)) {
+        rows.forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                row.forEach { (value, label) ->
+                    SettingChip(
+                        label = label,
+                        selected = value.equals(selected, ignoreCase = true),
+                        onClick = { onSelect(value) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToggleLine(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 6.dp, end = 2.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Switch(checked = checked, onCheckedChange = onChecked)
+    }
+}
+
+/** 一行输入。自绘：系统 `TextField` 的内边距与圆角跟这套页面里其它控件对不上。 */
+@Composable
+private fun LoreField(
+    value: String,
+    onChange: (String) -> Unit,
+    placeholder: String,
+    singleLine: Boolean = true,
+    number: Boolean = false,
+    minHeight: Dp = 44.dp,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+    ) {
+        Box(contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty()) {
+                Text(
+                    text = placeholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = singleLine,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (number) KeyboardType.Number else KeyboardType.Text,
+                ),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = minHeight)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            )
+        }
+    }
+}
