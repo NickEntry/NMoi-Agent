@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +71,11 @@ private enum class SettingsSection(val title: String, val note: String, val keyw
         note = "上限与临时额度 · 直发/路径 · 发图前压缩",
         keywords = "图片 上限 张数 临时 额度 模式 直发 路径 压缩 质量 长边 短边",
     ),
+    Lorebook(
+        title = "世界书",
+        note = "导入 JSON · 条数与启用数",
+        keywords = "世界书 lorebook 导入 设定 词条 关键词 注入",
+    ),
     Ui(
         title = "界面",
         note = "刷新周期（流式与计时）",
@@ -112,6 +118,9 @@ internal fun AppSettingsScreen(
     var section by remember { mutableStateOf<SettingsSection?>(null) }
     var query by remember { mutableStateOf("") }
     var refreshText by remember { mutableStateOf(AppSettings.uiRefreshMs(context).toString()) }
+    // 世界书（D280）：粘贴框里的原文 + 导入结果。
+    var loreText by remember { mutableStateOf(LorebookStore.text(context)) }
+    var loreStatus by remember { mutableStateOf<String?>(null) }
     // 输入框自动保存（D277）：停手 **100 ms** 就写，不用再点"用这个值"。
     //
     // 只在这一页**显示时**监听：`LaunchedEffect` 跟着组合走，离开页面就取消，
@@ -220,6 +229,62 @@ internal fun AppSettingsScreen(
                         },
                     )
                 } else {
+                if (section == SettingsSection.Lorebook) {
+                SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "导入世界书",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "把 kelivo / RikkaHub 导出的 JSON 整份贴进来，点「导入」。\n" +
+                                "导入之后**每一轮**都会按关键词激活、按位置插进请求；" +
+                                "它属于设定，档位再高也不会被截断（F4 下也是全文）。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        LorebookField(
+                            value = loreText,
+                            onChange = { loreText = it },
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("导入", selected = false) {
+                                if (loreText.isBlank()) {
+                                    loreStatus = "框里还是空的：先贴一份 JSON 进来"
+                                } else {
+                                    // 真正的解析在 core（`Lorebook::import`）：这里只落盘，
+                                    // 下一轮发请求时由 FFI 解析并点名报错。
+                                    LorebookStore.save(context, loreText).fold(
+                                        onSuccess = {
+                                            loreStatus = "已存下（${loreText.length} 字符）；" +
+                                                "下一轮请求会用它，解析不过会在提示里点名"
+                                        },
+                                        onFailure = { loreStatus = "存盘失败：${it.message}" },
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            SettingChip("清空", selected = false) {
+                                LorebookStore.clear(context)
+                                loreText = ""
+                                loreStatus = "已清空：之后不再注入任何设定"
+                            }
+                        }
+                        loreStatus?.let { line ->
+                            Text(
+                                text = line,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
+                    }
+                }
+                }
+
                 if (section == SettingsSection.Ui) {
                 SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -951,3 +1016,43 @@ internal fun parsePercent(raw: String): Double? =
 /** 阈值那一格读出来（没存过就用默认值）。 */
 private fun routerText(context: Context, key: String, fallback: Int): String =
     AppSettings.routerValue(context, key, fallback).toString()
+
+/** 世界书的粘贴框：多行、等宽、限高。 */
+@Composable
+private fun LorebookField(
+    value: String,
+    onChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(160.dp)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(12.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            textStyle = MaterialTheme.typography.bodySmall.copy(
+                color = MaterialTheme.colorScheme.onSurface,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            ),
+            modifier = Modifier.fillMaxSize(),
+            decorationBox = { inner ->
+                if (value.isEmpty()) {
+                    Text(
+                        text = "{\"version\":1,\"type\":\"lorebook\",\"data\":{…}}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
+                inner()
+            },
+        )
+    }
+}

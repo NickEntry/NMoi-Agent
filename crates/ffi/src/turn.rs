@@ -262,6 +262,8 @@ struct TurnInput {
     image_temp_limit: u32,
     /// 上下文档位（D275）：`F1`–`F4`。默认 F1（跟以前一模一样）。
     form_level: nmoi_core::message::FormLevel,
+    /// 世界书（D279）：整份 JSON。`None` = 没导入过。
+    lorebook: Option<nmoi_core::lorebook::Lorebook>,
     /// 内容形态阈值（D275）：小 / 大 / 超大 + 头尾保留量。
     router: nmoi_core::router::RouterConfig,
     max_tokens: Option<u32>,
@@ -568,6 +570,14 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         form_level: nmoi_core::message::FormLevel::parse(
             &optional_str(&root, "context_form")?.unwrap_or_default(),
         ),
+        // 世界书：解析失败**点名报错**，不静默跳过——用户会以为设定生效了。
+        lorebook: match optional_str(&root, "lorebook")? {
+            Some(text) if !text.trim().is_empty() => Some(
+                nmoi_core::lorebook::Lorebook::import(&text)
+                    .map_err(|error| bad("lorebook", &error.to_string()))?,
+            ),
+            _ => None,
+        },
         router: parse_router(&root)?,
         max_tokens: optional_u64(&root, "max_tokens")?.map(|value| value as u32),
         temperature: optional_f32(&root, "temperature")?,
@@ -1168,8 +1178,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             allow_new_version: true,
             form_level: input.form_level,
             router: input.router,
-            // 世界书（D279）：core 那边接好了，FFI 这一层还没接（下一批）。
-            lorebook: None,
+            lorebook: input.lorebook.as_ref().map(|book| &book.data),
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1500,8 +1509,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             envir: input.envir.as_ref(),
             form_level: input.form_level,
             router: input.router,
-            // 世界书（D279）：core 那边接好了，FFI 这一层还没接（下一批）。
-            lorebook: None,
+            lorebook: input.lorebook.as_ref().map(|book| &book.data),
         };
 
         let client = crate::proxy::client();

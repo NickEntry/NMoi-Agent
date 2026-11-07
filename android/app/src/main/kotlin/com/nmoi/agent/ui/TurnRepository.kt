@@ -334,6 +334,12 @@ internal object TurnRepository {
                         )
                     }
 
+                // 世界书（D280）：整份 JSON 递进去，core 那边按关键词激活、按位置注入。
+                // 没导入就不发这个字段——省一次解析，也省得 core 判空串。
+                .also { row ->
+                    val book = LorebookStore.text(context)
+                    if (book.isNotBlank()) row.put("lorebook", book)
+                }
                 // 上下文档位与内容形态阈值（D275）。F1 = 跟以前一模一样。
                 .put("context_form", AppSettings.formLevel(context))
                 .put(
