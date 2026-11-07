@@ -246,6 +246,106 @@ impl Lorebook {
     }
 }
 
+/// 导入世界书时出的事（D278）：**点名到条**，不猜。
+///
+/// 为什么不用 `serde_json::Error`：它只说"第 12 行第 30 列"，用户手上是一份
+/// 几百条的 JSON，那一行对他没有意义。这里说"第几条、哪个字段、填的是什么、能填什么"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportError {
+    /// 第几条（1 起；0 = 整个文件的问题）。
+    pub index: usize,
+    pub entry: String,
+    pub field: &'static str,
+    pub value: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.index == 0 {
+            write!(f, "{}", self.message)
+        } else {
+            write!(
+                f,
+                "第 {} 条（{}）的 {} 是「{}」：{}",
+                self.index, self.entry, self.field, self.value, self.message
+            )
+        }
+    }
+}
+
+impl std::error::Error for ImportError {}
+
+impl Lorebook {
+    /// 导入一份世界书（D278）：**大小写不敏感**，认不出的值点名报错。
+    ///
+    /// 为什么要这一层：kelivo 导出的 `position` / `role` 是 `BEFORE_SYSTEM_PROMPT` 这种
+    /// 大写蛇形，RikkaHub 是 `before_system_prompt` 小写。直接 `serde_json::from_str`
+    /// 只认前者，后者会报一句"unknown variant"，用户看不出是哪一条。
+    ///
+    /// 只改这两个字段的**写法**，不猜语义：认不出的值一律报错，绝不默默落到默认值
+    /// （`AFTER_SYSTEM_PROMPT` 是最常见的默认，猜错了等于把设定塞进错的地方）。
+    pub fn import(text: &str) -> Result<Self, ImportError> {
+        let mut root: serde_json::Value =
+            serde_json::from_str(text).map_err(|error| ImportError {
+                index: 0,
+                entry: String::new(),
+                field: "文件",
+                value: String::new(),
+                message: format!("不是合法的 JSON：{error}"),
+            })?;
+
+        // 形状是 `{"version":1,"type":"lorebook","data":{"entries":[…]}}`。
+        if let Some(entries) = root
+            .get_mut("data")
+            .and_then(|data| data.get_mut("entries"))
+            .and_then(|value| value.as_array_mut())
+        {
+            for (index, entry) in entries.iter_mut().enumerate() {
+                let name = entry
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                for (field, allowed) in [("position", POSITION_NAMES), ("role", ROLE_NAMES)] {
+                    let Some(raw) = entry.get(field).and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let upper = raw.trim().to_ascii_uppercase();
+                    if !allowed.contains(&upper.as_str()) {
+                        return Err(ImportError {
+                            index: index + 1,
+                            entry: name,
+                            field,
+                            value: raw.to_string(),
+                            message: format!("认不出；只收 {}", allowed.join(" / ")),
+                        });
+                    }
+                    entry[field] = serde_json::Value::String(upper);
+                }
+            }
+        }
+
+        serde_json::from_value(root).map_err(|error| ImportError {
+            index: 0,
+            entry: String::new(),
+            field: "文件",
+            value: String::new(),
+            message: format!("结构不对：{error}"),
+        })
+    }
+}
+
+const POSITION_NAMES: &[&str] = &[
+    "BEFORE_SYSTEM_PROMPT",
+    "AFTER_SYSTEM_PROMPT",
+    "TOP_OF_CHAT",
+    "AT_DEPTH",
+    "BOTTOM_OF_CHAT",
+];
+
+const ROLE_NAMES: &[&str] = &["SYSTEM", "USER", "ASSISTANT"];
+
 /// 一条待注入的内容。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Injection {
@@ -575,5 +675,52 @@ mod tests {
             entry("b", Position::TopOfChat, false, &["a"]),
         ]);
         assert_eq!(keyword_index(&book), vec!["a", "b"]);
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    fn book(position: &str, role: &str) -> String {
+        format!(
+            r#"{{"version":1,"type":"lorebook","data":{{"enabled":true,"entries":[{{"id":"e1","name":"猫娘设定","position":"{position}","role":"{role}","content":"她是猫"}}]}}}}"#
+        )
+    }
+
+    /// 两种写法都收：kelivo 是大写蛇形，RikkaHub 是小写。
+    #[test]
+    fn both_spellings_import() {
+        for (position, role) in [
+            ("AFTER_SYSTEM_PROMPT", "SYSTEM"),
+            ("after_system_prompt", "system"),
+        ] {
+            let book = Lorebook::import(&book(position, role)).expect("两种写法都该过");
+            assert_eq!(book.data.entries.len(), 1);
+            assert_eq!(book.data.entries[0].position, Position::AfterSystemPrompt);
+            assert_eq!(book.data.entries[0].role, InjectionRole::System);
+        }
+    }
+
+    /// 认不出的值**点名报错**，不猜默认值。
+    #[test]
+    fn an_unknown_position_names_the_entry() {
+        let error = Lorebook::import(&book("BEFORE_CHAR", "USER")).unwrap_err();
+        assert_eq!(error.index, 1);
+        assert_eq!(error.field, "position");
+        let text = error.to_string();
+        assert!(text.contains("猫娘设定"), "{text}");
+        assert!(text.contains("BEFORE_CHAR"), "{text}");
+        assert!(
+            text.contains("AFTER_SYSTEM_PROMPT"),
+            "要把能填的列出来：{text}"
+        );
+    }
+
+    #[test]
+    fn a_broken_file_says_so_without_an_entry_number() {
+        let error = Lorebook::import("{oops").unwrap_err();
+        assert_eq!(error.index, 0);
+        assert!(error.to_string().contains("不是合法的 JSON"));
     }
 }

@@ -1655,3 +1655,22 @@ F4 下连"小于阈值"的内容都会被换成指针。现在：
   所以周期就是它能做到的最小粒度；再快只是白烧电。
 
 判据：kotlinc 全量只剩 9 个 `R`；设置页不再有「用这个值」。
+
+## D278 世界书导入的读取层（0.15ap 第一块）
+
+`Lorebook::import`：**大小写不敏感**，认不出的值点名报错。
+
+- kelivo 导出的 `position` / `role` 是大写蛇形（`BEFORE_SYSTEM_PROMPT`），RikkaHub 是小写
+  （`before_system_prompt`）。直接 `serde_json::from_str` 只认前者，后者报一句
+  "unknown variant"，用户看不出是哪一条。
+- 只改这两个字段的**写法**，不猜语义：认不出就报错，绝不默默落到默认值
+  （`AFTER_SYSTEM_PROMPT` 是最常见的默认，猜错了等于把设定塞进错的地方）。
+- 错误形状 `ImportError { index, entry, field, value, message }`，`Display` 出来是
+  「第 3 条（猫娘设定）的 position 是「BEFORE_CHAR」：认不出；只收 …」——
+  用户手上是几百条的 JSON，"第 12 行第 30 列"对他没有意义。
+
+这一块只是读取层：**还没接库、接 FFI、接界面、接请求组装**（那是 0.15ap 剩下的四块，
+`lorebook::plan` 已经写好、也还没接）。所以这一批没有新的真机清单。
+
+判据：`both_spellings_import` / `an_unknown_position_names_the_entry` /
+`a_broken_file_says_so_without_an_entry_number`。
