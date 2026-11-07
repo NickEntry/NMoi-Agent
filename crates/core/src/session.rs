@@ -394,6 +394,16 @@ fn attach_images<S: HistoryStore>(
 ///
 /// 1. **最新那一条工具结果不动**——它可能正是模型这一轮要读的东西，换成指针等于没给它。
 /// 2. **归档失败就退回全文**——宁可多花 token，也不要把内容换成一句取不回来的话。
+/// 能被档位降级的内容：**只有工具结果**。
+///
+/// 用户说的话、系统提示、指令注入、世界书、工具定义一律全文——它们是"模型该看到的东西"，
+/// 不是可以省的对话历史（用户 2026-11-07 明确）。`router` 自己的规则 1 也拦这几类，
+/// 这里再列一遍是因为**白名单比黑名单可靠**：以后新加一种 `SourceTag`，
+/// 忘了往黑名单里加就会被悄悄降级，忘了往白名单里加只是没省到。
+fn routable(source: SourceTag) -> bool {
+    matches!(source, SourceTag::ToolResult)
+}
+
 fn apply_forms<S: HistoryStore>(
     store: &mut S,
     session: SessionId,
@@ -407,7 +417,7 @@ fn apply_forms<S: HistoryStore>(
     }
     let last = history.len().saturating_sub(1);
     for (index, message) in history.iter_mut().enumerate() {
-        if message.source != SourceTag::ToolResult || index == last {
+        if !routable(message.source) || index == last {
             continue;
         }
         let text = message.content();
@@ -417,7 +427,16 @@ fn apply_forms<S: HistoryStore>(
         let input =
             crate::router::RouteInput::new(message.role, message.source, &text, message.tokens);
         let decision = crate::router::route(&input, config);
-        let form = level.cap(decision.form, config.truncate_head, config.truncate_tail);
+        // "多大算大"由档位回答：命中这三条就按档位那一档，不看它自己算出来的形态。
+        let form = match decision.rule {
+            crate::router::RuleId::Huge
+            | crate::router::RuleId::Large
+            | crate::router::RuleId::Medium => {
+                level.ceiling(config.truncate_head, config.truncate_tail)
+            }
+            // 内容形态的判定（二进制 / 重复 / 空）：照路由的结论，只是不许比档位更狠。
+            _ => level.cap(decision.form, config.truncate_head, config.truncate_tail),
+        };
         if form == crate::message::ContentForm::Full {
             continue;
         }
@@ -3257,7 +3276,15 @@ mod tests {
         }
 
         let session = SessionId::new();
-        let big = "日志行\n".repeat(8_000);
+        // 内容要**不重复**：纯重复行会被路由的规则 5b 直接判成占位符，
+        // 那样测的就不是"档位"而是"重复检测"了。
+        let mut big = String::new();
+        for index in 0..8_000 {
+            big.push_str(&format!(
+                "第 {index} 行：读取成功，耗时 {} ms\n",
+                index % 97
+            ));
+        }
         let mut history = vec![
             Message::text(
                 MessageId::new(session, 1),
@@ -3285,6 +3312,25 @@ mod tests {
                 4,
                 0,
                 LogicalClock::new(3),
+            ),
+            // 注入类：世界书 / 指令注入。F4 下也必须是全文（用户 2026-11-07）。
+            Message::text(
+                MessageId::new(session, 4),
+                Role::System,
+                SourceTag::WorldBook,
+                &big,
+                40_000,
+                0,
+                LogicalClock::new(4),
+            ),
+            Message::text(
+                MessageId::new(session, 5),
+                Role::System,
+                SourceTag::InstructionInjection,
+                &big,
+                40_000,
+                0,
+                LogicalClock::new(5),
             ),
         ];
         let mut store = ArchiveStore::default();
@@ -3321,6 +3367,8 @@ mod tests {
         );
         assert_eq!(history[0].content(), "看看这份日志", "用户说的话永远全文");
         assert_eq!(history[2].content(), "最新那一条", "最新一条工具结果不动");
+        assert_eq!(history[3].content(), big, "世界书永远全文");
+        assert_eq!(history[4].content(), big, "指令注入永远全文");
     }
 
     /// 图片（D208）：这一轮带的图必须真的进请求体——`content` 变成多模态数组。

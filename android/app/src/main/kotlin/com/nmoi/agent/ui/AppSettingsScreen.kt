@@ -2,6 +2,10 @@ package com.nmoi.agent.ui
 
 import android.content.Context
 import kotlin.math.roundToInt
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +46,30 @@ import androidx.compose.ui.unit.dp
  * - **默认上下文窗口**：模型自己没填窗口时，压缩判据拿它当分母。
  *   这一项存在的前提是"没填也要算"——用户 2026-10-31 定的。
  */
+/**
+ * 应用设置的分页（D276）：项太多，一页铺下来要滚好几屏。
+ *
+ * 三页按"改这件事的时候会一起改"分：生成（重试与轮数）、上下文（窗口 / 压缩 / 档位）、
+ * 图片（上限 / 模式 / 压缩）。搜索只搜这三页的标题与关键词，点一行就进那一页。
+ */
+private enum class SettingsSection(val title: String, val note: String, val keywords: String) {
+    Generation(
+        title = "生成",
+        note = "允许生成新版本 · 工具轮数上限",
+        keywords = "生成 版本 重试 覆盖 轮数 工具 上限 循环",
+    ),
+    Context(
+        title = "上下文",
+        note = "默认窗口 · 压缩两条线 · 输出预留 · 档位与阈值",
+        keywords = "上下文 窗口 压缩 建议线 绝对线 输出 预留 档位 F1 F2 F3 F4 阈值 路由 截断 指针 占位",
+    ),
+    Images(
+        title = "图片",
+        note = "上限与临时额度 · 直发/路径 · 发图前压缩",
+        keywords = "图片 上限 张数 临时 额度 模式 直发 路径 压缩 质量 长边 短边",
+    ),
+}
+
 @Composable
 internal fun AppSettingsScreen(
     context: Context,
@@ -73,6 +101,11 @@ internal fun AppSettingsScreen(
     var hugeText by remember { mutableStateOf(routerText(context, "context.router.huge", AppSettings.DEFAULT_ROUTER_HUGE)) }
     var headText by remember { mutableStateOf(routerText(context, "context.router.head", AppSettings.DEFAULT_ROUTER_HEAD)) }
     var tailText by remember { mutableStateOf(routerText(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)) }
+    // 当前在哪一页（`null` = 索引页）+ 搜索词（D276）。
+    var section by remember { mutableStateOf<SettingsSection?>(null) }
+    var query by remember { mutableStateOf("") }
+    // 返回键：子页先回索引，索引才交给外面。
+    BackHandler(enabled = section != null) { section = null }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -82,7 +115,7 @@ internal fun AppSettingsScreen(
             ) {
                 BackButton(onBack = onBack)
                 Text(
-                    text = "应用设置",
+                    text = section?.title ?: "应用设置",
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
@@ -90,6 +123,17 @@ internal fun AppSettingsScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                if (section == null) {
+                    SettingsIndex(
+                        query = query,
+                        onQuery = { query = it },
+                        onPick = { picked ->
+                            section = picked
+                            query = ""
+                        },
+                    )
+                } else {
+                if (section == SettingsSection.Generation) {
                 SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
@@ -121,7 +165,9 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
+                if (section == SettingsSection.Context) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
@@ -162,8 +208,10 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
                 // —— 工具轮数（D244）——
+                if (section == SettingsSection.Generation) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
@@ -208,8 +256,10 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
                 // —— 上下文图片上限（D248）——
+                if (section == SettingsSection.Images) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
@@ -306,8 +356,10 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
                 // —— 压缩（D274）——
+                if (section == SettingsSection.Context) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
@@ -428,8 +480,10 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
                 // —— 上下文档位（D275）——
+                if (section == SettingsSection.Context) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
@@ -571,8 +625,10 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
                 // —— 图片模式（D270）——
+                if (section == SettingsSection.Images) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
@@ -610,8 +666,10 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
 
                 // —— 图片压缩（D241）——
+                if (section == SettingsSection.Images) {
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -723,6 +781,9 @@ internal fun AppSettingsScreen(
                         }
                     }
                 }
+                }
+
+                } // section != null
 
                 notice?.let { line ->
                     Text(
@@ -733,6 +794,81 @@ internal fun AppSettingsScreen(
                     )
                 }
                 Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 应用设置的索引页（D276）：搜索框 + 三行入口。
+ *
+ * 为什么要有搜索：项一多，"改哪个"就变成翻页找。搜索按**标题与关键词**匹配
+ * （关键词里放了同义词：张数 / 上限、档位 / F1 / 截断），点一行直接进那一页。
+ */
+@Composable
+private fun SettingsIndex(
+    query: String,
+    onQuery: (String) -> Unit,
+    onPick: (SettingsSection) -> Unit,
+) {
+    val needle = query.trim()
+    val matched = SettingsSection.entries.filter { section ->
+        needle.isEmpty() ||
+            section.title.contains(needle, ignoreCase = true) ||
+            section.note.contains(needle, ignoreCase = true) ||
+            section.keywords.contains(needle, ignoreCase = true)
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                SettingField(
+                    value = query,
+                    onChange = onQuery,
+                    placeholder = "搜设置项（例如 压缩 / 图片 / 档位）",
+                )
+                Text(
+                    text = if (needle.isEmpty()) {
+                        "三页：生成 · 上下文 · 图片。点一行进去改；返回一次回到这里。"
+                    } else if (matched.isEmpty()) {
+                        "没有匹配「$needle」的设置项"
+                    } else {
+                        "匹配到 ${matched.size} 页"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
+        SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+            matched.forEach { section ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 64.dp)
+                        .clickable { onPick(section) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = section.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = section.note,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        imageVector = ActionIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
         }
     }

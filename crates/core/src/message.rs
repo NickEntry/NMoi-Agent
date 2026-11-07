@@ -125,10 +125,14 @@ impl FormLevel {
         }
     }
 
-    /// 把路由结论**夹**到档位以内：结论比档位轻就照结论，比档位重就退到档位那一档。
+    /// 把路由结论**夹**到档位以内：结论比档位更狠（留得更少）就抬回档位那一档。
     ///
     /// 判据按"留多少原文"排：Full > Truncated > Masked > Pointer > IndexOnly。
     /// 夹的时候用档位自己的头尾预算，不用结论里那份——结论可能是按 40k 算的。
+    ///
+    /// 注意：**"大不大"那三条规则不走这里**（`Huge` / `Large` / `Medium` 直接用档位那一档），
+    /// 因为档位就是回答"多大算大、大了留多少"的那一层。这里管的是内容形态的判定
+    /// （二进制 / 重复 / 空）——它们不该因为档位低就被降成"截断一段二进制"。
     pub fn cap(self, form: ContentForm, head_tokens: u32, tail_tokens: u32) -> ContentForm {
         fn rank(form: ContentForm) -> u8 {
             match form {
@@ -140,10 +144,11 @@ impl FormLevel {
             }
         }
         let ceiling = self.ceiling(head_tokens, tail_tokens);
-        if rank(form) <= rank(ceiling) {
-            form
-        } else {
+        // 排名是"留多少原文"：Full 最高。结论比档位**留得少**（更狠）就抬回档位。
+        if rank(form) < rank(ceiling) {
             ceiling
+        } else {
+            form
         }
     }
 }
