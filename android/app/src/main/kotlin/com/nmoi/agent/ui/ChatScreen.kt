@@ -782,27 +782,40 @@ internal fun ChatScreen(
             // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
             GeneratingTracker.mark(sid, true)
             try {
+                // 「允许生成新版本」（D185）。读的是应用设置，不是页面里的缓存。
+                val allowNewVersion = AppSettings.allowNewVersion(context)
                 val result = TurnRepository.regen(
                     context = context,
                     databasePath = databasePath,
                     sessionId = sid,
                     upTo = upTo,
                     target = target,
-                    // 「允许生成新版本」关着 → 覆盖那一版（D185）。读的是应用设置，不是页面里的缓存。
-                    allowNewVersion = AppSettings.allowNewVersion(context),
+                    // **永远先留着两版**（D273）：停止时要问"留哪一版"，问之前上一版不能已经没了。
+                    // 关着"允许生成新版本"的话，成功之后由下面把上一版删掉（覆盖语义不变）。
+                    allowNewVersion = true,
                     append = append,
                     stream = assistant.stream,
                 )
                 result.fold(
                     onSuccess = { outcome ->
                         notice = (if (append) "续话：" else "重试：") + outcome.describe()
-                        // 停止也会把残句写成新版本（core 已经落库）。留不留由用户定：
-                        // 有旧版可切的时候问一句；新发一条没有旧版可留，就只留提示行。
-                        if (outcome.cancelled && target != null) {
+                        // 停止（D273）：开着"允许生成新版本"就**不弹**——两版都在，跟这个设置一致；
+                        // 关着才问"留哪一版"，因为那种情况下默认会覆盖，而覆盖是用户看不见的丢东西。
+                        if (outcome.cancelled && !allowNewVersion && target != null) {
                             stopPrompt = StoppedTurn(
                                 messageId = target,
                                 length = outcome.assistant?.length ?: 0,
                             )
+                        }
+                        // 成功 + 设置是"覆盖"：把上一版删掉（D273 把覆盖从 core 挪到这儿，
+                        // 因为停止时要先留着它）。版号现读，不猜。
+                        if (!outcome.cancelled && !allowNewVersion && target != null) {
+                            val info = ChatRepository.versions(databasePath, target).getOrNull()
+                            val previous = ((info?.active ?: 1) - 1).toLong()
+                            if (previous >= 1L) {
+                                ChatRepository.deleteVersion(databasePath, target, previous)
+                                reloadKey += 1
+                            }
                         }
                     },
                     onFailure = { error ->
@@ -1617,17 +1630,13 @@ internal fun ChatScreen(
             )
         }
 
-        // 停止之后那一问：这一版是残的，留不留由用户定。
-        // 库里已经写进去了，所以「回到上一版」= 删掉刚落的那一版（版号现读，不猜）。
+        // 停止之后那一问（D273）：两版都在库里，留哪一版由用户定。
+        // 只在"允许生成新版本"关着的时候弹——开着的话两版本来就都留着，没什么可问的。
         val pendingStop = stopPrompt
         if (pendingStop != null) {
             StopPromptDialog(
                 stopped = pendingStop,
-                onKeepThis = {
-                    stopPrompt = null
-                    notice = "留着这一版：第 ${pendingStop.length} 字那一段已经存进库里"
-                },
-                onBackToPrevious = {
+                onKeepPrevious = {
                     stopPrompt = null
                     scope.launch {
                         val info = ChatRepository.versions(databasePath, pendingStop.messageId).getOrNull()
@@ -1644,6 +1653,28 @@ internal fun ChatScreen(
                             "上一版没切回去：${dropped.exceptionOrNull()?.message}"
                         }
                     }
+                },
+                onKeepThis = {
+                    stopPrompt = null
+                    scope.launch {
+                        val info = ChatRepository.versions(databasePath, pendingStop.messageId).getOrNull()
+                        val previous = ((info?.active ?: 1) - 1).toLong()
+                        val dropped = if (previous >= 1L) {
+                            ChatRepository.deleteVersion(databasePath, pendingStop.messageId, previous)
+                        } else {
+                            Result.success(0)
+                        }
+                        reloadKey += 1
+                        notice = if (dropped.isSuccess) {
+                            "只留这一版（上一版已删）"
+                        } else {
+                            "这一版留着，但上一版没删掉：${dropped.exceptionOrNull()?.message}"
+                        }
+                    }
+                },
+                onKeepBoth = {
+                    stopPrompt = null
+                    notice = "两版都留着：这一版是停止时那一段，切得回上一版"
                 },
             )
         }
@@ -2566,6 +2597,18 @@ private fun UnitBlock(
             // 旧版那个样子（D262）：圆角底色 + 左侧一个节点，工具行在里面。
             // 折行之后这半行单独成行，`ProcessGroupRow` 那层壳没跟过来，这里补上。
             ToolCard(unit = unit, onOpen = { call -> onOpenTool(unit, call) })
+            // 纯工具那一轮没有正文，动作行没地方挂——但**版本控件不能跟着一起消失**：
+            // 这一轮有 `<n/n>` 的话，用户得能切回去（D273）。
+            val last = unit.messages.lastOrNull()
+            if (slice == UnitSlice.ToolsOnly && last != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    // `VersionControl` 自己会判断"只有一版且没被改过"就不画。
+                    VersionControl(message = last) { no, view -> onVersionMessage(last.id, no, view) }
+                }
+            }
         } else {
             unit.messages.forEach { message ->
                 when {
@@ -2605,8 +2648,10 @@ private fun UnitBlock(
                             onOpenDoneCall = onOpenDoneCall,
                             finishedThinkingOpen = finishedThinkingOpen,
                             onToggleFinishedThinking = onToggleFinishedThinking,
-                            // 折行之后这一轮的动作行收在工具块后面（D262），这里不画。
-                            showActions = slice != UnitSlice.TextOnly,
+                            // 动作行跟着**正文**走（D273）：折行之后正文单独一行，
+                            // 它就是这一条消息的正文，复制 / 更多 / 版本都该在这里。
+                            // 只有"纯工具那半行"（ToolsOnly）不画——那里没有正文可复制。
+                            showActions = slice != UnitSlice.ToolsOnly,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -3246,21 +3291,21 @@ private data class StoppedTurn(
 )
 
 /**
- * 停止之后问一句：这一版留着，还是回到上一版。
+ * 停止之后问一句（D273）：留哪一版。
  *
- * 两条规矩：
+ * 只在"允许生成新版本"关着时弹——开着的话两版本来就都留着，没什么可问的。
+ * 三项和失败三选一同形：保留上一版 / 保留这一版 / 都保留。
  *
- * 1. **默认留着这一版**——它是库里此刻的状态，默认动作不该是删东西。
- * 2. **必须处理**（和失败三选一同一套）：关掉等于替用户选了"留着"，而这一屏存在的
- *    理由就是"别替他选"。
+ * 默认「保留上一版」：停止留下的是半截，回到能看的那一版是最常想做的事（D228 同一条）。
  */
 @Composable
 private fun StopPromptDialog(
     stopped: StoppedTurn,
+    onKeepPrevious: () -> Unit,
     onKeepThis: () -> Unit,
-    onBackToPrevious: () -> Unit,
+    onKeepBoth: () -> Unit,
 ) {
-    var back by remember(stopped) { mutableStateOf(false) }
+    var mode by remember(stopped) { mutableStateOf(KeepMode.Previous) }
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -3286,32 +3331,43 @@ private fun StopPromptDialog(
                         modifier = Modifier.padding(top = 4.dp),
                     )
                     Text(
-                        text = "这一版已经存进库里（${stopped.length} 字），上一版还在。",
+                        text = "这一版已经存进库里（正文 ${stopped.length} 字，工具与思考也一起），上一版还在。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp),
                     )
                     Spacer(Modifier.height(10.dp))
                     KeepChoice(
-                        title = "留着这一版",
-                        note = "当前显示的就是它；上一版切得回去。",
-                        selected = !back,
+                        title = "保留上一版",
+                        note = "回到停止之前那一版，这次写到的内容不留。",
+                        selected = mode == KeepMode.Previous,
                         enabled = true,
-                        onPick = { back = false },
+                        onPick = { mode = KeepMode.Previous },
                     )
                     KeepChoice(
-                        title = "回到上一版",
-                        note = "删掉这一版，回到停止之前那一版。",
-                        selected = back,
+                        title = "保留这一版",
+                        note = "只留这次写到的（${stopped.length} 字正文，工具与思考也在里面），上一版删掉。",
+                        selected = mode == KeepMode.This,
                         enabled = true,
-                        onPick = { back = true },
+                        onPick = { mode = KeepMode.This },
+                    )
+                    KeepChoice(
+                        title = "都保留",
+                        note = "两版都留着，当前显示这一版，可以切回上一版。",
+                        selected = mode == KeepMode.Both,
+                        enabled = true,
+                        onPick = { mode = KeepMode.Both },
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
                         horizontalArrangement = Arrangement.End,
                     ) {
                         DialogAction(label = "确定", primary = true) {
-                            if (back) onBackToPrevious() else onKeepThis()
+                            when (mode) {
+                                KeepMode.Previous -> onKeepPrevious()
+                                KeepMode.This -> onKeepThis()
+                                KeepMode.Both -> onKeepBoth()
+                            }
                         }
                     }
                 }
