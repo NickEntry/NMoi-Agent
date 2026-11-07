@@ -98,6 +98,12 @@ internal object LorebookStore {
         }
     }
 
+    /** 内置册的 id 固定：导入按 id 覆盖、恢复默认都认它。 */
+    const val BUILTIN_ID = "builtin"
+    const val BUILTIN_NAME = "内置提示词"
+
+    fun isBuiltin(bookId: String): Boolean = bookId == BUILTIN_ID
+
     fun books(root: JSONObject): JSONArray = root.optJSONArray("books") ?: JSONArray()
 
     fun book(root: JSONObject, bookId: String): JSONObject? {
@@ -140,6 +146,76 @@ internal object LorebookStore {
                 .put("enabled", true)
                 .put("entries", JSONArray()),
         )
+        return root.put("books", books)
+    }
+
+    /** 内置册在文件里只存"自己加的那几条"；内置条目来自预设包，不落盘。 */
+    fun manualEntries(root: JSONObject): JSONArray =
+        book(root, BUILTIN_ID)?.let { entries(it) } ?: JSONArray()
+
+    /** 内置册不存在就建一个空壳（id 固定，名字固定）。 */
+    fun ensureBuiltinBook(root: JSONObject): JSONObject {
+        if (book(root, BUILTIN_ID) != null) return root
+        val books = books(root)
+        books.put(
+            JSONObject()
+                .put("id", BUILTIN_ID)
+                .put("name", BUILTIN_NAME)
+                .put("note", "")
+                .put("enabled", true)
+                .put("entries", JSONArray()),
+        )
+        return root.put("books", books)
+    }
+
+    /** 往内置册里加一条自制条目（内置条目不能加，那是预设包的东西）。 */
+    fun addManualEntry(root: JSONObject): JSONObject =
+        addEntry(ensureBuiltinBook(root), BUILTIN_ID)
+
+    /**
+     * 内置册按 id 补缺（§10.2）：文件里没有的保留、同 id 的覆盖正文、自制条目原样留着。
+     *
+     * 它跟别的册不一样：别的册是"整册替换"，内置册**不能减法**——那是应用自带的那几条，
+     * 少一条就等于悄悄改了行为。
+     */
+    fun mergeIntoBuiltin(root: JSONObject, incoming: JSONObject): JSONObject {
+        val target = ensureBuiltinBook(root)
+        val targetBook = book(target, BUILTIN_ID) ?: return target
+        val mine = entries(targetBook)
+        val theirs = entries(incoming)
+        for (index in 0 until theirs.length()) {
+            val entry = theirs.optJSONObject(index) ?: continue
+            val id = entry.optString("id")
+            var replaced = false
+            for (slot in 0 until mine.length()) {
+                val old = mine.optJSONObject(slot) ?: continue
+                if (old.optString("id") == id) {
+                    mine.put(slot, entry)
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) mine.put(entry)
+        }
+        targetBook.put("entries", mine)
+        return target
+    }
+
+    /** 按 id 放一册进去：同 id 就整册换掉（§10.2），没有就追加。 */
+    fun putBookObject(root: JSONObject, book: JSONObject): JSONObject {
+        val id = book.optString("id").ifBlank { nextId(books(root), "b") }
+        book.put("id", id)
+        val books = books(root)
+        var replaced = false
+        for (index in 0 until books.length()) {
+            val old = books.optJSONObject(index) ?: continue
+            if (old.optString("id") == id) {
+                books.put(index, book)
+                replaced = true
+                break
+            }
+        }
+        if (!replaced) books.put(book)
         return root.put("books", books)
     }
 

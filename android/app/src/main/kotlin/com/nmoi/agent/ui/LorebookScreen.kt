@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -57,7 +58,7 @@ import org.json.JSONObject
  * 摆一个拨了不生效的开关，比不摆更坏。
  */
 @Composable
-internal fun LorebookScreen(context: Context, onBack: () -> Unit) {
+internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -> Unit) {
     var root by remember { mutableStateOf(LorebookStore.library(context)) }
     var expanded by remember { mutableStateOf(setOf<String>()) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -66,6 +67,14 @@ internal fun LorebookScreen(context: Context, onBack: () -> Unit) {
     var creating by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<List<JSONObject>?>(null) }
     var exportTarget by remember { mutableStateOf<JSONObject?>(null) }
+    // 内置册的条目来自预设包（§10.1）：不复制数据，这一册是那份词条的视图。
+    var presetReload by remember { mutableStateOf(0) }
+    val presets by produceState(initialValue = emptyList<PresetView>(), presetReload) {
+        value = withContext(Dispatchers.IO) {
+            PresetRepository.list(context, databasePath).getOrNull()?.items.orEmpty()
+        }
+    }
+    var presetSheet by remember { mutableStateOf<PresetEntryView?>(null) }
     val scope = rememberCoroutineScope()
 
     // 每次改动都从**当前树**拷一份再改：`JSONObject` 是可变对象，原地改不会触发重组，
@@ -185,9 +194,50 @@ internal fun LorebookScreen(context: Context, onBack: () -> Unit) {
                 }
             }
 
+            BuiltinCard(
+                presets = presets,
+                manual = LorebookStore.manualEntries(root),
+                expanded = expanded.contains(LorebookStore.BUILTIN_ID),
+                onToggleExpand = {
+                    expanded = if (expanded.contains(LorebookStore.BUILTIN_ID)) {
+                        expanded - LorebookStore.BUILTIN_ID
+                    } else {
+                        expanded + LorebookStore.BUILTIN_ID
+                    }
+                },
+                onOpenPreset = { presetSheet = it },
+                onAddManual = {
+                    commit { LorebookStore.addManualEntry(it) }
+                    expanded = expanded + LorebookStore.BUILTIN_ID
+                },
+                onEditManual = { entryId -> editing = EditTarget(LorebookStore.BUILTIN_ID, entryId) },
+                onToggleManual = { entryId, on ->
+                    commit { LorebookStore.setEntryEnabled(it, LorebookStore.BUILTIN_ID, entryId, on) }
+                },
+                onReset = {
+                    scope.launch {
+                        var reset = 0
+                        presets.forEach { preset ->
+                            preset.entries.filter { it.state != "follow" }.forEach { entry ->
+                                PresetRepository.follow(databasePath, preset.id, entry.id)
+                                    .onSuccess { reset += 1 }
+                            }
+                        }
+                        presetReload += 1
+                        notice = if (reset == 0) {
+                            "内置条目本来就是默认的"
+                        } else {
+                            "已把 $reset 条内置条目恢复成默认"
+                        }
+                    }
+                },
+            )
+
             for (index in 0 until books.length()) {
                 val book = books.optJSONObject(index) ?: continue
                 val bookId = book.optString("id")
+                // 内置册是虚拟的一册（条目来自预设包），不在真册循环里画。
+                if (LorebookStore.isBuiltin(bookId)) continue
                 BookCard(
                     book = book,
                     expanded = expanded.contains(bookId),
@@ -257,6 +307,10 @@ internal fun LorebookScreen(context: Context, onBack: () -> Unit) {
             }
         }
 
+        presetSheet?.let { entry ->
+            PresetEntrySheet(entry = entry, onDismiss = { presetSheet = null })
+        }
+
         if (creating) {
             NewBookSheet(
                 onCreate = { name, note ->
@@ -270,28 +324,65 @@ internal fun LorebookScreen(context: Context, onBack: () -> Unit) {
         preview?.let { incoming ->
             ImportPreviewSheet(
                 books = incoming,
-                existing = existingNames(root),
-                onImport = { overwrite ->
-                    commit { next ->
-                        var out = next
-                        incoming.forEach { book ->
-                            val name = book.optString("name")
-                            if (overwrite) {
-                                LorebookStore.books(out).let { array ->
-                                    for (i in 0 until array.length()) {
-                                        val old = array.optJSONObject(i) ?: continue
-                                        if (old.optString("name") == name) {
-                                            out = LorebookStore.deleteBook(out, old.optString("id"))
-                                        }
-                                    }
+                existing = existingIds(root),
+                onImport = {
+                    scope.launch {
+                        // 内置册里那些"和预设同 id"的条目：覆盖的是预设正文（§10.2 的补缺），
+                        // 不是往世界书里塞一条新的。要写 settings，所以先做。
+                        val presetOwner = presets
+                            .flatMap { preset -> preset.entries.map { entry -> entry.id to preset.id } }
+                            .toMap()
+                        val builtin = incoming.firstOrNull {
+                            LorebookStore.isBuiltin(it.optString("id"))
+                        }
+                        var overridden = 0
+                        if (builtin != null) {
+                            val rows = LorebookStore.entries(builtin)
+                            for (index in 0 until rows.length()) {
+                                val row = rows.optJSONObject(index) ?: continue
+                                val entryId = row.optString("id")
+                                val presetId = presetOwner[entryId] ?: continue
+                                val view = presets.firstOrNull { it.id == presetId }
+                                    ?.entries?.firstOrNull { it.id == entryId } ?: continue
+                                PresetRepository.saveEntry(
+                                    databasePath = databasePath,
+                                    presetId = presetId,
+                                    entry = view,
+                                    content = row.optString("content"),
+                                    disabled = false,
+                                ).onSuccess { overridden += 1 }
+                            }
+                            presetReload += 1
+                        }
+                        var replaced = 0
+                        var added = 0
+                        commit { next ->
+                            var out = next
+                            incoming.forEach { book ->
+                                val id = book.optString("id")
+                                if (LorebookStore.isBuiltin(id)) {
+                                    out = LorebookStore.mergeIntoBuiltin(out, book)
+                                } else {
+                                    if (LorebookStore.book(out, id) != null) replaced++ else added++
+                                    out = LorebookStore.putBookObject(out, book)
                                 }
                             }
-                            out = LorebookStore.addBookObject(out, book)
+                            out
                         }
-                        out
+                        preview = null
+                        notice = buildString {
+                            if (added > 0) append("新增 $added 册")
+                            if (replaced > 0) {
+                                if (isNotEmpty()) append("，")
+                                append("覆盖 $replaced 册")
+                            }
+                            if (overridden > 0) {
+                                if (isNotEmpty()) append("，")
+                                append("内置条目覆盖 $overridden 条")
+                            }
+                            if (isEmpty()) append("这份文件里没有可导入的东西")
+                        }
                     }
-                    preview = null
-                    notice = "已导入 ${incoming.size} 册"
                 },
                 onDismiss = { preview = null },
             )
@@ -340,13 +431,135 @@ private fun singleBookDocument(book: JSONObject): JSONObject = JSONObject()
     .put("type", "lorebook")
     .put("data", JSONObject(book.toString()))
 
-private fun existingNames(root: JSONObject): Set<String> {
+private fun existingIds(root: JSONObject): Set<String> {
     val books = LorebookStore.books(root)
-    val names = LinkedHashSet<String>()
+    val ids = LinkedHashSet<String>()
     for (index in 0 until books.length()) {
-        books.optJSONObject(index)?.optString("name")?.takeIf { it.isNotBlank() }?.let { names.add(it) }
+        books.optJSONObject(index)?.optString("id")?.takeIf { it.isNotBlank() }?.let { ids.add(it) }
     }
-    return names
+    return ids
+}
+
+/**
+ * 内置提示词册（§10.1）：条目来自 `assets/presets`，**不复制数据**。
+ *
+ * 三条规矩：不可删、不可减项（内置条目没有删除与停用）、能增项（自己加的存
+ * `files/lorebook.json` 的 `builtin` 册里，可删可停用）。恢复默认只重置内置那几条。
+ */
+@Composable
+private fun BuiltinCard(
+    presets: List<PresetView>,
+    manual: JSONArray,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onOpenPreset: (PresetEntryView) -> Unit,
+    onAddManual: () -> Unit,
+    onEditManual: (String) -> Unit,
+    onToggleManual: (String, Boolean) -> Unit,
+    onReset: () -> Unit,
+) {
+    val builtinCount = presets.sumOf { it.entries.size }
+    SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggleExpand)
+                .padding(start = 10.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (expanded) ActionIcons.ChevronDown else ActionIcons.ChevronRight,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = LorebookStore.BUILTIN_NAME,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Badge("内置")
+                }
+                Text(
+                    text = "$builtinCount 条内置 · ${manual.length()} 条自制",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+
+        if (expanded) {
+            RowDivider(leading = 36.dp)
+            presets.forEach { preset ->
+                preset.entries.forEach { entry ->
+                    PresetEntryRow(entry = entry, onClick = { onOpenPreset(entry) })
+                }
+            }
+            for (index in 0 until manual.length()) {
+                val entry = manual.optJSONObject(index) ?: continue
+                val entryId = entry.optString("id")
+                EntryRow(
+                    entry = entry,
+                    onClick = { onEditManual(entryId) },
+                    onToggle = { on -> onToggleManual(entryId, on) },
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 36.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChipButton("新建条目", primary = false, onClick = onAddManual)
+                Spacer(Modifier.weight(1f))
+                ChipButton("恢复默认", primary = false, onClick = onReset)
+            }
+        }
+    }
+}
+
+/** 内置条目那一行：只读，没有开关也没有删除（不可减项）。 */
+@Composable
+private fun PresetEntryRow(entry: PresetEntryView, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 36.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = entry.title.ifBlank { "（未命名）" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            Row(
+                modifier = Modifier.padding(top = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Badge("预设")
+                if (entry.state != "follow") {
+                    Spacer(Modifier.width(6.dp))
+                    Badge(entry.label)
+                }
+            }
+        }
+        Icon(
+            imageVector = ActionIcons.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+    }
 }
 
 @Composable
@@ -649,15 +862,15 @@ private fun NewBookSheet(onCreate: (String, String) -> Unit, onDismiss: () -> Un
     }
 }
 
-/** 导入预览：先看再落库（几条、几常驻、几关键词、和现有哪一册重名）。 */
+/** 导入预览：先看再落库。冲突按 **id** 判（§10.2），名字相同不算同一册。 */
 @Composable
 private fun ImportPreviewSheet(
     books: List<JSONObject>,
     existing: Set<String>,
-    onImport: (Boolean) -> Unit,
+    onImport: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val clashes = books.map { it.optString("name") }.filter { existing.contains(it) }
+    val clashes = books.filter { existing.contains(it.optString("id")) }
     SheetFrame(title = "导入预览", onDismiss = onDismiss) {
         Column(
             modifier = Modifier
@@ -683,14 +896,16 @@ private fun ImportPreviewSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (existing.contains(book.optString("name"))) {
-                        Badge("同名")
+                    if (LorebookStore.isBuiltin(book.optString("id"))) {
+                        Badge("内置册")
+                    } else if (existing.contains(book.optString("id"))) {
+                        Badge("同 id")
                     }
                 }
             }
             if (clashes.isNotEmpty()) {
                 Text(
-                    text = "有 ${clashes.size} 册和现有的同名：导入会覆盖同名那一册（旧的那一册没了）。",
+                    text = "同 id 的 ${clashes.size} 册会被整册替换；内置册按 id 补缺，一条都不少。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
@@ -702,11 +917,34 @@ private fun ImportPreviewSheet(
             ) {
                 ChipButton("取消", primary = false, onClick = onDismiss)
                 Spacer(Modifier.weight(1f))
-                ChipButton(
-                    label = if (clashes.isEmpty()) "导入" else "覆盖并导入",
-                    primary = true,
-                    onClick = { onImport(clashes.isNotEmpty()) },
-                )
+                ChipButton("导入", primary = true, onClick = onImport)
+            }
+        }
+    }
+}
+
+/** 内置条目：只读。要改内容去「预设」页——一个动作一个入口。 */
+@Composable
+private fun PresetEntrySheet(entry: PresetEntryView, onDismiss: () -> Unit) {
+    SheetFrame(title = entry.title.ifBlank { "内置条目" }, onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 460.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            Text(
+                text = entry.content.ifBlank { "（这一条是空的）" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Spacer(Modifier.weight(1f))
+                ChipButton("关闭", primary = true, onClick = onDismiss)
             }
         }
     }

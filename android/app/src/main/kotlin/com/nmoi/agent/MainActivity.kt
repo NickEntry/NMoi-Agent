@@ -613,6 +613,7 @@ class MainActivity : ComponentActivity() {
 
                         Route.Lorebook -> LorebookScreen(
                             context = context,
+                            databasePath = databasePath,
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
