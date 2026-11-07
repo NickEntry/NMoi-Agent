@@ -29,6 +29,7 @@ internal object AppSettings {
     private const val KEY_ROUTER_HUGE = "context.router.huge"
     private const val KEY_ROUTER_HEAD = "context.router.head"
     private const val KEY_ROUTER_TAIL = "context.router.tail"
+    private const val KEY_UI_REFRESH = "ui.refresh_ms"
 
     /**
      * 一轮里允许模型"调工具再开口"几次。**0 = 不限制**（D245，默认就是 0）。
@@ -150,6 +151,26 @@ internal object AppSettings {
 
     fun setReserveOutput(context: Context, value: Int) {
         prefs(context).edit().putInt(KEY_RESERVE, value.coerceIn(0, MAX_RESERVE)).apply()
+    }
+
+    /**
+     * 界面刷新周期（D277）：流式那一轮的轮询间隔，也是"正在跑"那些秒数的刷新节奏。
+     *
+     * 默认 **50 ms**（用户 2026-11-07 定的）。这一条不是"越快越好"：
+     * 每一拍都要过 JNI 读一次 `turn_busy`，太快只是白烧电。20–500 之间可调。
+     */
+    const val DEFAULT_UI_REFRESH = 50
+    const val MIN_UI_REFRESH = 20
+    const val MAX_UI_REFRESH = 500
+
+    fun uiRefreshMs(context: Context): Int =
+        prefs(context).getInt(KEY_UI_REFRESH, DEFAULT_UI_REFRESH)
+            .coerceIn(MIN_UI_REFRESH, MAX_UI_REFRESH)
+
+    fun setUiRefreshMs(context: Context, value: Int) {
+        prefs(context).edit()
+            .putInt(KEY_UI_REFRESH, value.coerceIn(MIN_UI_REFRESH, MAX_UI_REFRESH))
+            .apply()
     }
 
     /**

@@ -417,6 +417,9 @@ internal fun ChatScreen(
         }
     }
 
+    // 界面刷新周期（D277）：流式轮询与"跑了多久"的刷新节奏。默认 50 ms，设置里可调。
+    val refreshMs = remember { AppSettings.uiRefreshMs(context) }
+
     // 原生 EditText 的引用：抽屉打开时要主动清焦点 + 收输入法。
     // Compose 的 clearFocus 对 AndroidView 里的原生控件不一定生效，所以这里拿真控件。
     val editTextRef = remember { mutableStateOf<EditText?>(null) }
@@ -471,10 +474,10 @@ internal fun ChatScreen(
             }
             // 还没开始：给 native 一点时间登记，但别无限空转。
             if (!poll.started) {
-                waited += 100
+                waited += refreshMs
                 if (waited > 15_000) break
             }
-            delay(100)
+            delay(refreshMs.toLong())
         }
     }
 

@@ -2,6 +2,7 @@ package com.nmoi.agent.ui
 
 import android.content.Context
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
@@ -24,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +70,11 @@ private enum class SettingsSection(val title: String, val note: String, val keyw
         note = "上限与临时额度 · 直发/路径 · 发图前压缩",
         keywords = "图片 上限 张数 临时 额度 模式 直发 路径 压缩 质量 长边 短边",
     ),
+    Ui(
+        title = "界面",
+        note = "刷新周期（流式与计时）",
+        keywords = "界面 刷新 周期 毫秒 流式 轮询 卡顿 频率",
+    ),
 }
 
 @Composable
@@ -104,6 +111,86 @@ internal fun AppSettingsScreen(
     // 当前在哪一页（`null` = 索引页）+ 搜索词（D276）。
     var section by remember { mutableStateOf<SettingsSection?>(null) }
     var query by remember { mutableStateOf("") }
+    var refreshText by remember { mutableStateOf(AppSettings.uiRefreshMs(context).toString()) }
+    // 输入框自动保存（D277）：停手 **100 ms** 就写，不用再点"用这个值"。
+    //
+    // 只在这一页**显示时**监听：`LaunchedEffect` 跟着组合走，离开页面就取消，
+    // 不会在后台空转。每一行自己判"这个数合不合法"——不合法就当没改，
+    // 用户继续打字时不会把半截数字写进去。
+    LaunchedEffect(windowText) {
+        delay(100)
+        windowText.trim().toIntOrNull()?.takeIf { it > 0 }
+            ?.let { AppSettings.setDefaultContextWindow(context, it) }
+    }
+    LaunchedEffect(roundsText) {
+        delay(100)
+        roundsText.trim().toIntOrNull()?.takeIf { it in 0..10_000 }
+            ?.let { AppSettings.setMaxRounds(context, it) }
+    }
+    LaunchedEffect(imageLimitText) {
+        delay(100)
+        imageLimitText.trim().toIntOrNull()?.takeIf { it in 1..AppSettings.MAX_IMAGE_LIMIT }
+            ?.let { AppSettings.setImageLimit(context, it) }
+    }
+    LaunchedEffect(imageTempText) {
+        delay(100)
+        imageTempText.trim().toIntOrNull()?.takeIf { it in 0..AppSettings.MAX_IMAGE_LIMIT }
+            ?.let { AppSettings.setImageTempLimit(context, it) }
+    }
+    LaunchedEffect(suggestText) {
+        delay(100)
+        parsePercent(suggestText)?.takeIf { it in 30.0..95.0 }
+            ?.let { AppSettings.setSuggestLine(context, it / 100) }
+    }
+    LaunchedEffect(absoluteText) {
+        delay(100)
+        parsePercent(absoluteText)?.takeIf { it in 40.0..99.0 }
+            ?.let { AppSettings.setAbsoluteLine(context, it / 100) }
+    }
+    LaunchedEffect(reserveText) {
+        delay(100)
+        reserveText.trim().toIntOrNull()
+            ?.takeIf { it == 0 || it in AppSettings.MIN_RESERVE..AppSettings.MAX_RESERVE }
+            ?.let { AppSettings.setReserveOutput(context, it) }
+    }
+    LaunchedEffect(refreshText) {
+        delay(100)
+        refreshText.trim().toIntOrNull()
+            ?.takeIf { it in AppSettings.MIN_UI_REFRESH..AppSettings.MAX_UI_REFRESH }
+            ?.let { AppSettings.setUiRefreshMs(context, it) }
+    }
+    LaunchedEffect(longText, shortText, qualityText) {
+        delay(100)
+        val long = longText.trim().toIntOrNull()
+        val short = shortText.trim().toIntOrNull()
+        val quality = qualityText.trim().toIntOrNull()
+        if (long != null && long > 0 && short != null && short > 0 &&
+            quality != null && quality in 1..100
+        ) {
+            AppSettings.setImageLongEdge(context, long)
+            AppSettings.setImageShortEdge(context, short)
+            AppSettings.setImageQuality(context, quality)
+        }
+    }
+    LaunchedEffect(smallText, largeText, hugeText, headText, tailText) {
+        delay(100)
+        val small = smallText.trim().toIntOrNull()
+        val large = largeText.trim().toIntOrNull()
+        val huge = hugeText.trim().toIntOrNull()
+        val head = headText.trim().toIntOrNull()
+        val tail = tailText.trim().toIntOrNull()
+        // 三个阈值必须递增：不递增就当没改，别写一个"大的比小的小"的配置进去。
+        if (small != null && large != null && huge != null && head != null && tail != null &&
+            small <= large && large <= huge && head >= 0 && tail >= 0
+        ) {
+            AppSettings.setRouterValue(context, "context.router.small", small)
+            AppSettings.setRouterValue(context, "context.router.large", large)
+            AppSettings.setRouterValue(context, "context.router.huge", huge)
+            AppSettings.setRouterValue(context, "context.router.head", head)
+            AppSettings.setRouterValue(context, "context.router.tail", tail)
+        }
+    }
+
     // 返回键：子页先回索引，索引才交给外面。
     BackHandler(enabled = section != null) { section = null }
 
@@ -133,6 +220,40 @@ internal fun AppSettingsScreen(
                         },
                     )
                 } else {
+                if (section == SettingsSection.Ui) {
+                SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "界面刷新周期（毫秒）",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "流式那一轮每这么久问一次原生层\"写到哪了\"，\"跑了多久\"也按这个节奏走。" +
+                                "默认 ${AppSettings.DEFAULT_UI_REFRESH} ms；可调 " +
+                                "${AppSettings.MIN_UI_REFRESH}–${AppSettings.MAX_UI_REFRESH}。\n" +
+                                "调小更跟手，但每一拍都要过 JNI 读一次，太小只是白烧电。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        SettingField(
+                            value = refreshText,
+                            onChange = { refreshText = it },
+                            placeholder = AppSettings.DEFAULT_UI_REFRESH.toString(),
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Row(modifier = Modifier.padding(top = 8.dp)) {
+                            SettingChip("恢复默认", selected = false) {
+                                AppSettings.setUiRefreshMs(context, AppSettings.DEFAULT_UI_REFRESH)
+                                refreshText = AppSettings.uiRefreshMs(context).toString()
+                                notice = "刷新周期恢复成 ${AppSettings.DEFAULT_UI_REFRESH} ms"
+                            }
+                        }
+                    }
+                }
+                }
+
                 if (section == SettingsSection.Generation) {
                 SettingsCard(modifier = Modifier.padding(top = 8.dp)) {
                     Row(
@@ -189,17 +310,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这个值", selected = false) {
-                                val parsed = windowText.trim().toIntOrNull()
-                                if (parsed == null || parsed <= 0) {
-                                    notice = "窗口要填正整数"
-                                } else {
-                                    AppSettings.setDefaultContextWindow(context, parsed)
-                                    windowText = parsed.toString()
-                                    notice = "默认窗口改成 $parsed"
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复 128000", selected = false) {
                                 AppSettings.setDefaultContextWindow(context, AppSettings.DEFAULT_WINDOW)
                                 windowText = AppSettings.DEFAULT_WINDOW.toString()
@@ -234,20 +344,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这个值", selected = false) {
-                                val parsed = roundsText.trim().toIntOrNull()
-                                if (parsed == null ||
-                                    parsed < AppSettings.MIN_MAX_ROUNDS ||
-                                    parsed > AppSettings.MAX_MAX_ROUNDS
-                                ) {
-                                    notice = "轮数要填 0–${AppSettings.MAX_MAX_ROUNDS}（0 = 不限制）"
-                                } else {
-                                    AppSettings.setMaxRounds(context, parsed)
-                                    roundsText = AppSettings.maxRounds(context).toString()
-                                    notice = "工具轮数上限改成 ${AppSettings.maxRoundsLabel(context)}"
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复不限制", selected = false) {
                                 AppSettings.setMaxRounds(context, AppSettings.DEFAULT_MAX_ROUNDS)
                                 roundsText = AppSettings.DEFAULT_MAX_ROUNDS.toString()
@@ -282,20 +378,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这个值", selected = false) {
-                                val parsed = imageLimitText.trim().toIntOrNull()
-                                if (parsed == null ||
-                                    parsed < 1 ||
-                                    parsed > AppSettings.MAX_IMAGE_LIMIT
-                                ) {
-                                    notice = "图片上限要填 1–${AppSettings.MAX_IMAGE_LIMIT} 张"
-                                } else {
-                                    AppSettings.setImageLimit(context, parsed)
-                                    imageLimitText = AppSettings.imageLimit(context).toString()
-                                    notice = "上下文图片上限改成 ${AppSettings.imageLimit(context)} 张"
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setImageLimit(context, AppSettings.DEFAULT_IMAGE_LIMIT)
                                 imageLimitText = AppSettings.DEFAULT_IMAGE_LIMIT.toString()
@@ -333,21 +415,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这个值", selected = false) {
-                                val parsed = imageTempText.trim().toIntOrNull()
-                                if (parsed == null || parsed < 0 || parsed > AppSettings.MAX_IMAGE_LIMIT) {
-                                    notice = "临时额度要填 0–${AppSettings.MAX_IMAGE_LIMIT} 张"
-                                } else {
-                                    AppSettings.setImageTempLimit(context, parsed)
-                                    imageTempText = AppSettings.imageTempLimit(context).toString()
-                                    notice = if (parsed == 0) {
-                                        "临时额度关掉了：满了直接丢最旧的"
-                                    } else {
-                                        "临时额度改成 ${AppSettings.imageTempLimit(context)} 张"
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setImageTempLimit(context, AppSettings.DEFAULT_IMAGE_TEMP)
                                 imageTempText = AppSettings.DEFAULT_IMAGE_TEMP.toString()
@@ -398,32 +465,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 4.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这两个值", selected = false) {
-                                val suggest = parsePercent(suggestText)
-                                val absolute = parsePercent(absoluteText)
-                                if (suggest == null || absolute == null) {
-                                    notice = "两条线都要填 1–99 之间的百分数，例如 75"
-                                } else if (suggest < AppSettings.MIN_SUGGEST * 100 ||
-                                    suggest > AppSettings.MAX_SUGGEST * 100
-                                ) {
-                                    notice = "建议线要填 ${(AppSettings.MIN_SUGGEST * 100).toInt()}–" +
-                                        "${(AppSettings.MAX_SUGGEST * 100).toInt()} 之间"
-                                } else if (absolute < AppSettings.MIN_ABSOLUTE * 100 ||
-                                    absolute > AppSettings.MAX_ABSOLUTE * 100
-                                ) {
-                                    notice = "绝对线要填 ${(AppSettings.MIN_ABSOLUTE * 100).toInt()}–" +
-                                        "${(AppSettings.MAX_ABSOLUTE * 100).toInt()} 之间"
-                                } else if (absolute <= suggest) {
-                                    notice = "绝对线要高于建议线（现在 $suggest ≥ $absolute）"
-                                } else {
-                                    AppSettings.setSuggestLine(context, suggest / 100.0)
-                                    AppSettings.setAbsoluteLine(context, absolute / 100.0)
-                                    suggestText = percentText(AppSettings.suggestLine(context))
-                                    absoluteText = percentText(AppSettings.absoluteLine(context))
-                                    notice = "压缩两条线改成 $suggest / $absolute（下一轮生效）"
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setSuggestLine(context, AppSettings.DEFAULT_SUGGEST)
                                 AppSettings.setAbsoluteLine(context, AppSettings.DEFAULT_ABSOLUTE)
@@ -453,25 +494,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这个值", selected = false) {
-                                val parsed = reserveText.trim().toIntOrNull()
-                                if (parsed == null || parsed < 0 ||
-                                    (parsed in 1 until AppSettings.MIN_RESERVE) ||
-                                    parsed > AppSettings.MAX_RESERVE
-                                ) {
-                                    notice = "要么填 0（按模型算），要么填 " +
-                                        "${AppSettings.MIN_RESERVE}–${AppSettings.MAX_RESERVE}"
-                                } else {
-                                    AppSettings.setReserveOutput(context, parsed)
-                                    reserveText = AppSettings.reserveOutput(context).toString()
-                                    notice = if (parsed == 0) {
-                                        "输出预留恢复成按模型算"
-                                    } else {
-                                        "输出预留改成 $parsed token"
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setReserveOutput(context, AppSettings.DEFAULT_RESERVE)
                                 reserveText = AppSettings.DEFAULT_RESERVE.toString()
@@ -582,33 +604,6 @@ internal fun AppSettingsScreen(
                             modifier = Modifier.padding(top = 4.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("用这些值", selected = false) {
-                                val small = smallText.trim().toIntOrNull()
-                                val large = largeText.trim().toIntOrNull()
-                                val huge = hugeText.trim().toIntOrNull()
-                                val head = headText.trim().toIntOrNull()
-                                val tail = tailText.trim().toIntOrNull()
-                                when {
-                                    listOf(small, large, huge, head, tail).any { it == null || it < 0 } ->
-                                        notice = "五个数都要填非负整数"
-                                    small!! > large!! || large > huge!! ->
-                                        notice = "阈值要递增：小 ≤ 大 ≤ 超大（现在 $small / $large / $huge）"
-                                    else -> {
-                                        AppSettings.setRouterValue(context, "context.router.small", small)
-                                        AppSettings.setRouterValue(context, "context.router.large", large)
-                                        AppSettings.setRouterValue(context, "context.router.huge", huge)
-                                        AppSettings.setRouterValue(context, "context.router.head", head!!)
-                                        AppSettings.setRouterValue(context, "context.router.tail", tail!!)
-                                        smallText = routerText(context, "context.router.small", AppSettings.DEFAULT_ROUTER_SMALL)
-                                        largeText = routerText(context, "context.router.large", AppSettings.DEFAULT_ROUTER_LARGE)
-                                        hugeText = routerText(context, "context.router.huge", AppSettings.DEFAULT_ROUTER_HUGE)
-                                        headText = routerText(context, "context.router.head", AppSettings.DEFAULT_ROUTER_HEAD)
-                                        tailText = routerText(context, "context.router.tail", AppSettings.DEFAULT_ROUTER_TAIL)
-                                        notice = "内容形态阈值改成 $small / $large / $huge，头尾 $head / $tail"
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setRouterValue(context, "context.router.small", AppSettings.DEFAULT_ROUTER_SMALL)
                                 AppSettings.setRouterValue(context, "context.router.large", AppSettings.DEFAULT_ROUTER_LARGE)
@@ -750,25 +745,6 @@ internal fun AppSettingsScreen(
                             }
                         }
                         Row(modifier = Modifier.padding(top = 10.dp)) {
-                            SettingChip("用这三个值", selected = false) {
-                                val long = longText.trim().toIntOrNull()
-                                val short = shortText.trim().toIntOrNull()
-                                val quality = qualityText.trim().toIntOrNull()
-                                if (long == null || long <= 0 || short == null || short <= 0) {
-                                    notice = "长边/短边要填正整数"
-                                } else if (quality == null || quality !in 1..100) {
-                                    notice = "质量要填 1–100"
-                                } else {
-                                    AppSettings.setImageLongEdge(context, long)
-                                    AppSettings.setImageShortEdge(context, short)
-                                    AppSettings.setImageQuality(context, quality)
-                                    longText = long.toString()
-                                    shortText = short.toString()
-                                    qualityText = quality.toString()
-                                    notice = "以后发图按 长边 $long / 短边 $short / 质量 $quality%"
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setImageLongEdge(context, AppSettings.DEFAULT_IMAGE_LONG)
                                 AppSettings.setImageShortEdge(context, AppSettings.DEFAULT_IMAGE_SHORT)
