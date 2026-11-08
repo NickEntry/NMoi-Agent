@@ -1624,7 +1624,9 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
 /// "用户让我改一条消息"和"模型回了新正文"这两条假对话——下一次压缩、下一次上下文
 /// 都会把它们当成真的。
 ///
-/// 入参：`{provider{id,kind,base_url,api_key?}, model, prompt, system?, max_tokens?, temperature?}`
+/// 入参：`{provider{id,kind,base_url,api_key?}, model, prompt, system?, max_tokens?, temperature?,
+/// images?}`。`images` 与 `turn_run` 同形（`[{mime,data}]`，最多 4 张）——视觉覆盖那条旁路靠它：
+/// 拿一张图 + 一段固定提示词，换回一段文字。
 /// 出参：`{text, reasoning, finish, usage{prompt, completion}}`
 ///
 /// 思考内容单独给（`reasoning`），不混进 `text`：围栏解析在 `text` 上做，
@@ -1678,6 +1680,20 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
         }
         if let Some(temperature) = temperature {
             request = request.temperature(temperature);
+        }
+        // 图片挂在那条用户消息上（`images` 按消息 id 索引）。视觉覆盖要用它：
+        // 一张图 + 一段固定提示词 → 一段文字。
+        let images = parse_images(text)?;
+        if !images.is_empty() {
+            let target = request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::User)
+                .map(|message| message.id.clone());
+            if let Some(id) = target {
+                request.images.push((id, images));
+            }
         }
 
         let client = crate::proxy::client();

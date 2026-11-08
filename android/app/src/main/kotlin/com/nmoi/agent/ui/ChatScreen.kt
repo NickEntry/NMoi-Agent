@@ -1145,8 +1145,30 @@ internal fun ChatScreen(
                     }
                     // 空白会话的草稿挪到真 id：用户回来时那半句还应该在。
                     DraftStore.migrateNewTo(context, sid)
+                    // 视觉覆盖（D291）：这个角色指定了独立模型时，先把图转录成文字再发。
+                    // 失败或没启用就照旧发图——旁路挂了不该把用户的消息卡住。
+                    var bodyToSend = body
+                    var imagesToSend = images
+                    if (images.isNotEmpty()) {
+                        if (RoleRunner.target(context, databasePath, ModelRole.Vision) != null) {
+                            notice = "视觉覆盖：正在读 ${images.size} 张图…"
+                        }
+                        val transcript = runCatching {
+                            RoleRunner.transcribe(context, databasePath, images)
+                        }.getOrNull()
+                        notice = null
+                        if (transcript != null) {
+                            bodyToSend = if (text.isBlank()) {
+                                transcript
+                            } else {
+                                "$text\n\n$transcript"
+                            }
+                            imagesToSend = emptyList()
+                            NLog.i("Chat", "视觉覆盖：${images.size} 张图已转录成 ${transcript.length} 字")
+                        }
+                    }
                     if (TurnRunner.isRunning(sid)) {
-                        if (images.isNotEmpty()) {
+                        if (imagesToSend.isNotEmpty()) {
                             // 队列里只存文字：带图的这一轮排进去，图就悄悄丢了。
                             draft = text
                             pendingImages = images
@@ -1155,8 +1177,8 @@ internal fun ChatScreen(
                         }
                         val position = SendQueue.enqueue(sid, text)
                         notice = "已排队（第 $position 位）：这一轮结束后自动继续"
-                    } else if (!TurnRunner.start(context, databasePath, sid, body, images)) {
-                        if (images.isNotEmpty()) {
+                    } else if (!TurnRunner.start(context, databasePath, sid, bodyToSend, imagesToSend)) {
+                        if (imagesToSend.isNotEmpty()) {
                             draft = text
                             pendingImages = images
                             notice = "这一轮马上结束：等它收尾再发图（排队暂不支持图片）"
@@ -1171,9 +1193,9 @@ internal fun ChatScreen(
                         // `remember(sessionId)` 清掉——那样第一句话就看不见了。
                         pending = PendingSend(
                             session = sid,
-                            text = body,
+                            text = bodyToSend,
                             at = System.currentTimeMillis(),
-                            imageCount = images.size,
+                            imageCount = imagesToSend.size,
                         )
                     }
                 }
