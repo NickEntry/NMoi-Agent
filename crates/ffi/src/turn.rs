@@ -339,6 +339,12 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
         Some(_) if chat.is_none() => None,
         Some(_) => Some(PathBuf::from(envir_path(value, "chat_images")?)),
     };
+    // 会话自己的 `/tmp`（D294）：可选。给了才绑——没给时容器用 rootfs 自己那份，
+    // 与文件工具的 `/tmp` 就不是同一份了（老版本发上来的配置正是这种）。
+    let session_tmp = match value.get("session_tmp") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(PathBuf::from(envir_path(value, "session_tmp")?)),
+    };
     Ok(Some(EnvirSpec {
         proot: paths[0].clone(),
         loader: paths[1].clone(),
@@ -348,6 +354,7 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
         resolv,
         chat,
         chat_images,
+        session_tmp,
     }))
 }
 

@@ -42,7 +42,19 @@ internal object ToolingRepository {
         File(File(File(context.filesDir, "sessions"), sessionId), "images")
 
     /**
-     * 删掉这个会话自己的目录（`sessions/<id>/`，含 `chat/` 与 `images/`）。
+     * 这个会话自己的暂存目录（`sessions/<id>/tmp`，D294）。
+     *
+     * 文件工具里的 `/tmp` 落到这儿，容器里的 `/tmp` 挂的也是它——**两边是同一份**。
+     * 系统 shell 不做这个映射：它跑在宿主上，`/tmp` 是宿主自己的。
+     *
+     * 这里不 `mkdirs()`：谁用谁建（工具第一次写时建、容器起之前 `EnvirSpec` 建），
+     * 光打开一条会话不该在盘上多出一个空目录。
+     */
+    fun sessionTmpRoot(context: Context, sessionId: String): File =
+        File(File(File(context.filesDir, "sessions"), sessionId), "tmp")
+
+    /**
+     * 删掉这个会话自己的目录（`sessions/<id>/`，含 `chat/`、`images/` 与 `tmp/`）。
      *
      * 只在**库里的会话真的删掉之后**调：先删库再删文件，顺序反了会出现
      * "消息还在、图没了"——那比留着垃圾目录糟得多。

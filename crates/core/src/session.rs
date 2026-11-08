@@ -69,6 +69,16 @@ pub trait HistoryStore {
         None
     }
 
+    /// 这个会话自己的暂存目录（`sessions/<id>/tmp`，D294）。
+    ///
+    /// 文件工具里的 `/tmp` 落到这儿，容器起的时候同一份挂到 guest 的 `/tmp`。
+    /// 默认 `None` = 这个实现没有会话目录：那时 `/tmp` 报错，**不退回宿主的 `/tmp`**
+    /// （退回等于让两个会话共用一份，正是要隔离掉的东西）。
+    fn session_tmp_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        let _ = session;
+        None
+    }
+
     /// 把这一轮用户带的图片落到那条消息上（D208）。
     ///
     /// 默认实现**什么都不存**（内存实现没有附件表），但这一轮的请求里仍然会带上它们——
@@ -883,9 +893,11 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     ctx = ctx.with_call_session(&call_session);
     // 上下文图片（D248）：附件目录给 `View-Image` 用，上限跟着这一轮的配置走。
     let images_dir = store.attachment_dir(session);
+    let session_tmp = store.session_tmp_dir(session);
     ctx = ctx
         .with_images(images_dir.as_deref(), config.turn.image_limit)
-        .with_image_room(config.turn.image_temp_limit);
+        .with_image_room(config.turn.image_temp_limit)
+        .with_session_tmp(session_tmp.as_deref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1127,9 +1139,11 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     crate::kills::clear_done(&call_session);
     ctx = ctx.with_call_session(&call_session);
     let images_dir = store.attachment_dir(session);
+    let session_tmp = store.session_tmp_dir(session);
     ctx = ctx
         .with_images(images_dir.as_deref(), config.turn.image_limit)
-        .with_image_room(config.turn.image_temp_limit);
+        .with_image_room(config.turn.image_temp_limit)
+        .with_session_tmp(session_tmp.as_deref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

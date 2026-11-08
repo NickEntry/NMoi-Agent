@@ -222,8 +222,8 @@ impl Storage {
         let changed = tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
         tx.commit()?;
         if changed > 0 {
-            // 附件目录跟着会话走（D216）：库里删干净了，盘上也不该留孤儿。
-            let dir = self.data_root().join("sessions").join(session.to_string());
+            // 附件目录与暂存目录跟着会话走（D216 / D294）：库里删干净了，盘上也不该留孤儿。
+            let dir = self.session_dir(session);
             let _ = std::fs::remove_dir_all(dir);
         }
         Ok(changed > 0)
@@ -522,10 +522,19 @@ impl Storage {
     /// 与库同级是刻意的：备份/导出只要带上库和这个目录就齐了；
     /// 会话删掉时整目录一起删（见 `delete_conversation`）。
     pub fn attachment_dir(&self, session: SessionId) -> std::path::PathBuf {
-        self.data_root()
-            .join("sessions")
-            .join(session.to_string())
-            .join("images")
+        self.session_dir(session).join("images")
+    }
+
+    /// 会话自己的暂存目录：`<库目录>/sessions/<会话 id>/tmp/`（D294）。
+    ///
+    /// 文件工具里的 `/tmp` 落到这儿，容器里的 `/tmp` 挂的也是它；与 `images` 同级，
+    /// 删会话时整目录一起删。
+    pub fn session_tmp_dir(&self, session: SessionId) -> std::path::PathBuf {
+        self.session_dir(session).join("tmp")
+    }
+
+    fn session_dir(&self, session: SessionId) -> std::path::PathBuf {
+        self.data_root().join("sessions").join(session.to_string())
     }
 
     fn data_root(&self) -> std::path::PathBuf {
@@ -1719,6 +1728,11 @@ impl nmoi_core::session::HistoryStore for Storage {
     /// 这个会话的附件目录（D248）：`View-Image` 只认这里面的文件。
     fn attachment_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         Some(Storage::attachment_dir(self, session))
+    }
+
+    /// 这个会话自己的暂存目录（D294）：文件工具的 `/tmp` 落到它。
+    fn session_tmp_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        Some(Storage::session_tmp_dir(self, session))
     }
 
     /// 这一轮刚发的图片（D208）：解码后逐张落库。解不开就报错——

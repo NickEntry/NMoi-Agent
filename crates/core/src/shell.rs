@@ -103,6 +103,7 @@ impl Tool for SystemShellTool {
             "不要用它做删除目录、改系统设置、装服务、发网络请求这类收不回来的事。\n",
             "Linux/Android 上是 `/bin/sh -c`（Android 没有 bash，coreutils 是 toybox 的裁剪版）；",
             "Windows 上是 `powershell -NoProfile -Command`——那是本机原生命令，谨慎操作。\n",
+            "它的 `/tmp` 是**宿主自己的**，跟文件工具里的 `/tmp`（会话暂存）不是同一份。\n",
             "返回 JSON：exit_code（被信号杀掉时是 null）、stdout、stderr、truncated、duration_ms、timed_out。",
             "每个流最多 64 KiB；默认超时 30 秒，超时会杀掉整个进程组。",
             "timeout_ms 可以给 1000–36000000（毫秒）；要「一直跑到它自己结束」就写字符串 \"inf\"（0 不是不超时）。",
@@ -227,6 +228,13 @@ pub struct EnvirSpec {
     /// 单独一条是因为附件不挪地方（D216 的路径写进了库，也写进了存储页），
     /// 而模型要能在容器里读到它——两条绑定比一次数据迁移便宜得多。
     pub chat_images: Option<PathBuf>,
+    /// 这个会话自己的暂存目录（`sessions/<id>/tmp`），绑到容器里的 `/tmp`（D294）。
+    ///
+    /// 与文件工具那个 `/tmp` 是**同一份**：容器里 `echo x > /tmp/a`，宿主工具
+    /// `read_file /tmp/a` 就读得到。系统 shell 不做这个映射（它跑在宿主上，没有会话）。
+    ///
+    /// 可选：没有会话上下文就不绑，容器用自己的 `/tmp`（rootfs 里那份）。
+    pub session_tmp: Option<PathBuf>,
 }
 
 impl EnvirSpec {
@@ -263,6 +271,14 @@ impl EnvirSpec {
             if let Some(images) = &self.chat_images {
                 cmd.arg("-b")
                     .arg(format!("{}:/chat/images", images.display()));
+            }
+        }
+        // 会话自己的 `/tmp`（D294）：容器里写的 `/tmp` 就是这个会话的暂存目录，
+        // 宿主工具用 `/tmp/...` 读的是同一份。目录必须**先建好**——不存在时 proot 的
+        // `-b` 静默不生效，表现是"容器里写的 /tmp 不见了"。
+        if let Some(scratch) = &self.session_tmp {
+            if std::fs::create_dir_all(scratch).is_ok() {
+                cmd.arg("-b").arg(format!("{}:/tmp", scratch.display()));
             }
         }
         // 工作目录：`-w` 只认一个，模型给的相对目录就接在后面（已经过词法校验，不含 `..`）。
@@ -322,6 +338,7 @@ impl Tool for EnvirShellTool {
             "**没有用户明确允许时不要调用**；读写文件优先用 read_file / write_file / edit_file。\n",
             "容器里只有工作区（/workspace）和这个会话自己的 /chat 是共享的：宿主机上别的地方它碰不到，",
             "容器里装的东西也不影响宿主。附件在 /chat/images 下，要看就自己用命令读。\n",
+            "容器里的 `/tmp` 就是这个会话自己的暂存目录，跟文件工具里的 `/tmp` 是同一份。\n",
             "容器里**没有内核**：uname -r 显示的是手机内核，systemd / docker / iptables / 内核模块都用不了；",
             "proot 是 ptrace 模拟，比原生慢。\n",
             "返回 JSON：exit_code（被信号杀掉时是 null）、stdout、stderr、truncated、duration_ms、timed_out。",
@@ -878,6 +895,7 @@ mod tests {
             resolv: None,
             chat: None,
             chat_images: None,
+            session_tmp: None,
         }
     }
 
@@ -899,6 +917,7 @@ mod tests {
             resolv: None,
             chat: None,
             chat_images: None,
+            session_tmp: None,
         };
 
         let plain: Vec<String> = base
@@ -946,6 +965,7 @@ mod tests {
             resolv: None,
             chat: None,
             chat_images: None,
+            session_tmp: None,
         };
 
         let plain: Vec<String> = base
@@ -981,6 +1001,57 @@ mod tests {
         assert!(
             chat_at < images_at,
             "/chat 必须先于 /chat/images：{bound:?}"
+        );
+    }
+
+    /// 会话自己的 `/tmp`（D294）：容器里那份跟文件工具的 `/tmp` 是同一份。
+    ///
+    /// 两个判据：绑了 `-b <dir>:/tmp`；而且那个目录**真的被建出来了**——
+    /// 不存在时 proot 的 `-b` 静默不生效，表现是"容器里写的 /tmp 不见了"。
+    #[test]
+    fn envir_binds_the_session_tmp_and_creates_it_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Path::new("/tmp/nmoi-envir-ws");
+        let scratch = dir.path().join("sessions").join("s_1").join("tmp");
+        let base = EnvirSpec {
+            proot: dir.path().join("proot"),
+            loader: dir.path().join("loader"),
+            lib_dir: dir.path().join("lib"),
+            rootfs: dir.path().join("rootfs"),
+            tmp: dir.path().join("tmp"),
+            resolv: None,
+            chat: None,
+            chat_images: None,
+            session_tmp: None,
+        };
+
+        let plain: Vec<String> = base
+            .command(workspace, None, "true")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !plain.iter().any(|arg| arg.ends_with(":/tmp")),
+            "没给会话暂存时不该绑 /tmp（rootfs 自己那份要留着）：{plain:?}"
+        );
+
+        let mut with_scratch = base;
+        with_scratch.session_tmp = Some(scratch.clone());
+        let bound: Vec<String> = with_scratch
+            .command(workspace, None, "true")
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let expected = format!("{}:/tmp", scratch.display());
+        let at = bound
+            .iter()
+            .position(|arg| arg == &expected)
+            .unwrap_or_else(|| panic!("应当绑会话暂存到 /tmp：{bound:?}"));
+        assert_eq!(bound[at - 1], "-b", "{bound:?}");
+        assert!(
+            scratch.is_dir(),
+            "绑之前必须先建目录：{}",
+            scratch.display()
         );
     }
 

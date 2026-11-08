@@ -1910,3 +1910,24 @@ Kotlin 侧加 `RoleRunner`：把「默认模型」里某个角色的配置（供
 **现状**：转录提示词还在 `RoleRunner.VISION_PROMPT` 常量里，其余几个角色还没有提示词。
 接齿轮面板那一批一起搬进内置册，并给每条一个稳定的 id（`role.vision.transcribe` 这种），
 这样用户改了之后「恢复默认」能逐条回滚。
+
+## D294 `/tmp` 会话隔离（2026-11-09）
+
+工具里的 `/tmp` 现在落到 **`sessions/<id>/tmp`**，容器里的 `/tmp` 挂的也是它——两边是同一份；
+另一个会话读不到。系统 shell 不做这个映射（它跑在宿主机上，没有"会话"这个概念），
+但**两把 shell 的说明里各写了一句**，否则模型会以为两边是同一份。
+
+落法（三处，都必须一起）：
+
+1. 文件工具：`target()` 只认一个固定前缀 `/tmp`，其余绝对路径照旧拒绝——放行绝对路径等于
+   把 `Workspace::resolve` 那道"只许落在根里"的检查作废。
+2. 容器：`EnvirSpec::session_tmp` 绑到 guest 的 `/tmp`，**绑之前 `create_dir_all`**：
+   目录不存在时 proot 的 `-b` 静默不生效，表现是"容器里写的 /tmp 不见了"。
+3. 存储：`HistoryStore::session_tmp_dir` 默认 `None`，SQLite 实现给
+   `<库目录>/sessions/<id>/tmp`，与 `images/` 同级，删会话时整目录一起删（先删库再删目录）。
+
+没有会话上下文时 `/tmp` **报错，不回落**宿主的 `/tmp`：回落等于让两个会话共用一份，
+那正是这一层要隔离掉的东西。判据：`tmp_in_a_file_tool_lands_in_the_session_scratch`、
+`the_scratch_of_one_session_is_invisible_to_another`、`tmp_without_a_session_is_an_error_not_a_fallback`、
+`the_scratch_still_refuses_to_escape`、`envir_binds_the_session_tmp_and_creates_it_first`；
+真机 **V104**。

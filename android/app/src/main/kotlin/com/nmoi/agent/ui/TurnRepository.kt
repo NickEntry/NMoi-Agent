@@ -423,6 +423,10 @@ internal object TurnRepository {
             // 于是"有条...件才绑"等于永远不绑——容器里 `/chat/images` 一直缺席。
             val images = ToolingRepository.sessionImagesRoot(context, sessionId).apply { mkdirs() }
             row.put("chat_images", images.absolutePath)
+            // 会话自己的 `/tmp`（D294）：容器里的 `/tmp` 与文件工具的 `/tmp` 是同一份。
+            // 同样**先建好**——目录不存在时 proot 的 `-b` 静默不生效。
+            val scratch = ToolingRepository.sessionTmpRoot(context, sessionId).apply { mkdirs() }
+            row.put("session_tmp", scratch.absolutePath)
         }
 
     /** 点"停止"。没在跑不算失败：`cancelled:false` 只说明它已经收尾了。 */

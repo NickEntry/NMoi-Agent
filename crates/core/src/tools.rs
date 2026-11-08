@@ -130,6 +130,12 @@ pub struct ToolContext<'a> {
     pub call: Option<&'a crate::kills::CallHandle>,
     /// 这个会话的附件目录（`sessions/<id>/images`）。`View-Image` 只认这里的文件（D248）。
     pub chat_images: Option<&'a std::path::Path>,
+    /// 这个会话自己的暂存目录（`sessions/<id>/tmp`）。文件工具里的 `/tmp` 落到这儿，
+    /// 容器起的时候同一份挂到 guest 的 `/tmp`（D294）。
+    ///
+    /// `None` = 这一轮没有会话上下文（直接 `invoke`、内存历史实现）：那时 `/tmp` 报错，
+    /// 不退回宿主的 `/tmp`——退回等于让两个会话共用一份，正是要隔离掉的东西。
+    pub session_tmp: Option<&'a std::path::Path>,
     /// 上下文图片清单的上限（0 = 用默认 20）。见 [`crate::images`]。
     pub image_limit: u32,
     /// 满了之后还能临时多留几张（D272）：`0` = 关。见 [`crate::images::room_of`]。
@@ -147,6 +153,7 @@ impl<'a> ToolContext<'a> {
             call_session: None,
             call: None,
             chat_images: None,
+            session_tmp: None,
             image_limit: 0,
             image_temp_limit: 0,
         }
@@ -162,6 +169,12 @@ impl<'a> ToolContext<'a> {
     /// 临时多留几张图（D272）：满了之后还能多放几张，那几张活到下一次思考结束。
     pub fn with_image_room(mut self, temp: u32) -> Self {
         self.image_temp_limit = temp;
+        self
+    }
+
+    /// 这个会话自己的暂存目录（D294）：文件工具里的 `/tmp` 落到它。
+    pub fn with_session_tmp(mut self, dir: Option<&'a std::path::Path>) -> Self {
+        self.session_tmp = dir;
         self
     }
 
@@ -425,10 +438,67 @@ fn optional_bool(args: &Value, key: &str, default: bool) -> bool {
     args.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
 
+/// 一次文件工具调用真正落到哪儿（D294）。
+///
+/// 文件工具只收 **工作区相对路径**，唯一的例外是 `/tmp`：它是这条会话自己的暂存目录
+/// （`sessions/<id>/tmp`），与容器里的 `/tmp` 是同一份，两个会话之间看不见。
+///
+/// 为什么不干脆接受更多绝对路径：绝对路径一旦放行，`Workspace::resolve` 那道
+/// "只许落在根目录里"的检查就形同虚设。这里只映射**一个固定前缀**，别的一律照旧拒绝。
+struct Target<'a> {
+    workspace: std::borrow::Cow<'a, Workspace>,
+    /// 相对 `workspace` 的路径；`/tmp` 本身给的是 `.`（等于那个根）。
+    path: String,
+}
+
+/// 把 `path` 解析成"哪个根 + 哪个相对路径"。
+///
+/// `/tmp` 没有会话上下文时**报错，不回落**：回落到宿主 `/tmp` 等于让两个会话共用一份，
+/// 那正是这一层要隔离掉的东西。
+fn target<'a>(
+    ctx: &ToolContext<'_>,
+    workspace: &'a Workspace,
+    path: &str,
+) -> Result<Target<'a>, ToolOutcome> {
+    let trimmed = path.trim();
+    let rest = if trimmed == "/tmp" {
+        Some("")
+    } else {
+        trimmed.strip_prefix("/tmp/")
+    };
+    let Some(rest) = rest else {
+        return Ok(Target {
+            workspace: std::borrow::Cow::Borrowed(workspace),
+            path: trimmed.to_string(),
+        });
+    };
+    let Some(root) = ctx.session_tmp else {
+        return Err(ToolOutcome::failed(
+            "`/tmp` 是会话私有的，这一轮没有会话上下文（或这个历史实现不存会话目录）；\
+             用工作区相对路径，或先发一条消息让这一轮有会话。"
+                .to_string(),
+        ));
+    };
+    let scratch = Workspace::open(root).map_err(|error| {
+        ToolOutcome::failed(format!(
+            "会话暂存目录建不出来（{}）：{error}",
+            root.display()
+        ))
+    })?;
+    Ok(Target {
+        workspace: std::borrow::Cow::Owned(scratch),
+        path: if rest.is_empty() {
+            ".".to_string()
+        } else {
+            rest.to_string()
+        },
+    })
+}
+
 /// 工作区错误 → 给模型看的话。带上"怎么办"，不只是"错了"。
 fn workspace_error(error: WorkspaceError) -> ToolOutcome {
     let hint = match &error {
-        WorkspaceError::OutsideRoot { .. } => "只能访问工作区内的路径。",
+        WorkspaceError::OutsideRoot { .. } => "只能访问工作区内的路径；会话暂存写 `/tmp/...`。",
         WorkspaceError::NotFound { .. } => "路径不存在；先用 list_dir 或 find_files 看一眼。",
         WorkspaceError::AmbiguousMatch { .. } => {
             "原文片段出现了多次；多带几行上下文，或把 replace_all 设为 true。"
@@ -491,6 +561,10 @@ impl Tool for ReadFileTool {
             Ok(path) => path,
             Err(outcome) => return outcome,
         };
+        let spot = match target(ctx, workspace, &path) {
+            Ok(spot) => spot,
+            Err(outcome) => return outcome,
+        };
         let defaults = ReadOptions::default();
         let options = ReadOptions {
             start_line: optional_usize(args, "start_line", 1).max(1),
@@ -499,7 +573,7 @@ impl Tool for ReadFileTool {
             force_full: optional_bool(args, "force_full", false),
             ..defaults
         };
-        match workspace.read_file(&path, &options) {
+        match spot.workspace.read_file(&spot.path, &options) {
             Ok(result) => {
                 let mut text = format!(
                     "[{} | {} 行 / {} 字节",
@@ -535,7 +609,8 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &str {
-        "整篇覆盖写一个文件（目录会自动建）。要改局部请用 edit_file——覆盖会丢掉没读到的东西。"
+        "整篇覆盖写一个文件（目录会自动建）。要改局部请用 edit_file——覆盖会丢掉没读到的东西。\
+         `path` 相对工作区；写 `/tmp/...` 是这个会话自己的暂存目录，别的会话看不见。"
     }
 
     fn schema(&self) -> Value {
@@ -566,7 +641,11 @@ impl Tool for WriteFileTool {
             Ok(content) => content,
             Err(outcome) => return outcome,
         };
-        match workspace.write_file(&path, &content) {
+        let spot = match target(ctx, workspace, &path) {
+            Ok(spot) => spot,
+            Err(outcome) => return outcome,
+        };
+        match spot.workspace.write_file(&spot.path, &content) {
             Ok(result) => {
                 ToolOutcome::ok(format!("已写入 {}（{} 字节）", result.path, result.bytes))
             }
@@ -621,7 +700,14 @@ impl Tool for EditFileTool {
             Err(outcome) => return outcome,
         };
         let replace_all = optional_bool(args, "replace_all", false);
-        match workspace.edit_file(&path, &old, &new, replace_all) {
+        let spot = match target(ctx, workspace, &path) {
+            Ok(spot) => spot,
+            Err(outcome) => return outcome,
+        };
+        match spot
+            .workspace
+            .edit_file(&spot.path, &old, &new, replace_all)
+        {
             Ok(result) => ToolOutcome::ok(format!(
                 "已改 {}：{} 处，{} → {} 字节",
                 result.path, result.replacements, result.bytes_before, result.bytes_after
@@ -668,13 +754,17 @@ impl Tool for ListDirTool {
             Err(outcome) => return outcome,
         };
         let path = optional_str(args, "path").unwrap_or_default();
+        let spot = match target(ctx, workspace, &path) {
+            Ok(spot) => spot,
+            Err(outcome) => return outcome,
+        };
         let defaults = ListOptions::default();
         let options = ListOptions {
             depth: optional_usize(args, "depth", defaults.depth).max(1),
             include_hidden: optional_bool(args, "include_hidden", defaults.include_hidden),
             max_entries: optional_usize(args, "max_entries", defaults.max_entries),
         };
-        match workspace.list_dir(&path, &options) {
+        match spot.workspace.list_dir(&spot.path, &options) {
             Ok(result) => {
                 let mut text = format!("[{} | {} 条]\n", result.path, result.entries.len());
                 for entry in &result.entries {
@@ -739,13 +829,18 @@ impl Tool for FindFilesTool {
             Err(outcome) => return outcome,
         };
         let defaults = crate::workspace::FindOptions::default();
+        let wanted = optional_str(args, "path").unwrap_or_default();
+        let spot = match target(ctx, workspace, &wanted) {
+            Ok(spot) => spot,
+            Err(outcome) => return outcome,
+        };
         let options = crate::workspace::FindOptions {
-            path: optional_str(args, "path").unwrap_or_default(),
+            path: spot.path.clone(),
             max_results: optional_usize(args, "max_results", defaults.max_results),
             include_hidden: optional_bool(args, "include_hidden", defaults.include_hidden),
             ..defaults
         };
-        match workspace.find(&pattern, &options) {
+        match spot.workspace.find(&pattern, &options) {
             Ok(result) => {
                 let mut text = format!("[{} | {} 个匹配]\n", result.pattern, result.matches.len());
                 for path in &result.matches {
@@ -807,14 +902,19 @@ impl Tool for SearchTool {
             Err(outcome) => return outcome,
         };
         let defaults = SearchOptions::default();
+        let wanted = optional_str(args, "path").unwrap_or_default();
+        let spot = match target(ctx, workspace, &wanted) {
+            Ok(spot) => spot,
+            Err(outcome) => return outcome,
+        };
         let options = SearchOptions {
-            path: optional_str(args, "path").unwrap_or_default(),
+            path: spot.path.clone(),
             ignore_case: optional_bool(args, "ignore_case", defaults.ignore_case),
             max_results: optional_usize(args, "max_results", defaults.max_results),
             include_hidden: optional_bool(args, "include_hidden", defaults.include_hidden),
             ..defaults
         };
-        match workspace.search(&query, &options) {
+        match spot.workspace.search(&query, &options) {
             Ok(result) => {
                 let mut text = format!("[{} | {} 处命中]\n", result.query, result.hits.len());
                 for hit in &result.hits {
@@ -1336,6 +1436,104 @@ mod tests {
     ) -> ToolOutcome {
         let ctx = ToolContext::new(policy, Some(workspace));
         registry.invoke(name, args, &ctx)
+    }
+
+    /// 文件工具里的 `/tmp` 落到这个会话自己的暂存目录（D294）：
+    /// 不是工作区里的 `tmp/`，也不是宿主的 `/tmp`。
+    #[test]
+    fn tmp_in_a_file_tool_lands_in_the_session_scratch() {
+        let (work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let scratch = store.path().join("sessions").join("s_1").join("tmp");
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_session_tmp(Some(&scratch));
+
+        let written = registry.invoke(
+            "write_file",
+            r#"{"path":"/tmp/a.txt","content":"hi"}"#,
+            &ctx,
+        );
+        assert!(matches!(written, ToolOutcome::Ok { .. }), "{written:?}");
+        assert_eq!(
+            fs::read_to_string(scratch.join("a.txt")).unwrap(),
+            "hi",
+            "应当落在会话暂存里：{}",
+            scratch.display()
+        );
+        assert!(!work.path().join("tmp").exists(), "不该在工作区里建 tmp/");
+
+        let read = registry.invoke("read_file", r#"{"path":"/tmp/a.txt"}"#, &ctx);
+        match read {
+            ToolOutcome::Ok { text, .. } => assert!(text.contains("hi"), "{text}"),
+            other => panic!("{other:?}"),
+        }
+
+        // `/tmp` 本身是目录：列它不该报"路径为空"。
+        let listed = registry.invoke("list_dir", r#"{"path":"/tmp"}"#, &ctx);
+        match listed {
+            ToolOutcome::Ok { text, .. } => assert!(text.contains("a.txt"), "{text}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 两个会话的 `/tmp` 不是同一份：一个写的，另一个读不到。
+    #[test]
+    fn the_scratch_of_one_session_is_invisible_to_another() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let one = store.path().join("sessions").join("s_1").join("tmp");
+        let two = store.path().join("sessions").join("s_2").join("tmp");
+        let registry = ToolRegistry::workspace_defaults();
+
+        let first = ToolContext::new(&policy, Some(&workspace)).with_session_tmp(Some(&one));
+        let written = registry.invoke(
+            "write_file",
+            r#"{"path":"/tmp/secret.txt","content":"x"}"#,
+            &first,
+        );
+        assert!(matches!(written, ToolOutcome::Ok { .. }), "{written:?}");
+
+        let second = ToolContext::new(&policy, Some(&workspace)).with_session_tmp(Some(&two));
+        let read = registry.invoke("read_file", r#"{"path":"/tmp/secret.txt"}"#, &second);
+        assert!(matches!(read, ToolOutcome::Failed { .. }), "{read:?}");
+    }
+
+    /// 没有会话上下文时 `/tmp` **报错**，不退回宿主 `/tmp`。
+    #[test]
+    fn tmp_without_a_session_is_an_error_not_a_fallback() {
+        let (_work, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+        let outcome = registry.invoke("write_file", r#"{"path":"/tmp/a.txt","content":"x"}"#, &ctx);
+        match outcome {
+            ToolOutcome::Failed { message } => {
+                assert!(message.contains("/tmp"), "{message}");
+                assert!(message.contains("会话"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `/tmp` 里面也不许用 `..` 爬出去。
+    #[test]
+    fn the_scratch_still_refuses_to_escape() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let scratch = store.path().join("sessions").join("s_1").join("tmp");
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_session_tmp(Some(&scratch));
+        let outcome = registry.invoke(
+            "write_file",
+            r#"{"path":"/tmp/../escape.txt","content":"x"}"#,
+            &ctx,
+        );
+        assert!(matches!(outcome, ToolOutcome::Failed { .. }), "{outcome:?}");
+        assert!(!store
+            .path()
+            .join("sessions")
+            .join("s_1")
+            .join("escape.txt")
+            .exists());
     }
 
     #[test]
