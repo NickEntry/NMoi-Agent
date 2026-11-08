@@ -19,6 +19,7 @@ internal object ToolingRepository {
     private const val PREFS = "nmoi.local"
     private const val KEY_NATIVE_SHELL = "tool.native_shell"
     private const val KEY_ENVIR_SHELL = "tool.envir_shell"
+    private const val KEY_CROSS_SESSION = "tool.cross_session"
 
     /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
     fun sharedRoot(context: Context): File = WorkspaceRepository.defaultRoot(context)
@@ -121,6 +122,24 @@ internal object ToolingRepository {
     fun envirShell(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_ENVIR_SHELL, false)
+
+    /**
+     * 本机开关：跨会话只读（`Session-Files`，D295）。默认关。
+     *
+     * 关着的时候这个工具**不声明**（不是灰的、不是声明了再拒绝）——不声明，模型就不会去试。
+     * 与 `native_shell` 一样只存本机：它描述的是"这台设备允不允许"。
+     */
+    fun crossSession(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CROSS_SESSION, false)
+
+    fun setCrossSession(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_CROSS_SESSION, enabled)
+            .apply()
+        NLog.i("Tools", "跨会话读取开关：${if (enabled) "开" else "关"}")
+    }
 
     fun setEnvirShell(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

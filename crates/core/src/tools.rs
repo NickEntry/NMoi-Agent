@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use crate::edit::{BlockOp, BlockSelector, MAX_BLOCK_BYTES};
-use crate::ids::MessageId;
+use crate::ids::{MessageId, SessionId};
 use crate::message::{Message, Role};
 use crate::policy::{AssistantPolicy, Capability, DenyReason};
 use crate::runtime::ToolSpec;
@@ -103,7 +103,7 @@ impl ToolOutcome {
 ///
 /// `workspace` 为 `None` 是正常状态（助手没绑工作区），不是错误——
 /// 这种时候读写类工具统一回 [`DenyReason::NoWorkspace`]。
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ToolContext<'a> {
     pub policy: &'a AssistantPolicy,
     pub workspace: Option<&'a Workspace>,
@@ -130,6 +130,9 @@ pub struct ToolContext<'a> {
     pub call: Option<&'a crate::kills::CallHandle>,
     /// 这个会话的附件目录（`sessions/<id>/images`）。`View-Image` 只认这里的文件（D248）。
     pub chat_images: Option<&'a std::path::Path>,
+    /// 跨会话只读（D295）：别的会话在哪、叫什么。`None` = 这一轮不提供这个能力
+    /// （开关关着、或者历史实现不认别的会话）。
+    pub sessions: Option<&'a crate::session::SessionIndex>,
     /// 这个会话自己的暂存目录（`sessions/<id>/tmp`）。文件工具里的 `/tmp` 落到这儿，
     /// 容器起的时候同一份挂到 guest 的 `/tmp`（D294）。
     ///
@@ -140,6 +143,19 @@ pub struct ToolContext<'a> {
     pub image_limit: u32,
     /// 满了之后还能临时多留几张（D272）：`0` = 关。见 [`crate::images::room_of`]。
     pub image_temp_limit: u32,
+}
+
+/// 手写而不是 derive：这里面有一个 `&dyn SessionCatalog`，它不该被打印出来，
+/// 也不该为了能被打印而多一个约束。
+impl std::fmt::Debug for ToolContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("declared", &self.declared)
+            .field("call_session", &self.call_session)
+            .field("session_tmp", &self.session_tmp)
+            .field("sessions", &self.sessions)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> ToolContext<'a> {
@@ -153,6 +169,7 @@ impl<'a> ToolContext<'a> {
             call_session: None,
             call: None,
             chat_images: None,
+            sessions: None,
             session_tmp: None,
             image_limit: 0,
             image_temp_limit: 0,
@@ -175,6 +192,12 @@ impl<'a> ToolContext<'a> {
     /// 这个会话自己的暂存目录（D294）：文件工具里的 `/tmp` 落到它。
     pub fn with_session_tmp(mut self, dir: Option<&'a std::path::Path>) -> Self {
         self.session_tmp = dir;
+        self
+    }
+
+    /// 别的会话查得到的目录（D295）。不给就是"看不到任何别的会话"。
+    pub fn with_sessions(mut self, sessions: Option<&'a crate::session::SessionIndex>) -> Self {
+        self.sessions = sessions;
         self
     }
 
@@ -293,6 +316,9 @@ impl ToolRegistry {
         registry.register(Box::new(crate::shell::EnvirShellTool));
         // 模型改消息（D177 / 0.14y）：与 `edit_file` 同档能力，但改的是会话不是磁盘。
         registry.register(Box::new(EditUnitTool));
+        // 别的会话的 `/tmp` 与 `/chat`（D295）：`Capability::CrossSessionRead` 门控，
+        // 默认关——关着时**不声明**，模型连它会去试的机会都没有。
+        registry.register(Box::new(SessionFilesTool));
         registry
     }
 
@@ -518,8 +544,265 @@ fn workspace_error(error: WorkspaceError) -> ToolOutcome {
 // 六个内置工具
 // ---------------------------------------------------------------------------
 
-pub struct ReadFileTool;
+/// 跨会话只读（D295）：读**别的会话**的暂存目录（`tmp`）或会话目录（`chat`）。
+///
+/// 存在的理由只有一个：上下文里不会自动带任何会话 id（用户 2026-11-08 明确
+/// 「需要用户去给出会话和 ID」），所以"接着上一条会话里的东西干"这件事，
+/// 只能由用户把 id 递进来。开关关着时这个工具**不声明**——不声明，模型就不会去试。
+pub struct SessionFilesTool;
 
+/// 单次读的上限。跨会话读的是"别人的东西"，一次读爆内存没有道理。
+const SESSION_FILES_MAX_BYTES: u64 = 256 * 1024;
+
+impl SessionFilesTool {
+    /// `area` 只认这两个词：会话私有的那两块。
+    fn area_of(raw: &str) -> Option<&'static str> {
+        match raw.trim() {
+            "tmp" => Some("tmp"),
+            "chat" => Some("chat"),
+            _ => None,
+        }
+    }
+}
+
+impl Tool for SessionFilesTool {
+    fn lane(&self) -> Lane {
+        Lane::Read
+    }
+
+    fn name(&self) -> &str {
+        "Session-Files"
+    }
+
+    fn description(&self) -> &str {
+        concat!(
+            "读**别的会话**的暂存目录（area=tmp）或会话目录（area=chat）。只读。\n",
+            "session_id 必须由用户给：侧边栏长按会话 → 详细信息 → 长按「会话 ID」复制；",
+            "上下文里不会有任何会话 id，也不要去猜。\n",
+            "path 留空 = 列这一层；mode=read 读一个文件（单次上限 256 KB）。",
+            "结果会标出这是哪个会话的东西，别把它当成本会话的设定。"
+        )
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "目标会话 id（用户复制给你的那一串）"
+                },
+                "area": {
+                    "type": "string",
+                    "description": "tmp（会话暂存）或 chat（会话目录）"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "相对 area 的路径；留空 = 列这一层"
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "list（默认）或 read"
+                }
+            },
+            "required": ["session_id", "area"]
+        })
+    }
+
+    fn capability(&self) -> Capability {
+        Capability::CrossSessionRead
+    }
+
+    fn invoke(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutcome {
+        // 门控在最前面（三条硬规矩之一）：没开这一项，连 id 都不解析。
+        if let Err(reason) = ctx.policy.check(self.capability()) {
+            return ToolOutcome::denied(self.capability(), reason);
+        }
+        let Some(index) = ctx.sessions else {
+            return ToolOutcome::failed(
+                "这一轮读不了别的会话：跨会话读取没开，或者这个历史实现没有会话目录。",
+            );
+        };
+        let raw_id = match required_str(args, "session_id") {
+            Ok(id) => id,
+            Err(outcome) => return outcome,
+        };
+        let raw_area = match required_str(args, "area") {
+            Ok(area) => area,
+            Err(outcome) => return outcome,
+        };
+
+        // 1 形状：拿真解析器验，不手搓正则——手搓的那套迟早和 id 的真形状不一致。
+        let id = match raw_id.trim().parse::<SessionId>() {
+            Ok(id) => id,
+            Err(_) => {
+                return ToolOutcome::failed(format!(
+                    "`session_id` 不是会话 id：{}。形如 \
+                     0199f0c3-1b2a-7c4d-8e5f-0a1b2c3d4e5f（36 位，带连字符）；\
+                     从侧边栏长按会话 → 详细信息 → 长按「会话 ID」复制。",
+                    raw_id.trim()
+                ))
+            }
+        };
+        let id = id.to_string();
+
+        // 2 存在性：没有就点名报错，**不猜一个最像的**。
+        if !index.exists(&id) {
+            return ToolOutcome::failed(format!(
+                "没有这个会话：{id} 可能已经被删了（找不到就不猜，宁可空着）。"
+            ));
+        }
+        let Some(area) = SessionFilesTool::area_of(&raw_area) else {
+            return ToolOutcome::failed(format!(
+                "`area` 只认 `tmp` 或 `chat`，收到的是 `{}`。",
+                raw_area.trim()
+            ));
+        };
+        let Some(base) = index.area_dir(&id, area) else {
+            return ToolOutcome::failed(format!("这个会话没有 `{area}` 目录。"));
+        };
+
+        // 3 路径：先按字面拼，`..` 与绝对路径一律拒；再问一次真实路径有没有跑出去
+        //   （符号链接可能指到别处）。
+        let relative = optional_str(args, "path").unwrap_or_default();
+        let target = match join_area(&base, &relative) {
+            Ok(path) => path,
+            Err(message) => return ToolOutcome::failed(message),
+        };
+        let mode = optional_str(args, "mode").unwrap_or_else(|| "list".to_string());
+        let from = match ctx.call_session {
+            Some(current) if current == id => "这个会话自己".to_string(),
+            _ => format!(
+                "另一个助手「{}」",
+                index
+                    .title(&id)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or("（没有标题）")
+            ),
+        };
+
+        match mode.as_str() {
+            "list" => match list_area(&base, &target, &relative) {
+                Ok(text) => ToolOutcome::ok(format!("[来自{from} · {area}/{relative}]\n{text}")),
+                Err(message) => ToolOutcome::failed(message),
+            },
+            "read" => match read_area(&base, &target, &relative) {
+                Ok(text) => ToolOutcome::ok(format!("[来自{from} · {area}/{relative}]\n{text}")),
+                Err(message) => ToolOutcome::failed(message),
+            },
+            other => ToolOutcome::failed(format!(
+                "`mode` 只认 `list` 或 `read`，收到的是 `{other}`。"
+            )),
+        }
+    }
+}
+
+/// 按字面拼出一条落在 `base` 里的路径。`..`、绝对路径、盘符一律拒（先把错说清楚，
+/// 再谈能不能读）。
+fn join_area(base: &std::path::Path, relative: &str) -> Result<std::path::PathBuf, String> {
+    let mut out = base.to_path_buf();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => continue,
+            ".." => {
+                return Err(format!(
+                    "`path` 越界：`{relative}` 里有 `..`，只能往 `{}` 里面看。",
+                    base.display()
+                ))
+            }
+            other if other.contains('\\') || other.contains(':') => {
+                return Err(format!("`path` 里不该有 `\\` 或驱动器号：`{relative}`。"))
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(out)
+}
+
+/// 真实路径必须还在 `base` 里（符号链接、`..` 都已经过一道，这里再验一次）。
+fn inside(base: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    let real_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let real_target = std::fs::canonicalize(target).map_err(|_| {
+        format!(
+            "没有这个路径：{}（`path` 留空可以列这一层）",
+            target.strip_prefix(base).unwrap_or(target).display()
+        )
+    })?;
+    if !real_target.starts_with(real_base) {
+        return Err(format!("`path` 跑出了这个会话的目录：{}", target.display()));
+    }
+    Ok(())
+}
+
+fn list_area(
+    base: &std::path::Path,
+    target: &std::path::Path,
+    relative: &str,
+) -> Result<String, String> {
+    if !target.exists() {
+        return Err(format!(
+            "这个位置还没有东西：`{}`（第一次用到才会建）。",
+            if relative.is_empty() { "根" } else { relative }
+        ));
+    }
+    inside(base, target)?;
+    if !target.is_dir() {
+        return Err(format!(
+            "`{}` 是个文件；用 mode=read 读它。",
+            if relative.is_empty() { "根" } else { relative }
+        ));
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(target)
+        .map_err(|error| format!("列不出来（{}）：{error}", target.display()))?
+        .flatten()
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    if entries.is_empty() {
+        return Ok("（空的）\n".to_string());
+    }
+    let mut text = String::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let meta = entry.metadata().ok();
+        let is_dir = meta.as_ref().map(|meta| meta.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|meta| meta.len()).unwrap_or(0);
+        text.push_str(&format!(
+            "{name}{}  {size} 字节\n",
+            if is_dir { "/" } else { "" }
+        ));
+    }
+    Ok(text)
+}
+
+fn read_area(
+    base: &std::path::Path,
+    target: &std::path::Path,
+    relative: &str,
+) -> Result<String, String> {
+    if relative.is_empty() {
+        return Err("mode=read 要给 `path`；留空是列目录（mode=list）。".to_string());
+    }
+    inside(base, target)?;
+    let meta = std::fs::metadata(target)
+        .map_err(|_| format!("没有这个文件：`{relative}`（先用 mode=list 看一眼这一层有什么）"))?;
+    if meta.is_dir() {
+        return Err(format!("`{relative}` 是目录；用 mode=list 列它。"));
+    }
+    if meta.len() > SESSION_FILES_MAX_BYTES {
+        return Err(format!(
+            "这个文件 {} KB，超过 {} KB 上限；换个小一点的，或者只取其中一部分（分段参数还没做）。",
+            meta.len() / 1024,
+            SESSION_FILES_MAX_BYTES / 1024
+        ));
+    }
+    let bytes = std::fs::read(target).map_err(|error| format!("读不出来：{error}"))?;
+    if bytes.contains(&0) {
+        return Err(format!("`{relative}` 是二进制文件，这里只读文本。"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub struct ReadFileTool;
 impl Tool for ReadFileTool {
     fn lane(&self) -> Lane {
         Lane::Read
@@ -1536,6 +1819,149 @@ mod tests {
             .exists());
     }
 
+    /// 跨会话读取（D295）：开关关着时**不声明**，打开才出现在声明表里。
+    #[test]
+    fn cross_session_tool_is_not_declared_until_the_switch_is_on() {
+        let registry = ToolRegistry::workspace_defaults();
+        let off = AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_write("ws-1"));
+        let names: Vec<String> = registry
+            .specs_for(&off)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            !names.contains(&"Session-Files".to_string()),
+            "默认不该声明：{names:?}"
+        );
+
+        let on = off.clone().enable_cross_session(true);
+        let names: Vec<String> = registry
+            .specs_for(&on)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(names.contains(&"Session-Files".to_string()), "{names:?}");
+    }
+
+    /// 跨会话读取：读得到别的会话的 `/tmp`，结果里点名来源。
+    #[test]
+    fn session_files_reads_another_sessions_tmp_and_names_the_source() {
+        let (_work, workspace, _) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let other = SessionId::new().to_string();
+        let me = SessionId::new().to_string();
+        let dir = store.path().join(&other).join("tmp");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("note.txt"), "别人的东西").unwrap();
+        let index = crate::session::SessionIndex::new(
+            store.path(),
+            vec![(other.clone(), "上一条会话".to_string())],
+        );
+        let policy = AssistantPolicy::locked_down()
+            .with_binding(WorkspaceBinding::read_write("ws-1"))
+            .enable_cross_session(true);
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session(&me)
+            .with_sessions(Some(&index));
+
+        let outcome = registry.invoke(
+            "Session-Files",
+            &json!({"session_id": other, "area": "tmp", "path": "note.txt", "mode": "read"})
+                .to_string(),
+            &ctx,
+        );
+        match outcome {
+            ToolOutcome::Ok { text, .. } => {
+                assert!(text.contains("上一条会话"), "{text}");
+                assert!(text.contains("另一个助手"), "{text}");
+                assert!(text.contains("别人的东西"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 形状不对 / 会话不存在：两句不同的错，都要能照着改。
+    #[test]
+    fn session_files_names_a_malformed_id_and_a_missing_session() {
+        let (_work, workspace, _) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let policy = AssistantPolicy::locked_down()
+            .with_binding(WorkspaceBinding::read_write("ws-1"))
+            .enable_cross_session(true);
+        let index = crate::session::SessionIndex::new(store.path(), Vec::new());
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_sessions(Some(&index));
+
+        let malformed = registry.invoke(
+            "Session-Files",
+            r#"{"session_id":"s_1","area":"tmp"}"#,
+            &ctx,
+        );
+        match malformed {
+            ToolOutcome::Failed { message } => {
+                assert!(message.contains("不是会话 id"), "{message}");
+                assert!(message.contains("详细信息"), "要说清去哪复制：{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let missing = registry.invoke(
+            "Session-Files",
+            &json!({"session_id": SessionId::new().to_string(), "area": "tmp"}).to_string(),
+            &ctx,
+        );
+        match missing {
+            ToolOutcome::Failed { message } => {
+                assert!(message.contains("没有这个会话"), "{message}");
+                assert!(message.contains("可能已经被删"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 跨会话读取：`..` 不许爬出去；超过 256 KB 要说清多大。
+    #[test]
+    fn session_files_refuses_escapes_and_oversized_files() {
+        let (_work, workspace, _) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let other = SessionId::new().to_string();
+        let dir = store.path().join(&other).join("chat");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("big.txt"), "x".repeat(300 * 1024)).unwrap();
+        let index =
+            crate::session::SessionIndex::new(store.path(), vec![(other.clone(), String::new())]);
+        let policy = AssistantPolicy::locked_down()
+            .with_binding(WorkspaceBinding::read_write("ws-1"))
+            .enable_cross_session(true);
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_sessions(Some(&index));
+
+        let escape = registry.invoke(
+            "Session-Files",
+            &json!({"session_id": other, "area": "chat", "path": "../../etc/passwd"}).to_string(),
+            &ctx,
+        );
+        match escape {
+            ToolOutcome::Failed { message } => assert!(message.contains("越界"), "{message}"),
+            other => panic!("{other:?}"),
+        }
+
+        let big = registry.invoke(
+            "Session-Files",
+            &json!({"session_id": other, "area": "chat", "path": "big.txt", "mode": "read"})
+                .to_string(),
+            &ctx,
+        );
+        match big {
+            ToolOutcome::Failed { message } => {
+                assert!(message.contains("256 KB"), "{message}");
+                assert!(message.contains("300"), "要说清多大：{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn registry_declares_the_workspace_tools_and_both_shells() {
         let registry = ToolRegistry::workspace_defaults();
@@ -1543,7 +1969,7 @@ mod tests {
         // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）
         // + 模型改消息（`edit_unit` D177）+ 把图拉进上下文（`View-Image` D248）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
-        assert_eq!(names.len(), 10, "{names:?}");
+        assert_eq!(names.len(), 11, "{names:?}");
         for name in [
             "System-Shell",
             "WorkSpace-EnvirShell",
@@ -1563,7 +1989,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 10);
+        assert_eq!(specs.len(), 11);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }
@@ -1753,7 +2179,6 @@ mod tests {
     /// 一轮会话的样子：一条助手消息带一个工具调用 + 那条结果，再加一条用户消息。
     fn history() -> Vec<Message> {
         use crate::clock::LogicalClock;
-        use crate::ids::SessionId;
         use crate::message::OutgoingToolCall;
         use crate::source::SourceTag;
 

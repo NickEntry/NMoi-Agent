@@ -245,6 +245,8 @@ internal object TurnRepository {
                     // 工作区句柄 0 = 没绑（FFI 那边 `optional_u64(...).filter(|id| *id != 0)` 会忽略它）。
                     .put("workspace", workspace.getOrNull() ?: 0L)
                     .put("native_shell", nativeShell)
+                    // 跨会话只读（D295）：默认关；关着时 `Session-Files` 不声明。
+                    .put("cross_session", ToolingRepository.crossSession(context))
                     .put("thinking", assistant.thinking)
                     .also { row ->
                         envir?.let { row.put("envir", envirJson(context, it, sessionId)) }

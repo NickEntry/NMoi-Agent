@@ -30,10 +30,12 @@ pub enum Capability {
     Network,
     /// 向凭据代理请求凭据（Android 的透明代理 / helper）。
     SecretsBroker,
+    /// 读**别的会话**的 `/tmp` 与 `/chat`（D295）。只读，默认关。
+    CrossSessionRead,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 7] = [
+    pub const ALL: [Capability; 8] = [
         Capability::WorkspaceRead,
         Capability::WorkspaceWrite,
         Capability::WorkspaceSearch,
@@ -41,6 +43,7 @@ impl Capability {
         Capability::NativeShell,
         Capability::Network,
         Capability::SecretsBroker,
+        Capability::CrossSessionRead,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -52,6 +55,7 @@ impl Capability {
             Capability::NativeShell => "native_shell",
             Capability::Network => "network",
             Capability::SecretsBroker => "secrets_broker",
+            Capability::CrossSessionRead => "cross_session_read",
         }
     }
 
@@ -137,6 +141,8 @@ pub struct AssistantPolicy {
     pub network_enabled: bool,
     /// 凭据代理：默认关（Android 透明代理）。
     pub broker_enabled: bool,
+    /// 跨会话只读（D295）：默认关。关着时 `Session-Files` **不声明**，不是声明了再拒绝。
+    pub cross_session_enabled: bool,
 }
 
 impl AssistantPolicy {
@@ -168,6 +174,11 @@ impl AssistantPolicy {
 
     pub fn enable_broker(mut self, enabled: bool) -> Self {
         self.broker_enabled = enabled;
+        self
+    }
+
+    pub fn enable_cross_session(mut self, enabled: bool) -> Self {
+        self.cross_session_enabled = enabled;
         self
     }
 
@@ -211,6 +222,13 @@ impl AssistantPolicy {
             }
             Capability::SecretsBroker => {
                 if self.broker_enabled {
+                    Ok(())
+                } else {
+                    Err(DenyReason::FeatureDisabled)
+                }
+            }
+            Capability::CrossSessionRead => {
+                if self.cross_session_enabled {
                     Ok(())
                 } else {
                     Err(DenyReason::FeatureDisabled)

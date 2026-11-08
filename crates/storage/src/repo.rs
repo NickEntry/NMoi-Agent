@@ -537,6 +537,26 @@ impl Storage {
         self.data_root().join("sessions").join(session.to_string())
     }
 
+    /// 跨会话只读（D295）要的索引：全部会话的 id 与名字，外加 `sessions/` 这个根。
+    ///
+    /// 只查两列，不碰消息表——这份索引只在那项开关打开时用一次，几十条会话足够轻。
+    pub fn session_index(&self) -> Result<nmoi_core::session::SessionIndex, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, COALESCE(title, '') FROM conversations")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(nmoi_core::session::SessionIndex::new(
+            self.data_root().join("sessions"),
+            sessions,
+        ))
+    }
+
     fn data_root(&self) -> std::path::PathBuf {
         self.path
             .parent()
@@ -1733,6 +1753,11 @@ impl nmoi_core::session::HistoryStore for Storage {
     /// 这个会话自己的暂存目录（D294）：文件工具的 `/tmp` 落到它。
     fn session_tmp_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         Some(Storage::session_tmp_dir(self, session))
+    }
+
+    /// 跨会话只读（D295）：别的会话的索引。查不出来就当"看不到"，不编。
+    fn session_index(&self) -> Option<nmoi_core::session::SessionIndex> {
+        Storage::session_index(self).ok()
     }
 
     /// 这一轮刚发的图片（D208）：解码后逐张落库。解不开就报错——

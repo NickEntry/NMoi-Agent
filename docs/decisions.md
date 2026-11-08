@@ -1931,3 +1931,25 @@ Kotlin 侧加 `RoleRunner`：把「默认模型」里某个角色的配置（供
 `the_scratch_of_one_session_is_invisible_to_another`、`tmp_without_a_session_is_an_error_not_a_fallback`、
 `the_scratch_still_refuses_to_escape`、`envir_binds_the_session_tmp_and_creates_it_first`；
 真机 **V104**。
+
+## D295 跨会话只读工具 `Session-Files`（2026-11-09）
+
+「接着上一条会话里的东西干」这件事，只能由用户递 id 进来——上下文里不会出现会话 id
+（用户 2026-11-08：「需要用户去给出会话和 ID」）。
+
+- **开关**：设置 → 工具与工作区 → 「跨会话读取」，默认**关**。关着时这个工具**不声明**
+  （不是声明了再拒绝）——不声明，模型就不会去试。
+- **只读**：`area` 只认 `tmp` 与 `chat`，`mode` 只认 `list` / `read`。要写是另一条开关、另一轮讨论。
+- **五步校验，每步点名报错**：形状（拿 `SessionId::from_str` 验，报错里带上"从侧边栏长按会话 →
+  详细信息 → 长按「会话 ID」复制"）→ 存在性（不在就写"可能已经被删了"，**不猜一个最像的**）→
+  路径（先按字面拼、拒 `..` 与绝对路径，再 `canonicalize` 验一次没跑出 `area`）→
+  大小（单次 256 KB，超了写清多少 KB）→ 来源（结果首行「来自另一个助手「名字」」；是自己就写"这个会话自己"）。
+- **id 的真实形状是 UUID**（`0199f0c3-…`，36 位带连字符），不是设计稿里写的 `s_…`：
+  以 `SessionId` 的解析器为准，形状写错会被解析器当场拒掉。
+- **索引是一份快照**（`SessionIndex`：id、名字、`sessions/` 根），不是活的库句柄：
+  工具要在后台线程里用（`Send + Sync`），而 SQLite 连接不是 `Sync`。只在开关打开时才查一次。
+
+判据：`cross_session_tool_is_not_declared_until_the_switch_is_on`、
+`session_files_reads_another_sessions_tmp_and_names_the_source`、
+`session_files_names_a_malformed_id_and_a_missing_session`、
+`session_files_refuses_escapes_and_oversized_files`；真机 **V105**。

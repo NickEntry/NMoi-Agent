@@ -156,10 +156,12 @@ fn axis_of(capability: Capability) -> ToolAxis {
             ToolAxis::Workspace
         }
         // 执行、联网、要凭据：这些是"这台机器上能干的事"，属于本地开关。
+        // 跨会话只读（D295）也在这里：它是设置里的一项，不跟工作区走。
         Capability::ContainerExec
         | Capability::NativeShell
         | Capability::Network
-        | Capability::SecretsBroker => ToolAxis::Local,
+        | Capability::SecretsBroker
+        | Capability::CrossSessionRead => ToolAxis::Local,
     }
 }
 

@@ -276,6 +276,8 @@ struct TurnInput {
     avg_per_turn: Option<u64>,
     /// 原生命令（`System-Shell`）这一轮开不开。**默认关**：它是这个 App 能跑的最危险的一把。
     native_shell: bool,
+    /// 跨会话只读（`Session-Files`，D295）。**默认关**：关着时这个工具不声明。
+    cross_session: bool,
     /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
     thinking: Option<String>,
     /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
@@ -596,6 +598,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         absolute_line,
         avg_per_turn: optional_u64(&root, "avg_per_turn")?,
         native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
+        cross_session: optional_bool(&root, "cross_session")?.unwrap_or(false),
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
@@ -966,15 +969,17 @@ fn policy_for(input: &TurnInput) -> AssistantPolicy {
     let container = input.envir.is_some();
     match input.workspace {
         // 没有工作区就没有可跑的目录：连带原生命令也开不了（`check` 会回 no_workspace）。
-        None => AssistantPolicy::locked_down(),
+        None => AssistantPolicy::locked_down().enable_cross_session(input.cross_session),
         Some(_) if input.read_only => AssistantPolicy::locked_down()
             .with_binding(WorkspaceBinding::read_only("ffi-workspace"))
             .enable_native_shell(input.native_shell)
-            .enable_container(container),
+            .enable_container(container)
+            .enable_cross_session(input.cross_session),
         Some(_) => AssistantPolicy::locked_down()
             .with_binding(WorkspaceBinding::read_write("ffi-workspace"))
             .enable_native_shell(input.native_shell)
-            .enable_container(container),
+            .enable_container(container)
+            .enable_cross_session(input.cross_session),
     }
 }
 

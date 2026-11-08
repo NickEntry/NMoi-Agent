@@ -66,6 +66,8 @@ internal fun ToolsScreen(
     // 容器里的命令（D172）：开关是"用户允不允许"，能不能跑由 `envir` 说话。
     var envirShell by remember { mutableStateOf(ToolingRepository.envirShell(context)) }
     var confirmEnvirShell by remember { mutableStateOf(false) }
+    // 跨会话只读（D295）：默认关；关着时 `Session-Files` 不声明。
+    var crossSession by remember { mutableStateOf(ToolingRepository.crossSession(context)) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -202,6 +204,20 @@ internal fun ToolsScreen(
                             modifier = Modifier.padding(start = 8.dp),
                         )
                     }
+                }
+
+                SectionLabel("会话")
+                GroupCard {
+                    ToolSwitchRow(
+                        title = "跨会话读取",
+                        subtitle = "读**别的会话**的 /tmp 与 /chat。只读；会话 id 要你从侧边栏长按复制给它。" +
+                            "默认关——关着的时候这个工具根本不发给模型。",
+                        checked = crossSession,
+                        onChecked = { next ->
+                            ToolingRepository.setCrossSession(context, next)
+                            crossSession = next
+                        },
+                    )
                 }
 
             }

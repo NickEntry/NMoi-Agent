@@ -40,6 +40,48 @@ use crate::tools::{ToolContext, ToolRegistry};
 use crate::transport::Transport;
 use crate::workspace::Workspace;
 
+/// 跨会话只读（D295）要的一份索引：哪些会话在、叫什么、`sessions/<id>` 在哪。
+///
+/// 为什么是一份**快照**而不是一个能现查库的对象：工具上下文要能在后台线程里用
+/// （`Send + Sync`），而 SQLite 连接不是 `Sync`。索引只在这项开关打开时才查一次，
+/// 关着的时候一分钱不花。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionIndex {
+    /// 会话数据根（`<库目录>/sessions`）。
+    root: std::path::PathBuf,
+    /// id → 名字（没有标题就是空串）。
+    sessions: Vec<(String, String)>,
+}
+
+impl SessionIndex {
+    pub fn new(root: impl Into<std::path::PathBuf>, sessions: Vec<(String, String)>) -> Self {
+        Self {
+            root: root.into(),
+            sessions,
+        }
+    }
+
+    pub fn exists(&self, id: &str) -> bool {
+        self.sessions.iter().any(|(known, _)| known == id)
+    }
+
+    /// `None` = 库里没有这条会话；`Some("")` = 有，但没标题。
+    pub fn title(&self, id: &str) -> Option<&str> {
+        self.sessions
+            .iter()
+            .find(|(known, _)| known == id)
+            .map(|(_, title)| title.as_str())
+    }
+
+    /// 那条会话的 `tmp` 或 `chat` 目录。`area` 只认这两个词。
+    pub fn area_dir(&self, id: &str, area: &str) -> Option<std::path::PathBuf> {
+        if !self.exists(id) || !matches!(area, "tmp" | "chat") {
+            return None;
+        }
+        Some(self.root.join(id).join(area))
+    }
+}
+
 /// 历史读写。实现方负责事务与顺序（SQLite 那边就是 `append_unit`）。
 pub trait HistoryStore {
     fn append_unit(&mut self, session: SessionId, unit: &AtomicUnit) -> Result<(), String>;
@@ -76,6 +118,14 @@ pub trait HistoryStore {
     /// （退回等于让两个会话共用一份，正是要隔离掉的东西）。
     fn session_tmp_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         let _ = session;
+        None
+    }
+
+    /// 跨会话只读（D295）：别的会话的索引。
+    ///
+    /// 默认 `None`——内存实现、测试夹具都"看不到别的会话"，工具那边会报一句
+    /// 「这一轮读不了别的会话」。真正查库的实现在开关打开时才被调用。
+    fn session_index(&self) -> Option<SessionIndex> {
         None
     }
 
@@ -894,10 +944,15 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     // 上下文图片（D248）：附件目录给 `View-Image` 用，上限跟着这一轮的配置走。
     let images_dir = store.attachment_dir(session);
     let session_tmp = store.session_tmp_dir(session);
+    // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
+    let session_index = store
+        .session_index()
+        .filter(|_| policy.allows(crate::policy::Capability::CrossSessionRead));
     ctx = ctx
         .with_images(images_dir.as_deref(), config.turn.image_limit)
         .with_image_room(config.turn.image_temp_limit)
-        .with_session_tmp(session_tmp.as_deref());
+        .with_session_tmp(session_tmp.as_deref())
+        .with_sessions(session_index.as_ref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1140,10 +1195,15 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     ctx = ctx.with_call_session(&call_session);
     let images_dir = store.attachment_dir(session);
     let session_tmp = store.session_tmp_dir(session);
+    // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
+    let session_index = store
+        .session_index()
+        .filter(|_| policy.allows(crate::policy::Capability::CrossSessionRead));
     ctx = ctx
         .with_images(images_dir.as_deref(), config.turn.image_limit)
         .with_image_room(config.turn.image_temp_limit)
-        .with_session_tmp(session_tmp.as_deref());
+        .with_session_tmp(session_tmp.as_deref())
+        .with_sessions(session_index.as_ref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
