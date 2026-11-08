@@ -1953,3 +1953,22 @@ Kotlin 侧加 `RoleRunner`：把「默认模型」里某个角色的配置（供
 `session_files_reads_another_sessions_tmp_and_names_the_source`、
 `session_files_names_a_malformed_id_and_a_missing_session`、
 `session_files_refuses_escapes_and_oversized_files`；真机 **V105**。
+
+## D296 压缩摘要里带上"这一段用过的会话文件"（2026-11-09）
+
+压掉的是一段对话，压不掉的是"这一段依赖过哪些文件"。摘要末尾接一节
+`[这一段用到的会话文件]`：`/tmp/a.txt（write_file、read_file）`，最多 12 条 / 600 字，
+超了写一句"其余 N 条没列出，文件还在盘上"。**只搬清单，不搬内容**。
+
+- 只认 `/tmp/...` 与 `/chat/...` 两个前缀，而且要**给了根**才认（`FileRoots`）。
+  没有根却把 `/tmp/x` 写进摘要，等于让模型去别处找。
+- 只留**真的还在**的：摘要里写一个删掉的文件，等于让下一轮去找鬼。
+- 只做字面扫描（工具参数是 JSON，路径在字符串里），宁可多认一个——后面还有存在性这一关。
+- 预算不够就整节不接（`append_section` 拿 `SUMMARY_MAX_TOKENS` 比），**草稿正文一个字都不动**。
+- 附件不在这一节里：它们按消息 id 存在库里、压缩时拿不到字节清单，而且图片本来就在
+  上下文清单里；要列它们得让压缩任务持有一份库的手柄，那是另一件事。
+
+**接入点已备好，但压缩本身还没有入口**：`CompressionJob` 目前只被 core 的单测与
+`examples/compress_smoke.rs` 用到，`crates/ffi/` 里没有任何压缩函数、Kotlin 也没有调用。
+所以这一批的判据现在只有单测（`compress::files::` 5 条）；真机项 **V106** 要等压缩接线
+（`compress_start` / `compress_commit` 一类的 FFI 入口）之后才能走。
