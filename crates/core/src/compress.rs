@@ -42,6 +42,7 @@ use crate::source::SourceTag;
 use crate::tokens::estimate_tokens;
 
 pub mod excerpt;
+pub mod files;
 pub mod runner;
 
 /// 追加草稿。
@@ -721,6 +722,11 @@ pub struct CompressionJob {
     max_rounds: u32,
     started_at: i64,
     ops: Vec<OpRecord>,
+    /// 这一段用到的会话文件（D296）：`/tmp` 与 `/chat` 两个根。
+    ///
+    /// 由调用方给（`session.rs` 从历史实现里取）；不给就不写这一节——
+    /// 没有根却把 `/tmp/x` 写进摘要，等于让模型去别处找。
+    file_roots: files::FileRoots,
 }
 
 impl CompressionJob {
@@ -763,7 +769,14 @@ impl CompressionJob {
             max_rounds: limits.max_rounds,
             started_at: now,
             ops: Vec::new(),
+            file_roots: files::FileRoots::default(),
         })
+    }
+
+    /// 这一段用到的会话文件从哪儿找（D296）。不给就写不出那一节。
+    pub fn with_file_roots(mut self, roots: files::FileRoots) -> Self {
+        self.file_roots = roots;
+        self
     }
 
     pub fn state(&self) -> JobState {
@@ -937,7 +950,11 @@ impl CompressionJob {
                 rounds_left: self.max_rounds - self.rounds + 1,
             });
         }
-        let summary = self.draft.text().to_string();
+        let summary = files::append_section(
+            self.draft.text(),
+            &self.file_roots.collect(&self.above),
+            excerpt::SUMMARY_MAX_TOKENS,
+        );
         self.finish(archive, now, summary, coverage, false)
     }
 
@@ -982,6 +999,11 @@ impl CompressionJob {
             "[压缩兜底：共 {total} 条消息已归档，原文可回灌；下列 {} 条]\n{}{tail}",
             lines.len(),
             lines.join("\n")
+        );
+        let summary = files::append_section(
+            &summary,
+            &self.file_roots.collect(&self.above),
+            excerpt::SUMMARY_MAX_TOKENS,
         );
         let coverage = check_coverage(&self.above, &summary);
         self.finish(archive, now, summary, coverage, true)
