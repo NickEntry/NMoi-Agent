@@ -79,6 +79,8 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ConversationDrawer(
     open: Boolean,
+    /** 会话信息面板要现读库里的计数，所以这一层也得拿到路径。 */
+    databasePath: String,
     rows: List<ConversationRow>,
     currentId: String? = null,
     /** 全部助手（D174）。底部那一行显示当前那个，点它弹出切换面板。 */
@@ -332,6 +334,7 @@ internal fun ConversationDrawer(
                 .offset { IntOffset((shownPx - widthPx).roundToInt(), 0) },
         ) {
             DrawerPanel(
+                databasePath = databasePath,
                 rows = rows,
                 currentId = currentId,
                 hint = hint,
@@ -408,6 +411,7 @@ private fun greeting(): String = when (LocalTime.now().hour) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DrawerPanel(
+    databasePath: String,
     rows: List<ConversationRow>,
     currentId: String?,
     hint: String?,
@@ -699,6 +703,7 @@ private fun DrawerPanel(
         //
         // 为什么是菜单而不是每行挂三个图标：抽屉本来就窄（300dp），一行里塞图标之后
         // 标题会被挤到看不清；而且这些动作里有破坏性的，露在外面容易误触。
+        var infoTarget by remember { mutableStateOf<ConversationRow?>(null) }
         actionTarget?.let { target ->
             val pinned = target.id in pinnedIds
             MenuSheet(
@@ -710,6 +715,14 @@ private fun DrawerPanel(
                         onClick = {
                             actionTarget = null
                             renameTarget = target
+                        },
+                    ),
+                    SheetItem(
+                        label = "详细信息",
+                        icon = ActionIcons.Database,
+                        onClick = {
+                            actionTarget = null
+                            infoTarget = target
                         },
                     ),
                     SheetItem(
@@ -758,6 +771,16 @@ private fun DrawerPanel(
                 ),
                 onHint = onHint,
                 onDismiss = { actionTarget = null },
+            )
+        }
+
+        // 会话信息：跨会话访问要一个能复制出去的 id，所以每一项都能长按复制。
+        infoTarget?.let { target ->
+            SessionInfoSheet(
+                sessionId = target.id,
+                title = target.title,
+                databasePath = databasePath,
+                onDismiss = { infoTarget = null },
             )
         }
 

@@ -289,6 +289,7 @@ class MainActivity : ComponentActivity() {
                 var drawerNotice by remember { mutableStateOf<String?>(null) }
                 ConversationDrawer(
                     open = drawerOpen,
+                    databasePath = databasePath,
                     rows = snapshot?.rows.orEmpty(),
                     currentId = (route as? Route.Chat)?.sessionId,
                     assistants = assistantList?.rows.orEmpty(),
