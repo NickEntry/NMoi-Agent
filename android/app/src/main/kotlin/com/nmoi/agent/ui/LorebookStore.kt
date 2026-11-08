@@ -201,6 +201,36 @@ internal object LorebookStore {
         return target
     }
 
+    /**
+     * 这一轮真正参与注入的册：`ids == null` 表示没设置过（全部启用册都算）。
+     *
+     * 册级 `enabled` 只管"要不要出现在「＋」的清单里"，真正生效的是助手身上这一份
+     * （用户 2026-11-08 定的三层语义）。
+     */
+    fun filterBy(root: JSONObject, ids: List<String>?): JSONObject {
+        if (ids == null) return root
+        val keep = ids.toSet()
+        val books = books(root)
+        val kept = JSONArray()
+        for (index in 0 until books.length()) {
+            val book = books.optJSONObject(index) ?: continue
+            if (book.optString("id") in keep) kept.put(book)
+        }
+        return JSONObject(root.toString()).put("books", kept)
+    }
+
+    /** 「＋」里那份可选清单：只列册级 `enabled` 的（收起的不出现在这里）。 */
+    fun selectableBooks(root: JSONObject): List<Pair<String, String>> {
+        val books = books(root)
+        val out = ArrayList<Pair<String, String>>()
+        for (index in 0 until books.length()) {
+            val book = books.optJSONObject(index) ?: continue
+            if (!book.optBoolean("enabled", true)) continue
+            out.add(book.optString("id") to book.optString("name").ifBlank { "未命名" })
+        }
+        return out
+    }
+
     /** 按 id 放一册进去：同 id 就整册换掉（§10.2），没有就追加。 */
     fun putBookObject(root: JSONObject, book: JSONObject): JSONObject {
         val id = book.optString("id").ifBlank { nextId(books(root), "b") }

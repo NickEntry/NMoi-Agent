@@ -291,6 +291,10 @@ internal fun ChatScreen(
     var queueSheet by remember { mutableStateOf(false) }
     /** 「＋」面板（D208）：附件入口在这里，不再靠一句"待接"。 */
     var plusMenu by remember { mutableStateOf(false) }
+    /** 「＋ → 世界书」那一层：勾哪几册真正生效（2026-11-08）。 */
+    var lorebookPick by remember { mutableStateOf(false) }
+    /** 这一轮可勾的世界书册 + 当前助手勾了哪几册（`null` = 没设置过 → 全勾）。 */
+    var bookOptions by remember { mutableStateOf(listOf<Pair<String, String>>()) }
     /**
      * 待发的图片（D208）。发送时随这一轮交出去，发完清空。
      *
@@ -359,6 +363,11 @@ internal fun ChatScreen(
                 failure != null -> "已加 ${loaded.size} 张，有 ${uris.size - loaded.size} 张没读出来"
                 else -> "已加 ${loaded.size} 张（这一轮共 ${pendingImages.size + loaded.size} 张）"
             }
+        }
+    }
+    LaunchedEffect(sessionId, assistantKey, externalReload, lorebookPick) {
+        withContext(Dispatchers.IO) {
+            bookOptions = LorebookStore.selectableBooks(LorebookStore.library(context))
         }
     }
     LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
@@ -1463,11 +1472,42 @@ internal fun ChatScreen(
                     SheetItem(
                         label = "技能",
                         icon = ActionIcons.GitBranch,
-                        hint = "技能待接（P5.5）；世界书已经能用：设置 → 世界书",
+                        hint = "技能待接（P5.5）",
+                    ),
+                    SheetItem(
+                        label = "世界书",
+                        icon = ActionIcons.Database,
+                        // 右侧是「生效 / 启用」：生效是这一轮真注入的册，启用是册级开关打开的总数。
+                        value = lorebookCount(bookOptions, assistant?.lorebooks),
+                        onClick = {
+                            plusMenu = false
+                            lorebookPick = true
+                        },
                     ),
                 ),
                 onHint = { notice = it },
                 onDismiss = { plusMenu = false },
+            )
+        }
+
+        if (lorebookPick) {
+            val active = assistant?.lorebooks
+            LorebookPickerSheet(
+                books = bookOptions,
+                active = active ?: bookOptions.map { it.first },
+                onToggle = { bookId, on ->
+                    val current = assistant ?: return@LorebookPickerSheet
+                    val now = (active ?: bookOptions.map { it.first }).toMutableSet()
+                    if (on) now.add(bookId) else now.remove(bookId)
+                    val next = current.copy(lorebooks = now.toList())
+                    scope.launch {
+                        AssistantRepository.save(databasePath, next).fold(
+                            onSuccess = { assistant = next },
+                            onFailure = { notice = "保存世界书勾选失败：${it.message}" },
+                        )
+                    }
+                },
+                onDismiss = { lorebookPick = false },
             )
         }
 

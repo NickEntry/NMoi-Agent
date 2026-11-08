@@ -61,7 +61,7 @@
 |---|---|---|---|
 | 册级开关 | `files/lorebook.json` 的 `books[].enabled` | 世界书页册行 | **这一册要不要出现在「＋」的清单里**（不是"生不生效"） |
 | 条目级开关 | 同一册的 `entries[].enabled` | 世界书页条目行 | 这一条参不参与注入 |
-| 助手级启用集 | `assistants` 表新增列（`lorebooks` / `skills`） | 「＋」面板里勾的那些 | **真正生效的是这一层** |
+| 助手级启用集 | 助手文档里的 `lorebooks`（settings `scope=assistant`，**已落**，D290）；技能等接上了再加 `skills` | 「＋」面板里勾的那些 | **真正生效的是这一层** |
 
 所以：
 

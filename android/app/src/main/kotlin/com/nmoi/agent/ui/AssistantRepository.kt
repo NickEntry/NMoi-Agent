@@ -29,6 +29,11 @@ internal data class AssistantEntry(
      * 工具根与容器里的 `/workspace` 都跟着它走；会话自己的 `/chat` 与它无关。
      */
     val workspaceId: String = WorkspaceRepository.DEFAULT_ID,
+    /**
+     * 这个助手用哪几册世界书（2026-11-08）。`null` = 没设置过，按"全部启用册都生效"处理
+     * ——老版本升上来时世界书不会突然全失效；用户在「＋」里勾过之后才有明确的一份。
+     */
+    val lorebooks: List<String>? = null,
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
@@ -212,6 +217,11 @@ internal object AssistantRepository {
                 .put("stream", entry.stream)
                 .put("workspace_id", entry.workspaceId.ifBlank { WorkspaceRepository.DEFAULT_ID })
                 .also { row ->
+                    entry.lorebooks?.let { ids ->
+                        row.put("lorebooks", org.json.JSONArray(ids))
+                    }
+                }
+                .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
                 }
@@ -349,6 +359,13 @@ internal object AssistantRepository {
             stream = safe.optBoolean("stream", true),
             workspaceId = safe.optString("workspace_id", WorkspaceRepository.DEFAULT_ID)
                 .ifBlank { WorkspaceRepository.DEFAULT_ID },
+            lorebooks = safe.optJSONArray("lorebooks")?.let { array ->
+                buildList {
+                    for (index in 0 until array.length()) {
+                        array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                }
+            },
         )
     }
 

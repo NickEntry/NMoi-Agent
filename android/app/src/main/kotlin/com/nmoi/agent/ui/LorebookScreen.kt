@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -1057,6 +1058,79 @@ private fun LoreField(
                     .heightIn(min = minHeight)
                     .padding(horizontal = 12.dp, vertical = 12.dp),
             )
+        }
+    }
+}
+
+/** 「＋」里那个数：**生效 / 启用**（用户 2026-11-08：2/13 = 生效 2、启用 13）。 */
+internal fun lorebookCount(books: List<Pair<String, String>>, active: List<String>?): String {
+    val on = active?.count { id -> books.any { it.first == id } } ?: books.size
+    return "$on/${books.size}"
+}
+
+/**
+ * 「＋ → 世界书」：勾哪几册**真正生效**。
+ *
+ * 这里只列册级开关打开的那些（收起来的不出现在清单里）；勾选结果存在助手身上，
+ * 跟助手设置里那份是同一份数据。
+ */
+@Composable
+internal fun LorebookPickerSheet(
+    books: List<Pair<String, String>>,
+    active: List<String>,
+    onToggle: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(title = "世界书", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 460.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            if (books.isEmpty()) {
+                Text(
+                    text = "还没有世界书：设置 → 世界书 里导入一份",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 16.dp),
+                )
+            }
+            books.forEach { (id, name) ->
+                val on = id in active
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggle(id, !on) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (on) {
+                        Icon(
+                            imageVector = ActionIcons.Check,
+                            contentDescription = "已生效",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Spacer(Modifier.weight(1f))
+                ChipButton("完成", primary = true, onClick = onDismiss)
+            }
         }
     }
 }

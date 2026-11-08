@@ -54,6 +54,8 @@ internal data class SheetItem(
     val onClick: (() -> Unit)? = null,
     /** 还没接的功能：点了给一句话，而不是让整行不能点。 */
     val hint: String? = null,
+    /** 右侧那个计数（`2/13` 这种）。不是"当前值"，是"这一项里有多少生效"。 */
+    val value: String? = null,
 )
 
 @Composable
@@ -191,6 +193,15 @@ private fun SheetRow(item: SheetItem, onHint: (String) -> Unit, onDismiss: () ->
             modifier = Modifier.weight(1f),
             maxLines = 1,
         )
+        val value = item.value
+        if (value != null) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 12.dp),
+            )
+        }
         val trailing = item.trailing
         if (trailing != null) {
             IconActionButton(
