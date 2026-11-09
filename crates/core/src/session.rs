@@ -477,6 +477,7 @@ fn attach_images<S: HistoryStore>(
 ///
 /// 1. **最新那一条工具结果不动**——它可能正是模型这一轮要读的东西，换成指针等于没给它。
 /// 2. **归档失败就退回全文**——宁可多花 token，也不要把内容换成一句取不回来的话。
+///
 /// 能被档位降级的内容：**只有工具结果**。
 ///
 /// 用户说的话、系统提示、指令注入、世界书、工具定义一律全文——它们是"模型该看到的东西"，
@@ -1273,17 +1274,16 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     let turn_start = units
         .iter()
         .flat_map(|unit| unit.messages.iter())
-        .filter(|message| message.role == Role::User)
-        .filter(|message| target_seq.map_or(true, |seq| message.id.seq() <= seq))
-        .next_back()
+        .rfind(|message| {
+            message.role == Role::User && target_seq.map_or(true, |seq| message.id.seq() <= seq)
+        })
         .map(|message| message.id.clone())
         .unwrap_or_else(|| {
             // 前面没有用户消息（导入的历史）：换的是"目标之前那条之后"；目标就是第一句时从头换。
             units
                 .iter()
                 .flat_map(|unit| unit.messages.iter())
-                .filter(|message| target_seq.map_or(true, |seq| message.id.seq() < seq))
-                .next_back()
+                .rfind(|message| target_seq.map_or(true, |seq| message.id.seq() < seq))
                 .map(|message| message.id.clone())
                 .unwrap_or_else(|| MessageId::new(session, 0))
         });

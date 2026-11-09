@@ -93,7 +93,10 @@ pub fn render(files: &[SessionFile]) -> Option<String> {
         lines.push(line);
     }
     if listed < files.len() {
-        lines.push(format!("（其余 {} 条没列出，文件还在盘上）", files.len() - listed));
+        lines.push(format!(
+            "（其余 {} 条没列出，文件还在盘上）",
+            files.len() - listed
+        ));
     }
     Some(lines.join("\n"))
 }
@@ -106,10 +109,9 @@ fn split_root<'a>(
 ) -> Option<(&'a Path, &'a str)> {
     let (root, rest) = if let Some(rest) = path.strip_prefix("/tmp/") {
         (tmp?, rest)
-    } else if let Some(rest) = path.strip_prefix("/chat/") {
-        (chat?, rest)
     } else {
-        return None;
+        let rest = path.strip_prefix("/chat/")?;
+        (chat?, rest)
     };
     if rest.is_empty() || rest.split('/').any(|part| part == "..") {
         return None;
@@ -146,7 +148,21 @@ fn is_boundary(ch: char) -> bool {
     ch.is_whitespace()
         || matches!(
             ch,
-            '"' | '\'' | '`' | ',' | ';' | ')' | '(' | ']' | '[' | '}' | '{' | ':' | '|' | '&' | '<' | '>'
+            '"' | '\''
+                | '`'
+                | ','
+                | ';'
+                | ')'
+                | '('
+                | ']'
+                | '['
+                | '}'
+                | '{'
+                | ':'
+                | '|'
+                | '&'
+                | '<'
+                | '>'
         )
 }
 
@@ -253,7 +269,10 @@ mod tests {
             .collect();
         let text = render(&files).unwrap();
         assert!(text.starts_with("[这一段用到的会话文件]"), "{text}");
-        assert!(text.contains("/tmp/f0.txt（read_file、edit_file）"), "{text}");
+        assert!(
+            text.contains("/tmp/f0.txt（read_file、edit_file）"),
+            "{text}"
+        );
         assert!(text.contains("没列出"), "{text}");
         assert!(render(&[]).is_none());
     }
