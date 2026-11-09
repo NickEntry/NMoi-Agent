@@ -42,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
@@ -107,6 +108,26 @@ internal fun ProviderListScreen(
         }
     }
 
+    val scope = rememberCoroutineScope()
+
+    fun moveRow(from: Int, to: Int) {
+        val current = page ?: return
+        if (query.isNotBlank()) return
+        val list = current.rows.toMutableList()
+        if (from !in list.indices || to !in list.indices) return
+        list.add(to, list.removeAt(from))
+        page = current.copy(rows = list)
+    }
+
+    fun dropRow() {
+        val ids = page?.rows?.map { it.id }.orEmpty()
+        if (ids.isEmpty() || query.isNotBlank()) return
+        scope.launch {
+            withContext(Dispatchers.IO) { ProviderRepository.saveOrder(databasePath, ids) }
+                .onFailure { notice = "顺序没存上：${it.message}" }
+        }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             ScreenTopBar(title = "供应商", onBack = onBack) {
@@ -130,12 +151,47 @@ internal fun ProviderListScreen(
                     page == null && notice == null -> Hint("正在读库…")
                     rows.isEmpty() -> EmptyProviders(onCreate = onCreate)
                     shown.isEmpty() -> Hint("没有匹配「${query.trim()}」的供应商")
-                    else -> GroupCard {
+                    query.isNotBlank() -> GroupCard {
                         shown.forEachIndexed { index, entry ->
-                            if (index > 0) {
-                                RowDivider(leading = 52.dp)
+                            if (index > 0) RowDivider(leading = 52.dp)
+                            ProviderRow(
+                                entry = entry,
+                                active = entry.id == page?.activeId,
+                                onClick = { onOpen(entry.id) },
+                            )
+                        }
+                    }
+                    else -> GroupCard {
+                        ReorderableColumn(
+                            keys = shown.map { it.id },
+                            onMove = { from, to -> moveRow(from, to) },
+                            onDrop = { dropRow() },
+                        ) { index, dragging, drag ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .then(drag)
+                                    .then(
+                                        if (dragging) {
+                                            Modifier
+                                                .shadow(6.dp, RoundedCornerShape(12.dp))
+                                                .background(
+                                                    MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                    RoundedCornerShape(12.dp),
+                                                )
+                                        } else {
+                                            Modifier.background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                        },
+                                    ),
+                            ) {
+                                if (index > 0) RowDivider(leading = 52.dp)
+                                val entry = shown[index]
+                                ProviderRow(
+                                    entry = entry,
+                                    active = entry.id == page?.activeId,
+                                    onClick = { onOpen(entry.id) },
+                                )
                             }
-                            ProviderRow(entry = entry, onClick = { onOpen(entry.id) })
                         }
                     }
                 }
@@ -644,46 +700,77 @@ internal fun ProviderEditScreen(
                     }
 
                     GroupCard(modifier = Modifier.padding(top = 8.dp)) {
-                        models.forEachIndexed { index, model ->
-                            if (index > 0) RowDivider(leading = 14.dp)
-                            ModelRow(
-                                model = model,
-                                current = model.id == activeModel,
-                                selecting = modelSelecting,
-                                selected = model.id in modelSelected,
-                                onSelect = {
-                                    if (modelSelecting) {
-                                        modelDeleteArmed = false
+                        ReorderableColumn(
+                            keys = models.map { it.id },
+                            enabled = !modelSelecting,
+                            onMove = { from, to ->
+                                if (from != to) {
+                                    val list = models.toMutableList()
+                                    if (from in list.indices && to in list.indices) {
+                                        list.add(to, list.removeAt(from))
+                                        models = list
+                                    }
+                                }
+                            },
+                            onDrop = { persist() },
+                        ) { index, dragging, drag ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .then(drag)
+                                    .then(
+                                        if (dragging) {
+                                            Modifier
+                                                .shadow(6.dp, RoundedCornerShape(12.dp))
+                                                .background(
+                                                    MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                    RoundedCornerShape(12.dp),
+                                                )
+                                        } else {
+                                            Modifier.background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                        },
+                                    ),
+                            ) {
+                                if (index > 0) RowDivider(leading = 14.dp)
+                                val model = models[index]
+                                ModelRow(
+                                    model = model,
+                                    current = model.id == activeModel,
+                                    selecting = modelSelecting,
+                                    selected = model.id in modelSelected,
+                                    onSelect = {
+                                        if (modelSelecting) {
+                                            modelDeleteArmed = false
+                                            modelSelected = if (model.id in modelSelected) {
+                                                modelSelected - model.id
+                                            } else {
+                                                modelSelected + model.id
+                                            }
+                                        } else {
+                                            activeModel = model.id
+                                        }
+                                    },
+                                    onToggleSelect = {
                                         modelSelected = if (model.id in modelSelected) {
                                             modelSelected - model.id
                                         } else {
                                             modelSelected + model.id
                                         }
-                                    } else {
-                                        activeModel = model.id
-                                    }
-                                },
-                                onToggleSelect = {
-                                    modelSelected = if (model.id in modelSelected) {
-                                        modelSelected - model.id
-                                    } else {
-                                        modelSelected + model.id
-                                    }
-                                },
-                                onEdit = {
-                                    modelDraft = ModelDraft(stored = model, model = model)
-                                },
-                                onDelete = {
-                                    // 左滑拉出来的删除：只动这一行，**立刻落库**（跟 ✓ 一个口径）。
-                                    models = models.filterNot { it.id == model.id }
-                                    sources = sources - model.id
-                                    if (activeModel == model.id) {
-                                        activeModel = models.firstOrNull()?.id.orEmpty()
-                                    }
-                                    notice = "删掉了 ${model.id}"
-                                    persist()
-                                },
-                            )
+                                    },
+                                    onEdit = {
+                                        modelDraft = ModelDraft(stored = model, model = model)
+                                    },
+                                    onDelete = {
+                                        models = models.filterNot { it.id == model.id }
+                                        sources = sources - model.id
+                                        if (activeModel == model.id) {
+                                            activeModel = models.firstOrNull()?.id.orEmpty()
+                                        }
+                                        notice = "删掉了 ${model.id}"
+                                        persist()
+                                    },
+                                )
+                            }
                         }
                         if (models.isNotEmpty()) RowDivider(leading = 14.dp)
                         AddRow(
@@ -1105,7 +1192,7 @@ private fun Segmented(
 
 /** 列表里的一行供应商：首字圆标 + 名字 + 类型/模型数 + 「当前」标记。 */
 @Composable
-private fun ProviderRow(entry: ProviderEntry, onClick: () -> Unit) {
+private fun ProviderRow(entry: ProviderEntry, active: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1126,12 +1213,23 @@ private fun ProviderRow(entry: ProviderEntry, onClick: () -> Unit) {
             )
         }
         Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(
-                text = entry.name.ifBlank { entry.id },
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = entry.name.ifBlank { entry.id },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (active) {
+                    Text(
+                        text = "当前",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+            }
             Text(
                 text = buildString {
                     append(ProviderKinds.label(entry.kind))

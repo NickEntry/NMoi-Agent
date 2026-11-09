@@ -217,6 +217,9 @@ internal object ModelKinds {
 internal object ProviderRepository {
     private const val ACTIVE_KEY = "active"
 
+    /** 用户拖出来的顺序（一个 id 数组）。不在里面的按名字排在后面。 */
+    private const val ORDER_KEY = "order"
+
     /** 我们自己生成的 id 一定匹配这个；库里读出来的别的形状一律不认，免得拼进文件名。 */
     private val ID_PATTERN = Regex("[A-Za-z0-9_-]{1,40}")
 
@@ -233,7 +236,7 @@ internal object ProviderRepository {
                         for (index in 0 until items.length()) {
                             val item = items.optJSONObject(index) ?: continue
                             val key = item.optString("key", "")
-                            if (key == ACTIVE_KEY) continue
+                            if (key == ACTIVE_KEY || key == ORDER_KEY) continue
                             if (!ID_PATTERN.matches(key)) {
                                 NLog.w("Provider", "跳过形状不对的 key：$key")
                                 continue
@@ -241,12 +244,15 @@ internal object ProviderRepository {
                             add(parse(key, item.optJSONObject("doc")))
                         }
                     }
-                    // 当前那个排最前，其余按名字；不按更新时间排——刚编辑过的会跳到顶上，
-                    // 那在列表里看起来像"它自己选了当前"。
+                    // 顺序由用户拖出来（D301）：拖过的一律按那份顺序，没拖过（新建的）按名字垫后。
+                    // 不再把"当前"顶到最前——那样一拖就回弹，等于这个手势没生效。
                     val active = activeIdOf(handle).getOrNull()
+                    val rank = orderIdsOf(handle).getOrNull().orEmpty()
+                        .withIndex()
+                        .associate { (index, id) -> id to index }
                     ProviderList(
                         activeId = active,
-                        rows = rows.sortedWith(compareBy({ it.id != active }, { it.name })),
+                        rows = rows.sortedWith(compareBy({ rank[it.id] ?: Int.MAX_VALUE }, { it.name })),
                     )
                 }
         }
@@ -333,9 +339,31 @@ internal object ProviderRepository {
                 NmoiFfi.settingsDelete(handle, SettingsScope.Provider, ACTIVE_KEY)
                     .onFailure { NLog.w("Provider", "清当前标记失败：${it.message}") }
             }
+            val order = orderIdsOf(handle).getOrNull().orEmpty()
+            if (id in order) {
+                NmoiFfi.settingsPut(
+                    handle,
+                    SettingsScope.Provider,
+                    ORDER_KEY,
+                    JSONObject().put("ids", JSONArray(order.filterNot { it == id })),
+                ).onFailure { NLog.w("Provider", "清理顺序失败：${it.message}") }
+            }
             Vault.clear(context, id)
             NLog.i("Provider", "已删除供应商 $id（设置与密钥文件）")
             Result.success(Unit)
+        }
+
+    /** 存一份拖出来的顺序。整份覆盖，不做增量：增量迟早会和现状对不上。 */
+    suspend fun saveOrder(databasePath: String, ids: List<String>): Result<Unit> =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.settingsPut(
+                handle,
+                SettingsScope.Provider,
+                ORDER_KEY,
+                JSONObject().put("ids", JSONArray(ids)),
+            )
+                .onFailure { NLog.w("Provider", "保存顺序失败：${it.message}") }
+                .map { }
         }
 
     suspend fun setActive(databasePath: String, id: String): Result<Unit> =
@@ -361,6 +389,16 @@ internal object ProviderRepository {
         File(context.filesDir, "nmoi.db").absolutePath
 
     // -----------------------------------------------------------------------
+
+    private suspend fun orderIdsOf(handle: Long): Result<List<String>> =
+        NmoiFfi.settingsGet(handle, SettingsScope.Provider, ORDER_KEY).map { envelope ->
+            val ids = envelope.optJSONObject("doc")?.optJSONArray("ids") ?: JSONArray()
+            buildList {
+                for (index in 0 until ids.length()) {
+                    ids.optString(index, "").takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+        }
 
     private suspend fun activeIdOf(handle: Long): Result<String?> =
         NmoiFfi.settingsGet(handle, SettingsScope.Provider, ACTIVE_KEY).map { envelope ->

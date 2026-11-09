@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,20 +39,26 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -498,6 +505,97 @@ internal fun Modifier.onHold(
                 if (!held && (change.position - down.position).getDistance() > viewConfiguration.touchSlop) break
             }
             armed = false
+        }
+    }
+}
+
+/**
+ * 长按 [holdMillis] 之后可以上下拖动排序的一列。
+ *
+ * 行高在 `onGloballyPositioned` 里量：两行文字的行与一行文字的行混在一起时，
+ * 按固定行高算会越拖越偏。行用 `key()` 包住，交换位置时 Composable 身份跟着数据走，
+ * 手势不会在拖动中途被重启。
+ *
+ * 超时用 `AwaitPointerEventScope.withTimeout`：那个作用域禁止 `delay`，只有它自己的超时
+ * 才抛得出来（`PointerEventTimeoutCancellationException`）。2 秒内抬起是点击、被滚动取消
+ * 是滚动，两种都不进拖动。
+ */
+@Composable
+internal fun ReorderableColumn(
+    keys: List<Any>,
+    onMove: (from: Int, to: Int) -> Unit,
+    onDrop: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    holdMillis: Long = 2000L,
+    content: @Composable (index: Int, dragging: Boolean, drag: Modifier) -> Unit,
+) {
+    val heights = remember { mutableStateMapOf<Int, Float>() }
+    var dragIndex by remember { mutableStateOf(-1) }
+    var dragOffset by remember { mutableStateOf(0f) }
+    val move = rememberUpdatedState(onMove)
+    val drop = rememberUpdatedState(onDrop)
+
+    Column(modifier = modifier) {
+        keys.forEachIndexed { index, itemKey ->
+            key(itemKey) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .zIndex(if (dragIndex == index) 1f else 0f)
+                        .offset {
+                            IntOffset(0, if (dragIndex == index) dragOffset.roundToInt() else 0)
+                        }
+                        .onGloballyPositioned { heights[index] = it.size.height.toFloat() }
+                        .pointerInput(itemKey, enabled) {
+                            if (!enabled) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                var timedOut = false
+                                try {
+                                    withTimeout(holdMillis) { waitForUpOrCancellation() }
+                                } catch (_: PointerEventTimeoutCancellationException) {
+                                    timedOut = true
+                                }
+                                if (!timedOut) return@awaitEachGesture
+                                dragIndex = index
+                                dragOffset = 0f
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    val up = change.changedToUpIgnoreConsumed()
+                                    val dy = change.positionChange().y
+                                    change.consume()
+                                    dragOffset += dy
+                                    val from = dragIndex
+                                    if (from < 0) break
+                                    val here = heights[from] ?: 0f
+                                    if (dragOffset > here / 2 && from < keys.lastIndex) {
+                                        val below = heights[from + 1] ?: here
+                                        heights[from] = below
+                                        heights[from + 1] = here
+                                        dragOffset -= below
+                                        dragIndex = from + 1
+                                        move.value(from, from + 1)
+                                    } else if (dragOffset < -here / 2 && from > 0) {
+                                        val above = heights[from - 1] ?: here
+                                        heights[from] = above
+                                        heights[from - 1] = here
+                                        dragOffset += above
+                                        dragIndex = from - 1
+                                        move.value(from, from - 1)
+                                    }
+                                    if (up) break
+                                }
+                                dragIndex = -1
+                                dragOffset = 0f
+                                drop.value()
+                            }
+                        },
+                ) {
+                    content(index, dragIndex == index, Modifier)
+                }
+            }
         }
     }
 }
