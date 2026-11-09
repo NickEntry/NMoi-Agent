@@ -44,6 +44,7 @@ import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
 import com.nmoi.agent.ui.PresetEditScreen
 import com.nmoi.agent.ui.PresetScreen
+import com.nmoi.agent.ui.KeyPoolScreen
 import com.nmoi.agent.ui.ProviderEditScreen
 import com.nmoi.agent.ui.ProviderListScreen
 import com.nmoi.agent.ui.ProxyContainer
@@ -120,6 +121,9 @@ private sealed interface Route {
      * 拆成路由就有两个写者（模型页直接落库 / 供应商页按「保存」），谁后按谁赢。
      */
     data class ProviderEdit(val id: String?, val focusModel: String? = null) : Route
+
+    /** 多 Key 管理（D302）：压在供应商编辑页上面，返回一次回编辑页，不会跳到列表。 */
+    data class ProviderKeys(val id: String) : Route
 
     data object Prompts : Route
 
@@ -528,6 +532,15 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                             // 删掉了就退回列表：留在编辑页会编辑一份已经不存在的配置。
                             onDeleted = { backStack = backStack.dropLast(1) },
+                            onOpenKeys = { providerId ->
+                                backStack = backStack + Route.ProviderKeys(providerId)
+                            },
+                        )
+
+                        is Route.ProviderKeys -> KeyPoolScreen(
+                            context = applicationContext,
+                            providerId = route.id,
+                            onBack = { backStack = backStack.dropLast(1) },
                         )
 
                         Route.Prompts -> PromptsScreen(

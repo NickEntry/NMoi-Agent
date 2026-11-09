@@ -63,7 +63,11 @@ internal object RoleRunner {
         val merged = listOfNotNull(extra.takeIf { it.isNotEmpty() }, system?.takeIf { it.isNotBlank() })
             .joinToString("\n\n")
             .ifBlank { null }
-        val key = Vault.load(context, provider.id)
+        val key = if (provider.multiKey) {
+            KeyPool.pick(context, provider.id)
+        } else {
+            Vault.load(context, provider.id)
+        }
         val config = JSONObject()
             .put(
                 "provider",

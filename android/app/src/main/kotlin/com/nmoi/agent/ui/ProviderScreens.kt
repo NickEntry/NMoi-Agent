@@ -228,6 +228,7 @@ internal fun ProviderEditScreen(
      * 用户还以为自己点错了。
      */
     focusModelId: String? = null,
+    onOpenKeys: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -246,6 +247,8 @@ internal fun ProviderEditScreen(
     var keyVisible by remember { mutableStateOf(false) }
     var keyHint by remember { mutableStateOf<String?>(null) }
     var keyOnDisk by remember { mutableStateOf(false) }
+    var multiKey by remember { mutableStateOf(false) }
+    var poolKeys by remember { mutableStateOf(0) }
     var tab by remember { mutableStateOf(0) }
     var saving by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -393,6 +396,7 @@ internal fun ProviderEditScreen(
                     models = entry.models
                     activeModel = entry.activeModel
                     sources = entry.fieldSources
+                    multiKey = entry.multiKey
                     // 长按进来的那一条：读到就直接开它的编辑页（只开一次）。
                     if (focusModelId != null) {
                         entry.models.firstOrNull { it.id == focusModelId }?.let { model ->
@@ -403,6 +407,9 @@ internal fun ProviderEditScreen(
                 onFailure = { notice = "读不到这份配置：${it.message}" },
             )
             keyOnDisk = withContext(Dispatchers.IO) { ProviderRepository.hasKey(context, providerId) }
+            poolKeys = withContext(Dispatchers.IO) {
+                if (providerId != null) KeyPool.load(context, providerId).keys.size else 0
+            }
             keyHint = withContext(Dispatchers.IO) {
                 ProviderRepository.keyHint(context, providerId)
             }
@@ -435,6 +442,7 @@ internal fun ProviderEditScreen(
             baseUrl = baseUrl.trim(),
             models = cleaned,
             activeModel = chosen,
+            multiKey = multiKey,
         )
         saving = true
         scope.launch {
@@ -490,7 +498,11 @@ internal fun ProviderEditScreen(
         fetchNote = null
         scope.launch {
             val key = withContext(Dispatchers.IO) {
-                keyDraft.trim().ifEmpty { Vault.load(context, id) }
+                if (multiKey) {
+                    KeyPool.pick(context, id)
+                } else {
+                    keyDraft.trim().ifEmpty { Vault.load(context, id) }
+                }
             }
             val fetched = withContext(Dispatchers.IO) {
                 ModelCatalog.fetch(base, kind, key)
@@ -597,6 +609,70 @@ internal fun ProviderEditScreen(
                     }
 
                     GroupCard(modifier = Modifier.padding(top = 12.dp)) {
+                        SectionLabel("管理", modifier = Modifier.padding(start = 14.dp, top = 12.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 14.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "多Key模式",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            androidx.compose.material3.Switch(
+                                checked = multiKey,
+                                onCheckedChange = { multiKey = it },
+                            )
+                        }
+                        if (multiKey) {
+                            RowDivider(leading = 14.dp)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (providerId == null) {
+                                            notice = "先保存这一份，再往里放 key"
+                                        } else {
+                                            onOpenKeys(id)
+                                        }
+                                    }
+                                    .padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "多Key管理",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = if (poolKeys == 0) "还没放 key" else "$poolKeys 把",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
+                                Text(
+                                    text = "›",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Hint(
+                            if (multiKey) {
+                                "开着的时候，请求按策略从池里挑一把；池里的 key 与下面那个单独的 API Key 是两份数据。"
+                            } else {
+                                "打开之后，下面那个单独的 API Key 会收起来，改成从一个池里挑。"
+                            },
+                        )
+                    }
+
+                    if (!multiKey) {
+                    GroupCard(modifier = Modifier.padding(top = 12.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -621,6 +697,7 @@ internal fun ProviderEditScreen(
                                 else -> "存在 vault/provider-<id>.bin，Keystore 加密，不进库、不进备份。"
                             },
                         )
+                    }
                     }
 
                     PrimaryButton(

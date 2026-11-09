@@ -150,6 +150,11 @@ internal data class ProviderEntry(
      * 一次写入一起落盘。老数据没有这一段——那时每个字段都按 [FieldSource.Default] 解释。
      */
     val fieldSources: Map<String, Map<String, FieldSource>> = emptyMap(),
+    /**
+     * 多 Key 模式（D302）：请求时从 [KeyPool] 里挑一把，而不是读那唯一的 `provider-<id>.bin`。
+     * 与单 Key 的数据不共用，开关只是"用哪一边"。
+     */
+    val multiKey: Boolean = false,
 ) {
     /** 当前模型：按 `activeModel` 找，找不到就退回第一个（别让界面显示成"没有模型"）。 */
     val model: ProviderModel?
@@ -312,6 +317,7 @@ internal object ProviderRepository {
                 )
                 .put("active_model", entry.activeModel.trim())
                 .put("field_sources", encodeSources(sources))
+                .apply { if (entry.multiKey) put("multi_key", true) }
             NmoiFfi.settingsPut(handle, SettingsScope.Provider, entry.id, doc)
                 .onSuccess {
                     NLog.i(
@@ -349,7 +355,8 @@ internal object ProviderRepository {
                 ).onFailure { NLog.w("Provider", "清理顺序失败：${it.message}") }
             }
             Vault.clear(context, id)
-            NLog.i("Provider", "已删除供应商 $id（设置与密钥文件）")
+            Vault.clearPool(context, id)
+            NLog.i("Provider", "已删除供应商 $id（设置、密钥与多 Key 池）")
             Result.success(Unit)
         }
 
@@ -677,6 +684,7 @@ internal object ProviderRepository {
                 models.firstOrNull()?.id.orEmpty()
             },
             fieldSources = decodeSources(doc.optJSONObject("field_sources")),
+            multiKey = doc.optBoolean("multi_key", false),
         )
     }
 }

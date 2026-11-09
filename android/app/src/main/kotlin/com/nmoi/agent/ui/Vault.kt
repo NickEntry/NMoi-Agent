@@ -105,6 +105,23 @@ internal object Vault {
         }
     }
 
+    /**
+     * 多 Key 池这类"一份 JSON"的密文（D302）。
+     *
+     * 复用同一个加密与文件名规则，id 取 `keys-<供应商 id>`：和供应商自己的 `provider-<id>.bin`
+     * 是两个文件——单 Key 与多 Key **数据不共用**，关掉多 Key 开关不会把池里的 key 当成那把唯一的。
+     */
+    fun savePool(context: Context, providerId: String, plain: String): Result<Unit> =
+        save(context, "keys-$providerId", plain)
+
+    fun loadPool(context: Context, providerId: String): String? = load(context, "keys-$providerId")
+
+    fun hasPool(context: Context, providerId: String): Boolean = has(context, "keys-$providerId")
+
+    fun clearPool(context: Context, providerId: String) {
+        clear(context, "keys-$providerId")
+    }
+
     private fun masterKey(): SecretKey {
         val store = KeyStore.getInstance(PROVIDER).apply { load(null) }
         (store.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }

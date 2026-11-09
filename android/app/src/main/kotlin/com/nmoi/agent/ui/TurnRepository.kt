@@ -192,7 +192,12 @@ internal object TurnRepository {
         val temperature = assistant.temperature ?: model.temperature
         val maxTokens = assistant.maxTokens ?: model.maxTokens
 
-        val key = Vault.load(context, provider.id)
+        // 多 Key 模式（D302）：从池里按策略挑一把；单 Key 还是那个唯一文件。
+        val key = if (provider.multiKey) {
+            KeyPool.pick(context, provider.id)
+        } else {
+            Vault.load(context, provider.id)
+        }
         // 只记"有没有"，不记内容也不记长度：长度也是信息。
         NLog.i(
             "Turn",
