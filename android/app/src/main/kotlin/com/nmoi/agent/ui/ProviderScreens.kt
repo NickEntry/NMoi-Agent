@@ -5,17 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import kotlin.math.roundToInt
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Box
@@ -27,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,7 +41,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -1181,124 +1173,51 @@ private fun ModelRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
-    val reveal = with(LocalDensity.current) { 88.dp.toPx() }
-    val offset = remember(model.id) { Animatable(0f) }
-
-    // 进多选就把滑开的那一行收回去：多选时这一行不吃滑动（D204）。
-    LaunchedEffect(selecting) {
-        if (selecting) offset.snapTo(0f)
-    }
-
-    // **红底铺在整个 Box 上**，而不是铺在"背后那一层"里（D215）。
-    // 真机上就是这里出的问题：滑开之后行确实动了，但露出来的是卡片底色——
-    // 背后那层 `matchParentSize` 的 Row 在某些测量顺序下高度是 0，红色根本没画出来。
-    // 铺在 Box 上就没有"量不出来"这回事；行自己不透明，盖住的部分看不见。
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clipToBounds()
-            .background(MaterialTheme.colorScheme.error),
+    SwipeDeleteRow(
+        resetKey = model.id,
+        rowColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        swipeEnabled = !selecting,
+        deleteDescription = "删除这个模型",
+        onClick = { if (selecting) onToggleSelect() else onSelect() },
+        onDelete = onDelete,
+        contentPadding = PaddingValues(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
     ) {
-        // 删除区固定在右端，不跟着行移动；图标 + 文字两个信号，色弱也分得出来。
-        Row(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .width(88.dp)
-                .fillMaxHeight()
-                .clickable {
-                    scope.launch { offset.snapTo(0f) }
-                    onDelete()
-                },
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            androidx.compose.material3.Icon(
-                imageVector = ActionIcons.Trash2,
-                contentDescription = "删除这个模型",
-                tint = MaterialTheme.colorScheme.onError,
-                modifier = Modifier.size(18.dp),
+        Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+            when {
+                selecting -> SelectBox(checked = selected)
+                current -> androidx.compose.material3.Icon(
+                    imageVector = ActionIcons.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
+            Text(
+                text = model.id,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "删除",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onError,
-                modifier = Modifier.padding(start = 6.dp),
+                text = if (model.isChat) {
+                    model.summary
+                } else {
+                    "${ModelKinds.label(model.kind)} · ${model.summary}"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
-
-        Row(
-            modifier = Modifier
-                // 不透明：不铺底色的话背后那颗红按钮会从行缝里透出来。
-                .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                .fillMaxWidth()
-                .offset { IntOffset(offset.value.roundToInt(), 0) }
-                .pointerInput(model.id, selecting) {
-                    if (selecting) return@pointerInput
-                    detectHorizontalDragGestures(
-                        onHorizontalDrag = { _, drag ->
-                            scope.launch {
-                                offset.snapTo((offset.value + drag).coerceIn(-reveal, 0f))
-                            }
-                        },
-                        onDragEnd = {
-                            // 超过一半就停在"露出删除"，否则弹回去；不留半开的状态。
-                            val target = if (offset.value < -reveal / 2f) -reveal else 0f
-                            scope.launch { offset.animateTo(target) }
-                        },
-                        onDragCancel = { scope.launch { offset.animateTo(0f) } },
-                    )
-                }
-                .clickable {
-                    when {
-                        selecting -> onToggleSelect()
-                        // 滑开的时候点一下 = 收回去，而不是"选中它"（那会是误触）。
-                        offset.value < -1f -> scope.launch { offset.animateTo(0f) }
-                        else -> onSelect()
-                    }
-                }
-                .padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
-                when {
-                    selecting -> SelectBox(checked = selected)
-                    current -> androidx.compose.material3.Icon(
-                        imageVector = ActionIcons.Check,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-            Column(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
-                Text(
-                    text = model.id,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = if (model.isChat) {
-                        model.summary
-                    } else {
-                        // 非聊天型在这里标出来：它在聊天页的选择器里**不会出现**，
-                        // 用户得能在这一行看出原因（D191）。
-                        "${ModelKinds.label(model.kind)} · ${model.summary}"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-            if (!selecting) {
-                IconActionButton(
-                    image = ActionIcons.Pencil,
-                    description = "改这个模型",
-                    onClick = onEdit,
-                    compact = true,
-                )
-            }
+        if (!selecting) {
+            IconActionButton(
+                image = ActionIcons.Pencil,
+                description = "改这个模型",
+                onClick = onEdit,
+                compact = true,
+            )
         }
     }
 }

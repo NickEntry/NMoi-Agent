@@ -1,16 +1,22 @@
 package com.nmoi.agent.ui
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,18 +33,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 返回箭头。左上角那个，二级页面统一用它。
@@ -253,6 +265,98 @@ internal fun RowDivider(leading: Dp) {
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
         modifier = Modifier.padding(start = leading),
     )
+}
+
+/**
+ * 一行可以左滑露出删除的列表行。
+ *
+ * 红底铺在这个 Box 上、内容行自己不透明：换成"背后那一层铺红"会在真机上量成 0 高（D215）。
+ * 松手不过一半就弹回，不留一条半开的红色待命。
+ */
+@Composable
+internal fun SwipeDeleteRow(
+    resetKey: Any?,
+    rowColor: Color,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+    swipeEnabled: Boolean = true,
+    revealWidth: Dp = 88.dp,
+    deleteLabel: String = "删除",
+    deleteDescription: String = "删除",
+    contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+    content: @Composable RowScope.() -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val reveal = with(LocalDensity.current) { revealWidth.toPx() }
+    val offset = remember(resetKey) { Animatable(0f) }
+
+    LaunchedEffect(swipeEnabled) {
+        if (!swipeEnabled) offset.snapTo(0f)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clipToBounds()
+            .background(MaterialTheme.colorScheme.error),
+    ) {
+        Box(modifier = Modifier.matchParentSize()) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(revealWidth)
+                    .fillMaxHeight()
+                    .clickable {
+                        scope.launch { offset.snapTo(0f) }
+                        onDelete()
+                    },
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = ActionIcons.Trash2,
+                    contentDescription = deleteDescription,
+                    tint = MaterialTheme.colorScheme.onError,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = deleteLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onError,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .background(rowColor)
+                .fillMaxWidth()
+                .offset { IntOffset(offset.value.roundToInt(), 0) }
+                .pointerInput(resetKey, swipeEnabled) {
+                    if (!swipeEnabled) return@pointerInput
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { _, drag ->
+                            scope.launch {
+                                offset.snapTo((offset.value + drag).coerceIn(-reveal, 0f))
+                            }
+                        },
+                        onDragEnd = {
+                            val target = if (offset.value < -reveal / 2f) -reveal else 0f
+                            scope.launch { offset.animateTo(target) }
+                        },
+                        onDragCancel = { scope.launch { offset.animateTo(0f) } },
+                    )
+                }
+                .clickable {
+                    if (offset.value < -1f) scope.launch { offset.animateTo(0f) } else onClick()
+                }
+                .padding(contentPadding),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
+    }
 }
 
 /** 多选时左边那个小方框：勾上是主色实心 + 白勾。 */
