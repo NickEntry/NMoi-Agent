@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -66,8 +68,14 @@ internal fun MenuSheet(
     onDismiss: () -> Unit,
 ) {
     SheetFrame(title = title, onDismiss = onDismiss) {
-        items.forEach { item ->
-            SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
+        Column(
+            modifier = Modifier
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            items.forEach { item ->
+                SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
+            }
         }
     }
 }

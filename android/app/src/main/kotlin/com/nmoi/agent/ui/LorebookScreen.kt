@@ -1,6 +1,7 @@
 package com.nmoi.agent.ui
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -77,6 +78,10 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
         }
     }
     var presetSheet by remember { mutableStateOf<PresetEntryView?>(null) }
+    var bookPicked by remember { mutableStateOf<Set<String>?>(null) }
+    var entryPicked by remember { mutableStateOf<EntryPick?>(null) }
+    var bulkDelete by remember { mutableStateOf<BulkDelete?>(null) }
+    var moveTarget by remember { mutableStateOf<MoveTarget?>(null) }
     val scope = rememberCoroutineScope()
 
     // 每次改动都从**当前树**拷一份再改：`JSONObject` 是可变对象，原地改不会触发重组，
@@ -91,6 +96,28 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
     }
 
     fun book(id: String): JSONObject? = LorebookStore.book(root, id)
+
+    fun exitPick() {
+        bookPicked = null
+        entryPicked = null
+    }
+
+    fun enterBookPick(bookId: String) {
+        entryPicked = null
+        bookPicked = setOf(bookId)
+        expanded = emptySet()
+    }
+
+    fun enterEntryPick(bookId: String) {
+        bookPicked = null
+        entryPicked = EntryPick(bookId, emptySet())
+        expanded = setOf(bookId)
+    }
+
+    val picking = bookPicked != null || entryPicked != null
+    val pickedCount = bookPicked?.size ?: entryPicked?.ids?.size ?: 0
+
+    BackHandler(enabled = picking) { exitPick() }
 
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) {
@@ -142,6 +169,54 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
 
     val books = LorebookStore.books(root)
 
+    fun exportBooks(ids: Set<String>) {
+        val rows = ArrayList<JSONObject>()
+        for (index in 0 until books.length()) {
+            val book = books.optJSONObject(index) ?: continue
+            if (book.optString("id") in ids) rows.add(JSONObject(book.toString()))
+        }
+        if (rows.isEmpty()) {
+            notice = "勾的那几册不在了"
+            return
+        }
+        exportTarget = if (rows.size == 1) {
+            singleBookDocument(rows[0])
+        } else {
+            JSONObject()
+                .put("version", 1)
+                .put("type", "lorebook")
+                .put("books", JSONArray().also { array -> rows.forEach { array.put(it) } })
+        }
+        val name = if (rows.size == 1) {
+            "${rows[0].optString("name").ifBlank { "lorebook" }}.json"
+        } else {
+            "世界书-${rows.size}册.json"
+        }
+        exportLauncher.launch(name)
+    }
+
+    val pickableBooks = (0 until books.length()).mapNotNull { index ->
+        books.optJSONObject(index)?.optString("id")
+    }.filter { it.isNotBlank() && !LorebookStore.isBuiltin(it) }
+
+    fun pickableEntries(rows: JSONArray?): List<String> {
+        if (rows == null) return emptyList()
+        return (0 until rows.length()).mapNotNull { index ->
+            rows.optJSONObject(index)?.optString("id")
+        }.filter { it.isNotBlank() }
+    }
+
+    fun otherBooks(bookId: String): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        for (index in 0 until books.length()) {
+            val row = books.optJSONObject(index) ?: continue
+            val id = row.optString("id")
+            if (id.isBlank() || id == bookId || LorebookStore.isBuiltin(id)) continue
+            out.add(id to row.optString("name").ifBlank { "未命名" })
+        }
+        return out
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -156,16 +231,52 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                 modifier = Modifier.weight(1f).padding(start = 4.dp),
             )
         }
+    if (picking) {
+        SelectionBar(
+            count = pickedCount,
+            unit = if (bookPicked != null) "册" else "条",
+            allSelected = run {
+                val pickedBooks = bookPicked
+                val pickedEntries = entryPicked
+                when {
+                    pickedBooks != null -> pickableBooks.isNotEmpty() && pickableBooks.all { it in pickedBooks }
+                    pickedEntries != null -> {
+                        val ids = pickableEntries(book(pickedEntries.bookId)?.let { LorebookStore.entries(it) })
+                        ids.isNotEmpty() && ids.all { it in pickedEntries.ids }
+                    }
+                    else -> false
+                }
+            },
+            onToggleAll = {
+                val picked = bookPicked
+                val rows = entryPicked
+                when {
+                    picked != null -> bookPicked = if (pickableBooks.all { it in picked }) {
+                        emptySet()
+                    } else {
+                        pickableBooks.toSet()
+                    }
+                    rows != null -> {
+                        val ids = pickableEntries(book(rows.bookId)?.let { LorebookStore.entries(it) })
+                        entryPicked = rows.copy(ids = if (ids.all { it in rows.ids }) emptySet() else ids.toSet())
+                    }
+                }
+            },
+            onClose = { exitPick() },
+        )
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                ChipButton("导入 JSON", primary = false) { pickFile.launch("application/json") }
-                ChipButton("新建一册", primary = true) { creating = true }
+            if (!picking) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ChipButton("导入 JSON", primary = false) { pickFile.launch("application/json") }
+                    ChipButton("新建一册", primary = true) { creating = true }
+                }
             }
 
             notice?.let { line ->
@@ -219,6 +330,7 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                 onDeleteManual = { entryId ->
                     deleting = DeleteTarget(LorebookStore.BUILTIN_ID, entryId)
                 },
+                locked = picking,
                 onReset = {
                     scope.launch {
                         var reset = 0
@@ -272,6 +384,27 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                     onDeleteEntry = { entryId ->
                         deleting = DeleteTarget(bookId, entryId)
                     },
+                    bookSelecting = bookPicked != null,
+                    bookSelected = bookPicked?.contains(bookId) == true,
+                    onToggleBookPick = {
+                        val current = bookPicked ?: emptySet<String>()
+                        bookPicked = if (bookId in current) current - bookId else current + bookId
+                    },
+                    onHold = {
+                        if (bookPicked == null && entryPicked == null) enterBookPick(bookId)
+                    },
+                    entrySelecting = entryPicked?.bookId == bookId,
+                    pickedEntries = if (entryPicked?.bookId == bookId) entryPicked?.ids ?: emptySet() else emptySet(),
+                    onToggleEntryPick = { entryId ->
+                        val current = entryPicked
+                        if (current != null && current.bookId == bookId) {
+                            entryPicked = current.copy(
+                                ids = if (entryId in current.ids) current.ids - entryId else current.ids + entryId,
+                            )
+                        }
+                    },
+                    onPickEntries = { enterEntryPick(bookId) },
+                    locked = entryPicked != null && entryPicked?.bookId != bookId,
                 )
             }
 
@@ -283,7 +416,53 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
             )
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(if (picking) 76.dp else 24.dp))
+        }
+
+        if (picking) {
+            Surface(
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+            ) {
+                BulkBar(
+                    count = pickedCount,
+                    emptyLabel = if (bookPicked != null) "还没勾：长按一册开始" else "还没勾：点一条开始",
+                ) {
+                    if (bookPicked != null) {
+                        BulkText(label = "导出", onClick = { exportBooks(bookPicked ?: emptySet<String>()) })
+                        Spacer(Modifier.weight(1f))
+                        BulkText(
+                            label = "删除",
+                            danger = true,
+                            onClick = { bulkDelete = BulkDelete(bookIds = bookPicked ?: emptySet<String>()) },
+                        )
+                    } else {
+                        val picked = entryPicked
+                        BulkText(
+                            label = "复制到…",
+                            onClick = { picked?.let { moveTarget = MoveTarget(it, move = false) } },
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        BulkText(
+                            label = "移动…",
+                            onClick = { picked?.let { moveTarget = MoveTarget(it, move = true) } },
+                        )
+                        Spacer(Modifier.weight(1f))
+                        BulkText(
+                            label = "删除",
+                            danger = true,
+                            onClick = {
+                                picked?.let {
+                                    bulkDelete = BulkDelete(entryBookId = it.bookId, entryIds = it.ids)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         val target = editing
@@ -424,6 +603,83 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                 },
             )
         }
+
+        bulkDelete?.let { target ->
+            val names = target.bookIds.mapNotNull { id ->
+                book(id)?.optString("name")?.ifBlank { "未命名" }
+            }
+            val entryCount = target.bookIds.sumOf { id ->
+                book(id)?.let { LorebookStore.entries(it).length() } ?: 0
+            }
+            val entryBook = target.entryBookId?.let { book(it) }
+            ConfirmDialog(
+                title = if (target.entryBookId == null) {
+                    "删除这 ${target.bookIds.size} 册？"
+                } else {
+                    "删除这 ${target.entryIds.size} 条？"
+                },
+                detail = if (target.entryBookId == null) {
+                    "「${names.joinToString("」「")}」里的 $entryCount 条会一起没掉。删完这些册不再参与注入。"
+                } else {
+                    "「${entryBook?.optString("name").orEmpty().ifBlank { "这一册" }}」里选中的" +
+                        " ${target.entryIds.size} 条会没掉，删完不再参与注入。"
+                },
+                confirmLabel = "删除",
+                onCancel = { bulkDelete = null },
+                onConfirm = {
+                    val bookIds = target.bookIds
+                    val entryBookId = target.entryBookId
+                    val entryIds = target.entryIds
+                    commit { next ->
+                        var out = next
+                        bookIds.forEach { id -> out = LorebookStore.deleteBook(out, id) }
+                        if (entryBookId != null) {
+                            entryIds.forEach { id -> out = LorebookStore.deleteEntry(out, entryBookId, id) }
+                        }
+                        out
+                    }
+                    bulkDelete = null
+                    exitPick()
+                    notice = if (bookIds.isNotEmpty()) "删了 ${bookIds.size} 册" else "删了 ${entryIds.size} 条"
+                },
+            )
+        }
+
+        moveTarget?.let { target ->
+            val from = target.pick
+            val present = from.ids.filter { id ->
+                book(from.bookId)?.let { LorebookStore.entry(it, id) } != null
+            }
+            val options = otherBooks(from.bookId)
+            MenuSheet(
+                title = if (target.move) "移到哪一册" else "复制到哪一册",
+                items = options.map { (id, name) ->
+                    SheetItem(
+                        label = name,
+                        value = "${present.size} 条",
+                        onClick = {
+                            commit { next ->
+                                if (target.move) {
+                                    LorebookStore.moveEntries(next, from.bookId, id, present)
+                                } else {
+                                    LorebookStore.copyEntries(next, from.bookId, id, present)
+                                }
+                                next
+                            }
+                            notice = if (target.move) {
+                                "移了 ${present.size} 条到「$name」"
+                            } else {
+                                "复制了 ${present.size} 条到「$name」"
+                            }
+                            moveTarget = null
+                            exitPick()
+                        },
+                    )
+                },
+                onHint = { notice = it },
+                onDismiss = { moveTarget = null },
+            )
+        }
     }
     }
     }
@@ -432,6 +688,16 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
 private data class EditTarget(val bookId: String, val entryId: String)
 
 private data class DeleteTarget(val bookId: String, val entryId: String?)
+
+private data class EntryPick(val bookId: String, val ids: Set<String>)
+
+private data class BulkDelete(
+    val bookIds: Set<String> = emptySet(),
+    val entryBookId: String? = null,
+    val entryIds: Set<String> = emptySet(),
+)
+
+private data class MoveTarget(val pick: EntryPick, val move: Boolean)
 
 /** 一册导出去用 kelivo 的单册形状：导回 kelivo 不会变样。 */
 private fun singleBookDocument(book: JSONObject): JSONObject = JSONObject()
@@ -465,6 +731,7 @@ private fun BuiltinCard(
     onEditManual: (String) -> Unit,
     onToggleManual: (String, Boolean) -> Unit,
     onDeleteManual: (String) -> Unit,
+    locked: Boolean = false,
     onReset: () -> Unit,
 ) {
     val builtinCount = presets.sumOf { it.entries.size }
@@ -472,7 +739,7 @@ private fun BuiltinCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onToggleExpand)
+                .clickable(enabled = !locked, onClick = onToggleExpand)
                 .padding(start = 10.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -584,6 +851,15 @@ private fun BookCard(
     onEditEntry: (String) -> Unit,
     onToggleEntry: (String, Boolean) -> Unit,
     onDeleteEntry: (String) -> Unit,
+    bookSelecting: Boolean = false,
+    bookSelected: Boolean = false,
+    onToggleBookPick: () -> Unit = {},
+    onHold: () -> Unit = {},
+    entrySelecting: Boolean = false,
+    pickedEntries: Set<String> = emptySet(),
+    onToggleEntryPick: (String) -> Unit = { },
+    onPickEntries: () -> Unit = {},
+    locked: Boolean = false,
 ) {
     val enabled = book.optBoolean("enabled", true)
     val entries = LorebookStore.entries(book)
@@ -591,16 +867,29 @@ private fun BookCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onToggleExpand)
+                .onHold(key = book.optString("id")) {
+                    if (!locked && !entrySelecting) onHold()
+                }
+                .clickable {
+                    when {
+                        locked -> Unit
+                        bookSelecting -> onToggleBookPick()
+                        else -> onToggleExpand()
+                    }
+                }
                 .padding(start = 10.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = if (expanded) ActionIcons.ChevronDown else ActionIcons.ChevronRight,
-                contentDescription = if (expanded) "收起" else "展开",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
+            if (bookSelecting) {
+                SelectBox(checked = bookSelected)
+            } else {
+                Icon(
+                    imageVector = if (expanded) ActionIcons.ChevronDown else ActionIcons.ChevronRight,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
             Spacer(Modifier.width(6.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -626,7 +915,17 @@ private fun BookCard(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
-            Switch(checked = enabled, onCheckedChange = onToggleEnabled)
+            if (!bookSelecting) {
+                Text(
+                    text = "选择",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable(enabled = !entrySelecting) { onPickEntries() }
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                )
+                Switch(checked = enabled, onCheckedChange = onToggleEnabled)
+            }
         }
 
         if (expanded) {
@@ -647,18 +946,23 @@ private fun BookCard(
                     onClick = { onEditEntry(entryId) },
                     onToggle = { on -> onToggleEntry(entryId, on) },
                     onDelete = { onDeleteEntry(entryId) },
+                    selecting = entrySelecting,
+                    selected = entryId in pickedEntries,
+                    onToggleSelect = { onToggleEntryPick(entryId) },
                 )
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 36.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ChipButton("新建条目", primary = false, onClick = onAddEntry)
-                Spacer(Modifier.weight(1f))
-                IconActionButton(ActionIcons.Share2, "导出这一册", onExport, compact = true)
-                IconActionButton(ActionIcons.Trash2, "删除这一册", onDelete, compact = true)
+            if (!entrySelecting) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 36.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ChipButton("新建条目", primary = false, onClick = onAddEntry)
+                    Spacer(Modifier.weight(1f))
+                    IconActionButton(ActionIcons.Share2, "导出这一册", onExport, compact = true)
+                    IconActionButton(ActionIcons.Trash2, "删除这一册", onDelete, compact = true)
+                }
             }
         }
     }
@@ -670,6 +974,9 @@ private fun EntryRow(
     onClick: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
+    selecting: Boolean = false,
+    selected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
 ) {
     val enabled = entry.optBoolean("enabled", true)
     val constant = entry.optBoolean("constantActive", false)
@@ -677,12 +984,18 @@ private fun EntryRow(
     SwipeDeleteRow(
         resetKey = entry.optString("id"),
         rowColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        swipeEnabled = !selecting,
         deleteDescription = "删除这一条",
-        onClick = onClick,
+        onClick = { if (selecting) onToggleSelect() else onClick() },
         onDelete = onDelete,
         modifier = Modifier.padding(start = 36.dp),
         contentPadding = PaddingValues(end = 8.dp, top = 8.dp, bottom = 8.dp),
     ) {
+        if (selecting) {
+            Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                SelectBox(checked = selected)
+            }
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = entry.optString("name").ifBlank { "（未命名）" },
@@ -716,7 +1029,9 @@ private fun EntryRow(
                 }
             }
         }
-        Switch(checked = enabled, onCheckedChange = onToggle)
+        if (!selecting) {
+            Switch(checked = enabled, onCheckedChange = onToggle)
+        }
     }
 }
 

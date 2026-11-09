@@ -300,6 +300,30 @@ internal object LorebookStore {
         return root
     }
 
+    /** 复制几条到另一册：目标册给新 id（同 id 在别的册里可能是别的条目），源册不动。 */
+    fun copyEntries(root: JSONObject, fromBook: String, toBook: String, ids: List<String>): Int {
+        if (fromBook == toBook) return 0
+        val from = book(root, fromBook) ?: return 0
+        val to = book(root, toBook) ?: return 0
+        val target = to.optJSONArray("entries") ?: JSONArray().also { to.put("entries", it) }
+        var copied = 0
+        ids.forEach { id ->
+            val entry = entry(from, id) ?: return@forEach
+            target.put(JSONObject(entry.toString()).put("id", nextId(target, "e")))
+            copied += 1
+        }
+        return copied
+    }
+
+    /** 搬过去：先复制到另一册，再把源册那几条去掉。 */
+    fun moveEntries(root: JSONObject, fromBook: String, toBook: String, ids: List<String>): Int {
+        val moved = copyEntries(root, fromBook, toBook, ids)
+        if (moved == 0) return 0
+        var out = root
+        ids.forEach { id -> out = deleteEntry(out, fromBook, id) }
+        return moved
+    }
+
     /** 条目上的一处改动：`apply` 里改什么就存什么（面板每次停手调一次）。 */
     fun updateEntry(
         root: JSONObject,
