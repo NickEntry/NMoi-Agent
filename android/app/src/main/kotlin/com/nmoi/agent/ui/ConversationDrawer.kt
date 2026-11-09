@@ -53,6 +53,7 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -580,13 +581,17 @@ private fun DrawerPanel(
                             SelectBox(checked = row.id in selectedIds)
                             Spacer(Modifier.width(10.dp))
                         }
+                        // 置顶的那几条用主色 + 加粗（用户 2026-11-09）：光靠"排在最前面"
+                        // 分不出"置顶"和"刚更新过"，而这两个原因都会把它顶到上面。
+                        val isPinnedRow = row.id in pinnedIds
                         Text(
                             text = row.title,
                             style = MaterialTheme.typography.bodyLarge,
-                            color = if (current) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
+                            fontWeight = if (isPinnedRow) FontWeight.Bold else null,
+                            color = when {
+                                current -> MaterialTheme.colorScheme.onSecondaryContainer
+                                isPinnedRow -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurface
                             },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,

@@ -55,10 +55,17 @@ internal enum class ModelRole(
     val title: String,
     val followByDefault: Boolean,
     val icon: ImageVector,
+    /**
+     * 「未启用」时还摆不摆那颗重置箭头。
+     *
+     * 视觉覆盖不摆（用户 2026-11-09）：它的初始值就是未启用，摆一颗点了只会回到原处的箭头，
+     * 等于告诉用户"这里能切"而其实切不动。要开就点值条选模型。
+     */
+    val resetWhenDisabled: Boolean = true,
 ) {
     Title("title", "标题总结", false, ActionIcons.Square),
     Suggest("suggest", "聊天建议", false, ActionIcons.SearchAssistant),
-    Vision("vision", "视觉覆盖", false, ActionIcons.Image),
+    Vision("vision", "视觉覆盖", false, ActionIcons.Image, resetWhenDisabled = false),
     Summary("summary", "摘要", true, ActionIcons.Database),
     Compress("compress", "压缩", true, ActionIcons.Gauge),
     Translate("translate", "翻译", true, ActionIcons.Languages),
@@ -136,12 +143,11 @@ internal fun ModelRolesScreen(
                         value = values[role].orEmpty(),
                         label = roleLabel(role, values[role].orEmpty(), choices),
                         onPickModel = { picking = role },
+                        // 重置 = "把它变成能用的状态"：跟随型回跟随，未启用型回跟随
+                        // （用户 2026-11-09：标题总结 / 聊天建议从未启用点重置要切到跟随）。
+                        // 视觉覆盖没有这颗箭头，走不到这里。
                         onReset = {
-                            val fallback = if (role.followByDefault) {
-                                AppSettings.ROLE_FOLLOW
-                            } else {
-                                AppSettings.ROLE_DISABLED
-                            }
+                            val fallback = AppSettings.ROLE_FOLLOW
                             AppSettings.setRoleValue(context, role.key, fallback)
                             notice = "${role.title}：${roleLabel(role, fallback, choices)}"
                             revision += 1
@@ -236,7 +242,8 @@ private fun RoleCard(
                 modifier = Modifier.weight(1f),
             )
             when {
-                disabled -> IconActionButton(ActionIcons.RotateCcw, "重置", onReset, compact = true)
+                disabled && role.resetWhenDisabled ->
+                    IconActionButton(ActionIcons.RotateCcw, "重置", onReset, compact = true)
                 pinned -> IconActionButton(ActionIcons.Ban, "禁用", onDisable, compact = true)
             }
         }

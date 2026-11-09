@@ -2398,6 +2398,11 @@ private fun MessageArea(
                 return@itemsIndexed
             }
             val unit = (row as ChatRow.Single).unit
+            // 这一轮助手的话后面还有没有别的正文段：有就说明现在这段不是最后一段，
+            // 动作行留给最后那段（同一轮只出现一排）。
+            val lastTextOfTurn = rows.drop(index + 1)
+                .takeWhile { !it.alignsRight() }
+                .none { it is ChatRow.Single && it.slice != UnitSlice.ToolsOnly }
             UnitBlock(
                 unit = unit,
                 showHeader = showHeader,
@@ -2422,6 +2427,7 @@ private fun MessageArea(
                 onVersionMessage = onVersionMessage,
                 retryEnabled = retryEnabled,
                 onRetryMessage = onRetryMessage,
+                showActions = lastTextOfTurn,
             )
         }
 
@@ -2739,6 +2745,14 @@ private fun UnitBlock(
     retryEnabled: Boolean = false,
     /** 点重试（0.15av）：只传 id，动作发生时再按 id 现取。 */
     onRetryMessage: (String) -> Unit = {},
+    /**
+     * 这一条画不画动作行（复制 / 刷新 / 语音 / 翻译 / ⋯ / 版本）。
+     *
+     * 只有**整轮回答的最后一段正文**画（用户 2026-11-09 的截图：中间那段也挂一排，
+     * 一排动作夹在正文与过程卡之间，看着像两块东西粘在一起）。一轮被拆成几段时，
+     * 前面几段没有可"复制整条回答"的东西，动作行收在最后一段。
+     */
+    showActions: Boolean = true,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
@@ -2813,7 +2827,7 @@ private fun UnitBlock(
                             // 动作行跟着**正文**走（D273）：折行之后正文单独一行，
                             // 它就是这一条消息的正文，复制 / 更多 / 版本都该在这里。
                             // 只有"纯工具那半行"（ToolsOnly）不画——那里没有正文可复制。
-                            showActions = slice != UnitSlice.ToolsOnly,
+                            showActions = showActions && slice != UnitSlice.ToolsOnly,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },

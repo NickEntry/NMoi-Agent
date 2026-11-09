@@ -287,11 +287,11 @@ internal fun AppSettingsScreen(
                         SettingField(
                             value = windowText,
                             onChange = { windowText = it },
-                            placeholder = "128000",
+                            placeholder = AppSettings.DEFAULT_WINDOW.toString(),
                             modifier = Modifier.padding(top = 10.dp),
                         )
                         Row(modifier = Modifier.padding(top = 8.dp)) {
-                            SettingChip("恢复 128000", selected = false) {
+                            SettingChip("恢复 ${AppSettings.DEFAULT_WINDOW}", selected = false) {
                                 AppSettings.setDefaultContextWindow(context, AppSettings.DEFAULT_WINDOW)
                                 windowText = AppSettings.DEFAULT_WINDOW.toString()
                                 notice = "默认窗口恢复成 ${AppSettings.DEFAULT_WINDOW}"
