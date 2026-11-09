@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -215,6 +216,9 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                 onToggleManual = { entryId, on ->
                     commit { LorebookStore.setEntryEnabled(it, LorebookStore.BUILTIN_ID, entryId, on) }
                 },
+                onDeleteManual = { entryId ->
+                    deleting = DeleteTarget(LorebookStore.BUILTIN_ID, entryId)
+                },
                 onReset = {
                     scope.launch {
                         var reset = 0
@@ -264,6 +268,9 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                     onEditEntry = { entryId -> editing = EditTarget(bookId, entryId) },
                     onToggleEntry = { entryId, on ->
                         commit { LorebookStore.setEntryEnabled(it, bookId, entryId, on) }
+                    },
+                    onDeleteEntry = { entryId ->
+                        deleting = DeleteTarget(bookId, entryId)
                     },
                 )
             }
@@ -457,6 +464,7 @@ private fun BuiltinCard(
     onAddManual: () -> Unit,
     onEditManual: (String) -> Unit,
     onToggleManual: (String, Boolean) -> Unit,
+    onDeleteManual: (String) -> Unit,
     onReset: () -> Unit,
 ) {
     val builtinCount = presets.sumOf { it.entries.size }
@@ -510,6 +518,7 @@ private fun BuiltinCard(
                     entry = entry,
                     onClick = { onEditManual(entryId) },
                     onToggle = { on -> onToggleManual(entryId, on) },
+                    onDelete = { onDeleteManual(entryId) },
                 )
             }
             Row(
@@ -574,6 +583,7 @@ private fun BookCard(
     onDelete: () -> Unit,
     onEditEntry: (String) -> Unit,
     onToggleEntry: (String, Boolean) -> Unit,
+    onDeleteEntry: (String) -> Unit,
 ) {
     val enabled = book.optBoolean("enabled", true)
     val entries = LorebookStore.entries(book)
@@ -636,6 +646,7 @@ private fun BookCard(
                     entry = entry,
                     onClick = { onEditEntry(entryId) },
                     onToggle = { on -> onToggleEntry(entryId, on) },
+                    onDelete = { onDeleteEntry(entryId) },
                 )
             }
             Row(
@@ -658,16 +669,19 @@ private fun EntryRow(
     entry: JSONObject,
     onClick: () -> Unit,
     onToggle: (Boolean) -> Unit,
+    onDelete: () -> Unit,
 ) {
     val enabled = entry.optBoolean("enabled", true)
     val constant = entry.optBoolean("constantActive", false)
     val keywords = entry.optJSONArray("keywords") ?: JSONArray()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(start = 36.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    SwipeDeleteRow(
+        resetKey = entry.optString("id"),
+        rowColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        deleteDescription = "删除这一条",
+        onClick = onClick,
+        onDelete = onDelete,
+        modifier = Modifier.padding(start = 36.dp),
+        contentPadding = PaddingValues(end = 8.dp, top = 8.dp, bottom = 8.dp),
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
