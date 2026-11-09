@@ -493,12 +493,14 @@ private fun DrawerPanel(
             // 用户块与搜索在这一层没有用处，留着只会把"已选 N 项"挤成一行小字。
             SelectionBar(
                 count = selectedIds.size,
+                unit = "项",
                 allSelected = rows.isNotEmpty() && rows.all { it.id in selectedIds },
                 onToggleAll = { selectedIds = ConversationSelection.toggleAll(rows, selectedIds) },
                 onClose = {
                     selecting = false
                     selectedIds = emptySet()
                 },
+                topPadding = 44.dp,
             )
         } else {
             // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
@@ -641,19 +643,29 @@ private fun DrawerPanel(
 
         // —— 选择时底部换成动作条：这三件事都是"对勾中的那几条做" ——
         if (selecting) {
-            BulkActionBar(
-                count = selectedIds.size,
-                pinLabel = if (ConversationSelection.allPinned(pinnedIds, chosenNow)) "取消置顶" else "置顶",
-                canMove = assistants.size > 1,
-                onPin = {
-                    onPinMany(chosenNow)
-                    selecting = false
-                    selectedIds = emptySet()
-                },
-                onMove = { bulkMoveOpen = true },
-                onDelete = { bulkDeleteOpen = true },
-                onMoveBlocked = { onHint("还没有别的助手：先用「新建助手」建一个") },
-            )
+            BulkBar(count = selectedIds.size) {
+                BulkText(
+                    label = if (ConversationSelection.allPinned(pinnedIds, chosenNow)) "取消置顶" else "置顶",
+                    onClick = {
+                        onPinMany(chosenNow)
+                        selecting = false
+                        selectedIds = emptySet()
+                    },
+                )
+                Spacer(Modifier.weight(1f))
+                BulkText(
+                    label = "移动",
+                    enabled = assistants.size > 1,
+                    onClick = {
+                        if (assistants.size > 1) {
+                            bulkMoveOpen = true
+                        } else {
+                            onHint("还没有别的助手：先用「新建助手」建一个")
+                        }
+                    },
+                )
+                BulkText(label = "删除", danger = true, onClick = { bulkDeleteOpen = true })
+            }
         } else {
             // —— 底部：助手切换 + 设置 ——
             Row(
@@ -892,111 +904,6 @@ private fun DrawerPanel(
     }
 }
 
-/**
- * 多选时那块顶栏（0.15d）：只回答"勾了几条 / 还能不能全选 / 怎么退出去"。
- *
- * 全选以**当前列表**为准（含置顶排序），不用"数量相等"去猜——已删除却还留在
- * 选择集里的 id 会让那种判据永远差一条。
- */
-@Composable
-private fun SelectionBar(
-    count: Int,
-    allSelected: Boolean,
-    onToggleAll: () -> Unit,
-    onClose: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 8.dp, top = 44.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "已选 $count 项",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = if (allSelected) "取消全选" else "全选",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .clickable { onToggleAll() }
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-        )
-        IconActionButton(
-            image = ActionIcons.Close,
-            description = "退出多选",
-            onClick = onClose,
-            compact = true,
-        )
-    }
-}
-
-/**
- * 多选时底部那条动作栏（0.15d）：置顶 / 移动 / 删除。
- *
- * 一条都没勾时**不摆按钮**，只写一句"还没勾"：三个按不动的字摆在那儿，
- * 用户会去点，然后怀疑是不是坏了（「空位可以、假开关不行」）。
- * 没有别的助手可移动时"移动"仍然在，但点下去给的是原因，不是一个死按钮。
- */
-@Composable
-private fun BulkActionBar(
-    count: Int,
-    pinLabel: String,
-    canMove: Boolean,
-    onPin: () -> Unit,
-    onMove: () -> Unit,
-    onDelete: () -> Unit,
-    onMoveBlocked: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (count == 0) {
-            Text(
-                text = "还没勾：点一行开始",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            return@Row
-        }
-        Text(
-            text = pinLabel,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .clickable { onPin() }
-                .padding(vertical = 8.dp),
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = "移动",
-            style = MaterialTheme.typography.labelLarge,
-            color = if (canMove) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            },
-            modifier = Modifier
-                .clickable { if (canMove) onMove() else onMoveBlocked() }
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-        )
-        Text(
-            text = "删除",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier
-                .clickable { onDelete() }
-                .padding(start = 10.dp, top = 8.dp, bottom = 8.dp),
-        )
-    }
-}
 
 /**
  * 搜索框：两态（搜索当前助手 / 搜索全部会话）。

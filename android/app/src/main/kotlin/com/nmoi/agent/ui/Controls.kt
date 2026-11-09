@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,12 +36,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
@@ -356,6 +362,143 @@ internal fun SwipeDeleteRow(
             verticalAlignment = Alignment.CenterVertically,
             content = content,
         )
+    }
+}
+
+/**
+ * 多选时那块顶栏：勾了几项、还能不能全选、怎么退出去。
+ *
+ * 抽屉和世界书用同一份：两处各写一条，改手感时总有一处落后。
+ */
+@Composable
+internal fun SelectionBar(
+    count: Int,
+    unit: String,
+    allSelected: Boolean,
+    onToggleAll: () -> Unit,
+    onClose: () -> Unit,
+    topPadding: Dp = 8.dp,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 8.dp, top = topPadding, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "已勾 $count $unit",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = if (allSelected) "取消全选" else "全选",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clickable { onToggleAll() }
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+        )
+        IconActionButton(
+            image = ActionIcons.Close,
+            description = "退出多选",
+            onClick = onClose,
+            compact = true,
+        )
+    }
+}
+
+/**
+ * 多选时的底部动作条：一项都没勾时只写一句，动作由调用方摆。
+ *
+ * 三个按不动的字摆在那儿，用户会去点，然后怀疑是不是坏了。
+ */
+@Composable
+internal fun BulkBar(
+    count: Int,
+    emptyLabel: String = "还没勾：点一行开始",
+    content: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (count == 0) {
+            Text(
+                text = emptyLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Row
+        }
+        content()
+    }
+}
+
+/** 底部那条里的一个文字动作。删除用 error 色；红色实心只出现在确认卡里。 */
+@Composable
+internal fun BulkText(
+    label: String,
+    onClick: () -> Unit,
+    danger: Boolean = false,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = when {
+            !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            danger -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.onSurface
+        },
+        modifier = modifier
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    )
+}
+
+/**
+ * 按住 [millis] 再触发：默认 2 秒，用户在真机上量过。
+ *
+ * 计时放在外面的 `LaunchedEffect` 里：`awaitEachGesture` 那块是受限挂起作用域，
+ * 里面既不能 `delay` 也不能 `launch`。
+ * 手指移动超过 slop 就取消，否则滚一下列表就会误进多选；触发之后这一串事件都被吞掉，
+ * 行自己的点击不会跟着再响一次。
+ */
+internal fun Modifier.onHold(
+    key: Any?,
+    millis: Long = 2000L,
+    onHold: () -> Unit,
+): Modifier = composed {
+    var armed by remember { mutableStateOf(false) }
+    var held by remember { mutableStateOf(false) }
+    val latest = rememberUpdatedState(onHold)
+
+    LaunchedEffect(armed, millis) {
+        if (!armed) return@LaunchedEffect
+        delay(millis)
+        held = true
+        latest.value()
+    }
+
+    pointerInput(key) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            held = false
+            armed = true
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (held) change.consume()
+                if (change.changedToUpIgnoreConsumed()) break
+                if (!held && (change.position - down.position).getDistance() > viewConfiguration.touchSlop) break
+            }
+            armed = false
+        }
     }
 }
 
