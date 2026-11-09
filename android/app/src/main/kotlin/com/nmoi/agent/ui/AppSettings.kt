@@ -143,6 +143,19 @@ internal object AppSettings {
     }
 
     /**
+     * 这个角色的**系统提示词**（D298）。空 = 用内置那段，不额外加什么。
+     *
+     * 为什么存 prefs 而不进库：它是"这台设备上怎么调这个模型"的事，跟会话无关，
+     * 也不该跟着导出/导入跑到别人机器上。以后搬进内置册（D293）时这一对函数就是出口。
+     */
+    fun roleSystem(context: Context, role: String): String =
+        prefs(context).getString("role.$role.system", "").orEmpty()
+
+    fun setRoleSystem(context: Context, role: String, text: String) {
+        prefs(context).edit().putString("role.$role.system", text).apply()
+    }
+
+    /**
      * 压缩的两条线（D274）：占"可用预算"的百分比。
      *
      * 建议线到了就发压缩信号（界面上是"该压了"），绝对线到了就**必须先压再发**。

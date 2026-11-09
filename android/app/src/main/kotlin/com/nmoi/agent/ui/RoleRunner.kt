@@ -57,6 +57,12 @@ internal object RoleRunner {
         images: List<PendingImage> = emptyList(),
     ): String? = withContext(Dispatchers.IO) {
         val (provider, model) = target(context, databasePath, role) ?: return@withContext null
+        // 这个角色自己的系统提示词（D298）：排在内置那段之前，正文（prompt）不动。
+        // 空串就当没有——发一个空 system 会让某些上游把它当成"清空系统提示"。
+        val extra = AppSettings.roleSystem(context, role.key).trim()
+        val merged = listOfNotNull(extra.takeIf { it.isNotEmpty() }, system?.takeIf { it.isNotBlank() })
+            .joinToString("\n\n")
+            .ifBlank { null }
         val key = Vault.load(context, provider.id)
         val config = JSONObject()
             .put(

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,6 +36,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -89,6 +92,8 @@ internal fun ModelRolesScreen(
 ) {
     var notice by remember { mutableStateOf<String?>(null) }
     var picking by remember { mutableStateOf<ModelRole?>(null) }
+    // 齿轮（D298）：只对**已经有消费者**的角色出现——拨了不生效就是假开关。
+    var promptFor by remember { mutableStateOf<ModelRole?>(null) }
     // 每次改了角色配置就 +1：值从 prefs 现读，不另存一份（免得两处对不上）。
     var revision by remember { mutableStateOf(0) }
     // 选模型那一页跟聊天页用的是同一份来源（供应商 → 模型），所以这里也读同一份。
@@ -143,6 +148,12 @@ internal fun ModelRolesScreen(
                         value = values[role].orEmpty(),
                         label = roleLabel(role, values[role].orEmpty(), choices),
                         onPickModel = { picking = role },
+                        // 齿轮只给真的会跑的那个角色：现在只有视觉覆盖（发图前转录）。
+                        onOpenPrompt = if (role == ModelRole.Vision) {
+                            { promptFor = role }
+                        } else {
+                            null
+                        },
                         // 重置 = "把它变成能用的状态"：跟随型回跟随，未启用型回跟随
                         // （用户 2026-11-09：标题总结 / 聊天建议从未启用点重置要切到跟随）。
                         // 视觉覆盖没有这颗箭头，走不到这里。
@@ -184,6 +195,14 @@ internal fun ModelRolesScreen(
         }
     }
 
+    promptFor?.let { role ->
+        RolePromptSheet(
+            context = context,
+            role = role,
+            onDismiss = { promptFor = null },
+        )
+    }
+
     picking?.let { role ->
         ModelPickerSheet(
             databasePath = databasePath,
@@ -220,6 +239,8 @@ private fun RoleCard(
     onPickModel: () -> Unit,
     onReset: () -> Unit,
     onDisable: () -> Unit,
+    /** `null` = 这个角色还没有消费者，不摆齿轮（不给假开关）。 */
+    onOpenPrompt: (() -> Unit)? = null,
 ) {
     val pinned = splitPinned(value) != null
     val disabled = value == AppSettings.ROLE_DISABLED
@@ -245,6 +266,9 @@ private fun RoleCard(
                 disabled && role.resetWhenDisabled ->
                     IconActionButton(ActionIcons.RotateCcw, "重置", onReset, compact = true)
                 pinned -> IconActionButton(ActionIcons.Ban, "禁用", onDisable, compact = true)
+            }
+            if (onOpenPrompt != null) {
+                IconActionButton(ActionIcons.Settings, "这个角色的提示词", onOpenPrompt, compact = true)
             }
         }
         Row(
@@ -323,5 +347,59 @@ private fun NavRow(title: String, onClick: () -> Unit) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(18.dp),
         )
+    }
+}
+
+/**
+ * 一个角色的提示词设置（D298）。
+ *
+ * 现在只有**系统提示词**这一项：`nmoi_complete_json` 已经支持 `system`，所以这一项拨了
+ * 真的会进请求（排在调用方给的那段之前）。思考开关 / 强度还没接进来——`complete` 那条
+ * 路径还不认 `thinking`，摆上来就是假开关，等 FFI 支持了再摆。
+ *
+ * 停手 100 ms 自动保存（用户 2026-11-07 定）：这类输入框不摆"保存"按钮。
+ */
+@Composable
+private fun RolePromptSheet(
+    context: Context,
+    role: ModelRole,
+    onDismiss: () -> Unit,
+) {
+    var text by remember(role) { mutableStateOf(AppSettings.roleSystem(context, role.key)) }
+    // 停手 100 ms 落盘。`text` 变了就重来一次，所以连打不会一直写盘。
+    LaunchedEffect(text) {
+        delay(100)
+        AppSettings.setRoleSystem(context, role.key, text)
+    }
+    SheetFrame(title = "${role.title} · 提示词", onDismiss = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Text(
+                text = "系统提示词：接在内置那段之前，只影响这个角色。留空就用内置那段。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                placeholder = { Text("例如：只输出译文，不要解释") },
+                minLines = 4,
+                maxLines = 10,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (text.isNotEmpty()) {
+                    ChipButton("恢复默认", primary = false) {
+                        text = ""
+                        AppSettings.setRoleSystem(context, role.key, "")
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                ChipButton("收起", primary = true, onClick = onDismiss)
+            }
+        }
     }
 }
