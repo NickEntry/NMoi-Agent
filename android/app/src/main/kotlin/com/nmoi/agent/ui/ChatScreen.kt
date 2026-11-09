@@ -19,6 +19,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +56,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -73,6 +75,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
@@ -1467,47 +1470,21 @@ internal fun ChatScreen(
         }
 
         if (plusMenu) {
-            // 「＋」面板（D208）：图片是真入口，其余三项照旧给"差什么"。
-            // 不给假开关的意思是"点了要有回应"，不是"不许摆"。
-            MenuSheet(
-                title = "添加",
-                items = listOf(
-                    // 图片**永远能选**（D211）：计划里有视觉覆盖，模型自己收不收图
-                    // 不该在这里拦人。已知不收图时只提示一句，让上游去判。
-                    SheetItem(
-                        label = "图片",
-                        icon = ActionIcons.Cpu,
-                        onClick = {
-                            plusMenu = false
-                            if (imageCapability == false) {
-                                notice = ModelCapabilities.refusal(currentModel?.inputModalities.orEmpty()) +
-                                    "（仍会发出去；要换模型再说）"
-                            }
-                            pickImage.launch("image/*")
-                        },
-                    ),
-                    SheetItem(
-                        label = "文件",
-                        icon = ActionIcons.Wrench,
-                        hint = "文件附件待接：这一批只做了图片（D208）",
-                    ),
-                    SheetItem(
-                        label = "技能",
-                        icon = ActionIcons.GitBranch,
-                        hint = "技能待接（P5.5）",
-                    ),
-                    SheetItem(
-                        label = "世界书",
-                        icon = ActionIcons.Database,
-                        // 右侧是「生效 / 启用」：生效是这一轮真注入的册，启用是册级开关打开的总数。
-                        value = lorebookCount(bookOptions, assistant?.lorebooks),
-                        onClick = {
-                            plusMenu = false
-                            lorebookPick = true
-                        },
-                    ),
-                ),
+            AddSheet(
+                lorebookValue = lorebookCount(bookOptions, assistant?.lorebooks),
+                onPickImages = {
+                    plusMenu = false
+                    if (imageCapability == false) {
+                        notice = ModelCapabilities.refusal(currentModel?.inputModalities.orEmpty()) +
+                            "（仍会发出去；要换模型再说）"
+                    }
+                    pickImage.launch("image/*")
+                },
                 onHint = { notice = it },
+                onOpenLorebook = {
+                    plusMenu = false
+                    lorebookPick = true
+                },
                 onDismiss = { plusMenu = false },
             )
         }
@@ -5841,6 +5818,125 @@ private fun ContextImagesSheet(
                         .padding(horizontal = 20.dp, vertical = 14.dp),
                 )
             }
+        }
+    }
+}
+
+/**
+ * 「＋」面板（D303）：上面一排格子（一行最多三个，最后一行不满就居中），下面是带右侧值的行。
+ *
+ * 格子按住时底色渐变到灰：按下这个动作在这张面板里没有别的地方能看出来（没有涟漪、没有按下去的移位），
+ * 而用户要的正是"按住的时候越来越深，一直到那个深度"。
+ */
+@Composable
+private fun AddSheet(
+    lorebookValue: String,
+    onPickImages: () -> Unit,
+    onHint: (String) -> Unit,
+    onOpenLorebook: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    SheetFrame(title = "添加", onDismiss = onDismiss) {
+        Column(modifier = Modifier.padding(bottom = 10.dp)) {
+            val tiles = listOf(
+                Triple(ActionIcons.Camera, "拍照") {
+                    onHint("拍照待接：这一版还没有相机与临时文件通道；先用「照片」从相册选")
+                },
+                Triple(ActionIcons.Image, "照片") { onPickImages() },
+                Triple(ActionIcons.Paperclip, "上传文件") {
+                    onHint("文件附件待接：这一批只做了图片（D208）")
+                },
+                Triple(ActionIcons.Video, "视频") { onHint("视频待接：现在只收图片") },
+                Triple(ActionIcons.Mic, "音频") { onHint("音频待接：现在只收图片") },
+            )
+            tiles.chunked(3).forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (row.size < 3) Spacer(Modifier.weight(1f))
+                    row.forEach { (icon, label, action) ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            AddTile(icon = icon, label = label, onClick = action)
+                        }
+                    }
+                    if (row.size < 3) Spacer(Modifier.weight(1f))
+                }
+            }
+            RowDivider(leading = 20.dp)
+            AddRow(ActionIcons.GitBranch, "技能", null) { onHint("技能待接（P5.5）") }
+            RowDivider(leading = 20.dp)
+            AddRow(ActionIcons.Database, "世界书", lorebookValue) { onOpenLorebook() }
+        }
+    }
+}
+
+@Composable
+private fun AddTile(icon: ImageVector, label: String, onClick: () -> Unit) {
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val depth by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = tween(durationMillis = 120),
+        label = "add-tile",
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f * depth))
+            .clickable(interactionSource = interactions, indication = null, onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(24.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun AddRow(icon: ImageVector, label: String, value: String?, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f).padding(start = 14.dp),
+        )
+        if (value != null) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Text(
+                text = "›",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
