@@ -20,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -368,6 +369,38 @@ internal fun ChatScreen(
             }
         }
     }
+    /**
+     * 待发的文件（D304）：只收读得出文本的，读出来的内容会拼进这一条消息的正文。
+     * 界面上看到的就是发出去的那段字——不是另存一份、显示时再叠上去。
+     */
+    var pendingFiles by remember { mutableStateOf(listOf<PendingFile>()) }
+    val pickFiles = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        val room = FileAttach.MAX_FILES - pendingFiles.size
+        if (room <= 0) {
+            notice = "一轮最多带 ${FileAttach.MAX_FILES} 个文件"
+            return@rememberLauncherForActivityResult
+        }
+        val take = uris.take(room)
+        scope.launch {
+            val loaded = ArrayList<PendingFile>()
+            var failure: String? = null
+            for (uri in take) {
+                FileAttach.read(context, uri)
+                    .onSuccess { loaded.add(it) }
+                    .onFailure { failure = it.message }
+            }
+            if (loaded.isNotEmpty()) pendingFiles = pendingFiles + loaded
+            notice = when {
+                loaded.isEmpty() -> failure ?: "没有读得出来的文件"
+                failure != null -> "已加 ${loaded.size} 个，有 ${take.size - loaded.size} 个没收下：$failure"
+                else -> "已加 ${loaded.size} 个（这一轮共 ${pendingFiles.size + loaded.size} 个）"
+            }
+        }
+    }
+
     LaunchedEffect(sessionId, assistantKey, externalReload, lorebookPick) {
         withContext(Dispatchers.IO) {
             bookOptions = LorebookStore.selectableBooks(LorebookStore.library(context))
@@ -1128,14 +1161,22 @@ internal fun ChatScreen(
     val sendTurn: () -> Unit = {
         val text = composerText()
         val images = pendingImages
-        // 只有图没有字：正文给一句占位，否则库里会是一条空消息（`Message::validate` 也拒）。
+        val files = pendingFiles
+        // 只有图/文件没有字：正文给一句占位，否则库里会是一条空消息（`Message::validate` 也拒）。
         // 这句话是**用户那条消息的正文**，界面上能看见，不是藏在别处的元数据。
-        val body = text.ifEmpty { if (images.isEmpty()) "" else "（图片）" }
+        val body = text.ifEmpty {
+            when {
+                files.isNotEmpty() -> "（文件）"
+                images.isNotEmpty() -> "（图片）"
+                else -> ""
+            }
+        }
         when {
             body.isEmpty() -> notice = "先写点什么"
             else -> {
                 draft = ""
                 pendingImages = emptyList()
+                pendingFiles = emptyList()
                 notice = null
                 scope.launch {
                     val sid = sessionId ?: onCreateSession()
@@ -1143,6 +1184,7 @@ internal fun ChatScreen(
                         // 连会话都建不出来：把字放回输入框，别吞掉用户刚打的。
                         draft = text
                         pendingImages = images
+                        pendingFiles = files
                         notice = "建会话失败：原因在 设置 → 调试 → 日志"
                         return@launch
                     }
@@ -1170,25 +1212,33 @@ internal fun ChatScreen(
                             NLog.i("Chat", "视觉覆盖：${images.size} 张图已转录成 ${transcript.length} 字")
                         }
                     }
+                    // 文件是文字：拼进正文，界面上看到的就是它。图片走另一条通道（转录或原样发）。
+                    val outgoing = if (files.isEmpty()) {
+                        bodyToSend
+                    } else {
+                        bodyToSend + "\n\n" + FileAttach.render(files)
+                    }
                     if (TurnRunner.isRunning(sid)) {
                         if (imagesToSend.isNotEmpty()) {
                             // 队列里只存文字：带图的这一轮排进去，图就悄悄丢了。
                             draft = text
                             pendingImages = images
+                            pendingFiles = files
                             notice = "这一轮还在跑：等它结束再发图（排队暂不支持图片）"
                             return@launch
                         }
-                        val position = SendQueue.enqueue(sid, text)
+                        val position = SendQueue.enqueue(sid, outgoing)
                         notice = "已排队（第 $position 位）：这一轮结束后自动继续"
-                    } else if (!TurnRunner.start(context, databasePath, sid, bodyToSend, imagesToSend)) {
+                    } else if (!TurnRunner.start(context, databasePath, sid, outgoing, imagesToSend)) {
                         if (imagesToSend.isNotEmpty()) {
                             draft = text
                             pendingImages = images
+                            pendingFiles = files
                             notice = "这一轮马上结束：等它收尾再发图（排队暂不支持图片）"
                             return@launch
                         }
                         // 抢跑（刚好在这一瞬间被别的入口起来了）：退一步排队，不丢字。
-                        SendQueue.enqueue(sid, text)
+                        SendQueue.enqueue(sid, outgoing)
                         notice = "已排队：这一轮马上结束，等它收尾就继续"
                     } else {
                         // 立刻上屏（0.15ah）：**不等 Started 事件**。
@@ -1196,7 +1246,7 @@ internal fun ChatScreen(
                         // `remember(sessionId)` 清掉——那样第一句话就看不见了。
                         pending = PendingSend(
                             session = sid,
-                            text = bodyToSend,
+                            text = outgoing,
                             at = System.currentTimeMillis(),
                             imageCount = imagesToSend.size,
                         )
@@ -1455,6 +1505,11 @@ internal fun ChatScreen(
                     onRemovePending = { index ->
                         pendingImages = pendingImages.filterIndexed { i, _ -> i != index }
                     },
+                    pendingFiles = pendingFiles,
+                    onRemoveFile = { index ->
+                        pendingFiles = pendingFiles.filterIndexed { i, _ -> i != index }
+                    },
+                    onPickFiles = { pickFiles.launch("*/*") },
                     onPlus = { plusMenu = true },
                     onTools = { toolsPanel = true },
                     imageCapability = imageCapability,
@@ -1472,6 +1527,10 @@ internal fun ChatScreen(
         if (plusMenu) {
             AddSheet(
                 lorebookValue = lorebookCount(bookOptions, assistant?.lorebooks),
+                onPickFiles = {
+                    plusMenu = false
+                    pickFiles.launch("*/*")
+                },
                 onPickImages = {
                     plusMenu = false
                     if (imageCapability == false) {
@@ -2925,6 +2984,61 @@ private fun InitialAvatar(letter: String, size: Dp, mine: Boolean) {
  * 为什么画在输入框**上面**：那是"还没发出去"的东西，跟草稿同一个位置；
  * 塞进输入框里会被原生 `EditText` 盖住，画在下面又会被当成"已经发过"。
  */
+/**
+ * 待发的文件（D304）：一行小条，名字 + 大小 + 移除。
+ *
+ * 不画缩略图：文件里没有能画的东西。但"这一轮带了什么"必须看得见——它会被拼进正文，
+ * 看不见就成了藏在别处的元数据。
+ */
+@Composable
+private fun PendingFileStrip(files: List<PendingFile>, onRemove: (Int) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        files.forEachIndexed { index, file ->
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 240.dp)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(10.dp))
+                    .padding(start = 10.dp, end = 0.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = ActionIcons.Paperclip,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                Column(modifier = Modifier.padding(start = 6.dp)) {
+                    Text(
+                        text = file.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = file.sizeLabel + if (file.truncated) " · 只取前 64 KB" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                IconActionButton(
+                    image = ActionIcons.Close,
+                    description = "移除这个文件",
+                    onClick = { onRemove(index) },
+                    compact = true,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun PendingImageStrip(images: List<PendingImage>, onRemove: (Int) -> Unit) {
     Row(
@@ -4446,6 +4560,10 @@ private fun Composer(
     /** 待发的图片（D208）：输入框上方那排缩略图。 */
     pending: List<PendingImage>,
     onRemovePending: (Int) -> Unit,
+    /** 待发的文件（D304）：输入框上方那排文件条。 */
+    pendingFiles: List<PendingFile> = emptyList(),
+    onRemoveFile: (Int) -> Unit = {},
+    onPickFiles: () -> Unit = {},
     /** 「工具」面板（D271）：这一条会话绑哪个工作区。 */
     onTools: () -> Unit = {},
     /** 「＋」面板：附件入口。 */
@@ -4479,6 +4597,9 @@ private fun Composer(
             Column(modifier = Modifier.padding(top = 6.dp, bottom = 6.dp)) {
                 if (pending.isNotEmpty()) {
                     PendingImageStrip(images = pending, onRemove = onRemovePending)
+                }
+                if (pendingFiles.isNotEmpty()) {
+                    PendingFileStrip(files = pendingFiles, onRemove = onRemoveFile)
                 }
                 // 上下文里已经有图（D248）：一行小字 + 入口。没有就不摆——
                 // 常驻一行"0 张"等于让人以为哪里坏了。
@@ -5831,6 +5952,7 @@ private fun ContextImagesSheet(
 @Composable
 private fun AddSheet(
     lorebookValue: String,
+    onPickFiles: () -> Unit,
     onPickImages: () -> Unit,
     onHint: (String) -> Unit,
     onOpenLorebook: () -> Unit,
@@ -5843,9 +5965,7 @@ private fun AddSheet(
                     onHint("拍照待接：这一版还没有相机与临时文件通道；先用「照片」从相册选")
                 },
                 Triple(ActionIcons.Image, "照片") { onPickImages() },
-                Triple(ActionIcons.Paperclip, "上传文件") {
-                    onHint("文件附件待接：这一批只做了图片（D208）")
-                },
+                Triple(ActionIcons.Paperclip, "上传文件") { onPickFiles() },
                 Triple(ActionIcons.Video, "视频") { onHint("视频待接：现在只收图片") },
                 Triple(ActionIcons.Mic, "音频") { onHint("音频待接：现在只收图片") },
             )
