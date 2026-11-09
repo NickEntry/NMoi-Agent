@@ -198,6 +198,18 @@ internal object NmoiFfi {
     suspend fun turnRun(config: JSONObject): Result<JSONObject> =
         call("turn_run") { NativeBridge.turnRunJson(config.toString()) }
 
+    /** 只算压缩切点：调它不会动任何数据（D305）。 */
+    suspend fun compressPlan(config: JSONObject): Result<JSONObject> =
+        call("compress_plan") { NativeBridge.compressPlanJson(config.toString()) }
+
+    /**
+     * 真的压一轮（D305）：模型写草稿 → 校验 → 归档 + 分界线 + 摘要。
+     *
+     * 阻塞到模型收尾或轮数用尽，`call` 已经在 IO 上。压完这一条会话的历史就短了。
+     */
+    suspend fun compressRun(config: JSONObject): Result<JSONObject> =
+        call("compress_run") { NativeBridge.compressRunJson(config.toString()) }
+
     /**
      * 这个会话现在有没有一轮在跑（0.15c）。
      *

@@ -26,6 +26,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use serde_json::json;
 
+mod compress;
 mod handles;
 mod icons;
 mod images;

@@ -374,6 +374,7 @@ internal fun ChatScreen(
      * 界面上看到的就是发出去的那段字——不是另存一份、显示时再叠上去。
      */
     var pendingFiles by remember { mutableStateOf(listOf<PendingFile>()) }
+    var compressOpen by remember { mutableStateOf(false) }
     val pickFiles = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
@@ -1527,6 +1528,11 @@ internal fun ChatScreen(
         if (plusMenu) {
             AddSheet(
                 lorebookValue = lorebookCount(bookOptions, assistant?.lorebooks),
+                compressLabel = if (sessionId != null && contextPercent != null) "$contextPercent%" else null,
+                onCompress = {
+                    plusMenu = false
+                    compressOpen = true
+                },
                 onPickFiles = {
                     plusMenu = false
                     pickFiles.launch("*/*")
@@ -1545,6 +1551,17 @@ internal fun ChatScreen(
                     lorebookPick = true
                 },
                 onDismiss = { plusMenu = false },
+            )
+        }
+
+        if (compressOpen && sessionId != null) {
+            CompressSheet(
+                databasePath = databasePath,
+                sessionId = sessionId,
+                provider = choices.firstOrNull { it.first.id == assistant?.providerId }?.first,
+                modelId = assistant?.modelId.orEmpty(),
+                onDone = { reloadKey += 1 },
+                onDismiss = { compressOpen = false },
             )
         }
 
@@ -5952,6 +5969,8 @@ private fun ContextImagesSheet(
 @Composable
 private fun AddSheet(
     lorebookValue: String,
+    compressLabel: String?,
+    onCompress: () -> Unit,
     onPickFiles: () -> Unit,
     onPickImages: () -> Unit,
     onHint: (String) -> Unit,
@@ -5985,6 +6004,10 @@ private fun AddSheet(
             }
             RowDivider(leading = 20.dp)
             AddRow(ActionIcons.GitBranch, "技能", null) { onHint("技能待接（P5.5）") }
+            if (compressLabel != null) {
+                RowDivider(leading = 20.dp)
+                AddRow(ActionIcons.RotateCcw, "压缩上下文", compressLabel) { onCompress() }
+            }
             RowDivider(leading = 20.dp)
             AddRow(ActionIcons.Database, "世界书", lorebookValue) { onOpenLorebook() }
         }
@@ -6057,6 +6080,200 @@ private fun AddRow(icon: ImageVector, label: String, value: String?, onClick: ()
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * 压缩上下文（D305）。
+ *
+ * 三步都在这一层里：先算切点（plan，不调模型）→ 用户按「开始压缩」→ 跑完给结果。
+ * 中间那一步**不能省**：压缩会永久移走一段历史，先让他看清"移走哪一段、留多少"再按。
+ *
+ * 跑的时候没有百分比：模型在写草稿，往返几次只有它自己知道。给的是已用秒数与"它还在跑"，
+ * 比编一个 30% → 70% 的进度条诚实。
+ */
+@Composable
+private fun CompressSheet(
+    databasePath: String,
+    sessionId: String,
+    provider: ProviderEntry?,
+    modelId: String,
+    onDone: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var plan by remember { mutableStateOf<JSONObject?>(null) }
+    var planError by remember { mutableStateOf<String?>(null) }
+    var running by remember { mutableStateOf(false) }
+    var seconds by remember { mutableStateOf(0) }
+    var result by remember { mutableStateOf<JSONObject?>(null) }
+    var failure by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(sessionId) {
+        CompressRunner.plan(databasePath, sessionId).fold(
+            onSuccess = { plan = it },
+            onFailure = { planError = it.message },
+        )
+    }
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        while (true) {
+            delay(1000)
+            seconds += 1
+        }
+    }
+
+    SheetFrame(title = "压缩上下文", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 520.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+        ) {
+            val done = result
+            when {
+                done != null -> {
+                    Text(
+                        text = buildString {
+                            append("归档 ${done.optInt("archived")} 条 · ")
+                            append("摘要 ${done.optInt("summary_chars")} 字")
+                            val used = done.optLong("elapsed_ms") / 1000
+                            append(" · 用了 ${used} 秒")
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = if (done.optBoolean("forced")) {
+                            "模型没交出可用摘要，这一份是确定性兜底拼的（准确，但不是它写的）"
+                        } else {
+                            "模型写的摘要，已过覆盖率校验"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (done.optBoolean("forced")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        text = done.optString("coverage"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    ) {
+                        Text(
+                            text = done.optString("summary"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 18.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        ChipButton("收起", primary = true, onClick = onDismiss)
+                    }
+                }
+                running -> {
+                    Text(
+                        text = "正在压缩…已 $seconds 秒",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "模型在写草稿，往返几次只有它自己知道；这一段不要退出应用。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                else -> {
+                    val ready = plan
+                    Text(
+                        text = when {
+                            planError != null -> "这只会话现在压不了：$planError"
+                            ready == null -> "正在算切点…"
+                            else -> "将移走 ${ready.optInt("above_units")} 条（切在第 " +
+                                "${ready.optLong("cut_after_seq")} 条之后），" +
+                                "窗口里保留最近约 ${ready.optInt("keep_recent")} token 的原文。"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (planError != null) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                    Text(
+                        text = "移走的消息不会删：它们进归档，摘要放在窗口最前面。" +
+                            "压完这一条会话的历史就短了，撤回要自己动手。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    val text = failure
+                    if (text != null) {
+                        Text(
+                            text = text,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 18.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        ChipButton("取消", primary = false, onClick = onDismiss)
+                        Spacer(Modifier.width(8.dp))
+                        ChipButton(
+                            label = "开始压缩",
+                            primary = true,
+                            enabled = ready != null && provider != null && !running,
+                            onClick = {
+                                if (provider == null) {
+                                    failure = "当前对话没有可用的供应商配置"
+                                    return@ChipButton
+                                }
+                                running = true
+                                seconds = 0
+                                failure = null
+                                scope.launch {
+                                    CompressRunner.run(
+                                        context = context,
+                                        databasePath = databasePath,
+                                        sessionId = sessionId,
+                                        provider = provider,
+                                        modelId = modelId,
+                                        keepRecent = ready?.optInt("keep_recent") ?: CompressRunner.KEEP_RECENT,
+                                    ).fold(
+                                        onSuccess = {
+                                            running = false
+                                            result = it
+                                            onDone()
+                                        },
+                                        onFailure = {
+                                            running = false
+                                            failure = it.message
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }

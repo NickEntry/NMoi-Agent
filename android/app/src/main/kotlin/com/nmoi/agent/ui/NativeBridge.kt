@@ -124,6 +124,22 @@ internal object NativeBridge {
     /** 给正在跑的那一轮置取消标志。没在跑返回 `cancelled:false`，不是错误。 */
     external fun turnCancelJson(session: String): String
 
+    /**
+     * 上下文压缩：只算切点，不调模型（D305）。
+     *
+     * 字段：`storage` / `session`，可选 `keep_recent`（窗口里留多少 token 原文，默认 8192）。
+     * 返回 `cut_after_seq` / `above_units` / `total_units` / `max_rounds`。
+     */
+    external fun compressPlanJson(config: String): String
+
+    /**
+     * 上下文压缩：真的跑一轮（D305）。**同步阻塞**几十秒，只能在 IO 线程上调。
+     *
+     * 比 plan 多四个字段：`model` / `provider{id,kind,base_url}` / `api_key` /
+     * `fallback`（默认 true：模型没交时走确定性兜底）。
+     */
+    external fun compressRunJson(config: String): String
+
     /** 这个会话现在有没有一轮在跑（0.15c）。「正在生成…」靠它复核，不信页面里的缓存。 */
     external fun turnBusyJson(session: String): String
 

@@ -481,7 +481,7 @@ fn optional_bool(root: &Value, field_name: &str) -> FfiResult<Option<bool>> {
     }
 }
 
-fn parse_provider_kind(text: &str) -> FfiResult<ProviderKind> {
+pub(crate) fn parse_provider_kind(text: &str) -> FfiResult<ProviderKind> {
     match text {
         "openai_compatible" => Ok(ProviderKind::OpenAiCompatible),
         "openai_responses" => Ok(ProviderKind::OpenAiResponses),

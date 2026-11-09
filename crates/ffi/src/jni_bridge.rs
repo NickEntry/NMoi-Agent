@@ -1048,6 +1048,48 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_turnRunJson<'local>(
     to_jstring(&mut env, text)
 }
 
+// ---------------------------------------------------------------------------
+// 上下文压缩（D305）
+// ---------------------------------------------------------------------------
+
+/// `NativeBridge.compressPlanJson(config)`：只算切点，不调模型。
+///
+/// 这一层只搬字符串：字段名与校验都在 `crate::compress` 里，Kotlin 那边不再拼一遍。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_compressPlanJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::compress::nmoi_compress_plan_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.compressRunJson(config)`：真的压一轮。**阻塞**，只能在 IO 线程上调。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_compressRunJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::compress::nmoi_compress_run_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `NativeBridge.turnCancelJson(session)`：给正在跑的那一轮置取消标志。
 ///
 /// 没在跑就是空操作（`{"cancelled":false,"running":false}`），不是错误——
