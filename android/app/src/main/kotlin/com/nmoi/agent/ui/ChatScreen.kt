@@ -146,6 +146,10 @@ internal fun ChatScreen(
     onEditModel: ((providerId: String, modelId: String) -> Unit)? = null,
     /** 长按模型选择里的供应商组头 → 去改这个供应商。 */
     onEditProvider: ((providerId: String) -> Unit)? = null,
+    /** 会话标题还是默认值时，用「标题总结」那个角色起一个（D306）；起好了往外说一声。 */
+    onRenamed: (String) -> Unit = {},
+    /** 默认标题的字面量：等于它才自动起名，用户改过的标题不动。 */
+    defaultTitle: String = "新会话",
 ) {
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
@@ -375,6 +379,11 @@ internal fun ChatScreen(
      */
     var pendingFiles by remember { mutableStateOf(listOf<PendingFile>()) }
     var compressOpen by remember { mutableStateOf(false) }
+    var suggestions by remember(sessionId) { mutableStateOf(listOf<String>()) }
+    // 已经为哪一轮生成过建议：不记的话，打完字删光会再请求一次（每一次都要钱）。
+    var suggestFor by remember(sessionId) { mutableStateOf(-1) }
+    var translateFor by remember { mutableStateOf<TranslateResult?>(null) }
+    var translating by remember { mutableStateOf(false) }
     val pickFiles = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
     ) { uris ->
@@ -648,6 +657,76 @@ internal fun ChatScreen(
         }
     }
 
+    // 自动命名（D306）：**第一轮正常结束之后**，标题还是默认值时才起。
+    //
+    // 起名是旁路：没有配置「标题总结」这个角色就什么都不做（默认未启用），
+    // 失败也不打扰用户——一条没起出来的标题，不值得在他眼前写一行红字。
+    var titled by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(sessionId, busy, allMessages.size, title) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (titled || busy) return@LaunchedEffect
+        if (title != defaultTitle) {
+            titled = true
+            return@LaunchedEffect
+        }
+        val first = allMessages.firstOrNull { it.role == "user" && it.content.isNotBlank() }
+            ?: return@LaunchedEffect
+        val answer = allMessages.firstOrNull { it.role == "assistant" && it.content.isNotBlank() }
+            ?: return@LaunchedEffect
+        titled = true
+        val prompt = buildString {
+            append("给下面这段对话起一个标题。\n\n")
+            append("要求：不超过 12 个字；不要标点、不要引号、不要书名号；\n")
+            append("说清这件事在做什么，不写「关于……的讨论」这种；只输出标题本身，不要解释。\n\n")
+            append("用户：").append(first.content.take(400)).append('\n')
+            append("助手：").append(answer.content.take(400))
+        }
+        val raw = RoleRunner.complete(context, databasePath, ModelRole.Title, prompt)
+            ?: return@LaunchedEffect
+        val clean = raw.trim().lines().firstOrNull().orEmpty()
+            .trim()
+            .trim('"', '\'', '“', '”', '「', '」', '《', '》')
+            .take(24)
+        if (clean.isBlank()) return@LaunchedEffect
+        ConversationRepository.rename(databasePath, sid, clean).onSuccess { onRenamed(clean) }
+    }
+
+    // 聊天建议（D306）：一轮结束、输入框空着、最后一条是助手时，用「聊天建议」那个角色起几条。
+    // 与自动命名同一条规矩：角色没启用就什么都不做，失败不出声。
+    LaunchedEffect(sessionId, busy, allMessages.size, draft.isEmpty()) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (busy || draft.isNotEmpty()) return@LaunchedEffect
+        if (allMessages.lastOrNull()?.role != "assistant") return@LaunchedEffect
+        if (suggestFor == allMessages.size) return@LaunchedEffect
+        suggestFor = allMessages.size
+        val tail = allMessages.takeLast(6).joinToString("\n\n") { message ->
+            val who = if (message.role == "user") "用户" else "助手"
+            "$who：${message.content.take(600)}"
+        }
+        suggestions = emptyList()
+        val prompt = buildString {
+            append("看下面这段对话的结尾，给用户写三条**接下来可能想说的话**。\n\n")
+            append("要求：每条不超过 20 个字；三条之间换行；不要编号、不要引号、不要解释；\n")
+            append("要具体到这件事上（提到文件、命令、下一步），不要写「继续」「好的」这种空话。\n\n")
+            append(tail)
+        }
+        val raw = RoleRunner.complete(context, databasePath, ModelRole.Suggest, prompt)
+            ?: return@LaunchedEffect
+        val picked = raw.lines()
+            .map { line ->
+                line.trim()
+                    .removePrefix("-").removePrefix("*")
+                    .trim()
+                    .trimStart('1', '2', '3', '4', '.', '、', '）', ')', ' ')
+                    .trim('"', '\'', '“', '”', '「', '」')
+                    .trim()
+            }
+            .filter { it.isNotBlank() && it.length in 2..30 }
+            .distinct()
+            .take(3)
+        suggestions = if (sid == sessionId) picked else emptyList()
+    }
+
     val selectedMessages = allMessages.filter { it.id in selected }.sortedBy { it.seq }
 
     val copySelected: () -> Unit = {
@@ -668,6 +747,30 @@ internal fun ChatScreen(
                 onSuccess = { reloadKey += 1 },
                 onFailure = { notice = "切版本失败：${it.message}" },
             )
+        }
+    }
+
+    // 「更多 → 翻译这条」（D306）：旁路跑一次，结果在弹层里看。
+    // 没启用「翻译」这个角色时说清怎么启用——不落库、不改消息，这条旁路不留痕。
+    val translateMessage: (ChatMessage) -> Unit = { message ->
+        moreForId = null
+        translating = true
+        notice = "正在翻译…"
+        scope.launch {
+            val prompt = buildString {
+                append("把下面这段文字翻译一下。\n\n")
+                append("规则：它是中文就翻成英文，是别的语言就翻成中文；\n")
+                append("只输出译文，不要解释、不要加引号、不要保留原文、不要写「译文：」。\n\n")
+                append(message.content)
+            }
+            val raw = RoleRunner.complete(context, databasePath, ModelRole.Translate, prompt)
+            translating = false
+            if (raw == null) {
+                notice = "翻译没启用：设置 → 模型与提示词 → 默认模型 → 翻译 里选一个模型"
+            } else {
+                notice = null
+                translateFor = TranslateResult(source = message.content.take(60), text = raw.trim())
+            }
         }
     }
 
@@ -1507,6 +1610,7 @@ internal fun ChatScreen(
                         pendingImages = pendingImages.filterIndexed { i, _ -> i != index }
                     },
                     pendingFiles = pendingFiles,
+                    suggestions = suggestions,
                     onRemoveFile = { index ->
                         pendingFiles = pendingFiles.filterIndexed { i, _ -> i != index }
                     },
@@ -1584,6 +1688,47 @@ internal fun ChatScreen(
                 },
                 onDismiss = { lorebookPick = false },
             )
+        }
+
+        val shownTranslate = translateFor
+        if (shownTranslate != null) {
+            SheetFrame(title = "译文", onDismiss = { translateFor = null }) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 480.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "原文：${shownTranslate.source}…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    ) {
+                        Text(
+                            text = shownTranslate.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 18.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        ChipButton("复制", primary = false) {
+                            putClipboard(context, "译文", shownTranslate.text)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        ChipButton("收起", primary = true, onClick = { translateFor = null })
+                    }
+                }
+            }
         }
 
         if (modelSheet) {
@@ -1993,6 +2138,7 @@ internal fun ChatScreen(
                         deleteVersion(sheetMessage.id, sheetActive.toLong())
                     },
                     onDeleteAll = { confirmDelete = sheetMessage },
+                    onTranslate = { translateMessage(sheetMessage) },
                 ),
                 onHint = { notice = it },
                 onDismiss = { moreForId = null },
@@ -4579,6 +4725,8 @@ private fun Composer(
     onRemovePending: (Int) -> Unit,
     /** 待发的文件（D304）：输入框上方那排文件条。 */
     pendingFiles: List<PendingFile> = emptyList(),
+    /** 聊天建议（D306）：点一下填进输入框，不直接发。 */
+    suggestions: List<String> = emptyList(),
     onRemoveFile: (Int) -> Unit = {},
     onPickFiles: () -> Unit = {},
     /** 「工具」面板（D271）：这一条会话绑哪个工作区。 */
@@ -4646,6 +4794,19 @@ private fun Composer(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp),
                         )
+                    }
+                }
+                if (suggestions.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        suggestions.forEach { line ->
+                            ChipButton(label = line, primary = false) { onDraftChange(line) }
+                        }
                     }
                 }
                 NativeEditText(
@@ -4842,8 +5003,15 @@ private fun messageSheetItems(
     onOpenEditor: () -> Unit,
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
+    onTranslate: () -> Unit,
 ): List<SheetItem> {
     val items = mutableListOf(
+        // 翻译（D306）：旁路跑一次，结果只在弹层里看，不落库（D158 的理由）。
+        SheetItem(
+            label = "翻译这条",
+            icon = ActionIcons.Languages,
+            onClick = onTranslate,
+        ),
         // 重试 / 续话排在最前：它们是对这一条最常见的动作，也是仅有的两条会真的再发请求的。
         *listOfNotNull(retryItem, continueItem).toTypedArray(),
         SheetItem(
@@ -6110,8 +6278,11 @@ private fun CompressSheet(
     var seconds by remember { mutableStateOf(0) }
     var result by remember { mutableStateOf<JSONObject?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
+    // 「压缩」这个角色指定了模型就用它，否则用当前对话的模型（D306）。
+    var roleTarget by remember { mutableStateOf<Pair<ProviderEntry, String>?>(null) }
 
     LaunchedEffect(sessionId) {
+        roleTarget = RoleRunner.target(context, databasePath, ModelRole.Compress)
         CompressRunner.plan(databasePath, sessionId).fold(
             onSuccess = { plan = it },
             onFailure = { planError = it.message },
@@ -6216,6 +6387,14 @@ private fun CompressSheet(
                         },
                     )
                     Text(
+                        text = "用 ${
+                            roleTarget?.second ?: modelId.ifBlank { "当前对话模型" }
+                        } 来写这份摘要${if (roleTarget != null) "（模型 → 压缩 里指定的）" else ""}。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Text(
                         text = "移走的消息不会删：它们进归档，摘要放在窗口最前面。" +
                             "压完这一条会话的历史就短了，撤回要自己动手。",
                         style = MaterialTheme.typography.labelSmall,
@@ -6237,12 +6416,14 @@ private fun CompressSheet(
                     ) {
                         ChipButton("取消", primary = false, onClick = onDismiss)
                         Spacer(Modifier.width(8.dp))
+                        val useProvider = roleTarget?.first ?: provider
+                        val useModel = roleTarget?.second ?: modelId
                         ChipButton(
                             label = "开始压缩",
                             primary = true,
-                            enabled = ready != null && provider != null && !running,
+                            enabled = ready != null && useProvider != null && !running,
                             onClick = {
-                                if (provider == null) {
+                                if (useProvider == null) {
                                     failure = "当前对话没有可用的供应商配置"
                                     return@ChipButton
                                 }
@@ -6254,8 +6435,8 @@ private fun CompressSheet(
                                         context = context,
                                         databasePath = databasePath,
                                         sessionId = sessionId,
-                                        provider = provider,
-                                        modelId = modelId,
+                                        provider = useProvider,
+                                        modelId = useModel,
                                         keepRecent = ready?.optInt("keep_recent") ?: CompressRunner.KEEP_RECENT,
                                     ).fold(
                                         onSuccess = {
@@ -6277,3 +6458,6 @@ private fun CompressSheet(
         }
     }
 }
+
+/** 一次旁路翻译的结果（D306）。不落库：看完就没了，要留就复制。 */
+private data class TranslateResult(val source: String, val text: String)

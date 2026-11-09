@@ -518,6 +518,15 @@ class MainActivity : ComponentActivity() {
                             onEditProvider = { providerId ->
                                 backStack = backStack + Route.ProviderEdit(providerId)
                             },
+                            // 自动起名（D306）：库已经改了，这里把路由与侧边栏一起刷新。
+                            onRenamed = { newTitle ->
+                                val current = backStack.lastOrNull()
+                                if (current is Route.Chat) {
+                                    backStack = backStack.dropLast(1) + Route.Chat(newTitle, current.sessionId)
+                                }
+                                listReload += 1
+                            },
+                            defaultTitle = NEW_CHAT_TITLE,
                         )
 
                         Route.Provider -> ProviderListScreen(

@@ -148,8 +148,9 @@ internal fun ModelRolesScreen(
                         value = values[role].orEmpty(),
                         label = roleLabel(role, values[role].orEmpty(), choices),
                         onPickModel = { picking = role },
-                        // 齿轮只给真的会跑的那个角色：现在只有视觉覆盖（发图前转录）。
-                        onOpenPrompt = if (role == ModelRole.Vision) {
+                        // 齿轮只给真的会跑的角色（D298 / D306）：视觉覆盖、压缩、标题总结、
+                        // 聊天建议、翻译。摘要还没有消费者，所以它没有齿轮。
+                        onOpenPrompt = if (role != ModelRole.Summary) {
                             { promptFor = role }
                         } else {
                             null
