@@ -422,18 +422,9 @@ private fun RolePromptSheet(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            levels.chunked(3).forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    row.forEach { (wire, _) ->
-                        ChipButton(thinkingShort(wire), primary = thinking == wire) {
-                            thinking = wire
-                            AppSettings.setRoleThinking(context, role.key, wire)
-                        }
-                    }
-                }
+            ThinkingChips(levels = levels, selected = thinking) { wire ->
+                thinking = wire
+                AppSettings.setRoleThinking(context, role.key, wire)
             }
             if (unsupported) {
                 Text(
@@ -500,17 +491,4 @@ private fun RolePromptSheet(
             }
         }
     }
-}
-
-/** 档位的短标签：整句塞进胶囊会挤成两行，胶囊上只留一个字到两个字。 */
-private fun thinkingShort(wire: String): String = when (wire) {
-    "auto" -> "自动"
-    "off" -> "关"
-    "minimal" -> "最小"
-    "low" -> "低"
-    "medium" -> "中"
-    "high" -> "高"
-    "xhigh" -> "很高"
-    "max" -> "最大"
-    else -> wire
 }

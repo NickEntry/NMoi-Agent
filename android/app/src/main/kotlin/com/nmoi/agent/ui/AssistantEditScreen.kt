@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -37,7 +38,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -77,6 +81,17 @@ internal fun AssistantEditScreen(
     var subProviderId by remember(assistantId) { mutableStateOf("") }
     var subModelId by remember(assistantId) { mutableStateOf("") }
 
+    var thinking by remember(assistantId) { mutableStateOf("auto") }
+    /** 这个助手用哪几册世界书（D314 起默认空集：一册都不带）。 */
+    var books by remember(assistantId) { mutableStateOf(listOf<String>()) }
+    var temperature by remember(assistantId) { mutableStateOf("") }
+    var maxOutput by remember(assistantId) { mutableStateOf("") }
+    /** 读完了没有：没读完不许自动落库，否则空表单会盖掉库里那一份。 */
+    var loadedOnce by remember(assistantId) { mutableStateOf(false) }
+    /** 已经在删了：这之后的自动保存一律不做，否则会把刚删掉的助手又写回去。 */
+    var gone by remember(assistantId) { mutableStateOf(false) }
+    val saveLock = remember(assistantId) { Mutex() }
+
     var notice by remember(assistantId) { mutableStateOf<String?>(null) }
     var noticeIsError by remember(assistantId) { mutableStateOf(false) }
     var busy by remember(assistantId) { mutableStateOf(false) }
@@ -102,6 +117,11 @@ internal fun AssistantEditScreen(
     }
     val workspaces by produceState(initialValue = emptyList<Workspace>(), assistantId) {
         value = withContext(Dispatchers.IO) { WorkspaceRepository.list(context) }
+    }
+    val availableBooks by produceState(initialValue = emptyList<BookRow>(), assistantId) {
+        value = withContext(Dispatchers.IO) {
+            LorebookStore.bookRows(LorebookStore.library(context))
+        }
     }
     LaunchedEffect(assistantId) {
         providerNames = withContext(Dispatchers.IO) {
@@ -138,59 +158,69 @@ internal fun AssistantEditScreen(
         subSession = loaded.subAgent.session
         subProviderId = loaded.subAgent.providerId
         subModelId = loaded.subAgent.modelId
+        thinking = loaded.thinking
+        books = loaded.lorebooks
+        temperature = numberText(loaded.temperature) ?: ""
+        maxOutput = loaded.maxTokens?.toString().orEmpty()
+        loadedOnce = true
     }
 
-    fun save(then: (AssistantEntry) -> Unit) {
-        val base = entry ?: return
-        val next = base.copy(
-            name = name.trim().ifEmpty { base.name },
-            stream = streamOn,
-            workspaceId = workspaceId,
-            subAgent = SubAgentSpec(
-                enabled = subEnabled,
-                callId = subId.trim(),
-                description = subDescription.trim(),
-                session = subSession,
-                // 只填了一半按没填处理（`hasOwnModel` 也这么判）：别生成一个"指定了但用不上"的状态。
-                providerId = if (subProviderId.isNotBlank() && subModelId.isNotBlank()) {
-                    subProviderId.trim()
-                } else {
-                    ""
-                },
-                modelId = if (subProviderId.isNotBlank() && subModelId.isNotBlank()) {
-                    subModelId.trim()
-                } else {
-                    ""
-                },
-            ),
-        )
-        busy = true
-        notice = null
-        scope.launch {
-            // **先校验、再落库**：不合法的配置不进库。
+    /** 把表单拼成一份配置（不落库）。**只在这里拼**：两处各拼一次就会长出两套规矩。 */
+    fun compose(base: AssistantEntry): AssistantEntry = base.copy(
+        name = name.trim().ifEmpty { base.name },
+        stream = streamOn,
+        workspaceId = workspaceId,
+        thinking = thinking,
+        lorebooks = books,
+        temperature = temperature.trim().toDoubleOrNull()?.takeIf { it >= 0.0 },
+        maxTokens = maxOutput.trim().toIntOrNull()?.takeIf { it > 0 },
+        subAgent = SubAgentSpec(
+            enabled = subEnabled,
+            callId = subId.trim(),
+            description = subDescription.trim(),
+            session = subSession,
+            // 只填了一半按没填处理（`hasOwnModel` 也这么判）：别生成一个"指定了但用不上"的状态。
+            providerId = if (subProviderId.isNotBlank() && subModelId.isNotBlank()) {
+                subProviderId.trim()
+            } else {
+                ""
+            },
+            modelId = if (subProviderId.isNotBlank() && subModelId.isNotBlank()) {
+                subModelId.trim()
+            } else {
+                ""
+            },
+        ),
+    )
+
+    /**
+     * 落库：校验在前、写入在后，失败只说话、不改 `entry`。
+     *
+     * 整页走这一条路——改了停手 300 ms 落一次，所以这页没有「保存」按钮。
+     * 锁是给"连着改两个字段"用的：两次写入必须按顺序落地，不然后写的会被先写的盖回去。
+     */
+    suspend fun commit(next: AssistantEntry) {
+        if (gone) return
+        saveLock.withLock {
+            if (gone) return@withLock
             val problems = withContext(Dispatchers.IO) {
                 AssistantRepository.validateSubAgents(databasePath, next)
             }.getOrElse { error ->
-                busy = false
                 notice = "校验失败：${error.message}"
                 noticeIsError = true
-                return@launch
+                return@withLock
             }
             if (problems.isNotEmpty()) {
-                busy = false
                 notice = problems.joinToString("\n")
                 noticeIsError = true
-                return@launch
+                return@withLock
             }
-            val saved = withContext(Dispatchers.IO) {
-                AssistantRepository.save(databasePath, next)
-            }
-            busy = false
-            saved.fold(
+            withContext(Dispatchers.IO) { AssistantRepository.save(databasePath, next) }.fold(
                 onSuccess = {
                     entry = next
+                    notice = null
+                    noticeIsError = false
                     onChanged()
-                    then(next)
                 },
                 onFailure = {
                     notice = "保存失败：${it.message}"
@@ -199,6 +229,35 @@ internal fun AssistantEditScreen(
             )
         }
     }
+
+    LaunchedEffect(
+        name, streamOn, workspaceId, thinking, books, temperature, maxOutput,
+        subEnabled, subId, subDescription, subSession, subProviderId, subModelId, loadedOnce,
+    ) {
+        val base = entry ?: return@LaunchedEffect
+        if (!loadedOnce) return@LaunchedEffect
+        delay(300)
+        commit(compose(base))
+    }
+
+    // 返回键（D314）：先收确认卡，再离开。这一页没有"未保存的改动"——都落过库了。
+    BackHandler {
+        if (confirmDelete) confirmDelete = false else onBack()
+    }
+
+    val ownModel = choices.firstOrNull {
+        it.first.id == entry?.providerId && it.second.id == entry?.modelId
+    }?.second
+    val ownLevels = THINKING_LEVELS.filter { (wire, _) ->
+        when {
+            wire == "auto" -> true
+            wire == "off" -> ownModel?.allowDisable != false
+            ownModel == null -> true
+            ownModel.efforts.isEmpty() -> true
+            else -> wire in ownModel.efforts
+        }
+    }
+    val thinkingUnsupported = thinking.isNotEmpty() && ownLevels.none { (wire, _) -> wire == thinking }
 
     // 「被调用时用哪个模型」这一格要显示的东西。三态：没指定 / 指定了且在 / 指定了但已经不在了。
     // 第三种必须单独写：显示一个"看着正常"的名字，等真调用时才发现对不上，是最难查的一种。
@@ -227,9 +286,6 @@ internal fun AssistantEditScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
                 )
-                Chip(label = "保存", primary = true, enabled = !busy && entry != null) {
-                    save { onBack() }
-                }
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -279,6 +335,68 @@ internal fun AssistantEditScreen(
                         value = name,
                         hint = "显示名，随时可改",
                         onChange = { name = it.take(24) },
+                    )
+                }
+
+                // —— 思考强度（D314）——
+                Card {
+                    Text(
+                        text = "思考强度",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    ThinkingChips(levels = ownLevels, selected = thinking) { thinking = it }
+                    if (thinkingUnsupported) {
+                        Text(
+                            text = "现在是「${thinkingShort(thinking)}」，这个模型不支持",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+
+                // —— 世界书（D314）——
+                Card {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "世界书",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${books.count { id -> availableBooks.any { it.id == id } }}" +
+                                "/${availableBooks.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    LorebookBookList(
+                        rows = availableBooks,
+                        active = books.toSet(),
+                        onToggle = { id, on ->
+                            books = if (on) books + id else books - id
+                        },
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
+                // —— 采样（D314）——
+                Card {
+                    Label("温度")
+                    Input(
+                        value = temperature,
+                        hint = "留空 = 用模型自己那份",
+                        onChange = { text ->
+                            temperature = text.filter { it.isDigit() || it == '.' }.take(6)
+                        },
+                    )
+                    Label("最大输出")
+                    Input(
+                        value = maxOutput,
+                        hint = "留空 = 用模型自己那份",
+                        onChange = { text -> maxOutput = text.filter { it.isDigit() }.take(7) },
                     )
                 }
 
@@ -498,6 +616,7 @@ internal fun AssistantEditScreen(
                                         count > 0 -> confirmDelete = true
                                         else -> {
                                             busy = true
+                                            gone = true
                                             scope.launch {
                                                 val cleared = withContext(Dispatchers.IO) {
                                                     if (isCurrent) {
@@ -511,6 +630,7 @@ internal fun AssistantEditScreen(
                                                 }
                                                 if (cleared.isFailure) {
                                                     busy = false
+                                                    gone = false
                                                     notice = "切回默认助手失败：${cleared.exceptionOrNull()?.message}"
                                                     noticeIsError = true
                                                     return@launch
@@ -525,6 +645,7 @@ internal fun AssistantEditScreen(
                                                     },
                                                     onFailure = {
                                                         busy = false
+                                                        gone = false
                                                         notice = "删除失败：${it.message}"
                                                         noticeIsError = true
                                                     },
@@ -569,6 +690,7 @@ internal fun AssistantEditScreen(
                         Row(modifier = Modifier.padding(top = 10.dp)) {
                             Chip(label = "一起移到默认助手", primary = true, enabled = !busy) {
                                 busy = true
+                                gone = true
                                 scope.launch {
                                     val moved = withContext(Dispatchers.IO) {
                                         moveAllThenDelete(databasePath, assistantId)
@@ -580,6 +702,8 @@ internal fun AssistantEditScreen(
                                             onBack()
                                         },
                                         onFailure = {
+                                            busy = false
+                                            gone = false
                                             notice = "删除失败：${it.message}"
                                             noticeIsError = true
                                         },
@@ -623,7 +747,7 @@ internal fun AssistantEditScreen(
                     subProviderId = choice.provider.id
                     subModelId = choice.model.id
                     modelSheet = false
-                    notice = "已选 ${choice.model.displayName}：点右上「保存」生效"
+                    notice = "已选 ${choice.model.displayName}"
                     noticeIsError = false
                 },
                 onNotice = {
@@ -770,4 +894,11 @@ private fun Chip(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
         )
     }
+}
+
+/** 0.7 写成 "0.7"，1.0 写成 "1"：直接 toString 会把 1.0 灌进输入框。 */
+private fun numberText(value: Double?): String? = when {
+    value == null -> null
+    value == value.toLong().toDouble() -> value.toLong().toString()
+    else -> value.toString()
 }

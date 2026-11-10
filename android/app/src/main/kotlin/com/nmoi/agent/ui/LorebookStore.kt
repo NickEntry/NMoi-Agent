@@ -224,13 +224,13 @@ internal object LorebookStore {
     }
 
     /**
-     * 这一轮真正参与注入的册：`ids == null` 表示没设置过（全部启用册都算）。
+     * 这一轮真正参与注入的册：`ids` 是勾选结果，空集 = 一册都不带。
      *
-     * 册级 `enabled` 只管"要不要出现在「＋」的清单里"，真正生效的是助手身上这一份
-     * （用户 2026-11-08 定的三层语义）。
+     * 册级 `enabled` 只管"要不要出现在「＋」的清单里"，真正生效的是助手 / 角色身上这一份
+     * （用户 2026-11-08 定的三层语义）。**没有"没设置过就全带"这一档了**（2026-11-10）：
+     * 那个默认值让"什么都不选"和"全选"长得一样。
      */
-    fun filterBy(root: JSONObject, ids: List<String>?): JSONObject {
-        if (ids == null) return root
+    fun filterBy(root: JSONObject, ids: List<String>): JSONObject {
         val keep = ids.toSet()
         val books = books(root)
         val kept = JSONArray()
@@ -241,14 +241,10 @@ internal object LorebookStore {
         return JSONObject(root.toString()).put("books", kept)
     }
 
-    /** 「＋」里那份可选清单：只列册级 `enabled` 的（收起的不出现在这里）。 */
-    fun selectableBooks(root: JSONObject): List<Pair<String, String>> =
-        bookRows(root).map { it.id to it.name }
-
     /**
-     * 「＋ → 世界书」和角色提示词里那份清单的行（D313）。
+     * 「＋ → 世界书」、助手页、角色面板三处共用的一份清单（D313）。
      *
-     * 跟 `selectableBooks` 同一份口径（只列册级开启的），只是把**每册的条目数**一起带出来：
+     * 只列册级 `enabled` 的（收起的不出现在这里），并带上**每册的条目数**：
      * 界面上要写「已启用 5/5 · 简介」，光有名字看不出这册是不是空的。
      */
     fun bookRows(root: JSONObject): List<BookRow> {

@@ -1637,7 +1637,7 @@ internal fun ChatScreen(
 
         if (plusMenu) {
             AddSheet(
-                lorebookValue = lorebookCount(bookOptions, assistant?.lorebooks),
+                lorebookValue = lorebookCount(bookOptions, assistant?.lorebooks.orEmpty()),
                 compressLabel = if (sessionId != null && contextPercent != null) "$contextPercent%" else null,
                 onCompress = {
                     plusMenu = false
@@ -1676,13 +1676,13 @@ internal fun ChatScreen(
         }
 
         if (lorebookPick) {
-            val active = assistant?.lorebooks
+            val active = assistant?.lorebooks.orEmpty()
             LorebookPickerSheet(
                 books = bookOptions,
-                active = active ?: bookOptions.map { it.id },
+                active = active,
                 onToggle = { bookId, on ->
                     val current = assistant ?: return@LorebookPickerSheet
-                    val now = (active ?: bookOptions.map { it.id }).toMutableSet()
+                    val now = active.toMutableSet()
                     if (on) now.add(bookId) else now.remove(bookId)
                     val next = current.copy(lorebooks = now.toList())
                     scope.launch {

@@ -1436,10 +1436,8 @@ private fun LoreField(
 }
 
 /** 「＋」里那个数：**生效 / 启用**（用户 2026-11-08：2/13 = 生效 2、启用 13）。 */
-internal fun lorebookCount(books: List<BookRow>, active: List<String>?): String {
-    val on = active?.count { id -> books.any { it.id == id } } ?: books.size
-    return "$on/${books.size}"
-}
+internal fun lorebookCount(books: List<BookRow>, active: List<String>): String =
+    "${active.count { id -> books.any { it.id == id } }}/${books.size}"
 
 /** 一册占多高：三册刚好一屏（用户 2026-11-11 要的正是这个数）。 */
 private val BOOK_ROW_HEIGHT = 64.dp

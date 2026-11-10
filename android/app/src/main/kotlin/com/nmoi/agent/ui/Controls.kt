@@ -722,3 +722,40 @@ internal fun ConfirmDialog(
         }
     }
 }
+
+/**
+ * 思考强度那一排胶囊（D313）：几档全摆出来，比再点开一层少一次操作。
+ *
+ * `levels` 是 `(wire, 说明)`；说明这里不用——胶囊上只留一两个字，整句会挤成两行。
+ * 过滤（这个模型不支持哪些档）交给调用方：两处"支持名单"的来源不一样。
+ */
+@Composable
+internal fun ThinkingChips(
+    levels: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    levels.chunked(3).forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            row.forEach { (wire, _) ->
+                ChipButton(thinkingShort(wire), primary = selected == wire) { onSelect(wire) }
+            }
+        }
+    }
+}
+
+/** 档位的短标签：胶囊上放不下整句。 */
+internal fun thinkingShort(wire: String): String = when (wire) {
+    "auto" -> "自动"
+    "off" -> "关"
+    "minimal" -> "最小"
+    "low" -> "低"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "很高"
+    "max" -> "最大"
+    else -> wire
+}

@@ -30,10 +30,14 @@ internal data class AssistantEntry(
      */
     val workspaceId: String = WorkspaceRepository.DEFAULT_ID,
     /**
-     * 这个助手用哪几册世界书（2026-11-08）。`null` = 没设置过，按"全部启用册都生效"处理
-     * ——老版本升上来时世界书不会突然全失效；用户在「＋」里勾过之后才有明确的一份。
+     * 这个助手用哪几册世界书。
+     *
+     * **默认空集 = 一册都不带**（用户 2026-11-10 定，跟角色那边同一条规矩）。
+     * 以前没设置过按"全部启用册都生效"，那条规矩在 2026-11-10 作废——
+     * 一个人装了很多册时，"默认全带"等于每轮都在塞他没勾过的东西。
+     * 老数据没有这个字段，读出来就是空集：世界书从此要自己勾。
      */
-    val lorebooks: List<String>? = null,
+    val lorebooks: List<String> = emptyList(),
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
@@ -216,11 +220,7 @@ internal object AssistantRepository {
                 )
                 .put("stream", entry.stream)
                 .put("workspace_id", entry.workspaceId.ifBlank { WorkspaceRepository.DEFAULT_ID })
-                .also { row ->
-                    entry.lorebooks?.let { ids ->
-                        row.put("lorebooks", org.json.JSONArray(ids))
-                    }
-                }
+                .put("lorebooks", org.json.JSONArray(entry.lorebooks))
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
@@ -365,7 +365,7 @@ internal object AssistantRepository {
                         array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
                     }
                 }
-            },
+            }.orEmpty(),
         )
     }
 

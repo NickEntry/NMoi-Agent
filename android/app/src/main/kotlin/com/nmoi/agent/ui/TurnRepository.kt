@@ -354,7 +354,7 @@ internal object TurnRepository {
                     if (text.isNotBlank()) {
                         // 真正生效的是**助手身上那一份**（2026-11-08 三层语义）：
                         // 册级开关只管"显示在＋里"，用户勾过的那几册才参与注入。
-                        // `null` = 没设置过 → 全部启用册都算（老版本升上来不变）。
+                        // 空集 = 一册都不带（2026-11-10 起，没有"没设置过就全带"那一档）。
                         val filtered = LorebookStore.filterBy(LorebookStore.parse(text), assistant.lorebooks)
                         row.put("lorebook", filtered.toString())
                     }
