@@ -39,6 +39,14 @@ internal object LorebookStore {
         "ASSISTANT" to "助手",
     )
 
+    /** 次级关键词怎么配合（D307，与 core 的 `SelectiveLogic` 对表）。 */
+    val SELECTIVE_LOGICS = listOf(
+        "and_any" to "任意一个",
+        "and_all" to "全部",
+        "not_any" to "都不能有",
+        "not_all" to "不能全有",
+    )
+
     fun file(context: Context): File = File(context.filesDir, FILE)
 
     /** 读出来；没有或读不出来就是空串（界面按"还没导入"处理）。 */
@@ -373,8 +381,8 @@ internal object LorebookStore {
         return array
     }
 
-    fun joinKeywords(entry: JSONObject): String {
-        val keywords = entry.optJSONArray("keywords") ?: return ""
+    fun joinKeywords(entry: JSONObject, field: String = "keywords"): String {
+        val keywords = entry.optJSONArray(field) ?: return ""
         val parts = ArrayList<String>()
         for (index in 0 until keywords.length()) {
             keywords.optString(index).takeIf { it.isNotBlank() }?.let { parts.add(it) }

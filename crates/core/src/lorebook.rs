@@ -87,6 +87,45 @@ impl InjectionRole {
     }
 }
 
+/// 次级关键词怎么和主关键词配合（ST 的 `selectiveLogic`，D307）。
+///
+/// 主关键词先命中，`key_secondary` 再决定"这条到底算不算激活"——
+/// 用来表达"提到 A 的时候才带上 B"这种条件：
+/// - `AndAny`：次级任意一个命中（最常用）
+/// - `AndAll`：次级全部命中
+/// - `NotAny`：次级一个都不许命中（"说 A 但没提 B"）
+/// - `NotAll`：次级不能全部命中
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectiveLogic {
+    #[default]
+    AndAny,
+    AndAll,
+    NotAny,
+    NotAll,
+}
+
+impl SelectiveLogic {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SelectiveLogic::AndAny => "and_any",
+            SelectiveLogic::AndAll => "and_all",
+            SelectiveLogic::NotAny => "not_any",
+            SelectiveLogic::NotAll => "not_all",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "and_any" | "any" => Some(SelectiveLogic::AndAny),
+            "and_all" | "all" => Some(SelectiveLogic::AndAll),
+            "not_any" | "none" => Some(SelectiveLogic::NotAny),
+            "not_all" => Some(SelectiveLogic::NotAll),
+            _ => None,
+        }
+    }
+}
+
 /// 一条世界书条目。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +159,28 @@ pub struct LorebookEntry {
     /// 常驻激活：无条件注入，不看关键词。
     #[serde(default)]
     pub constant_active: bool,
+    /// 次级关键词（D307）：主关键词命中之后，再由它和 [selective_logic] 决定算不算激活。
+    #[serde(default)]
+    pub key_secondary: Vec<String>,
+    /// 次级关键词怎么配合。默认「任意一个」，也就是老数据的行为——老数据没有这一项，
+    /// 而以前根本不看次级关键词，所以默认值必须等于"不看"。
+    #[serde(default)]
+    pub selective_logic: SelectiveLogic,
+    /// 关键词按整词匹配（词边界），不是子串。中文没有词边界，这条对中文等于不生效。
+    #[serde(default)]
+    pub match_whole_words: bool,
+    /// 粘性（D308）：命中之后再多带多少条历史仍然算激活。0 = 关。
+    #[serde(default)]
+    pub sticky: usize,
+    /// 冷却（D308）：最近这么多条里提到过就先不注入。0 = 关。
+    ///
+    /// 判据是"最近一次提到"，不是"上一次生效"——后一种要跨轮存状态，
+    /// 而跨轮状态一旦存进库，就会和归档、压缩打架（窗口就是真相）。
+    #[serde(default)]
+    pub cooldown: usize,
+    /// 延迟（D308）：会话前这么多条里不激活。0 = 关。
+    #[serde(default)]
+    pub delay: usize,
 }
 
 fn default_true() -> bool {
@@ -132,15 +193,58 @@ fn default_depth() -> usize {
 
 impl LorebookEntry {
     /// 这条条目该不该注入。`history` 按时间顺序（最后一条是最近的）。
+    ///
+    /// 两步（D307）：主关键词先命中，再由次级关键词和 [SelectiveLogic] 决定算不算激活。
+    /// `key_secondary` 为空时第二步不参与——这是老数据的行为，一个字都不变。
     pub fn is_active(&self, history: &[HistoryLine<'_>]) -> bool {
         if !self.enabled {
+            return false;
+        }
+        // 延迟（D308）：会话还太短，这一条先不进来。
+        if self.delay > 0 && history.len() < self.delay {
             return false;
         }
         if self.constant_active || self.keywords.is_empty() {
             return self.constant_active;
         }
-        let window = scan_window(history, self.scan_depth);
-        window.iter().any(|line| self.matches(line.text))
+        // 粘性把扫描范围往后多伸 sticky 条：更早提过、这几条里还该带着它。
+        let reach = self.scan_depth.saturating_add(self.sticky);
+        let window = scan_window(history, reach);
+        let nearest = window.iter().rev().position(|line| self.matches(line.text));
+        let Some(nearest) = nearest else {
+            return false;
+        };
+        if nearest >= reach {
+            return false;
+        }
+        // 冷却：刚刚提到过，先别注入（`nearest` 是从末尾数第几条，0 = 最近那一条）。
+        if self.cooldown > 0 && nearest < self.cooldown {
+            return false;
+        }
+        // 次级关键词只在**正常扫描窗口**里判：粘性带进来的旧命中不该再被次级拦一次。
+        let normal = scan_window(history, self.scan_depth);
+        if normal.iter().any(|line| self.matches(line.text)) {
+            return self.secondary_allows(normal);
+        }
+        true
+    }
+
+    /// 次级关键词这一关（`key_secondary` 为空时直接放行，等于老数据的行为）。
+    fn secondary_allows(&self, window: &[HistoryLine<'_>]) -> bool {
+        if self.key_secondary.is_empty() {
+            return true;
+        }
+        let hit = |keyword: &str| {
+            window
+                .iter()
+                .any(|line| self.matches_pattern(keyword, line.text))
+        };
+        match self.selective_logic {
+            SelectiveLogic::AndAny => self.key_secondary.iter().any(|keyword| hit(keyword)),
+            SelectiveLogic::AndAll => self.key_secondary.iter().all(|keyword| hit(keyword)),
+            SelectiveLogic::NotAny => !self.key_secondary.iter().any(|keyword| hit(keyword)),
+            SelectiveLogic::NotAll => !self.key_secondary.iter().all(|keyword| hit(keyword)),
+        }
     }
 
     /// 命中了哪个关键词（便于 UI 与日志解释"为什么它进来了"）。
@@ -169,6 +273,17 @@ impl LorebookEntry {
         if self.use_regex {
             // 非法正则当成"不匹配"，不让一条写坏的正则把整本世界书带崩
             match RegexBuilder::new(keyword)
+                .case_insensitive(!self.case_sensitive)
+                .build()
+            {
+                Ok(regex) => regex.is_match(text),
+                Err(_) => false,
+            }
+        } else if self.match_whole_words {
+            // 整词匹配走词边界：`\b` 在汉字之间不成立，所以中文关键词配这一项等于匹配不到——
+            // 与 ST 一致，界面上写清这一点，别让人以为"勾了更准"。
+            let pattern = format!(r"\b{}\b", regex::escape(keyword));
+            match RegexBuilder::new(&pattern)
                 .case_insensitive(!self.case_sensitive)
                 .build()
             {
@@ -390,6 +505,161 @@ fn default_library_kind() -> String {
     "lorebooks".to_string()
 }
 
+/// SillyTavern 的世界书：`entries` 是**对象**（键是 uid 字符串），不是数组（D309）。
+///
+/// 形状差得远：位置与角色是数字、名字在 `comment`、停用叫 `disable`。这里只做一次机械翻译，
+/// 认不出的数字**点名报错**——替用户挑一个"最常见的位置"，等于把一段设定塞进错的地方，
+/// 而他不会知道。
+///
+/// 不认的字段（`probability` / `vectorized` / `extensions` / `group` …）直接丢掉：
+/// 我们这边没有对应的行为，收下来就是"存了不生效"。
+fn sillytavern_book(root: &serde_json::Value) -> Result<Option<serde_json::Value>, ImportError> {
+    let Some(entries) = root.get("entries").and_then(|value| value.as_object()) else {
+        return Ok(None);
+    };
+    let mut keys: Vec<&String> = entries.keys().collect();
+    keys.sort_by_key(|key| key.parse::<i64>().unwrap_or(i64::MAX));
+    let mut converted = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        let entry = &entries[*key];
+        let label = entry
+            .get("comment")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let content = entry
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let position = match entry.get("position").and_then(|value| value.as_i64()) {
+            None | Some(1) => "AFTER_SYSTEM_PROMPT",
+            Some(0) => "BEFORE_SYSTEM_PROMPT",
+            Some(2) => "TOP_OF_CHAT",
+            Some(3) => "AT_DEPTH",
+            Some(4) => "BOTTOM_OF_CHAT",
+            Some(other) => {
+                return Err(ImportError {
+                    book: String::new(),
+                    index: index + 1,
+                    entry: label,
+                    field: "position",
+                    value: other.to_string(),
+                    message: "认不出；ST 的 position 只有 0–4".to_string(),
+                })
+            }
+        };
+        let role = match entry.get("role").and_then(|value| value.as_i64()) {
+            None | Some(0) => "SYSTEM",
+            Some(1) => "USER",
+            Some(2) => "ASSISTANT",
+            Some(other) => {
+                return Err(ImportError {
+                    book: String::new(),
+                    index: index + 1,
+                    entry: label,
+                    field: "role",
+                    value: other.to_string(),
+                    message: "认不出；ST 的 role 只有 0 / 1 / 2".to_string(),
+                })
+            }
+        };
+        let keywords = keywords_of(entry.get("key"));
+        let selective = entry
+            .get("selective")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let secondary = if selective {
+            keywords_of(entry.get("keysecondary"))
+        } else {
+            Vec::new()
+        };
+        let logic = match entry.get("selectiveLogic").and_then(|value| value.as_i64()) {
+            None | Some(0) => "and_any",
+            Some(1) => "and_all",
+            Some(2) => "not_any",
+            Some(3) => "not_all",
+            Some(other) => {
+                return Err(ImportError {
+                    book: String::new(),
+                    index: index + 1,
+                    entry: label,
+                    field: "selectiveLogic",
+                    value: other.to_string(),
+                    message: "认不出；ST 的 selectiveLogic 只有 0–3".to_string(),
+                })
+            }
+        };
+        let number = |field: &str, fallback: i64| {
+            entry
+                .get(field)
+                .and_then(|value| value.as_i64())
+                .unwrap_or(fallback)
+        };
+        let flag = |field: &str| {
+            entry
+                .get(field)
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        };
+        let name = if label.is_empty() {
+            content.chars().take(12).collect::<String>()
+        } else {
+            label
+        };
+        converted.push(serde_json::json!({
+            "id": format!("e{}", key),
+            "name": name,
+            "enabled": !flag("disable"),
+            "priority": number("order", 0),
+            "position": position,
+            "content": content,
+            "injectDepth": number("depth", 4),
+            "role": role,
+            "keywords": keywords,
+            "useRegex": false,
+            "caseSensitive": flag("caseSensitive"),
+            "scanDepth": 4,
+            "constantActive": flag("constant"),
+            "keySecondary": secondary,
+            "selectiveLogic": logic,
+            "matchWholeWords": flag("matchWholeWords"),
+            "sticky": number("sticky", 0),
+            "cooldown": number("cooldown", 0),
+            "delay": number("delay", 0),
+        }));
+    }
+    Ok(Some(serde_json::json!({
+        "version": 1,
+        "type": "lorebook",
+        "data": {
+            "id": "st",
+            "name": "从 SillyTavern 导入",
+            "enabled": true,
+            "entries": converted,
+        },
+    })))
+}
+
+/// ST 的 `key` 可能是数组，也可能是一串逗号分隔的字符串。
+fn keywords_of(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .collect(),
+        Some(serde_json::Value::String(text)) => text
+            .split(',')
+            .map(|part| part.trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 impl Library {
     /// 读一份文件：有 `books` 就当多册，没有就按单册读进来当一册。
     ///
@@ -405,8 +675,23 @@ impl Library {
                 message: format!("不是合法的 JSON：{error}"),
             })?;
 
+        // SillyTavern 的世界书没有 `books` 也没有 `data`：先翻译成我们的单册形状（D309）。
+        if let Some(converted) = sillytavern_book(&root)? {
+            root = converted;
+        }
+
         let Some(books) = root.get_mut("books").and_then(|value| value.as_array_mut()) else {
-            return Ok(Self::from_one(Lorebook::import(text)?.data));
+            // 单册：**读转换后的 root**，不是原始 text —— STD 文件（`entries` 是对象）
+            // 在这一步之前已经被翻译成单册形状了（D309）。
+            let single = serde_json::to_string(&root).map_err(|error| ImportError {
+                book: String::new(),
+                index: 0,
+                entry: String::new(),
+                field: "文件",
+                value: String::new(),
+                message: format!("转不回文本：{error}"),
+            })?;
+            return Ok(Self::from_one(Lorebook::import(&single)?.data));
         };
 
         for (index, book) in books.iter_mut().enumerate() {
@@ -614,6 +899,12 @@ mod tests {
             case_sensitive: false,
             scan_depth: 4,
             constant_active: constant,
+            key_secondary: Vec::new(),
+            selective_logic: SelectiveLogic::default(),
+            match_whole_words: false,
+            sticky: 0,
+            cooldown: 0,
+            delay: 0,
         }
     }
 
@@ -936,5 +1227,236 @@ mod library_tests {
         let library = Library::import(text).expect("empty book");
         assert_eq!(library.books[0].name, "导入的世界书");
         assert_eq!(library.books[0].id, "b1");
+    }
+}
+
+/// 次级关键词（D307）：主关键词命中之后，`key_secondary` 与 `selective_logic` 再决定算不算激活。
+#[cfg(test)]
+mod secondary_tests {
+    use super::*;
+
+    fn entry_of(keywords: &[&str]) -> LorebookEntry {
+        LorebookEntry {
+            id: "e1".into(),
+            name: "e1".into(),
+            enabled: true,
+            priority: 0,
+            position: Position::AfterSystemPrompt,
+            content: "内容".into(),
+            inject_depth: 4,
+            role: InjectionRole::User,
+            keywords: keywords.iter().map(|k| k.to_string()).collect(),
+            use_regex: false,
+            case_sensitive: false,
+            scan_depth: 4,
+            constant_active: false,
+            key_secondary: Vec::new(),
+            selective_logic: SelectiveLogic::default(),
+            match_whole_words: false,
+            sticky: 0,
+            cooldown: 0,
+            delay: 0,
+        }
+    }
+
+    fn with_secondary(
+        mut base: LorebookEntry,
+        secondary: &[&str],
+        logic: SelectiveLogic,
+    ) -> LorebookEntry {
+        base.key_secondary = secondary.iter().map(|k| k.to_string()).collect();
+        base.selective_logic = logic;
+        base
+    }
+
+    fn lines<'a>(texts: &'a [&'a str]) -> Vec<HistoryLine<'a>> {
+        texts
+            .iter()
+            .map(|text| HistoryLine::new(Role::User, text))
+            .collect()
+    }
+
+    #[test]
+    fn and_any_needs_one_secondary_keyword() {
+        let entry = with_secondary(entry_of(&["码头"]), &["灯塔", "雾"], SelectiveLogic::AndAny);
+        assert!(entry.is_active(&lines(&["码头", "灯塔"])));
+        assert!(!entry.is_active(&lines(&["码头", "货船"])));
+    }
+
+    #[test]
+    fn and_all_needs_every_secondary_keyword() {
+        let entry = with_secondary(entry_of(&["码头"]), &["灯塔", "雾"], SelectiveLogic::AndAll);
+        assert!(entry.is_active(&lines(&["码头", "灯塔", "雾"])));
+        assert!(!entry.is_active(&lines(&["码头", "灯塔"])));
+    }
+
+    #[test]
+    fn not_any_rejects_when_a_secondary_keyword_shows_up() {
+        let entry = with_secondary(entry_of(&["码头"]), &["灯塔"], SelectiveLogic::NotAny);
+        assert!(entry.is_active(&lines(&["码头"])));
+        assert!(!entry.is_active(&lines(&["码头", "灯塔"])));
+    }
+
+    #[test]
+    fn not_all_only_rejects_when_every_secondary_keyword_shows_up() {
+        let entry = with_secondary(entry_of(&["码头"]), &["灯塔", "雾"], SelectiveLogic::NotAll);
+        assert!(entry.is_active(&lines(&["码头", "灯塔"])));
+        assert!(!entry.is_active(&lines(&["码头", "灯塔", "雾"])));
+    }
+
+    #[test]
+    fn no_secondary_keywords_behaves_exactly_like_before() {
+        // 老数据没有次级关键词：主关键词命中就算激活，一个字都不能变。
+        let entry = entry_of(&["码头"]);
+        assert!(entry.is_active(&lines(&["码头"])));
+        assert!(!entry.is_active(&lines(&["货船"])));
+    }
+
+    #[test]
+    fn whole_words_does_not_match_inside_a_longer_word() {
+        let mut entry = entry_of(&["cat"]);
+        assert!(entry.is_active(&lines(&["concatenate"])));
+        entry.match_whole_words = true;
+        assert!(!entry.is_active(&lines(&["concatenate"])));
+        assert!(entry.is_active(&lines(&["a cat sat"])));
+    }
+
+    // ---- 时序（D308）------------------------------------------------------
+
+    #[test]
+    fn delay_keeps_the_entry_out_until_the_chat_is_long_enough() {
+        let mut entry = entry_of(&["码头"]);
+        entry.delay = 3;
+        assert!(!entry.is_active(&lines(&["码头"])));
+        assert!(!entry.is_active(&lines(&["码头", "一"])));
+        assert!(entry.is_active(&lines(&["码头", "一", "二"])));
+    }
+
+    #[test]
+    fn sticky_keeps_it_active_after_the_hit_falls_out_of_the_scan_window() {
+        let mut entry = entry_of(&["码头"]);
+        // 扫描深度 4：码头在最前面，最后四条里已经没有了。
+        let history = lines(&["码头", "一", "二", "三", "四"]);
+        assert!(!entry.is_active(&history));
+        entry.sticky = 2;
+        assert!(entry.is_active(&history));
+    }
+
+    #[test]
+    fn cooldown_stays_quiet_when_it_was_just_mentioned() {
+        let mut entry = entry_of(&["码头"]);
+        let history = lines(&["一", "二", "码头"]);
+        assert!(entry.is_active(&history));
+        entry.cooldown = 2;
+        assert!(!entry.is_active(&history));
+    }
+
+    #[test]
+    fn timing_knobs_default_to_off() {
+        let entry = entry_of(&["码头"]);
+        assert_eq!(entry.sticky, 0);
+        assert_eq!(entry.cooldown, 0);
+        assert_eq!(entry.delay, 0);
+        assert!(entry.is_active(&lines(&["码头"])));
+    }
+
+    #[test]
+    fn old_json_without_the_new_fields_still_loads() {
+        let text = r#"{"type":"lorebook","data":{"entries":[
+            {"id":"e1","name":"老","position":"AFTER_SYSTEM_PROMPT","keywords":["码头"],"content":"x"}
+        ]}}"#;
+        let lore = Lorebook::from_json(text).expect("老数据要能读");
+        let entry = &lore.data.entries[0];
+        assert!(entry.key_secondary.is_empty());
+        assert_eq!(entry.selective_logic, SelectiveLogic::AndAny);
+        assert!(!entry.match_whole_words);
+    }
+}
+
+/// SillyTavern 导入（D309）：数字字段的映射与"认不出就点名"。
+#[cfg(test)]
+mod st_import_tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"{
+        "entries": {
+            "1": {
+                "uid": 1,
+                "key": ["码头", "灯塔"],
+                "keysecondary": ["雾"],
+                "comment": "港口的规矩",
+                "content": "夜里不许点灯。",
+                "constant": false,
+                "selective": true,
+                "selectiveLogic": 1,
+                "order": 42,
+                "position": 3,
+                "depth": 6,
+                "disable": true,
+                "role": 1,
+                "caseSensitive": true,
+                "matchWholeWords": true,
+                "sticky": 2,
+                "cooldown": 3,
+                "delay": 5,
+                "probability": 100,
+                "vectorized": false
+            },
+            "2": {
+                "key": "船, 潮汐",
+                "content": "潮水一天两次。",
+                "position": 4,
+                "role": 2
+            }
+        }
+    }"#;
+
+    #[test]
+    fn sillytavern_entries_become_one_book() {
+        let library = Library::import(SAMPLE).expect("ST 文件要能读");
+        assert_eq!(library.books.len(), 1);
+        let entries = &library.books[0].entries;
+        assert_eq!(entries.len(), 2);
+
+        let first = &entries[0];
+        assert_eq!(first.id, "e1");
+        assert_eq!(first.name, "港口的规矩");
+        assert_eq!(first.keywords, vec!["码头", "灯塔"]);
+        assert_eq!(first.key_secondary, vec!["雾"]);
+        assert_eq!(first.selective_logic, SelectiveLogic::AndAll);
+        assert_eq!(first.priority, 42);
+        assert_eq!(first.position, Position::AtDepth);
+        assert_eq!(first.inject_depth, 6);
+        assert!(!first.enabled, "disable=true → 停用");
+        assert_eq!(first.role, InjectionRole::User);
+        assert!(first.case_sensitive);
+        assert!(first.match_whole_words);
+        assert_eq!(first.sticky, 2);
+        assert_eq!(first.cooldown, 3);
+        assert_eq!(first.delay, 5);
+
+        // key 是一串逗号分隔的字符串也要收；没写的字段走默认。
+        let second = &entries[1];
+        assert_eq!(second.keywords, vec!["船", "潮汐"]);
+        assert_eq!(second.position, Position::BottomOfChat);
+        assert_eq!(second.role, InjectionRole::Assistant);
+        assert!(second.enabled);
+        assert!(second.key_secondary.is_empty());
+    }
+
+    #[test]
+    fn unknown_position_is_reported_with_the_entry_name() {
+        let text = r#"{"entries":{"1":{"comment":"坏的那条","content":"x","position":9}}}"#;
+        let error = Library::import(text).expect_err("认不出的位置要报错");
+        assert_eq!(error.field, "position");
+        assert_eq!(error.value, "9");
+        assert!(error.to_string().contains("坏的那条"));
+    }
+
+    #[test]
+    fn selective_false_drops_the_secondary_keywords() {
+        let text = r#"{"entries":{"1":{"key":["a"],"keysecondary":["b"],"selective":false,"content":"x"}}}"#;
+        let library = Library::import(text).expect("读得出来");
+        assert!(library.books[0].entries[0].key_secondary.is_empty());
     }
 }

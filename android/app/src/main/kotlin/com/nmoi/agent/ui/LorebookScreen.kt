@@ -1071,16 +1071,23 @@ private fun EntrySheet(
     }
     var role by remember { mutableStateOf(entry.optString("role", "USER").trim().uppercase()) }
     var keywords by remember { mutableStateOf(LorebookStore.joinKeywords(entry)) }
+    var secondary by remember { mutableStateOf(LorebookStore.joinKeywords(entry, "keySecondary")) }
+    var logic by remember { mutableStateOf(entry.optString("selectiveLogic", "and_any")) }
+    var wholeWords by remember { mutableStateOf(entry.optBoolean("matchWholeWords", false)) }
     var useRegex by remember { mutableStateOf(entry.optBoolean("useRegex", false)) }
     var caseSensitive by remember { mutableStateOf(entry.optBoolean("caseSensitive", false)) }
     var constant by remember { mutableStateOf(entry.optBoolean("constantActive", false)) }
     var injectDepth by remember { mutableStateOf(entry.optInt("injectDepth", 4).toString()) }
     var scanDepth by remember { mutableStateOf(entry.optInt("scanDepth", 4).toString()) }
     var priority by remember { mutableStateOf(entry.optInt("priority", 0).toString()) }
+    var sticky by remember { mutableStateOf(entry.optInt("sticky", 0).toString()) }
+    var cooldown by remember { mutableStateOf(entry.optInt("cooldown", 0).toString()) }
+    var delay by remember { mutableStateOf(entry.optInt("delay", 0).toString()) }
 
     val key = listOf(
-        name, content, position, role, keywords, useRegex, caseSensitive, constant,
-        injectDepth, scanDepth, priority,
+        name, content, position, role, keywords, secondary, logic, wholeWords,
+        useRegex, caseSensitive, constant, injectDepth, scanDepth, priority,
+        sticky, cooldown, delay,
     )
     LaunchedEffect(key) {
         delay(100)
@@ -1091,12 +1098,18 @@ private fun EntrySheet(
                 .put("position", position)
                 .put("role", role)
                 .put("keywords", LorebookStore.splitKeywords(keywords))
+                .put("keySecondary", LorebookStore.splitKeywords(secondary))
+                .put("selectiveLogic", logic)
+                .put("matchWholeWords", wholeWords)
                 .put("useRegex", useRegex)
                 .put("caseSensitive", caseSensitive)
                 .put("constantActive", constant)
                 .put("injectDepth", injectDepth.trim().toIntOrNull()?.coerceIn(0, 999) ?: 4)
                 .put("scanDepth", scanDepth.trim().toIntOrNull()?.coerceIn(0, 999) ?: 4)
-                .put("priority", priority.trim().toIntOrNull()?.coerceIn(0, 9999) ?: 0),
+                .put("priority", priority.trim().toIntOrNull()?.coerceIn(0, 9999) ?: 0)
+                .put("sticky", sticky.trim().toIntOrNull()?.coerceIn(0, 99) ?: 0)
+                .put("cooldown", cooldown.trim().toIntOrNull()?.coerceIn(0, 99) ?: 0)
+                .put("delay", delay.trim().toIntOrNull()?.coerceIn(0, 99) ?: 0),
         )
     }
 
@@ -1125,6 +1138,10 @@ private fun EntrySheet(
 
             Spacer(Modifier.height(8.dp))
             LoreField(keywords, { keywords = it }, "关键词（逗号分隔；空 = 只有常驻时生效）")
+            Spacer(Modifier.height(8.dp))
+            LoreField(secondary, { secondary = it }, "次级关键词（逗号分隔；空 = 不看这一项）")
+            SheetLabel("次级关键词怎么配合主关键词")
+            ChipRows(LorebookStore.SELECTIVE_LOGICS, logic) { logic = it }
 
             if (position == "AT_DEPTH") {
                 Spacer(Modifier.height(8.dp))
@@ -1150,6 +1167,33 @@ private fun EntrySheet(
                 number = true,
             )
 
+            Spacer(Modifier.height(8.dp))
+            LoreField(
+                value = sticky,
+                onChange = { sticky = it },
+                placeholder = "粘性：命中之后再多带几条（0 = 关）",
+                number = true,
+            )
+            Spacer(Modifier.height(8.dp))
+            LoreField(
+                value = cooldown,
+                onChange = { cooldown = it },
+                placeholder = "冷却：最近几条里提到过就先不注入（0 = 关）",
+                number = true,
+            )
+            Spacer(Modifier.height(8.dp))
+            LoreField(
+                value = delay,
+                onChange = { delay = it },
+                placeholder = "延迟：会话前几条里不激活（0 = 关）",
+                number = true,
+            )
+
+            ToggleLine(
+                "整词匹配",
+                "关键词要整词命中；中文没有词边界，勾了对中文等于匹配不到",
+                wholeWords,
+            ) { wholeWords = it }
             ToggleLine("正则", "关键词按正则解释", useRegex) { useRegex = it }
             ToggleLine("区分大小写", "关着 = 不区分", caseSensitive) { caseSensitive = it }
             ToggleLine("常驻", "不看关键词，每一轮都注入", constant) { constant = it }
