@@ -60,9 +60,12 @@ internal object RoleRunner {
         // 这个角色自己的系统提示词（D298）：排在内置那段之前，正文（prompt）不动。
         // 空串就当没有——发一个空 system 会让某些上游把它当成"清空系统提示"。
         val extra = AppSettings.roleSystem(context, role.key).trim()
-        val merged = listOfNotNull(extra.takeIf { it.isNotEmpty() }, system?.takeIf { it.isNotBlank() })
+        // 站位字符串（D316）：`<ContextMode>` 这类在**发请求之前**换成当前状态，
+        // 于是同一段提示词能按档位分叉。没声明的原样留着，不猜。
+        val systemText = listOfNotNull(extra.takeIf { it.isNotEmpty() }, system?.takeIf { it.isNotBlank() })
             .joinToString("\n\n")
             .ifBlank { null }
+        val merged = systemText?.let { PromptVars.fill(it, PromptVars.values(context, role)) }
         val picked = if (provider.multiKey) KeyPool.pick(context, provider.id) else null
         val key = if (provider.multiKey) picked?.value else Vault.load(context, provider.id)
         // 这个角色自己的思考强度与世界书（D313）。世界书空集 = 一册都不带，老行为不变。

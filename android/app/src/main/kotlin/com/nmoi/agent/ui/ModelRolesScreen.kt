@@ -476,6 +476,16 @@ private fun RolePromptSheet(
                 maxLines = 6,
                 modifier = Modifier.fillMaxWidth(),
             )
+            // 站位字符串（D316）：框外一行，只列这个角色真的会被填的那些。
+            val vars = PromptVars.names(role)
+            if (vars.isNotEmpty()) {
+                Text(
+                    text = "变量：" + vars.joinToString(" "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
