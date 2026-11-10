@@ -188,8 +188,21 @@ impl TurnReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AgentError {
-    #[error("模型调用失败：{0}")]
-    Model(String),
+    #[error("模型调用失败：{message}")]
+    Model {
+        message: String,
+        /// 上游回的 HTTP 状态。401/403 说明**这把钥匙不行**，界面要据此标那一把。
+        /// 拿不到（断流、解析失败、自己造的错误）就是 `None`。
+        status: Option<u16>,
+    },
+}
+
+impl AgentError {
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            AgentError::Model { status, .. } => *status,
+        }
+    }
 }
 
 /// 跑一轮（可能包含多次工具往返）。
@@ -264,12 +277,17 @@ pub fn run_turn<T: Transport>(
         // 断流不算失败——残文留着，下面按 `truncated` 收尾（D194）。
         let mut interrupted = false;
         let completion = if config.stream {
-            let mut stream = client
-                .chat(&request)
-                .map_err(|error| AgentError::Model(error.to_string()))?;
-            let collected = stream
-                .collect_all(crate::progress::emit)
-                .map_err(|error| AgentError::Model(error.to_string()))?;
+            let mut stream = client.chat(&request).map_err(|error| AgentError::Model {
+                message: error.to_string(),
+                status: error.http_status(),
+            })?;
+            let collected =
+                stream
+                    .collect_all(crate::progress::emit)
+                    .map_err(|error| AgentError::Model {
+                        message: error.to_string(),
+                        status: error.http_status(),
+                    })?;
             // 端点不认 `stream`（回了一段普通 JSON / 干脆没回）→ 一个字都没收到、流就断了。
             // 这时候退回**非流式**重发这一轮一次：不这么做，"端点不支持流式"就变成"回答是空的"。
             //
@@ -278,12 +296,18 @@ pub fn run_turn<T: Transport>(
                 let mut plain = request.clone();
                 plain.stream = false;
                 match retry {
-                    Some(policy) => client
-                        .complete_retrying(&plain, policy, cancel)
-                        .map_err(|error| AgentError::Model(error.to_string()))?,
-                    None => client
-                        .complete(&plain)
-                        .map_err(|error| AgentError::Model(error.to_string()))?,
+                    Some(policy) => {
+                        client
+                            .complete_retrying(&plain, policy, cancel)
+                            .map_err(|error| AgentError::Model {
+                                message: error.to_string(),
+                                status: error.error.http_status(),
+                            })?
+                    }
+                    None => client.complete(&plain).map_err(|error| AgentError::Model {
+                        message: error.to_string(),
+                        status: error.http_status(),
+                    })?,
                 }
             } else {
                 interrupted = collected.interrupted.is_some();
@@ -291,12 +315,20 @@ pub fn run_turn<T: Transport>(
             }
         } else {
             match retry {
-                Some(policy) => client
-                    .complete_retrying(&request, policy, cancel)
-                    .map_err(|error| AgentError::Model(error.to_string()))?,
+                Some(policy) => {
+                    client
+                        .complete_retrying(&request, policy, cancel)
+                        .map_err(|error| AgentError::Model {
+                            message: error.to_string(),
+                            status: error.error.http_status(),
+                        })?
+                }
                 None => client
                     .complete(&request)
-                    .map_err(|error| AgentError::Model(error.to_string()))?,
+                    .map_err(|error| AgentError::Model {
+                        message: error.to_string(),
+                        status: error.http_status(),
+                    })?,
             }
         };
         report.rounds += 1;
@@ -649,10 +681,12 @@ fn stopped(mut report: TurnReport) -> TurnReport {
 /// 把会话历史装成 `run_turn` 要的形状。空 `messages` 会被上游拒，这里先挡住。
 pub fn ensure_non_empty(messages: &[Message]) -> Result<Vec<Message>, AgentError> {
     if messages.is_empty() {
-        return Err(AgentError::Model(
-            "history 是空的：至少要有一条用户消息（空 messages 上游只会回一个看不出原因的 400）"
-                .into(),
-        ));
+        return Err(AgentError::Model {
+            message:
+                "history 是空的：至少要有一条用户消息（空 messages 上游只会回一个看不出原因的 400）"
+                    .to_string(),
+            status: None,
+        });
     }
     Ok(messages.to_vec())
 }

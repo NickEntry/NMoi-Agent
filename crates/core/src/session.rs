@@ -272,6 +272,17 @@ pub enum SessionError {
     NotInWindow(MessageId),
 }
 
+impl SessionError {
+    /// 上游 HTTP 状态（能拿到的时候）。401/403 说明**这把钥匙不行**，
+    /// 界面据此把那一把标成错误（D315）。
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            SessionError::Agent(error) => error.http_status(),
+            _ => None,
+        }
+    }
+}
+
 /// 一次会话往返的完整结果。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionTurn {

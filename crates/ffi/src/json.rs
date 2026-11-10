@@ -18,6 +18,9 @@ use serde_json::Value;
 pub(crate) struct FfiError {
     pub(crate) kind: &'static str,
     pub(crate) message: String,
+    /// 上游回的 HTTP 状态（D315）。绑定层靠它判断"是不是这把钥匙不行"，
+    /// 而不是在文案里找数字——那是在猜。
+    pub(crate) status: Option<u16>,
 }
 
 impl FfiError {
@@ -25,7 +28,14 @@ impl FfiError {
         Self {
             kind,
             message: message.into(),
+            status: None,
         }
+    }
+
+    /// 把上游状态挂上去（没有就原样返回）。
+    pub(crate) fn with_status(mut self, status: Option<u16>) -> Self {
+        self.status = status;
+        self
     }
 }
 
@@ -65,7 +75,17 @@ pub(crate) fn ok_json(body: Value) -> *mut c_char {
 
 /// 失败信封：`{"ok":false,"error":{"kind":..,"message":..}}`。
 pub(crate) fn err_json(kind: &str, message: &str) -> *mut c_char {
-    let error = serde_json::json!({ "kind": kind, "message": message });
+    err_json_status(kind, message, None)
+}
+
+/// 同上，带一个可选的 `status`（D315）：只有上游真的回过 HTTP 状态时才有这个键。
+///
+/// 不给一个假值（比如 0）——绑定层分不出"没有状态"和"状态是 0"。
+pub(crate) fn err_json_status(kind: &str, message: &str, status: Option<u16>) -> *mut c_char {
+    let mut error = serde_json::json!({ "kind": kind, "message": message });
+    if let Some(code) = status {
+        error["status"] = serde_json::json!(code);
+    }
     emit(format!(r#"{{"ok":false,"error":{}}}"#, error))
 }
 
@@ -75,7 +95,7 @@ pub(crate) fn err_json(kind: &str, message: &str) -> *mut c_char {
 pub(crate) fn run_json<F: FnOnce() -> FfiResult<Value>>(body: F) -> *mut c_char {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(value)) => ok_json(value),
-        Ok(Err(error)) => err_json(error.kind, &error.message),
+        Ok(Err(error)) => err_json_status(error.kind, &error.message, error.status),
         Err(payload) => err_json("panic", &panic_text(payload)),
     }
 }
@@ -120,5 +140,32 @@ pub(crate) fn read_opt_str<'a>(ptr: *const c_char, field: &str) -> FfiResult<Opt
             "invalid_utf8",
             format!("参数 `{field}` 不是合法 UTF-8：{error}"),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    fn read(pointer: *mut c_char) -> Value {
+        let text = unsafe { CStr::from_ptr(pointer) }
+            .to_str()
+            .expect("信封是 UTF-8")
+            .to_string();
+        unsafe { crate::nmoi_string_free(pointer) };
+        serde_json::from_str(&text).expect("信封必须是合法 JSON")
+    }
+
+    /// 上游状态要原样带出来（D315）：绑定层靠它判断"是不是这把钥匙不行"。
+    #[test]
+    fn the_error_envelope_carries_the_upstream_status_when_there_is_one() {
+        let refused = read(err_json_status("turn", "上游拒绝", Some(401)));
+        assert_eq!(refused["error"]["status"], 401);
+        assert_eq!(refused["error"]["kind"], "turn");
+
+        // 没有状态就**不给这个键**：造一个 0 出来，绑定层分不出"没状态"和"状态是 0"。
+        let plain = read(err_json("turn", "断流了"));
+        assert!(plain["error"].get("status").is_none());
     }
 }

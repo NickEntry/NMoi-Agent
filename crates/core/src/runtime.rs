@@ -376,6 +376,17 @@ pub enum ChatError {
 }
 
 impl ChatError {
+    /// 上游回的 HTTP 状态（能拿到的时候）。
+    ///
+    /// 为什么单拎出来：`401/403` 不只是"这次失败"，它说明**这把钥匙不行**。
+    /// 界面要能把那一把标成错误，光有一句自然语言是做不到的（在文案里找数字等于猜）。
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            ChatError::Http(body) => Some(body.status),
+            _ => None,
+        }
+    }
+
     /// 整轮失败时值不值得重发一次。语义错误（400/401/404）不值得。
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -444,13 +455,6 @@ impl fmt::Display for RetryError {
 }
 
 impl std::error::Error for RetryError {}
-
-fn status_of(error: &ChatError) -> Option<u16> {
-    match error {
-        ChatError::Http(body) => Some(body.status),
-        _ => None,
-    }
-}
 
 /// 把请求发出去，拿到一条事件流。
 pub struct ChatClient<T: Transport> {
@@ -535,7 +539,7 @@ impl<T: Transport> ChatClient<T> {
                     let mut rng = || entropy.next_f64();
                     let decision = policy.plan(
                         Attempt {
-                            status: status_of(&error),
+                            status: error.http_status(),
                             error_text: &error.to_string(),
                             index,
                             written_any: false,

@@ -1248,7 +1248,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
                     "compaction_required",
                     format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
                 ),
-                other => FfiError::new("turn", other.to_string()),
+                other => FfiError::new("turn", other.to_string()).with_status(other.http_status()),
             })
         };
         let turn = match (sink, round_hook) {
@@ -1610,7 +1610,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
                 "compaction_required",
                 format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
             ),
-            other => FfiError::new("turn", other.to_string()),
+            other => FfiError::new("turn", other.to_string()).with_status(other.http_status()),
         })?;
 
         Ok(json!({
@@ -1821,9 +1821,9 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
         }
 
         let client = crate::proxy::client();
-        let done = client
-            .complete(&request)
-            .map_err(|error| FfiError::new("complete", error.to_string()))?;
+        let done = client.complete(&request).map_err(|error| {
+            FfiError::new("complete", error.to_string()).with_status(error.http_status())
+        })?;
         Ok(json!({
             "text": done.text,
             "reasoning": done.reasoning,

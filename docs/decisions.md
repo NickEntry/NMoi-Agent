@@ -2310,3 +2310,23 @@ kotlinc 只差那 9 个 `R`；真机 **V119**。
   自己那份 `BackHandler` 注册得更深，会先吃掉一次返回。
 - 思考强度那一排胶囊抽成 `ThinkingChips`（`Controls.kt`）：助手页与角色面板共用。
 - 判据：kotlinc 只差那 9 个 `R`；真机 **V124**。
+
+## D315 多 Key 的自动标错（2026-11-10）
+
+D302 留的例外：池里那把钥匙"行不行"得用户手点徽标。要自动标，先得让**上游回了 401/403**
+这件事从 core 一路传到界面——此前它在 `AgentError::Model(String)` 那一步就被压成一句话了，
+界面只能在文案里找数字，那是在猜。
+
+- core：`ChatError::http_status()`；`AgentError::Model` 从元组变结构体
+  `{ message, status }`（401/403 才有 status）；`SessionError::http_status()` 转发。
+  `runtime.rs` 里原来那个私有 `status_of` 删掉——同一个概念留一个出处。
+- ffi：`FfiError` 加 `status: Option<u16>`；`err_json_status` 只在**真有状态**时才写这个键。
+  造一个 0 出来，绑定层就分不出"没状态"和"状态是 0"。
+- Kotlin：`NmoiFfiException.status`；`KeyPool.pick` 改成返回 `Picked(id, value)`——
+  只给 `value` 的话，401 回来时界面知道"哪串钥匙不行"，却不知道是池里的哪一行。
+  `KeyPool.markError(providerId, keyId)` 只标那一把；同一个错标两次不重复写盘。
+- 谁去标：`TurnRepository`（聊天主路径）与 `RoleRunner`（旁路）在失败且 status 是 401/403 时标。
+  旁路失败本来不出声，但"钥匙被拒"这件事必须说给池子听。
+- 不退让的变化：池里全标红之后 `pick` 仍然退而用"启用但标错"的（D302 的老规矩）——
+  否则用户会看到"没有钥匙可用"，而他其实只是没去清红标。
+- 判据：ffi **66** 条（+1：信封带状态 / 不带状态两种情况）、core **700** 条；真机 **V125**。
