@@ -105,6 +105,14 @@ internal fun ModelRolesScreen(
         loaded = result.isSuccess
     }
     val keys = remember(choices) { choices.map { it.key }.toSet() }
+    // 角色那一层能勾的世界书（D313）：打开面板时现读一次，导入了新册不必重启。
+    var books by remember { mutableStateOf(listOf<BookRow>()) }
+    LaunchedEffect(promptFor) {
+        if (promptFor == null) return@LaunchedEffect
+        books = withContext(Dispatchers.IO) {
+            LorebookStore.bookRows(LorebookStore.library(context))
+        }
+    }
 
     // 选过但模型不在了：切回这个角色的初始值（用户 2026-11-08 定）。
     // 读到库之前不动手：那时候 `keys` 是空的，"不在库里"和"还没读出来"看起来一样。
@@ -186,9 +194,18 @@ internal fun ModelRolesScreen(
     }
 
     promptFor?.let { role ->
+        val pinned = splitPinned(values[role].orEmpty())
+        val model = pinned?.let { target ->
+            choices.firstOrNull {
+                it.provider.id == target.first && it.model.id == target.second
+            }?.model
+        }
         RolePromptSheet(
             context = context,
             role = role,
+            efforts = model?.efforts.orEmpty(),
+            allowDisable = model?.allowDisable != false,
+            books = books,
             onDismiss = { promptFor = null },
         )
     }
@@ -357,11 +374,11 @@ private fun NavRow(title: String, onClick: () -> Unit) {
 }
 
 /**
- * 一个角色的提示词设置（D298）。
+ * 一个角色的三样东西（D298 / D313）：思考强度、世界书、系统提示词。
  *
- * 现在只有**系统提示词**这一项：`nmoi_complete_json` 已经支持 `system`，所以这一项拨了
- * 真的会进请求（排在调用方给的那段之前）。思考开关 / 强度还没接进来——`complete` 那条
- * 路径还不认 `thinking`，摆上来就是假开关，等 FFI 支持了再摆。
+ * 三样都走 `nmoi_complete_json`：`thinking` 与 `turn_run` 同一套档位，
+ * `lorebook` 是**已按勾选筛过**的库，`system` 排在调用方给的那段之前。
+ * 全都改了就存，所以没有「保存」也没有「完成」。
  *
  * 停手 100 ms 自动保存（用户 2026-11-07 定）：这类输入框不摆"保存"按钮。
  */
@@ -369,6 +386,10 @@ private fun NavRow(title: String, onClick: () -> Unit) {
 private fun RolePromptSheet(
     context: Context,
     role: ModelRole,
+    /** 这个角色指到的模型支持哪些档位（空 = 不知道，全给）。 */
+    efforts: List<String>,
+    allowDisable: Boolean,
+    books: List<BookRow>,
     onDismiss: () -> Unit,
 ) {
     var text by remember(role) { mutableStateOf(AppSettings.roleSystem(context, role.key)) }
@@ -377,20 +398,91 @@ private fun RolePromptSheet(
         delay(100)
         AppSettings.setRoleSystem(context, role.key, text)
     }
+    var thinking by remember(role) { mutableStateOf(AppSettings.roleThinking(context, role.key)) }
+    var ownBooks by remember(role) { mutableStateOf(AppSettings.roleLorebooks(context, role.key)) }
+    val levels = THINKING_LEVELS.filter { (wire, _) ->
+        when {
+            wire == "auto" -> true
+            wire == "off" -> allowDisable
+            efforts.isEmpty() -> true
+            else -> wire in efforts
+        }
+    }
+    val unsupported = thinking.isNotEmpty() && levels.none { it.first == thinking }
     SheetFrame(title = "${role.title} · 提示词", onDismiss = onDismiss) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
             Text(
-                text = "系统提示词：接在内置那段之前，只影响这个角色。留空就用内置那段。",
-                style = MaterialTheme.typography.labelSmall,
+                text = "思考强度",
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(8.dp))
+            levels.chunked(3).forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    row.forEach { (wire, _) ->
+                        ChipButton(thinkingShort(wire), primary = thinking == wire) {
+                            thinking = wire
+                            AppSettings.setRoleThinking(context, role.key, wire)
+                        }
+                    }
+                }
+            }
+            if (unsupported) {
+                Text(
+                    text = "现在是「${thinkingShort(thinking)}」，这个模型不支持",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "世界书",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "${ownBooks.count { id -> books.any { it.id == id } }}/${books.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            LorebookBookList(
+                rows = books,
+                active = ownBooks.toSet(),
+                onToggle = { id, on ->
+                    ownBooks = if (on) ownBooks + id else ownBooks - id
+                    AppSettings.setRoleLorebooks(context, role.key, ownBooks)
+                },
+                modifier = Modifier.padding(top = 4.dp),
+            )
+
+            Text(
+                text = "系统提示词",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 14.dp),
+            )
+            Spacer(Modifier.height(6.dp))
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
                 placeholder = { Text("例如：只输出译文，不要解释") },
-                minLines = 4,
-                maxLines = 10,
+                minLines = 3,
+                maxLines = 6,
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(
@@ -408,4 +500,17 @@ private fun RolePromptSheet(
             }
         }
     }
+}
+
+/** 档位的短标签：整句塞进胶囊会挤成两行，胶囊上只留一个字到两个字。 */
+private fun thinkingShort(wire: String): String = when (wire) {
+    "auto" -> "自动"
+    "off" -> "关"
+    "minimal" -> "最小"
+    "low" -> "低"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "很高"
+    "max" -> "最大"
+    else -> wire
 }

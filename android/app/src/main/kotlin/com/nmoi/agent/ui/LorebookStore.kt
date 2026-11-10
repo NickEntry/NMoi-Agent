@@ -6,6 +6,20 @@ import org.json.JSONObject
 import java.io.File
 
 /**
+ * 世界书清单的一行（D313）：一册的 id / 名字 / 条目数 / 简介。
+ *
+ * 界面要「已启用 5/5 · 简介」这一句，所以数量在数据这一层就算好——
+ * 让每个调用点自己数一遍，迟早有两处对不上。
+ */
+internal data class BookRow(
+    val id: String,
+    val name: String,
+    val enabledEntries: Int,
+    val totalEntries: Int,
+    val note: String,
+)
+
+/**
  * 世界书的落盘（D280 / D281 第 1 批）：一个文件，**多册**。
  *
  * 为什么多册：一册 = 一组设定（主 AGENT / 子 AGENT / 界面）。单册装不下这个形状，
@@ -228,13 +242,35 @@ internal object LorebookStore {
     }
 
     /** 「＋」里那份可选清单：只列册级 `enabled` 的（收起的不出现在这里）。 */
-    fun selectableBooks(root: JSONObject): List<Pair<String, String>> {
+    fun selectableBooks(root: JSONObject): List<Pair<String, String>> =
+        bookRows(root).map { it.id to it.name }
+
+    /**
+     * 「＋ → 世界书」和角色提示词里那份清单的行（D313）。
+     *
+     * 跟 `selectableBooks` 同一份口径（只列册级开启的），只是把**每册的条目数**一起带出来：
+     * 界面上要写「已启用 5/5 · 简介」，光有名字看不出这册是不是空的。
+     */
+    fun bookRows(root: JSONObject): List<BookRow> {
         val books = books(root)
-        val out = ArrayList<Pair<String, String>>()
+        val out = ArrayList<BookRow>(books.length())
         for (index in 0 until books.length()) {
             val book = books.optJSONObject(index) ?: continue
             if (!book.optBoolean("enabled", true)) continue
-            out.add(book.optString("id") to book.optString("name").ifBlank { "未命名" })
+            val list = entries(book)
+            var on = 0
+            for (i in 0 until list.length()) {
+                if (list.optJSONObject(i)?.optBoolean("enabled", true) == true) on++
+            }
+            out.add(
+                BookRow(
+                    id = book.optString("id"),
+                    name = book.optString("name").ifBlank { "未命名" },
+                    enabledEntries = on,
+                    totalEntries = list.length(),
+                    note = book.optString("note"),
+                ),
+            )
         }
         return out
     }

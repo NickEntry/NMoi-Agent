@@ -68,6 +68,14 @@ internal object RoleRunner {
         } else {
             Vault.load(context, provider.id)
         }
+        // 这个角色自己的思考强度与世界书（D313）。世界书空集 = 一册都不带，老行为不变。
+        val thinking = AppSettings.roleThinking(context, role.key).trim()
+        val books = AppSettings.roleLorebooks(context, role.key)
+        val lorebook = if (books.isEmpty()) {
+            null
+        } else {
+            LorebookStore.filterBy(LorebookStore.library(context), books).toString()
+        }
         val config = JSONObject()
             .put(
                 "provider",
@@ -79,7 +87,9 @@ internal object RoleRunner {
             )
             .put("model", model)
             .put("prompt", prompt)
-            .also { row -> system?.takeIf { it.isNotBlank() }?.let { row.put("system", it) } }
+            .also { row -> merged?.let { row.put("system", it) } }
+            .also { row -> if (thinking.isNotEmpty()) row.put("thinking", thinking) }
+            .also { row -> lorebook?.let { row.put("lorebook", it) } }
             .also { row ->
                 if (images.isNotEmpty()) {
                     val array = JSONArray()

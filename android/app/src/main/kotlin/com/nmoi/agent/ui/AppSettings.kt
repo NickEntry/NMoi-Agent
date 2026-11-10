@@ -156,6 +156,36 @@ internal object AppSettings {
     }
 
     /**
+     * 这个角色的思考强度（D313）。空 = 自动（一个字段都不注）。
+     *
+     * 档位与聊天页同一套（`auto` / `off` / `low` / `medium` / `high` / `max`），
+     * 由 `nmoi_complete_json` 的 `thinking` 带进请求。
+     */
+    fun roleThinking(context: Context, role: String): String =
+        prefs(context).getString("role.$role.thinking", "").orEmpty()
+
+    fun setRoleThinking(context: Context, role: String, value: String) {
+        prefs(context).edit().putString("role.$role.thinking", value).apply()
+    }
+
+    /**
+     * 这个角色自己的世界书（D313）：勾了哪几册。
+     *
+     * 没设置过 = **一册都不生效**（空集）。跟助手的语义正好相反（那边 `null` = 全部启用册）：
+     * 角色是一次性旁路，默认什么设定都不带，老行为一个字不变。
+     */
+    fun roleLorebooks(context: Context, role: String): List<String> =
+        prefs(context).getString("role.$role.lorebooks", "").orEmpty()
+            .split(SEP).filter { it.isNotBlank() }
+
+    fun setRoleLorebooks(context: Context, role: String, ids: List<String>) {
+        prefs(context).edit().putString("role.$role.lorebooks", ids.joinToString(SEP)).apply()
+    }
+
+    /** 册 id 之间的分隔：id 来自导入文件，用肉眼看不见的那个字符，别用逗号。 */
+    private const val SEP = "\u001f"
+
+    /**
      * 压缩的两条线（D274）：占"可用预算"的百分比。
      *
      * 建议线到了就发压缩信号（界面上是"该压了"），绝对线到了就**必须先压再发**。

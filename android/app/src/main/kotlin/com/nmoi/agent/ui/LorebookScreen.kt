@@ -1436,9 +1436,99 @@ private fun LoreField(
 }
 
 /** 「＋」里那个数：**生效 / 启用**（用户 2026-11-08：2/13 = 生效 2、启用 13）。 */
-internal fun lorebookCount(books: List<Pair<String, String>>, active: List<String>?): String {
-    val on = active?.count { id -> books.any { it.first == id } } ?: books.size
+internal fun lorebookCount(books: List<BookRow>, active: List<String>?): String {
+    val on = active?.count { id -> books.any { it.id == id } } ?: books.size
     return "$on/${books.size}"
+}
+
+/** 一册占多高：三册刚好一屏（用户 2026-11-11 要的正是这个数）。 */
+private val BOOK_ROW_HEIGHT = 64.dp
+
+/**
+ * 世界书清单（D313）：「＋ → 世界书」与角色提示词两处共用同一份形状。
+ *
+ * 高度是 **3 行**，再多就滚。行高是**固定**的，不由内容撑开——名字长短不一时，
+ * 让内容撑就会变成"2.5 册"，那正是这次要避免的。
+ */
+@Composable
+internal fun LorebookBookList(
+    rows: List<BookRow>,
+    active: Set<String>,
+    onToggle: (String, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (rows.isEmpty()) {
+        Text(
+            text = "还没有世界书：设置 → 世界书 里导入一份",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = modifier.padding(vertical = 16.dp),
+        )
+        return
+    }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = BOOK_ROW_HEIGHT * 3)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        rows.forEachIndexed { index, row ->
+            if (index > 0) RowDivider(leading = 12.dp)
+            BookListRow(row = row, selected = row.id in active) {
+                onToggle(row.id, row.id !in active)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookListRow(row: BookRow, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(BOOK_ROW_HEIGHT)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = ActionIcons.Database,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = row.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = bookLine(row),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (selected) {
+            Icon(
+                imageVector = ActionIcons.Check,
+                contentDescription = "这一册生效",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** 第二行：「已启用 5/5 · 简介」；没写简介就只留数字。 */
+private fun bookLine(row: BookRow): String {
+    val head = "已启用 ${row.enabledEntries}/${row.totalEntries}"
+    return if (row.note.isBlank()) head else "$head · ${row.note}"
 }
 
 /**
@@ -1446,64 +1536,21 @@ internal fun lorebookCount(books: List<Pair<String, String>>, active: List<Strin
  *
  * 这里只列册级开关打开的那些（收起来的不出现在清单里）；勾选结果存在助手身上，
  * 跟助手设置里那份是同一份数据。
+ *
+ * **没有「完成」按钮**（用户 2026-11-11）：勾一下就已经存进去了，再摆一颗"完成"
+ * 等于告诉用户"你刚才点的那些都没算数"。收起靠点遮罩或返回。
  */
 @Composable
 internal fun LorebookPickerSheet(
-    books: List<Pair<String, String>>,
+    books: List<BookRow>,
     active: List<String>,
     onToggle: (String, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    SheetFrame(title = "世界书", onDismiss = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 460.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-        ) {
-            if (books.isEmpty()) {
-                Text(
-                    text = "还没有世界书：设置 → 世界书 里导入一份",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 16.dp),
-                )
-            }
-            books.forEach { (id, name) ->
-                val on = id in active
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onToggle(id, !on) }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (on) {
-                        Icon(
-                            imageVector = ActionIcons.Check,
-                            contentDescription = "已生效",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Spacer(Modifier.weight(1f))
-                ChipButton("完成", primary = true, onClick = onDismiss)
-            }
+    val on = active.count { id -> books.any { it.id == id } }
+    SheetFrame(title = "世界书（$on/${books.size}）", onDismiss = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 12.dp)) {
+            LorebookBookList(rows = books, active = active.toSet(), onToggle = onToggle)
         }
     }
 }

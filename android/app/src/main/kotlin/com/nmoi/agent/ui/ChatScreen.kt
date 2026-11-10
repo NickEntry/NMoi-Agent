@@ -308,7 +308,7 @@ internal fun ChatScreen(
     /** 「＋ → 世界书」那一层：勾哪几册真正生效（2026-11-08）。 */
     var lorebookPick by remember { mutableStateOf(false) }
     /** 这一轮可勾的世界书册 + 当前助手勾了哪几册（`null` = 没设置过 → 全勾）。 */
-    var bookOptions by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var bookOptions by remember { mutableStateOf(listOf<BookRow>()) }
     /**
      * 待发的图片（D208）。发送时随这一轮交出去，发完清空。
      *
@@ -419,7 +419,7 @@ internal fun ChatScreen(
 
     LaunchedEffect(sessionId, assistantKey, externalReload, lorebookPick) {
         withContext(Dispatchers.IO) {
-            bookOptions = LorebookStore.selectableBooks(LorebookStore.library(context))
+            bookOptions = LorebookStore.bookRows(LorebookStore.library(context))
         }
     }
     LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
@@ -1679,10 +1679,10 @@ internal fun ChatScreen(
             val active = assistant?.lorebooks
             LorebookPickerSheet(
                 books = bookOptions,
-                active = active ?: bookOptions.map { it.first },
+                active = active ?: bookOptions.map { it.id },
                 onToggle = { bookId, on ->
                     val current = assistant ?: return@LorebookPickerSheet
-                    val now = (active ?: bookOptions.map { it.first }).toMutableSet()
+                    val now = (active ?: bookOptions.map { it.id }).toMutableSet()
                     if (on) now.add(bookId) else now.remove(bookId)
                     val next = current.copy(lorebooks = now.toList())
                     scope.launch {
@@ -5369,7 +5369,7 @@ private fun ModelBar(label: String, percent: Int?, onClick: () -> Unit) {
 }
 
 /** 思考强度档位：wire 值必须跟 `crates/ffi/src/turn.rs` 的 `apply_thinking` 对表。 */
-private val THINKING_LEVELS = listOf(
+internal val THINKING_LEVELS = listOf(
     "auto" to "自动（不注字段）",
     "off" to "关闭",
     "low" to "低",
