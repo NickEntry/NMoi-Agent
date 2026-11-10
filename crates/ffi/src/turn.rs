@@ -1637,12 +1637,110 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
 /// 都会把它们当成真的。
 ///
 /// 入参：`{provider{id,kind,base_url,api_key?}, model, prompt, system?, max_tokens?, temperature?,
-/// images?}`。`images` 与 `turn_run` 同形（`[{mime,data}]`，最多 4 张）——视觉覆盖那条旁路靠它：
+/// thinking?, lorebook?, images?}`。`images` 与 `turn_run` 同形（`[{mime,data}]`，最多 4 张）——视觉覆盖那条旁路靠它：
 /// 拿一张图 + 一段固定提示词，换回一段文字。
+///
+/// `thinking`（D313）与 `turn_run` 同一套档位；`lorebook`（D313）是**已按角色勾选筛过**的
+/// 世界书库 JSON，按位置注入到 `system` / `prompt` 之间。
 /// 出参：`{text, reasoning, finish, usage{prompt, completion}}`
 ///
 /// 思考内容单独给（`reasoning`），不混进 `text`：围栏解析在 `text` 上做，
 /// 掺进去的思考会被当成正文的一部分。
+/// 一次性补全里的世界书注入（D313）。
+///
+/// 位置语义照 `session::apply_lorebook`：先按现有那几条算出下标，再从后往前插，
+/// 前面那些下标就不会被打乱。区别只有一个——这里没有"轮次"，
+/// `AtDepth` / `BottomOfChat` 都落在最后那条用户消息之后。
+///
+/// `text` 是**已经按勾选筛过**的库（界面那边过一遍 `LorebookStore.filterBy`），
+/// 这里只做合并与匹配，不再关心哪几册被勾了。
+fn inject_lorebook(mut turns: Vec<(Role, String)>, text: &str) -> FfiResult<Vec<(Role, String)>> {
+    use nmoi_core::lorebook::{HistoryLine, Library, Position};
+
+    let library = Library::import(text).map_err(|error| {
+        FfiError::new(
+            "bad_argument",
+            format!(
+                "lorebook 读不出来：{}（第 {} 册）",
+                error.message,
+                error.index + 1
+            ),
+        )
+    })?;
+    let book = library.merged();
+    if !book.enabled || book.entries.is_empty() {
+        return Ok(turns);
+    }
+    let lines: Vec<HistoryLine<'_>> = turns
+        .iter()
+        .map(|(role, text)| HistoryLine::new(*role, text.as_str()))
+        .collect();
+    let injections = nmoi_core::lorebook::plan(&book, &lines);
+    if injections.is_empty() {
+        return Ok(turns);
+    }
+    let system_end = turns
+        .iter()
+        .take_while(|(role, _)| *role == Role::System)
+        .count();
+    let mut placed: Vec<(usize, (Role, String))> = Vec::with_capacity(injections.len());
+    for injection in injections {
+        let at = match injection.position {
+            Position::BeforeSystemPrompt => 0,
+            Position::AfterSystemPrompt => system_end,
+            Position::TopOfChat => system_end,
+            Position::AtDepth => turns
+                .len()
+                .saturating_sub(injection.depth.unwrap_or(0))
+                .max(system_end),
+            Position::BottomOfChat => turns.len(),
+        };
+        placed.push((at, (injection.role.as_role(), injection.content)));
+    }
+    placed.sort_by_key(|(at, _)| *at);
+    for (at, turn) in placed.into_iter().rev() {
+        let at = at.min(turns.len());
+        turns.insert(at, turn);
+    }
+    Ok(turns)
+}
+
+/// 一次性补全的思考强度（D313）。档位与 `apply_thinking` 同一套，`auto` = 一个字段都不注。
+///
+/// 这边没有"这个模型支持哪些档位"（那份名单在模型编辑页，`complete` 拿不到），
+/// 所以写什么发什么——角色配置是用户自己拨的，档位选错时上游会说，不会悄悄不生效。
+fn apply_complete_thinking(
+    request: ChatRequest,
+    kind: ProviderKind,
+    level: &str,
+) -> FfiResult<ChatRequest> {
+    use nmoi_core::config::{default_thinking_field, ModelFlavor, ThinkingContext};
+    use nmoi_core::provider::ThinkingSetting;
+
+    if level.is_empty() || level.eq_ignore_ascii_case("auto") {
+        return Ok(request);
+    }
+    let lowered = level.to_ascii_lowercase();
+    if lowered == "off" {
+        return Ok(request.thinking(ThinkingSetting::disabled()));
+    }
+    let effort = ThinkingEffort::parse(&lowered).ok_or_else(|| {
+        bad(
+            "thinking",
+            &format!(
+                "只能是 auto / off / minimal / low / medium / high / xhigh / max，收到 `{level}`"
+            ),
+        )
+    })?;
+    let field = default_thinking_field(&ThinkingContext::new(kind, ModelFlavor::Other));
+    Ok(request.thinking(ThinkingSetting {
+        field,
+        effort: Some(effort),
+        budget_tokens: None,
+        custom: None,
+    }))
+}
+
 #[no_mangle]
 pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
     run_json(|| {
@@ -1670,11 +1768,20 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
         let max_tokens = optional_u64(&root, "max_tokens")?.map(|value| value as u32);
         let temperature = optional_f32(&root, "temperature")?;
 
-        let mut turns: Vec<(Role, &str)> = Vec::with_capacity(2);
+        let mut turns: Vec<(Role, String)> = Vec::with_capacity(2);
         if let Some(system) = system.as_deref() {
-            turns.push((Role::System, system));
+            turns.push((Role::System, system.to_string()));
         }
-        turns.push((Role::User, prompt.as_str()));
+        turns.push((Role::User, prompt.clone()));
+        // 这个角色自己的世界书（D313）：界面已经按勾选筛过一遍，这里只按位置注入。
+        if let Some(text) = optional_str(&root, "lorebook")?.filter(|text| !text.trim().is_empty())
+        {
+            turns = inject_lorebook(turns, &text)?;
+        }
+        let turns: Vec<(Role, &str)> = turns
+            .iter()
+            .map(|(role, text)| (*role, text.as_str()))
+            .collect();
 
         let mut request = ChatRequest::from_turns(
             ProviderConfig::new(provider_id, kind, base_url),
@@ -1692,6 +1799,11 @@ pub extern "C" fn nmoi_complete_json(config: *const c_char) -> *mut c_char {
         }
         if let Some(temperature) = temperature {
             request = request.temperature(temperature);
+        }
+        // 思考强度（D313）：跟 turn 那边同一套档位，只是没有"这个模型支持哪些"的白名单
+        // ——角色的模型没在这一次调用里带过来，写了的档位就照发。
+        if let Some(level) = optional_str(&root, "thinking")? {
+            request = apply_complete_thinking(request, kind, level.trim())?;
         }
         // 图片挂在那条用户消息上（`images` 按消息 id 索引）。视觉覆盖要用它：
         // 一张图 + 一段固定提示词 → 一段文字。
@@ -2578,5 +2690,108 @@ mod partial_tests {
                 .join(",")
         );
         assert!(parse_images(&too_many).is_err(), "一轮最多 4 张");
+    }
+
+    /// 角色自己的世界书（D313）：位置照 `apply_lorebook`，一次性补全没有"轮次"。
+    fn book(entries: &str) -> String {
+        format!(
+            r#"{{"version":2,"type":"lorebooks","books":[{{"id":"b1","name":"一册","enabled":true,"entries":[{entries}]}}]}}"#
+        )
+    }
+
+    fn entry(position: &str, role: &str, keywords: &str, content: &str) -> String {
+        format!(
+            r#"{{"id":"e1","name":"一条","enabled":true,"position":"{position}","role":"{role}","keywords":[{keywords}],"content":"{content}"}}"#
+        )
+    }
+
+    #[test]
+    fn complete_lorebook_injects_after_system_on_keyword() {
+        let turns = vec![
+            (Role::System, "你是助手".to_string()),
+            (Role::User, "码头上有什么事".to_string()),
+        ];
+        let text = book(&entry(
+            "AFTER_SYSTEM_PROMPT",
+            "SYSTEM",
+            "\"码头\"",
+            "港口的规矩",
+        ));
+        let out = inject_lorebook(turns, &text).expect("注入应当成功");
+        assert_eq!(out.len(), 3, "命中一条就多一条");
+        assert_eq!(out[0].0, Role::System);
+        assert_eq!(out[1].1, "港口的规矩", "排在系统提示之后");
+        assert_eq!(out[2].0, Role::User);
+    }
+
+    #[test]
+    fn complete_lorebook_without_hit_changes_nothing() {
+        let turns = vec![
+            (Role::System, "你是助手".to_string()),
+            (Role::User, "今天天气".to_string()),
+        ];
+        let text = book(&entry(
+            "AFTER_SYSTEM_PROMPT",
+            "SYSTEM",
+            "\"码头\"",
+            "港口的规矩",
+        ));
+        let out = inject_lorebook(turns, &text).expect("没命中也是成功");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].1, "今天天气");
+    }
+
+    #[test]
+    fn complete_lorebook_before_system_stays_first() {
+        let turns = vec![
+            (Role::System, "你是助手".to_string()),
+            (Role::User, "码头".to_string()),
+        ];
+        let text = book(&entry(
+            "BEFORE_SYSTEM_PROMPT",
+            "SYSTEM",
+            "\"码头\"",
+            "先说的",
+        ));
+        let out = inject_lorebook(turns, &text).unwrap();
+        assert_eq!(out[0].1, "先说的");
+        assert_eq!(out[0].0, Role::System);
+        assert_eq!(out[1].1, "你是助手");
+    }
+
+    #[test]
+    fn complete_lorebook_rejects_broken_json() {
+        let turns = vec![(Role::User, "码头".to_string())];
+        let error = inject_lorebook(turns, "{ 不是 JSON").unwrap_err();
+        assert_eq!(error.kind, "bad_argument");
+    }
+
+    /// 思考强度（D313）：`auto` 一个字段都不注，`off` 走 disabled，乱写点名报错。
+    #[test]
+    fn complete_thinking_maps_levels() {
+        use nmoi_core::provider::ThinkingSetting;
+        let base = || {
+            ChatRequest::from_turns(
+                ProviderConfig::new(
+                    "p",
+                    ProviderKind::OpenAiCompatible,
+                    "https://example.com/v1",
+                ),
+                "vendor/model-a",
+                &[(Role::User, "hi")],
+            )
+            .without_stream()
+        };
+
+        let auto = apply_complete_thinking(base(), ProviderKind::OpenAiCompatible, "auto").unwrap();
+        assert_eq!(auto.thinking, ThinkingSetting::disabled());
+
+        let high = apply_complete_thinking(base(), ProviderKind::OpenAiCompatible, "high").unwrap();
+        assert_eq!(high.thinking.effort, Some(ThinkingEffort::High));
+
+        let off = apply_complete_thinking(base(), ProviderKind::OpenAiCompatible, "off").unwrap();
+        assert_eq!(off.thinking, ThinkingSetting::disabled());
+
+        assert!(apply_complete_thinking(base(), ProviderKind::OpenAiCompatible, "特别高").is_err());
     }
 }
