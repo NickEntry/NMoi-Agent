@@ -57,16 +57,47 @@ internal object KeyPool {
      * 收藏的优先；全是"错误"时退而用"启用但标了错误"的——否则一条消息都发不出去，
      * 而用户其实只是没去清那两个红标。
      */
-    fun pick(context: Context, providerId: String): String? {
+    /**
+     * 选中一把。返回 `id` 是为了**请求失败之后能标这一把**（D315）——
+     * 只给 `value` 的话，401 回来时界面知道"哪一串钥匙不行"却不知道是哪一行。
+     */
+    data class Picked(val id: String, val value: String)
+
+    fun pick(context: Context, providerId: String): Picked? {
         val pool = load(context, providerId)
         val healthy = pool.keys.filter { it.enabled && it.state == OK }
         val usable = healthy.ifEmpty { pool.keys.filter { it.enabled } }
         if (usable.isEmpty()) return null
         val candidates = usable.filter { it.favorite }.ifEmpty { usable }
-        if (pool.strategy == FIXED) return candidates.first().value
-        val index = (cursors[providerId] ?: 0) % candidates.size
-        cursors[providerId] = index + 1
-        return candidates[index].value
+        val chosen = if (pool.strategy == FIXED) {
+            candidates.first()
+        } else {
+            val index = (cursors[providerId] ?: 0) % candidates.size
+            cursors[providerId] = index + 1
+            candidates[index]
+        }
+        return Picked(chosen.id, chosen.value)
+    }
+
+    /**
+     * 这一把不行了（D315）：上游回 401/403 时调。
+     *
+     * 只动这一把——池里别的钥匙没问题。标上之后 `pick` 会先跳过它，
+     * 所以下一轮自然换一把用；全标红了才会退而求其次（那条老规矩不变）。
+     *
+     * 返回是否真的改了：同一个错标两次不重复写盘。
+     */
+    fun markError(context: Context, providerId: String, keyId: String): Boolean {
+        val pool = load(context, providerId)
+        val row = pool.keys.firstOrNull { it.id == keyId } ?: return false
+        if (row.state == ERROR) return false
+        val next = pool.copy(
+            keys = pool.keys.map { key -> if (key.id == keyId) key.copy(state = ERROR) else key },
+        )
+        save(context, providerId, next).onFailure {
+            NLog.w("KeyPool", "标错误失败：${it.message}")
+        }
+        return true
     }
 
     fun clear(context: Context, providerId: String) {

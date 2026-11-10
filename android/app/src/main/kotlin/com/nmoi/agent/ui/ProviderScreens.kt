@@ -534,7 +534,7 @@ internal fun ProviderEditScreen(
         scope.launch {
             val key = withContext(Dispatchers.IO) {
                 if (multiKey) {
-                    KeyPool.pick(context, id)
+                    KeyPool.pick(context, id)?.value
                 } else {
                     keyDraft.trim().ifEmpty { Vault.load(context, id) }
                 }

@@ -11,7 +11,15 @@ import org.json.JSONObject
  * 做成异常而不是返回 `null`：`Result.failure` 只装得住异常，装不住"空了但不报错"——
  * 而"空了不报错"正是最难查的那种。
  */
-internal class NmoiFfiException(val kind: String, message: String) : Exception(message)
+internal class NmoiFfiException(
+    val kind: String,
+    message: String,
+    /**
+     * 上游回的 HTTP 状态（D315）。401/403 说明**这把钥匙不行**——
+     * 界面靠这个把多 Key 池里的那一把标成错误，而不是在文案里找数字。
+     */
+    val status: Int? = null,
+) : Exception(message)
 
 /**
  * D86 的四类设置文档。**wire 值是契约**，跟 `crates/ffi/src/settings.rs` 的
@@ -464,7 +472,11 @@ internal object NmoiFfi {
                     )
                 }
                 if (!envelope.ok()) {
-                    throw NmoiFfiException(envelope.errorKind(), envelope.errorText())
+                    throw NmoiFfiException(
+                        envelope.errorKind(),
+                        envelope.errorText(),
+                        envelope.errorStatus(),
+                    )
                 }
                 envelope
             }

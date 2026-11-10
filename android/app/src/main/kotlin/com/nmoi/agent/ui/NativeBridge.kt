@@ -260,6 +260,10 @@ internal fun JSONObject.errorText(): String {
     return if (message.isEmpty()) kind else "$kind：$message"
 }
 
+/** 只取上游 HTTP 状态（D315）：没有就是 null——不造一个 0，那跟"没状态"分不开。 */
+internal fun JSONObject.errorStatus(): Int? =
+    optJSONObject("error")?.optInt("status", 0)?.takeIf { it > 0 }
+
 /** 只取 `error.kind`：它才是可以拿来分支的那个，文案随时会改。 */
 internal fun JSONObject.errorKind(): String =
     optJSONObject("error")?.optString("kind", "unknown") ?: "unknown"

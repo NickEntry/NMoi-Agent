@@ -193,11 +193,9 @@ internal object TurnRepository {
         val maxTokens = assistant.maxTokens ?: model.maxTokens
 
         // 多 Key 模式（D302）：从池里按策略挑一把；单 Key 还是那个唯一文件。
-        val key = if (provider.multiKey) {
-            KeyPool.pick(context, provider.id)
-        } else {
-            Vault.load(context, provider.id)
-        }
+        // 挑出来的 `id` 留着——401/403 回来时要标的就是这一把（D315）。
+        val picked = if (provider.multiKey) KeyPool.pick(context, provider.id) else null
+        val key = if (provider.multiKey) picked?.value else Vault.load(context, provider.id)
         // 只记"有没有"，不记内容也不记长度：长度也是信息。
         NLog.i(
             "Turn",
@@ -389,6 +387,11 @@ internal object TurnRepository {
                     }
                     .onFailure { error ->
                         NLog.w("Turn", "失败：kind=${(error as? NmoiFfiException)?.kind} ${error.message}")
+                        // 401/403 = 这把钥匙不行（D315）：标上，下一轮换一把。
+                        val refused = (error as? NmoiFfiException)?.status?.takeIf { it == 401 || it == 403 }
+                        if (refused != null) {
+                            picked?.let { key -> KeyPool.markError(context, provider.id, key.id) }
+                        }
                     }
             }
         } finally {

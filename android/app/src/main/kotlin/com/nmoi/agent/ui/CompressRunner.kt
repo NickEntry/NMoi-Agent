@@ -35,7 +35,7 @@ internal object CompressRunner {
         keepRecent: Int = KEEP_RECENT,
     ): Result<JSONObject> = withStorageHandle(databasePath) { handle ->
         val key = if (provider.multiKey) {
-            KeyPool.pick(context, provider.id)
+            KeyPool.pick(context, provider.id)?.value
         } else {
             Vault.load(context, provider.id)
         }

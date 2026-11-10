@@ -63,11 +63,8 @@ internal object RoleRunner {
         val merged = listOfNotNull(extra.takeIf { it.isNotEmpty() }, system?.takeIf { it.isNotBlank() })
             .joinToString("\n\n")
             .ifBlank { null }
-        val key = if (provider.multiKey) {
-            KeyPool.pick(context, provider.id)
-        } else {
-            Vault.load(context, provider.id)
-        }
+        val picked = if (provider.multiKey) KeyPool.pick(context, provider.id) else null
+        val key = if (provider.multiKey) picked?.value else Vault.load(context, provider.id)
         // 这个角色自己的思考强度与世界书（D313）。世界书空集 = 一册都不带，老行为不变。
         val thinking = AppSettings.roleThinking(context, role.key).trim()
         val books = AppSettings.roleLorebooks(context, role.key)
@@ -100,6 +97,12 @@ internal object RoleRunner {
                 }
             }
         val result = NmoiFfi.complete(config)
+        // 旁路失败不出声，但钥匙被拒这件事要说给池子听（D315）：下一轮换一把。
+        val refused = (result.exceptionOrNull() as? NmoiFfiException)?.status
+            ?.takeIf { it == 401 || it == 403 }
+        if (refused != null) {
+            picked?.let { key -> KeyPool.markError(context, provider.id, key.id) }
+        }
         result.getOrThrow().optString("text").trim()
     }
 
