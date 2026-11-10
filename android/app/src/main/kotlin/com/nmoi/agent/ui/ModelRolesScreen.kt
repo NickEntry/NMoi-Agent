@@ -51,7 +51,8 @@ import kotlinx.coroutines.withContext
  * 卡片右侧第一个动作跟着状态变：
  * - 未启用 → 重置箭头（点了变成"使用当前对话模型"）
  * - 选了具体模型 → 禁用（点了回到这个角色的初始值）
- * - 跟随（且它本来就是跟随型）→ 不显示第一个动作：点了也没变化的东西不摆。
+ * - 跟随、而这个角色本来初始就不是跟随 → 禁用（点了回到未启用）
+ * - 跟随、且它本来就是跟随型 → 不显示第一个动作：点了也没变化的东西不摆。
  */
 internal enum class ModelRole(
     val key: String,
@@ -97,20 +98,21 @@ internal fun ModelRolesScreen(
     // 每次改了角色配置就 +1：值从 prefs 现读，不另存一份（免得两处对不上）。
     var revision by remember { mutableStateOf(0) }
     // 选模型那一页跟聊天页用的是同一份来源（供应商 → 模型），所以这里也读同一份。
+    var loaded by remember { mutableStateOf(false) }
     val choices by produceState(initialValue = emptyList<ModelChoice>(), databasePath) {
-        value = withContext(Dispatchers.IO) {
-            AssistantRepository.choices(databasePath).getOrDefault(emptyList())
-                .map { ModelChoice(it.first, it.second) }
-        }
+        val result = withContext(Dispatchers.IO) { AssistantRepository.choices(databasePath) }
+        value = result.getOrDefault(emptyList()).map { ModelChoice(it.first, it.second) }
+        loaded = result.isSuccess
     }
     val keys = remember(choices) { choices.map { it.key }.toSet() }
 
     // 选过但模型不在了：切回这个角色的初始值（用户 2026-11-08 定）。
-    val values = remember(revision, keys) {
+    // 读到库之前不动手：那时候 `keys` 是空的，"不在库里"和"还没读出来"看起来一样。
+    val values = remember(revision, keys, loaded) {
         ModelRole.entries.associateWith { role ->
             val raw = AppSettings.roleValue(context, role.key, role.followByDefault)
             val pinned = splitPinned(raw)
-            if (pinned != null && "${pinned.first}|${pinned.second}" !in keys) {
+            if (loaded && pinned != null && ModelFavorites.key(pinned.first, pinned.second) !in keys) {
                 if (role.followByDefault) AppSettings.ROLE_FOLLOW else AppSettings.ROLE_DISABLED
             } else {
                 raw
@@ -158,20 +160,9 @@ internal fun ModelRolesScreen(
                         // 重置 = "把它变成能用的状态"：跟随型回跟随，未启用型回跟随
                         // （用户 2026-11-09：标题总结 / 聊天建议从未启用点重置要切到跟随）。
                         // 视觉覆盖没有这颗箭头，走不到这里。
-                        onReset = {
-                            val fallback = AppSettings.ROLE_FOLLOW
-                            AppSettings.setRoleValue(context, role.key, fallback)
-                            notice = "${role.title}：${roleLabel(role, fallback, choices)}"
-                            revision += 1
-                        },
-                        onDisable = {
-                            val fallback = if (role.followByDefault) {
-                                AppSettings.ROLE_FOLLOW
-                            } else {
-                                AppSettings.ROLE_DISABLED
-                            }
-                            AppSettings.setRoleValue(context, role.key, fallback)
-                            notice = "${role.title}：${roleLabel(role, fallback, choices)}"
+                        onSetValue = { next ->
+                            AppSettings.setRoleValue(context, role.key, next)
+                            notice = "${role.title}：${roleLabel(role, next, choices)}"
                             revision += 1
                         },
                     )
@@ -209,7 +200,8 @@ internal fun ModelRolesScreen(
             databasePath = databasePath,
             title = role.title,
             choices = choices,
-            selected = splitPinned(values[role].orEmpty())?.let { "${it.first}|${it.second}" },
+            selected = splitPinned(values[role].orEmpty())
+                ?.let { ModelFavorites.key(it.first, it.second) },
             emptyHint = "还没有供应商或模型：先去「供应商」加一个",
             onPick = { choice ->
                 AppSettings.setRoleValue(context, role.key, "${choice.provider.id}|${choice.model.id}")
@@ -238,13 +230,13 @@ private fun RoleCard(
     value: String,
     label: String,
     onPickModel: () -> Unit,
-    onReset: () -> Unit,
-    onDisable: () -> Unit,
+    onSetValue: (String) -> Unit,
     /** `null` = 这个角色还没有消费者，不摆齿轮（不给假开关）。 */
     onOpenPrompt: (() -> Unit)? = null,
 ) {
     val pinned = splitPinned(value) != null
     val disabled = value == AppSettings.ROLE_DISABLED
+    val initial = if (role.followByDefault) AppSettings.ROLE_FOLLOW else AppSettings.ROLE_DISABLED
     SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
@@ -264,9 +256,24 @@ private fun RoleCard(
                 modifier = Modifier.weight(1f),
             )
             when {
-                disabled && role.resetWhenDisabled ->
-                    IconActionButton(ActionIcons.RotateCcw, "重置", onReset, compact = true)
-                pinned -> IconActionButton(ActionIcons.Ban, "禁用", onDisable, compact = true)
+                pinned -> IconActionButton(
+                    ActionIcons.Ban,
+                    "禁用：回到这个角色的初始值",
+                    { onSetValue(initial) },
+                    compact = true,
+                )
+                disabled && role.resetWhenDisabled -> IconActionButton(
+                    ActionIcons.RotateCcw,
+                    "重置：改成使用当前对话模型",
+                    { onSetValue(AppSettings.ROLE_FOLLOW) },
+                    compact = true,
+                )
+                value == AppSettings.ROLE_FOLLOW && !role.followByDefault -> IconActionButton(
+                    ActionIcons.Ban,
+                    "禁用：回到未启用",
+                    { onSetValue(AppSettings.ROLE_DISABLED) },
+                    compact = true,
+                )
             }
             if (onOpenPrompt != null) {
                 IconActionButton(ActionIcons.Settings, "这个角色的提示词", onOpenPrompt, compact = true)
