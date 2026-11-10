@@ -780,6 +780,9 @@ internal fun ProviderEditScreen(
                         ReorderableColumn(
                             keys = models.map { it.id },
                             enabled = !modelSelecting,
+                            // 模型列表用 1 秒：这里一行一个模型、不会有"误触进入编辑"的顾虑，
+                            // 供应商列表才需要 2 秒（那一行长按是要拖整份配置）。
+                            holdMillis = 1_000L,
                             onMove = { from, to ->
                                 if (from != to) {
                                     val list = models.toMutableList()

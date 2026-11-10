@@ -6157,17 +6157,20 @@ private fun AddSheet(
                 Triple(ActionIcons.Mic, "音频") { onHint("音频待接：现在只收图片") },
             )
             tiles.chunked(3).forEach { row ->
+                // 末行不满时，每个格子的**中心**要落在上一排相邻两个格子的中心之间：
+                // 两格就用 0.5 的边距（总权重 3，格子中心正好在 1/3 与 2/3），一格用 1（居中）。
+                val side = if (row.size == 2) 0.5f else 1f
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (row.size < 3) Spacer(Modifier.weight(1f))
+                    if (row.size < 3) Spacer(Modifier.weight(side))
                     row.forEach { (icon, label, action) ->
                         Box(modifier = Modifier.weight(1f)) {
                             AddTile(icon = icon, label = label, onClick = action)
                         }
                     }
-                    if (row.size < 3) Spacer(Modifier.weight(1f))
+                    if (row.size < 3) Spacer(Modifier.weight(side))
                 }
             }
             RowDivider(leading = 20.dp)
