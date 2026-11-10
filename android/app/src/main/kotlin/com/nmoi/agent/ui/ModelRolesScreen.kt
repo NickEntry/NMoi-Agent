@@ -97,8 +97,8 @@ internal fun ModelRolesScreen(
     var promptFor by remember { mutableStateOf<ModelRole?>(null) }
     // 每次改了角色配置就 +1：值从 prefs 现读，不另存一份（免得两处对不上）。
     var revision by remember { mutableStateOf(0) }
-    // 选模型那一页跟聊天页用的是同一份来源（供应商 → 模型），所以这里也读同一份。
     var loaded by remember { mutableStateOf(false) }
+    // 选模型那一页跟聊天页用的是同一份来源（供应商 → 模型），所以这里也读同一份。
     val choices by produceState(initialValue = emptyList<ModelChoice>(), databasePath) {
         val result = withContext(Dispatchers.IO) { AssistantRepository.choices(databasePath) }
         value = result.getOrDefault(emptyList()).map { ModelChoice(it.first, it.second) }
@@ -157,9 +157,7 @@ internal fun ModelRolesScreen(
                         } else {
                             null
                         },
-                        // 重置 = "把它变成能用的状态"：跟随型回跟随，未启用型回跟随
-                        // （用户 2026-11-09：标题总结 / 聊天建议从未启用点重置要切到跟随）。
-                        // 视觉覆盖没有这颗箭头，走不到这里。
+                        // 卡片上那颗箭头自己算目标值：↺ → 跟随，🚫 → 初始值 / 未启用。
                         onSetValue = { next ->
                             AppSettings.setRoleValue(context, role.key, next)
                             notice = "${role.title}：${roleLabel(role, next, choices)}"
