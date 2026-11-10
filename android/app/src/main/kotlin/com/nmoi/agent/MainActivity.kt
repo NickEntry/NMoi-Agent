@@ -263,6 +263,9 @@ class MainActivity : ComponentActivity() {
 
                 // D125 的"无感建会话"：路由原地换掉（栈深不变），页面不重建、不闪。
                 // 返回 null = 建不出来，调用方负责把原因写在界面上，不静默丢字。
+                // 空白会话里拨的工作区（用户 2026-11-10）：还没落库，先放在内存里。
+                // 落库的那一刻写进去；切走就丢，再开一个空白会话回到初始态。
+                var draftWorkspace by remember { mutableStateOf<String?>(null) }
                 val ensureSession: suspend () -> String? = {
                     val created = withContext(Dispatchers.IO) {
                         // 会话归**当前助手**：界面上看到的是哪个，建出来的就归哪个（D174）。
@@ -277,6 +280,13 @@ class MainActivity : ComponentActivity() {
                         onSuccess = { id ->
                             listReload += 1
                             backStack = backStack.dropLast(1) + Route.Chat(NEW_CHAT_TITLE, id)
+                            val pending = draftWorkspace
+                            if (pending != null) {
+                                draftWorkspace = null
+                                withContext(Dispatchers.IO) {
+                                    ConversationRepository.setWorkspace(databasePath, id, pending)
+                                }
+                            }
                             id
                         },
                         onFailure = {
@@ -478,6 +488,7 @@ class MainActivity : ComponentActivity() {
                     contentAboveDrawer = route !is Route.Chat,
                     onOpenConversation = { picked ->
                         drawerOpen = false
+                        draftWorkspace = null
                         backStack = listOf(Route.Chat(picked.title, picked.id.ifEmpty { null }))
                     },
                     // 从抽屉进设置页：**不收回抽屉**（0.15j ②）。页面压在抽屉上面，
@@ -493,6 +504,8 @@ class MainActivity : ComponentActivity() {
                             drawerOpen = drawerOpen,
                             onOpenDrawer = { drawerOpen = true },
                             onCreateSession = ensureSession,
+                            draftWorkspace = draftWorkspace,
+                            onDraftWorkspace = { draftWorkspace = it },
                             onEditMessage = { messageId ->
                                 val sessionId = (route as? Route.Chat)?.sessionId
                                 if (sessionId == null) {
@@ -507,6 +520,7 @@ class MainActivity : ComponentActivity() {
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
                                 if (route.sessionId != null) {
+                                    draftWorkspace = null
                                     backStack = listOf(Route.Chat(NEW_CHAT_TITLE, null))
                                 }
                             },

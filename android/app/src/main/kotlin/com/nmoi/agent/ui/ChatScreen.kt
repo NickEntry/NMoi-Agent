@@ -128,6 +128,12 @@ internal fun ChatScreen(
     onCreateSession: suspend () -> String?,
     onNewChat: () -> Unit,
     /**
+     * 空白会话里拨的工作区（用户 2026-11-10）：还没落库，先放在内存里。
+     * 会话落库的那一刻由建会话的那一侧写进去；切走就丢。
+     */
+    draftWorkspace: String? = null,
+    onDraftWorkspace: (String?) -> Unit = {},
+    /**
      * 助手换了就变（D174）：用户切了助手之后，这一页顶部的模型条必须跟着换。
      *
      * 为什么不能只靠 `sessionId`：切换助手时如果本来就停在一个空白会话上，
@@ -1873,6 +1879,8 @@ internal fun ChatScreen(
             ToolSheet(
                 sessionId = sessionId,
                 assistantWorkspaceId = assistant?.workspaceId,
+                draft = draftWorkspace,
+                onDraft = onDraftWorkspace,
                 onDismiss = { toolsPanel = false },
                 onNotice = { notice = it },
             )
@@ -5820,6 +5828,9 @@ private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
 private fun ToolSheet(
     sessionId: String?,
     assistantWorkspaceId: String?,
+    /** 空白会话里已经拨好的那个（`null` = 跟随助手 / 没拨过）。 */
+    draft: String?,
+    onDraft: (String?) -> Unit,
     onDismiss: () -> Unit,
     onNotice: (String) -> Unit,
 ) {
@@ -5842,13 +5853,15 @@ private fun ToolSheet(
         }
         loaded = true
     }
-    val current = bound?.let { id -> workspaces.firstOrNull { it.id == id } }
+    val shown = if (sessionId == null) draft else bound
+    val current = shown?.let { id -> workspaces.firstOrNull { it.id == id } }
+    // 还没落库的会话：拨了先记着，落库那一刻才写进去。这一句是状态，不是解释。
+    val pending = if (sessionId == null) "（还没落库）" else ""
     val label = when {
-        sessionId == null -> "这条会话还没落库"
-        !loaded -> "读…"
-        bound == null -> "跟随助手 · $assistantName"
+        sessionId != null && !loaded -> "读…"
+        shown == null -> "跟随助手 · $assistantName$pending"
         current == null -> "独立 · 那个工作区不在了"
-        else -> "独立 · ${current.name}"
+        else -> "独立 · ${current.name}$pending"
     }
     SheetFrame(title = "工具", onDismiss = onDismiss) {
         Column(
@@ -5869,7 +5882,7 @@ private fun ToolSheet(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 56.dp)
-                        .clickable(enabled = sessionId != null && loaded) { picking = true }
+                        .clickable(enabled = loaded) { picking = true }
                         .padding(top = 4.dp),
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -5881,11 +5894,7 @@ private fun ToolSheet(
                         Text(
                             text = label,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (sessionId == null) {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Icon(
@@ -5916,18 +5925,23 @@ private fun ToolSheet(
                 WorkspaceChoice(
                     title = "跟随助手",
                     note = "现在跟的是「$assistantName」；助手换了它就跟着换。",
-                    selected = bound == null,
+                    selected = shown == null,
                     onClick = {
-                        val sid = sessionId ?: return@WorkspaceChoice
-                        scope.launch {
-                            ConversationRepository.setWorkspace(databasePath, sid, null).fold(
-                                onSuccess = {
-                                    bound = null
-                                    picking = false
-                                    onNotice("这条会话改回跟随助手：${assistantName}")
-                                },
-                                onFailure = { onNotice("改回跟随助手失败：${it.message}") },
-                            )
+                        if (sessionId == null) {
+                            onDraft(null)
+                            picking = false
+                            onNotice("还没落库，先记着：这条会话跟随助手")
+                        } else {
+                            scope.launch {
+                                ConversationRepository.setWorkspace(databasePath, sessionId, null).fold(
+                                    onSuccess = {
+                                        bound = null
+                                        picking = false
+                                        onNotice("这条会话改回跟随助手：${assistantName}")
+                                    },
+                                    onFailure = { onNotice("改回跟随助手失败：${it.message}") },
+                                )
+                            }
                         }
                     },
                 )
@@ -5935,19 +5949,24 @@ private fun ToolSheet(
                     WorkspaceChoice(
                         title = workspace.name + if (workspace.isDefault) "（默认）" else "",
                         note = "${workspace.files} 个文件 · ${formatBytes(workspace.bytes)}",
-                        selected = bound == workspace.id,
+                        selected = shown == workspace.id,
                         onClick = {
-                            val sid = sessionId ?: return@WorkspaceChoice
-                            scope.launch {
-                                ConversationRepository.setWorkspace(databasePath, sid, workspace.id)
-                                    .fold(
-                                        onSuccess = {
-                                            bound = workspace.id
-                                            picking = false
-                                            onNotice("这条会话独立绑到「${workspace.name}」：老文件不搬")
-                                        },
-                                        onFailure = { onNotice("绑定失败：${it.message}") },
-                                    )
+                            if (sessionId == null) {
+                                onDraft(workspace.id)
+                                picking = false
+                                onNotice("还没落库，先记着：这条会话绑「${workspace.name}」")
+                            } else {
+                                scope.launch {
+                                    ConversationRepository.setWorkspace(databasePath, sessionId, workspace.id)
+                                        .fold(
+                                            onSuccess = {
+                                                bound = workspace.id
+                                                picking = false
+                                                onNotice("这条会话独立绑到「${workspace.name}」：老文件不搬")
+                                            },
+                                            onFailure = { onNotice("绑定失败：${it.message}") },
+                                        )
+                                }
                             }
                         },
                     )

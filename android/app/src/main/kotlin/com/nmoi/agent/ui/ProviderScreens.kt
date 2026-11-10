@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -289,6 +290,10 @@ internal fun ProviderEditScreen(
      * 全选 + 删除一次就能清空整份配置，不给这一步留缓冲太危险。
      */
     var modelDeleteArmed by remember { mutableStateOf(false) }
+    /** 配置读完了没有：没读完不许自动落库，否则空白表单会盖掉库里那一份。 */
+    var formLoaded by remember(providerId) { mutableStateOf(providerId == null) }
+    /** 这份配置在库里存在（新建的那份按下「保存」之后也算）：存在之后改一格就落一格。 */
+    var autoSaved by remember(providerId) { mutableStateOf(providerId != null) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { snapshot = ModelSnapshot.load(context) }
@@ -403,6 +408,7 @@ internal fun ProviderEditScreen(
                             modelDraft = ModelDraft(stored = model, model = model)
                         }
                     }
+                    formLoaded = true
                 },
                 onFailure = { notice = "读不到这份配置：${it.message}" },
             )
@@ -416,18 +422,18 @@ internal fun ProviderEditScreen(
         }
     }
 
-    fun persist() {
+    fun persist(announce: Boolean = true, includeKey: Boolean = true) {
         val cleaned = models
             .map { it.copy(id = it.id.trim()) }
             .filter { it.id.isNotEmpty() }
             .distinctBy { it.id }
         when {
             name.isBlank() -> {
-                notice = "给它起个名字（列表里认这一栏）"
+                if (announce) notice = "给它起个名字（列表里认这一栏）"
                 return
             }
             !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://") -> {
-                notice = "API Base URL 要以 http:// 或 https:// 开头"
+                if (announce) notice = "API Base URL 要以 http:// 或 https:// 开头"
                 return
             }
         }
@@ -444,41 +450,70 @@ internal fun ProviderEditScreen(
             activeModel = chosen,
             multiKey = multiKey,
         )
-        saving = true
+        if (announce) saving = true
         scope.launch {
             val stored = ProviderRepository.save(databasePath, entry, pendingInferred)
-            val keyed = if (keyDraft.isBlank()) {
+            val keyed = if (!includeKey || keyDraft.isBlank()) {
                 Result.success(Unit)
             } else {
                 withContext(Dispatchers.IO) { Vault.save(context, id, keyDraft.trim()) }
             }
-            saving = false
+            if (announce) saving = false
 
             if (stored.isFailure) {
                 notice = "保存失败：${stored.exceptionOrNull()?.message}"
                 return@launch
             }
+            autoSaved = true
             models = cleaned
             activeModel = chosen
             // 落盘之后**现读库**：来源标记是仓库比出来的，界面照抄一份算是两份规矩。
-            withContext(Dispatchers.IO) { ProviderRepository.load(databasePath, id) }
-                .onSuccess { fresh ->
-                    models = fresh.models
-                    sources = fresh.fieldSources
-                }
+            // 自动保存那条路不读：刚写进去的就是这一份，再读一遍只是多一次往返，
+            // 万一仓库那边归一化过（读回来和写进去不相等），还会自己把自己再触发一轮。
+            if (announce) {
+                withContext(Dispatchers.IO) { ProviderRepository.load(databasePath, id) }
+                    .onSuccess { fresh ->
+                        models = fresh.models
+                        sources = fresh.fieldSources
+                    }
+            }
             if (keyed.isFailure) {
                 notice = "配置存了，但密钥没存进去：${keyed.exceptionOrNull()?.message}"
                 return@launch
             }
-            if (keyDraft.isNotBlank()) {
+            if (includeKey && keyDraft.isNotBlank()) {
                 keyDraft = ""
                 keyVisible = false
                 keyOnDisk = true
                 keyHint = withContext(Dispatchers.IO) { ProviderRepository.keyHint(context, id) }
             }
             pendingInferred = emptyMap()
-            notice = "已保存"
+            if (announce) notice = "已保存"
         }
+    }
+
+    // 改一格就落一格（用户 2026-11-10）：这一页只给"新建"留一颗「保存」。
+    // 300 ms 跟输入框自动保存同一套；模型编辑页开着的时候不动手，免得两份改动互相盖。
+    LaunchedEffect(name, kind, baseUrl, multiKey, models, activeModel, autoSaved, formLoaded) {
+        if (!autoSaved || !formLoaded || modelDraft != null) return@LaunchedEffect
+        delay(300)
+        persist(announce = false, includeKey = false)
+    }
+
+    // 密钥单独一条：它不走 persist（那边会把输入框清空，打字打到一半会被抹掉）。
+    // 停手 800 ms 就写进 vault，写没写进去看下面那行 Hint。
+    LaunchedEffect(keyDraft, autoSaved, formLoaded) {
+        if (!autoSaved || !formLoaded) return@LaunchedEffect
+        val secret = keyDraft.trim()
+        if (secret.isEmpty()) return@LaunchedEffect
+        delay(800)
+        withContext(Dispatchers.IO) { Vault.save(context, id, secret) }.fold(
+            onSuccess = {
+                keyOnDisk = true
+                keyHint = withContext(Dispatchers.IO) { ProviderRepository.keyHint(context, id) }
+            },
+            onFailure = { notice = "密钥没存进去：${it.message}" },
+        )
     }
 
     /**
@@ -700,12 +735,14 @@ internal fun ProviderEditScreen(
                     }
                     }
 
-                    PrimaryButton(
-                        label = if (saving) "保存中…" else "保存",
-                        enabled = !saving,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        onClick = { persist() },
-                    )
+                    if (!autoSaved) {
+                        PrimaryButton(
+                            label = if (saving) "保存中…" else "保存",
+                            enabled = !saving,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            onClick = { persist() },
+                        )
+                    }
 
                 } else {
                     if (modelSelecting) {
@@ -880,12 +917,14 @@ internal fun ProviderEditScreen(
                         )
                     }
 
-                    PrimaryButton(
-                        label = if (saving) "保存中…" else "保存",
-                        enabled = !saving,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                        onClick = { persist() },
-                    )
+                    if (!autoSaved) {
+                        PrimaryButton(
+                            label = if (saving) "保存中…" else "保存",
+                            enabled = !saving,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            onClick = { persist() },
+                        )
+                    }
                 }
 
                 val line = notice
