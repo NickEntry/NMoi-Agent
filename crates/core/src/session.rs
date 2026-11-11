@@ -165,6 +165,39 @@ pub trait HistoryStore {
         Err("这个历史实现没有归档：F2–F4 不生效".to_string())
     }
 
+    /// 给一条归档写索引（D322）。默认什么都不做：内存实现没有持久化的归档。
+    ///
+    /// 写失败只影响"这一段的索引下次再补"，不该让整轮失败。
+    fn archive_set_note(
+        &mut self,
+        reference: &crate::ids::ArchiveRef,
+        note: &str,
+    ) -> Result<(), String> {
+        let _ = (reference, note);
+        Ok(())
+    }
+
+    /// 记一笔"这段索引欠着"（D322）：只在该段**从来没写过索引**时才落空串。
+    ///
+    /// 已经有索引的不动——不然每一轮降级都会把上一轮的成果擦掉，来回补同一批。
+    fn archive_mark_pending(&mut self, reference: &crate::ids::ArchiveRef) -> Result<(), String> {
+        let _ = reference;
+        Ok(())
+    }
+
+    /// 还没有索引的那些归档（D322）：`note` 是空串（问过、没写成）。
+    ///
+    /// "下一次请求先把中断的摘要补完"就是这一条：它不靠任何内存里的状态，
+    /// 只靠库里那一列——进程被杀掉再回来，欠的索引照样补得上。
+    fn pending_summaries(
+        &self,
+        session: SessionId,
+        limit: usize,
+    ) -> Result<Vec<crate::archive::ArchiveEntry>, String> {
+        let _ = (session, limit);
+        Ok(Vec::new())
+    }
+
     /// 一条消息带的图片**文件名**（不读字节）。
     ///
     /// 图片模式（D270）只给模型路径：它要知道有哪些图可看，但这一轮一张字节都不发。
@@ -395,6 +428,11 @@ pub struct SessionConfig<'a> {
     /// 注入的消息 `SourceTag::WorldBook`——**档位不碰它**（`routable` 白名单），
     /// 它是"模型该看到的设定"，不是可以省的对话历史。
     pub lorebook: Option<&'a crate::lorebook::LorebookData>,
+    /// 这个会话用哪个模型写**索引摘要**（D322）。`None` = 这一轮不做摘要，
+    /// 降级之后标记就只是一行标记（原文照样在 `/archive` 里）。
+    ///
+    /// 摘要走「摘要」这个角色指定的模型：它是一次内部调用，跟主对话用哪个模型无关。
+    pub summary: Option<&'a crate::summary::SummaryTarget>,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -439,6 +477,7 @@ impl Default for SessionConfig<'_> {
             form_level: crate::message::FormLevel::Full,
             router: crate::router::RouterConfig::default(),
             lorebook: None,
+            summary: None,
         }
     }
 }
@@ -522,7 +561,49 @@ fn apply_forms<S: HistoryStore>(
     }
     let last = history.len().saturating_sub(1);
     for (index, message) in history.iter_mut().enumerate() {
-        if !routable(message.source) || index == last {
+        if index == last {
+            continue;
+        }
+        // 1. 工具结果：parts 化的形状（v16 起）。结果在 `Part::Tool.output` 里，
+        //    **不在正文里**——读 `content()` 拿到的是空串，于是这一整条路曾经静默失效。
+        let outputs: Vec<String> = message
+            .parts()
+            .iter()
+            .filter_map(|part| match part {
+                crate::message::Part::Tool(tool) if !tool.output.trim().is_empty() => {
+                    Some(tool.part.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for part_id in outputs {
+            let Some(text) = message.part_field(&part_id, true) else {
+                continue;
+            };
+            let tokens = estimate_tokens(&text);
+            let input =
+                crate::router::RouteInput::new(Role::Tool, SourceTag::ToolResult, &text, tokens);
+            let form = shape_of(&crate::router::route(&input, config), level, config);
+            if form == crate::message::ContentForm::Full {
+                continue;
+            }
+            let (entry, _) = crate::archive::ArchiveEntry::capture(
+                &text,
+                SourceTag::ToolResult,
+                crate::archive::Origin::new(session, message.id.clone(), 0),
+                tokens,
+                now,
+            );
+            if store.archive_put(entry.clone()).is_err() {
+                continue;
+            }
+            let _ = store.archive_mark_pending(&entry.rf);
+            message.set_part_field(&part_id, true, crate::form::render_for_form(&entry, form));
+        }
+
+        // 2. 旧形状：工具结果还躺在正文里的消息（老库、测试夹具）。
+        //    白名单认 `source`，不认角色——用户说的话、系统提示、注入一律全文。
+        if !routable(message.source) {
             continue;
         }
         let text = message.content();
@@ -531,17 +612,7 @@ fn apply_forms<S: HistoryStore>(
         }
         let input =
             crate::router::RouteInput::new(message.role, message.source, &text, message.tokens);
-        let decision = crate::router::route(&input, config);
-        // "多大算大"由档位回答：命中这三条就按档位那一档，不看它自己算出来的形态。
-        let form = match decision.rule {
-            crate::router::RuleId::Huge
-            | crate::router::RuleId::Large
-            | crate::router::RuleId::Medium => {
-                level.ceiling(config.truncate_head, config.truncate_tail)
-            }
-            // 内容形态的判定（二进制 / 重复 / 空）：照路由的结论，只是不许比档位更狠。
-            _ => level.cap(decision.form, config.truncate_head, config.truncate_tail),
-        };
+        let form = shape_of(&crate::router::route(&input, config), level, config);
         if form == crate::message::ContentForm::Full {
             continue;
         }
@@ -555,10 +626,132 @@ fn apply_forms<S: HistoryStore>(
         if store.archive_put(entry.clone()).is_err() {
             continue;
         }
+        let _ = store.archive_mark_pending(&entry.rf);
         message.set_text(crate::form::render_for_form(&entry, form));
         message.tokens = estimate_tokens(&message.content());
     }
     Ok(())
+}
+
+/// 路由判出来的形态 + 档位上限 → 这一块实际用什么形态。
+fn shape_of(
+    decision: &crate::router::RouteDecision,
+    level: crate::message::FormLevel,
+    config: &crate::router::RouterConfig,
+) -> crate::message::ContentForm {
+    match decision.rule {
+        crate::router::RuleId::Huge
+        | crate::router::RuleId::Large
+        | crate::router::RuleId::Medium => {
+            level.ceiling(config.truncate_head, config.truncate_tail)
+        }
+        // 内容形态的判定（二进制 / 重复 / 空）：照路由的结论，只是不许比档位更狠。
+        _ => level.cap(decision.form, config.truncate_head, config.truncate_tail),
+    }
+}
+
+/// 给降级过的块补索引摘要（D322）：一次请求看几段，写回 `archive.note`，再把标记重画。
+///
+/// 为什么放在 `apply_forms` **之后**、发请求**之前**：降级是把原文换成一行标记这个动作，
+/// 落库之前把索引写进去，消息正文就只写一次。事后再补只能改写已落库的正文——
+/// 那正是铁律②要防的"库变了、界面指不出来"。
+///
+/// 没有摘要的块保持"欠着"：下一轮 [`pending_summaries`] 还会把它们捞出来，直到补上为止。
+/// 失败不出声——旁路失败不该让这一轮发不出去。
+fn summarize_degraded<S: HistoryStore, T: Transport>(
+    store: &mut S,
+    client: &ChatClient<T>,
+    target: Option<&crate::summary::SummaryTarget>,
+    session: SessionId,
+    history: &mut [crate::message::Message],
+) {
+    let Some(target) = target else {
+        return;
+    };
+    // 一次最多补这么多个：够覆盖这一轮降级的量，又不会让"发一条消息"等上好几轮往返。
+    const MAX: usize = crate::summary::BATCH * 3;
+    let pending = match store.pending_summaries(session, MAX) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    if pending.is_empty() {
+        return;
+    }
+    for chunk in pending.chunks(crate::summary::BATCH) {
+        let lines = match crate::summary::run(client, target, chunk) {
+            Ok(lines) => lines,
+            Err(_) => continue,
+        };
+        for (reference, text) in lines {
+            if store.archive_set_note(&reference, &text).is_err() {
+                continue;
+            }
+            let Some(entry) = chunk.iter().find(|entry| entry.rf == reference) else {
+                continue;
+            };
+            let filled = entry.clone().with_note(text);
+            repaint(history, entry, &filled);
+        }
+    }
+}
+
+/// 把已经写好的那一行标记**换成带索引的那一行**（D322）。
+///
+/// 为什么是"换整行"而不是"按 form 重画"：`apply_forms` 只改内存里那份正文，消息身上不带
+/// `form` / `archived_ref`（带了 `wire` 会拒绝发送）。三种标记都是同一段文本，
+/// 拿"旧的那一行"去换"新的那一行"就够——不依赖形态，也不会碰正文的其余部分。
+fn repaint(
+    history: &mut [crate::message::Message],
+    plain: &crate::archive::ArchiveEntry,
+    filled: &crate::archive::ArchiveEntry,
+) {
+    // 同一段归档在同一条消息里只出现一次；三种形态各试一遍，没命中的是空操作。
+    let pairs = [
+        (
+            crate::form::mask_marker(plain.tokens, &plain.rf, None),
+            crate::form::mask_marker(filled.tokens, &filled.rf, filled.summary()),
+        ),
+        (
+            crate::form::truncation_marker(plain.tokens, &plain.rf, None),
+            crate::form::truncation_marker(filled.tokens, &filled.rf, filled.summary()),
+        ),
+        (plain.pointer_line(), filled.pointer_line()),
+    ];
+    for message in history.iter_mut() {
+        // 工具结果在 parts 里（v16 起）：只换 `output` 里那一行，参数与调用 id 一个字不动——
+        // 换了 id，下一条 tool 消息就配不上这次调用，整轮请求会直接 400。
+        let part_ids: Vec<String> = message
+            .parts()
+            .iter()
+            .map(|part| part.id().to_string())
+            .collect();
+        for part_id in part_ids {
+            let Some(current) = message.part_field(&part_id, true) else {
+                continue;
+            };
+            let mut next = current.clone();
+            for (old, new) in &pairs {
+                if next.contains(old.as_str()) {
+                    next = next.replace(old.as_str(), new.as_str());
+                }
+            }
+            if next != current {
+                message.set_part_field(&part_id, true, next);
+            }
+        }
+        // 旧形状：结果在正文里。
+        let text = message.content();
+        let mut next = text.clone();
+        for (old, new) in &pairs {
+            if next.contains(old.as_str()) {
+                next = next.replace(old.as_str(), new.as_str());
+            }
+        }
+        if next != text {
+            message.set_text(next);
+            message.tokens = estimate_tokens(&message.content());
+        }
+    }
 }
 
 /// 按世界书把该注入的内容插进历史（D279）。
@@ -936,6 +1129,8 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         &config.router,
         now,
     )?;
+    // 索引摘要（D322）：降级完、发出去之前补上——包括上一轮欠着的那些。
+    summarize_degraded(store, client, config.summary, session, &mut history);
 
     // 图片模式（D270）：只给路径，不内联。判据在 `path_mode_on` 里——模型得真的调得动
     // `View-Image`，否则图会变成"看得见文件名、永远读不到"。
@@ -1203,6 +1398,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         &config.router,
         now,
     )?;
+    // 索引摘要（D322）：重试这条路也要补，否则"重试一次"就把欠着的索引永远欠着。
+    summarize_degraded(store, client, config.summary, session, &mut history);
 
     // 图片模式（D270）在重试里同样生效——不然"重试一次"就把用户想省的 token 全补回来了。
     let path_mode = path_mode_on(store, &history, policy, config.turn.image_mode)?;
@@ -3588,6 +3785,262 @@ mod tests {
             "没有读权限时必须照旧内联：{}",
             sent[0]
         );
+    }
+
+    /// 索引摘要（D322）：一次请求看几段，写进 `archive.note`，**再重画标记**。
+    /// 没写成的留在库里，下一轮发请求之前先补上。
+    ///
+    /// 这一条同时钉住一件旧事：档位对工具结果以前是**静默失效**的（`content()` 读不到
+    /// `Part::Tool.output`），所以这里必须走真实的 parts 形状，不能拿 `Message::text` 凑。
+    mod summaries {
+        use super::*;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        #[derive(Default)]
+        pub(super) struct SummaryStore {
+            units: Vec<AtomicUnit>,
+            pub(super) saved: Vec<crate::archive::ArchiveEntry>,
+            pub(super) notes: BTreeMap<String, String>,
+            pub(super) owed: BTreeSet<String>,
+        }
+
+        impl HistoryStore for SummaryStore {
+            fn append_unit(&mut self, _: SessionId, unit: &AtomicUnit) -> Result<(), String> {
+                self.units.push(unit.clone());
+                Ok(())
+            }
+            fn load_units(&self, _: SessionId) -> Result<Vec<AtomicUnit>, String> {
+                Ok(self.units.clone())
+            }
+            fn archive_put(
+                &mut self,
+                entry: crate::archive::ArchiveEntry,
+            ) -> Result<crate::ids::ArchiveRef, String> {
+                self.saved.push(entry.clone());
+                Ok(entry.rf)
+            }
+            fn archive_mark_pending(
+                &mut self,
+                reference: &crate::ids::ArchiveRef,
+            ) -> Result<(), String> {
+                self.owed.insert(reference.to_string());
+                Ok(())
+            }
+            fn archive_set_note(
+                &mut self,
+                reference: &crate::ids::ArchiveRef,
+                note: &str,
+            ) -> Result<(), String> {
+                self.notes.insert(reference.to_string(), note.to_string());
+                Ok(())
+            }
+            fn pending_summaries(
+                &self,
+                _: SessionId,
+                limit: usize,
+            ) -> Result<Vec<crate::archive::ArchiveEntry>, String> {
+                let mut out: Vec<crate::archive::ArchiveEntry> = Vec::new();
+                for entry in &self.saved {
+                    if !self.owed.contains(&entry.rf.to_string())
+                        || self.notes.contains_key(&entry.rf.to_string())
+                    {
+                        continue;
+                    }
+                    if out.iter().any(|known| known.rf == entry.rf) {
+                        continue;
+                    }
+                    out.push(entry.clone());
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+        }
+
+        /// 一条会话 + 一段 8 千行工具结果。返回值里的 store 是空的，靠 `seed` 灌。
+        pub(super) fn seed(store: &mut SummaryStore, session: SessionId) {
+            let mut big = String::new();
+            for index in 0..8_000 {
+                big.push_str(&format!(
+                    "第 {index} 行：读取成功，耗时 {} ms\n",
+                    index % 97
+                ));
+            }
+            let user = Message::text(
+                MessageId::new(session, 1),
+                Role::User,
+                SourceTag::History,
+                "看看这份日志",
+                8,
+                0,
+                LogicalClock::new(1),
+            );
+            store.units.push(AtomicUnit::turn(user).unwrap());
+            let head = Message::tool_call_message(
+                MessageId::new(session, 2),
+                vec![crate::message::OutgoingToolCall::new(
+                    "c1",
+                    "read_file",
+                    r#"{"path":"big.log"}"#,
+                )],
+                4,
+                0,
+                LogicalClock::new(2),
+            );
+            let mut pair = AtomicUnit::tool_pair(head).unwrap();
+            pair.set_output("c1", &big, ToolStatus::Ok).unwrap();
+            // 这一条要**算大的**：路由按 token 数判"要不要降级"，不给它一个真数就永远不降。
+            pair.messages[0].tokens = 40_000;
+            store.units.push(pair);
+        }
+
+        pub(super) fn target() -> crate::summary::SummaryTarget {
+            crate::summary::SummaryTarget {
+                provider: ProviderConfig::new("s", ProviderKind::OpenAiCompatible, "http://x/v1"),
+                model: "summary-model".to_string(),
+                api_key: None,
+                thinking: crate::provider::ThinkingSetting::disabled(),
+                system: Some("全局那句话".to_string()),
+            }
+        }
+
+        pub(super) fn config(target: &crate::summary::SummaryTarget) -> SessionConfig<'_> {
+            SessionConfig {
+                form_level: crate::message::FormLevel::Mask,
+                summary: Some(target),
+                turn: TurnConfig {
+                    stream: false,
+                    ..TurnConfig::default()
+                },
+                ..SessionConfig::default()
+            }
+        }
+    }
+
+    #[test]
+    fn summaries_fill_the_marker_and_reach_the_request() {
+        use summaries::*;
+
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = SummaryStore::default();
+        seed(&mut store, session);
+
+        let transport = Scripted::new(vec![
+            text_body("1. 8 千行读取日志，最后一行是第 7999 行"),
+            text_body("看到了"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let target = target();
+        let config = config(&target);
+        run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "现在呢",
+            &ToolRegistry::workspace_defaults(),
+            &policy,
+            Some(&workspace),
+            &config,
+            1_000,
+        )
+        .unwrap();
+
+        let sent = transport.requests();
+        assert_eq!(
+            sent.len(),
+            2,
+            "一次摘要 + 一次主请求（存档 {} / 欠着 {} / 写成 {}）",
+            store.saved.len(),
+            store.owed.len(),
+            store.notes.len()
+        );
+        assert!(
+            sent[0].contains("你在给几段"),
+            "摘要请求少了脚手架：{}",
+            sent[0]
+        );
+        assert!(
+            sent[0].contains("全局那句话"),
+            "全局那段没进摘要请求：{}",
+            sent[0]
+        );
+        assert!(
+            sent[1].contains("8 千行读取日志"),
+            "索引没写进那一行——拼好了却没发出去：{}",
+            sent[1]
+        );
+        assert_eq!(store.notes.len(), 1);
+    }
+
+    /// 摘要没写成（模型没按段号回）→ 标记退回纯标记，且**欠着**；下一轮先补再发。
+    #[test]
+    fn a_failed_summary_is_retried_before_the_next_request() {
+        use summaries::*;
+
+        let (_dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let mut store = SummaryStore::default();
+        seed(&mut store, session);
+        let target = target();
+        let config = config(&target);
+
+        let failing = Scripted::new(vec![text_body("这段我不想写"), text_body("好吧")]);
+        let client = ChatClient::new(failing.clone());
+        run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "再看一眼",
+            &ToolRegistry::workspace_defaults(),
+            &policy,
+            Some(&workspace),
+            &config,
+            2_000,
+        )
+        .unwrap();
+        let first = failing.requests();
+        assert!(
+            !first[1].contains("8 千行读取日志"),
+            "解析不出索引时，标记里不该出现一句编的：{}",
+            first[1]
+        );
+        assert!(store.notes.is_empty(), "没解析出来就不该写进去");
+        assert_eq!(store.owed.len(), 1, "但这一笔还欠着");
+
+        let retry = Scripted::new(vec![
+            text_body("1. 8 千行读取日志，最后一行是第 7999 行"),
+            text_body("补上了"),
+        ]);
+        let client = ChatClient::new(retry.clone());
+        run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "还在吗",
+            &ToolRegistry::workspace_defaults(),
+            &policy,
+            Some(&workspace),
+            &config,
+            3_000,
+        )
+        .unwrap();
+        let second = retry.requests();
+        assert!(
+            second[0].contains("你在给几段"),
+            "下一轮要先补中断的摘要：{}",
+            second[0]
+        );
+        assert!(
+            second[1].contains("8 千行读取日志"),
+            "补上了就该出现在标记里：{}",
+            second[1]
+        );
+        assert_eq!(store.notes.len(), 1);
     }
 
     /// 档位（D275）：F1 什么都不动；F4 把旧工具结果换成指针，用户那句与**最新一条**工具结果不动。

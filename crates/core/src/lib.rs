@@ -47,6 +47,7 @@ pub mod source;
 pub mod speech;
 pub mod sse;
 pub mod stream;
+pub mod summary;
 pub mod thinkparse;
 pub mod tokens;
 pub mod toolparse;

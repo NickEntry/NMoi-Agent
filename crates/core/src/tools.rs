@@ -1848,7 +1848,7 @@ mod tests {
         );
         let file = archive.join(entry.rf.file_name());
         fs::write(file, entry.content.as_bytes()).unwrap();
-        let marker = crate::form::truncation_marker(entry.tokens, &entry.rf);
+        let marker = crate::form::truncation_marker(entry.tokens, &entry.rf, None);
         let path = crate::archive::guest_path(&entry.rf);
         assert!(marker.contains(&path), "{marker}");
 

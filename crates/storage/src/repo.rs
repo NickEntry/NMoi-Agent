@@ -1852,6 +1852,68 @@ impl nmoi_core::session::HistoryStore for Storage {
         Storage::put_archive(self, session, entry).map_err(|error| error.to_string())
     }
 
+    /// 给一条归档写索引摘要（D322）。
+    ///
+    /// 只改 `note` 一列：索引是"这段里有什么"的一句话，不是内容本身，
+    /// 所以它不许碰 `content`（那是唯一真相）。
+    fn archive_set_note(&mut self, reference: &ArchiveRef, note: &str) -> Result<(), String> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE archive SET note = ?1 WHERE ref = ?2",
+                params![note, reference.to_string()],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err(format!("没有这条归档：{reference}"));
+        }
+        Ok(())
+    }
+
+    /// 记一笔"这段索引欠着"（D322）：只在 `note` 本来就没有时才落空串。
+    ///
+    /// 为什么是空串而不是另开一列：`note` 本来就有三种状态——`NULL`（没问过）、
+    /// 空串（问过、没写成）、有字（写成了）。三种都只在一列里，读写就不会出现
+    /// "标记说有、索引里没有"那种两处对不上。
+    fn archive_mark_pending(&mut self, reference: &ArchiveRef) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE archive SET note = '' WHERE ref = ?1 AND note IS NULL",
+                params![reference.to_string()],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// 还没有索引的那些归档（D322）：`note` 是空串。
+    ///
+    /// 判据落在**库**上，不落在任何内存状态上——进程被杀掉再回来，欠着的索引照样补得上。
+    fn pending_summaries(
+        &self,
+        session: SessionId,
+        limit: usize,
+    ) -> Result<Vec<ArchiveEntry>, String> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT ref, content, tokens, source, descriptor, protected, origin_session,
+                        origin_message, origin_turn, content_hash, created_at, note
+                 FROM archive
+                 WHERE conv_id = ?1 AND note = ''
+                 ORDER BY created_at ASC, ref ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![session.to_string(), limit as i64], row_to_archive)
+            .map_err(|error| error.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(out)
+    }
+
     /// 一条消息带的图片文件名（D270）：盘上的名字就是 `<附件 id>.<扩展名>`。
     fn attachment_files(&self, message: &MessageId) -> Result<Vec<String>, String> {
         let mut statement = self

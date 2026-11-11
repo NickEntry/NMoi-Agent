@@ -99,6 +99,11 @@ impl ArchiveEntry {
         self
     }
 
+    pub fn with_descriptor(mut self, descriptor: impl Into<String>) -> Self {
+        self.descriptor = descriptor.into();
+        self
+    }
+
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self
@@ -109,15 +114,32 @@ impl ArchiveEntry {
     /// 带上可读路径（`/archive/<hex>.txt`）是有意的：模型手上只有这一行，
     /// 它得能自己把那一段取回来。只给 `ref#…` 的话，取回要靠猜文件叫什么。
     pub fn pointer_line(&self) -> String {
-        format!(
-            "[archived {} | {} tok | {} | {} | {} | {}]",
+        let mut line = format!(
+            "[archived {} | {} tok | {} | {} | {} | {}",
             self.rf,
             self.tokens,
             self.source,
             self.origin.short(),
             guest_path(&self.rf),
             self.descriptor
-        )
+        );
+        if let Some(summary) = self.summary() {
+            line.push_str(" | ");
+            line.push_str(summary);
+        }
+        line.push(']');
+        line
+    }
+
+    /// 索引那一句（D322）：降级时写给模型看的那行摘要，没有返回 `None`。
+    ///
+    /// 挂在 `note` 上是有意的：库里已经有这一列（`archive.note`），而且它从来没被别的
+    /// 用途占过。摘要**不进消息正文**——它只在标记行里出现，`/archive` 里那份原文永远是全文。
+    pub fn summary(&self) -> Option<&str> {
+        self.note
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
     }
 
     /// 自校验：哈希是否仍匹配内容。

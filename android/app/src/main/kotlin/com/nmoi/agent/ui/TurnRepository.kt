@@ -357,6 +357,9 @@ internal object TurnRepository {
                         row.put("lorebook", filtered.toString())
                     }
                 }
+                // 索引摘要（D322）：降级过的块要写一行索引，走「摘要」这个角色指定的模型。
+                // 没指定就不发这一块——那时标记只是一行标记，原文照样在 /archive 里（D317）。
+                .also { row -> summaryJson(context, databasePath)?.let { row.put("summary", it) } }
                 // 上下文档位与内容形态阈值（D275）。F1 = 跟以前一模一样。
                 .put("context_form", AppSettings.formLevel(context))
                 .put(
@@ -405,6 +408,43 @@ internal object TurnRepository {
      * 压太狠（留太多）会让上下文剩不下多少；留太少则模型可能写一半被截断。
      * 这个区间是"能正常答完一段话"的经验值。
      */
+    /**
+     * 索引摘要那一段配置（D322）。
+     *
+     * 「摘要」这个角色指定了模型才发：没指定 = 这一轮不写索引。抄的是
+     * `RoleRunner.complete` 那套（多 Key 从池里挑、单 Key 读那一个文件、思考档位跟着角色走），
+     * 只是这次请求由 core 自己发，所以配置得界面上先拼好递下去。
+     *
+     * 全局系统提示词（D318）也带上：它管的是"所有角色"，摘要是一个角色。
+     */
+    private suspend fun summaryJson(context: Context, databasePath: String): JSONObject? {
+        val (provider, model) = RoleRunner.target(context, databasePath, ModelRole.Summary)
+            ?: return null
+        val key = if (provider.multiKey) {
+            KeyPool.pick(context, provider.id)?.value
+        } else {
+            Vault.load(context, provider.id)
+        }
+        return JSONObject()
+            .put(
+                "provider",
+                JSONObject()
+                    .put("id", provider.id)
+                    .put("kind", provider.kind)
+                    .put("base_url", provider.baseUrl.trim())
+                    .also { row -> if (!key.isNullOrBlank()) row.put("api_key", key) },
+            )
+            .put("model", model)
+            .also { row ->
+                val thinking = AppSettings.roleThinking(context, ModelRole.Summary.key)
+                if (thinking.isNotBlank()) row.put("thinking", thinking)
+            }
+            .also { row ->
+                val global = AppSettings.globalSystem(context)
+                if (global.isNotBlank()) row.put("system", global)
+            }
+    }
+
     private fun reserveOutput(maxTokens: Int?, window: Int): Long {
         val base = maxTokens ?: (window / 4)
         return base.coerceIn(1024, 8192).toLong()

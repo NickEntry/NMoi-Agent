@@ -7,23 +7,43 @@ use crate::archive::{guest_path, ArchiveEntry};
 use crate::ids::ArchiveRef;
 use crate::tokens::{estimate_tokens, format_k, head_prefix, tail_suffix};
 
+/// 一段索引（D322）：没有就什么都不加。
+///
+/// 摘要只当**索引**用——"这段里有没有我要的东西、跟旁边那段有什么区别"。
+/// 它不进上下文的其他任何地方，就挂在这一行标记里。
+fn with_summary(marker: String, summary: Option<&str>) -> String {
+    match summary.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => format!("{} | {text}", marker.trim_end_matches(']')),
+        None => marker,
+    }
+    .trim_end()
+    .to_string()
+        + "]"
+}
+
 /// F3：masking 占位符，约 10 token。
-pub fn mask_marker(tokens: u32, reference: &ArchiveRef) -> String {
-    format!(
-        "[output masked: {} tok, {} → {}]",
-        format_k(tokens),
-        reference,
-        guest_path(reference)
+pub fn mask_marker(tokens: u32, reference: &ArchiveRef, summary: Option<&str>) -> String {
+    with_summary(
+        format!(
+            "[output masked: {} tok, {} → {}",
+            format_k(tokens),
+            reference,
+            guest_path(reference)
+        ),
+        summary,
     )
 }
 
-/// F2 尾注：`[… 8.2k tok 已归档 ref#a3f9… → /archive/a3f9….txt]`。
-pub fn truncation_marker(tokens: u32, reference: &ArchiveRef) -> String {
-    format!(
-        "[… {} tok 已归档 {} → {}]",
-        format_k(tokens),
-        reference,
-        guest_path(reference)
+/// F2 尾注：`[… 8.2k tok 已归档 ref#a3f9… → /archive/a3f9….txt | 失败那次的构建日志]`。
+pub fn truncation_marker(tokens: u32, reference: &ArchiveRef, summary: Option<&str>) -> String {
+    with_summary(
+        format!(
+            "[… {} tok 已归档 {} → {}",
+            format_k(tokens),
+            reference,
+            guest_path(reference)
+        ),
+        summary,
     )
 }
 
@@ -36,6 +56,7 @@ pub fn render_truncated(
     tail_tokens: u32,
     reference: &ArchiveRef,
     total_tokens: u32,
+    summary: Option<&str>,
 ) -> String {
     let head = head_prefix(content, head_tokens);
     let tail = tail_suffix(content, tail_tokens);
@@ -45,7 +66,7 @@ pub fn render_truncated(
     let mut out = String::with_capacity(head.len() + tail.len() + 80);
     out.push_str(head.trim_end());
     out.push('\n');
-    out.push_str(&truncation_marker(total_tokens, reference));
+    out.push_str(&truncation_marker(total_tokens, reference, summary));
     out.push('\n');
     out.push_str(tail.trim_start());
     out
@@ -58,7 +79,7 @@ pub fn render_pointer(entry: &ArchiveEntry) -> String {
 
 /// 渲染 F3。
 pub fn render_masked(entry: &ArchiveEntry) -> String {
-    mask_marker(entry.tokens, &entry.rf)
+    mask_marker(entry.tokens, &entry.rf, entry.summary())
 }
 
 /// 按形态渲染一段内容。F1 原样返回，F5 只留描述符。
@@ -75,6 +96,7 @@ pub fn render_for_form(entry: &ArchiveEntry, form: crate::message::ContentForm) 
             tail_tokens,
             &entry.rf,
             entry.tokens,
+            entry.summary(),
         ),
         ContentForm::Masked => render_masked(entry),
         ContentForm::Pointer => render_pointer(entry),
@@ -110,11 +132,11 @@ mod tests {
         let entry = entry("x", 8_200);
         let path = guest_path(&entry.rf);
         assert_eq!(
-            truncation_marker(entry.tokens, &entry.rf),
+            truncation_marker(entry.tokens, &entry.rf, None),
             format!("[… 8.2k tok 已归档 {} → {path}]", entry.rf)
         );
         assert_eq!(
-            mask_marker(entry.tokens, &entry.rf),
+            mask_marker(entry.tokens, &entry.rf, None),
             format!("[output masked: 8.2k tok, {} → {path}]", entry.rf)
         );
     }
@@ -123,7 +145,7 @@ mod tests {
     #[test]
     fn markers_carry_a_readable_path() {
         let entry = entry("x", 10);
-        let marker = truncation_marker(entry.tokens, &entry.rf);
+        let marker = truncation_marker(entry.tokens, &entry.rf, None);
         let path = guest_path(&entry.rf);
         assert!(marker.contains(&path), "{marker}");
         assert!(path.starts_with("/archive/"), "{path}");
@@ -135,7 +157,7 @@ mod tests {
     fn truncated_keeps_head_tail_and_marker() {
         let content = format!("HEAD-{}-TAIL", "x".repeat(400));
         let entry = entry(&content, 200);
-        let rendered = render_truncated(&content, 4, 4, &entry.rf, entry.tokens);
+        let rendered = render_truncated(&content, 4, 4, &entry.rf, entry.tokens, None);
         assert!(rendered.starts_with("HEAD-"));
         assert!(rendered.ends_with("TAIL"));
         assert!(rendered.contains(&entry.rf.to_string()));
@@ -144,7 +166,7 @@ mod tests {
     #[test]
     fn truncation_is_noop_when_budget_covers_content() {
         let entry = entry("short", 2);
-        let rendered = render_truncated("short", 100, 100, &entry.rf, 2);
+        let rendered = render_truncated("short", 100, 100, &entry.rf, 2, None);
         assert_eq!(rendered, "short");
     }
 

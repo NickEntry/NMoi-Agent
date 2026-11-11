@@ -1091,7 +1091,85 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&copied).unwrap(), "第一轮的原文");
     }
 
-    /// 不存在的会话复制不了：静默建出一个空会话比报错更难查。
+    /// 欠着的索引（D322）：`note` 有三种状态——`NULL`（没问过）/ 空串（问过、没写成）/
+    /// 有字（写成了）。判据只认中间那一种。
+    #[test]
+    fn pending_summaries_follows_the_library_not_memory() {
+        use nmoi_core::session::HistoryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("索引", "device-a", "default")
+            .unwrap();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "一段很长的工具输出".to_string(),
+            SourceTag::ToolResult,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 0),
+            2100,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+
+        // 没问过：不算欠着（压缩写进来的那些归档就是这样）。
+        assert!(HistoryStore::pending_summaries(&storage, session, 10)
+            .unwrap()
+            .is_empty());
+
+        HistoryStore::archive_mark_pending(&mut storage, &reference).unwrap();
+        let pending = HistoryStore::pending_summaries(&storage, session, 10).unwrap();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].rf, reference);
+
+        HistoryStore::archive_set_note(&mut storage, &reference, "失败那次的构建日志").unwrap();
+        assert!(
+            HistoryStore::pending_summaries(&storage, session, 10)
+                .unwrap()
+                .is_empty(),
+            "写进 note 之后就不该再算欠着"
+        );
+        // 索引只碰 note，内容还是那一份。
+        let fetched = storage.fetch_archive(&reference).unwrap();
+        assert_eq!(fetched.content, "一段很长的工具输出");
+        assert_eq!(fetched.summary(), Some("失败那次的构建日志"));
+    }
+
+    /// 补索引的时候不能把已有的索引擦掉：`archive_mark_pending` 只在 `note IS NULL` 时落空串。
+    ///
+    /// 否则每一轮都会重新降级同一段、把上一轮写好的索引清掉，然后整轮都在补同一批。
+    #[test]
+    fn marking_pending_never_erases_a_finished_summary() {
+        use nmoi_core::session::HistoryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("不擦", "device-a", "default")
+            .unwrap();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "原文".to_string(),
+            SourceTag::ToolResult,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 0),
+            10,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+        HistoryStore::archive_mark_pending(&mut storage, &reference).unwrap();
+        HistoryStore::archive_set_note(&mut storage, &reference, "写好了").unwrap();
+
+        HistoryStore::archive_mark_pending(&mut storage, &reference).unwrap();
+        assert_eq!(
+            storage.fetch_archive(&reference).unwrap().summary(),
+            Some("写好了")
+        );
+        assert!(HistoryStore::pending_summaries(&storage, session, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// 不存在的会话复制不了：静默建出一个空会话比报错更难查。    /// 不存在的会话复制不了：静默建出一个空会话比报错更难查。
     #[test]
     fn copy_conversation_refuses_unknown_session() {
         let dir = tempfile::tempdir().unwrap();

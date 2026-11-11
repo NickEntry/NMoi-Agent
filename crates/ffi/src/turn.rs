@@ -267,6 +267,8 @@ struct TurnInput {
     lorebook: Option<nmoi_core::lorebook::LorebookData>,
     /// 内容形态阈值（D275）：小 / 大 / 超大 + 头尾保留量。
     router: nmoi_core::router::RouterConfig,
+    /// 索引摘要用哪个模型（D322）。`None` = 这一轮不写摘要，降级之后标记就只是一行标记。
+    summary: Option<nmoi_core::summary::SummaryTarget>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     budget: Option<Budget>,
@@ -597,6 +599,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
             _ => None,
         },
         router: parse_router(&root)?,
+        summary: parse_summary(&root)?,
         max_tokens: optional_u64(&root, "max_tokens")?.map(|value| value as u32),
         temperature: optional_f32(&root, "temperature")?,
         budget,
@@ -1200,6 +1203,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             form_level: input.form_level,
             router: input.router,
             lorebook: input.lorebook.as_ref(),
+            summary: input.summary.as_ref(),
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1547,6 +1551,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             form_level: input.form_level,
             router: input.router,
             lorebook: input.lorebook.as_ref(),
+            summary: input.summary.as_ref(),
         };
 
         let client = crate::proxy::client();
@@ -1715,20 +1720,21 @@ fn inject_lorebook(mut turns: Vec<(Role, String)>, text: &str) -> FfiResult<Vec<
 ///
 /// 这边没有"这个模型支持哪些档位"（那份名单在模型编辑页，`complete` 拿不到），
 /// 所以写什么发什么——角色配置是用户自己拨的，档位选错时上游会说，不会悄悄不生效。
-fn apply_complete_thinking(
-    request: ChatRequest,
+/// 档位字符串 → `ThinkingSetting`。**只有这一处**做这个翻译：
+/// 一次性补全（`nmoi_complete_json`）与索引摘要（D322）走同一份规矩。
+fn thinking_setting(
     kind: ProviderKind,
     level: &str,
-) -> FfiResult<ChatRequest> {
+) -> FfiResult<nmoi_core::provider::ThinkingSetting> {
     use nmoi_core::config::{default_thinking_field, ModelFlavor, ThinkingContext};
     use nmoi_core::provider::ThinkingSetting;
 
     if level.is_empty() || level.eq_ignore_ascii_case("auto") {
-        return Ok(request);
+        return Ok(ThinkingSetting::disabled());
     }
     let lowered = level.to_ascii_lowercase();
     if lowered == "off" {
-        return Ok(request.thinking(ThinkingSetting::disabled()));
+        return Ok(ThinkingSetting::disabled());
     }
     let effort = ThinkingEffort::parse(&lowered).ok_or_else(|| {
         bad(
@@ -1739,11 +1745,81 @@ fn apply_complete_thinking(
         )
     })?;
     let field = default_thinking_field(&ThinkingContext::new(kind, ModelFlavor::Other));
-    Ok(request.thinking(ThinkingSetting {
+    Ok(ThinkingSetting {
         field,
         effort: Some(effort),
         budget_tokens: None,
         custom: None,
+    })
+}
+
+fn apply_complete_thinking(
+    request: ChatRequest,
+    kind: ProviderKind,
+    level: &str,
+) -> FfiResult<ChatRequest> {
+    Ok(request.thinking(thinking_setting(kind, level)?))
+}
+
+/// 索引摘要那一段配置（D322）：`{provider:{id,kind,base_url,api_key?}, model, thinking?}`。
+///
+/// 没有这一块 = 这一轮不写摘要。**给了却缺字段就报错**：静默降级成"不写"会让用户以为
+/// 摘要坏了，而真正的原因是他那边没传全。
+fn parse_summary(root: &Value) -> FfiResult<Option<nmoi_core::summary::SummaryTarget>> {
+    let Some(row) = field(root, "summary") else {
+        return Ok(None);
+    };
+    let provider = row
+        .get("provider")
+        .ok_or_else(|| bad("summary.provider", "是必填的"))?;
+    let id = provider
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("summary");
+    let kind = parse_provider_kind(
+        provider
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("openai_compatible"),
+    )?;
+    let base = provider
+        .get("base_url")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if base.trim().is_empty() {
+        return Err(bad("summary.provider.base_url", "不能是空的"));
+    }
+    let model = row
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if model.is_empty() {
+        return Err(bad("summary.model", "是必填的"));
+    }
+    let api_key = provider
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(|key| nmoi_core::runtime::ApiKey::new(key.to_string()));
+    let thinking = thinking_setting(
+        kind,
+        row.get("thinking").and_then(Value::as_str).unwrap_or(""),
+    )?;
+    // 全局系统提示词（D318）：摘要是"所有角色共用"那一层的使用者之一。
+    let system = row
+        .get("system")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    Ok(Some(nmoi_core::summary::SummaryTarget {
+        provider: ProviderConfig::new(id, kind, base),
+        model: model.to_string(),
+        api_key,
+        thinking,
+        system,
     }))
 }
 
