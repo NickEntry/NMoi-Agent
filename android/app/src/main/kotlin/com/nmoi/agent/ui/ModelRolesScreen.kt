@@ -98,6 +98,9 @@ internal fun ModelRolesScreen(
     // 每次改了角色配置就 +1：值从 prefs 现读，不另存一份（免得两处对不上）。
     var revision by remember { mutableStateOf(0) }
     var loaded by remember { mutableStateOf(false) }
+    // 所有角色共用的那段系统提示词（D318）：值是现读的那一份，改完立刻反映到行尾。
+    var globalSystem by remember { mutableStateOf(AppSettings.globalSystem(context)) }
+    var editingGlobal by remember { mutableStateOf(false) }
     // 选模型那一页跟聊天页用的是同一份来源（供应商 → 模型），所以这里也读同一份。
     val choices by produceState(initialValue = emptyList<ModelChoice>(), databasePath) {
         val result = withContext(Dispatchers.IO) { AssistantRepository.choices(databasePath) }
@@ -152,6 +155,14 @@ internal fun ModelRolesScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                // 全局那段在最上面（D318）：它管的是**所有**角色，摆在第一个才说得通。
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    NavRow(
+                        title = "系统提示词",
+                        value = if (globalSystem.isBlank()) "未设置" else "${globalSystem.length} 字",
+                        onClick = { editingGlobal = true },
+                    )
+                }
                 ModelRole.entries.forEach { role ->
                     RoleCard(
                         role = role,
@@ -175,9 +186,9 @@ internal fun ModelRolesScreen(
                 }
 
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
-                    NavRow("提示词", onOpenPrompts)
+                    NavRow("提示词", onClick = onOpenPrompts)
                     RowDivider(leading = 16.dp)
-                    NavRow("预设", onOpenPresets)
+                    NavRow("预设", onClick = onOpenPresets)
                 }
 
                 notice?.let { line ->
@@ -191,6 +202,15 @@ internal fun ModelRolesScreen(
                 Spacer(Modifier.size(24.dp))
             }
         }
+    }
+
+    if (editingGlobal) {
+        GlobalSystemSheet(
+            context = context,
+            value = globalSystem,
+            onChange = { globalSystem = it },
+            onDismiss = { editingGlobal = false },
+        )
     }
 
     promptFor?.let { role ->
@@ -349,7 +369,7 @@ private fun RoleCard(
 }
 
 @Composable
-private fun NavRow(title: String, onClick: () -> Unit) {
+private fun NavRow(title: String, value: String? = null, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -364,6 +384,15 @@ private fun NavRow(title: String, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
+        if (value != null) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Icon(
             imageVector = ActionIcons.ChevronRight,
             contentDescription = null,
@@ -498,6 +527,53 @@ private fun RolePromptSheet(
                 }
                 Spacer(Modifier.weight(1f))
                 ChipButton("收起", primary = true, onClick = onDismiss)
+            }
+        }
+    }
+}
+
+/**
+ * 所有角色共用那段系统提示词的编辑面板（D318）。
+ *
+ * 拼法只有一处（`RoleRunner.complete`）：内置那段 → 这一段 → 角色自己那段。
+ * 它就是一张输入框，所以不摆「保存」——停手 100 ms 落盘，跟别的输入框同一个规矩。
+ */
+@Composable
+private fun GlobalSystemSheet(
+    context: Context,
+    value: String,
+    onChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    LaunchedEffect(value) {
+        delay(100)
+        AppSettings.setGlobalSystem(context, value)
+    }
+    SheetFrame(title = "系统提示词 · 所有角色", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+        ) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onChange,
+                placeholder = { Text("例如：只输出结果，不复述要求") },
+                minLines = 4,
+                maxLines = 8,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (value.isNotEmpty()) {
+                    ChipButton("清空", primary = false) {
+                        onChange("")
+                        AppSettings.setGlobalSystem(context, "")
+                    }
+                }
+                Spacer(Modifier.weight(1f))
             }
         }
     }

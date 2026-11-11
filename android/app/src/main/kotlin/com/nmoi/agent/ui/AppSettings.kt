@@ -156,6 +156,22 @@ internal object AppSettings {
     }
 
     /**
+     * **所有角色共用**的那段系统提示词（D318）。空 = 没有这一层。
+     *
+     * 拼法只有一处（`RoleRunner.complete`）：内置那段 → 这一段 → 角色自己那段。
+     * 角色那段排最后，所以它压得过这一段——"全局说的"是底，"这个角色说的"是例外。
+     *
+     * 为什么存 prefs：跟角色那几份一样，是"这台设备上怎么调这些旁路"的事，
+     * 跟会话无关，也不该跟着导出/导入跑到别人机器上。
+     */
+    fun globalSystem(context: Context): String =
+        prefs(context).getString("role.global.system", "").orEmpty()
+
+    fun setGlobalSystem(context: Context, text: String) {
+        prefs(context).edit().putString("role.global.system", text).apply()
+    }
+
+    /**
      * 这个角色的思考强度（D313）。空 = 自动（一个字段都不注）。
      *
      * 档位与聊天页同一套（`auto` / `off` / `low` / `medium` / `high` / `max`），

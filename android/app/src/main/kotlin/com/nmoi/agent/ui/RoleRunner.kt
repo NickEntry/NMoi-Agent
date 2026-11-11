@@ -57,14 +57,14 @@ internal object RoleRunner {
         images: List<PendingImage> = emptyList(),
     ): String? = withContext(Dispatchers.IO) {
         val (provider, model) = target(context, databasePath, role) ?: return@withContext null
-        // 这个角色自己的系统提示词（D298）：排在内置那段之前，正文（prompt）不动。
-        // 空串就当没有——发一个空 system 会让某些上游把它当成"清空系统提示"。
-        val extra = AppSettings.roleSystem(context, role.key).trim()
+        // 三层拼在一处（D318）：内置那段（调用方给的 `system`）→ 全局 → 这个角色自己的。
+        // 角色那段排最后，所以它压得过全局那段；全局那段是"这些旁路共用的底"。
+        // 空串一律当没有——发一个空 system 会让某些上游把它当成"清空系统提示"。
+        val global = AppSettings.globalSystem(context)
+        val own = AppSettings.roleSystem(context, role.key)
         // 站位字符串（D316）：`<ContextMode>` 这类在**发请求之前**换成当前状态，
         // 于是同一段提示词能按档位分叉。没声明的原样留着，不猜。
-        val systemText = listOfNotNull(extra.takeIf { it.isNotEmpty() }, system?.takeIf { it.isNotBlank() })
-            .joinToString("\n\n")
-            .ifBlank { null }
+        val systemText = PromptVars.compose(system, global, own)
         val merged = systemText?.let { PromptVars.fill(it, PromptVars.values(context, role)) }
         val picked = if (provider.multiKey) KeyPool.pick(context, provider.id) else null
         val key = if (provider.multiKey) picked?.value else Vault.load(context, provider.id)

@@ -37,6 +37,23 @@ class PromptVarsTest {
     }
 
     @Test
+    fun compose_puts_builtin_first_global_second_role_last() {
+        // 角色那段排最后 = 它压得过全局那段（判据原话："角色自己那段仍然压过全局那段"）。
+        assertEquals(
+            "内置\n\n全局\n\n角色",
+            PromptVars.compose("内置", "全局", "角色"),
+        )
+    }
+
+    @Test
+    fun compose_skips_blank_layers() {
+        // 空串当没有：发一个空 system 会被某些上游当成"清空系统提示"。
+        assertEquals("全局\n\n角色", PromptVars.compose("  ", "全局", "角色"))
+        assertEquals("角色", PromptVars.compose(null, "", "角色"))
+        assertEquals(null, PromptVars.compose("", null, "   "))
+    }
+
+    @Test
     fun every_declared_name_gets_filled() {
         // 声明的名字必须真的能被填——否则界面上那行「变量：…」就是假开关。
         ModelRole.entries.forEach { role ->

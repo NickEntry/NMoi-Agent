@@ -47,6 +47,19 @@ internal object PromptVars {
     }
 
     /**
+     * 三层提示词拼成一段（D318）：内置那段 → 全局那段 → 角色自己那段。
+     *
+     * 拼法只有这一处。三处各拼一遍的话，第一处换了顺序，另外两处还按老顺序发出去，
+     * 而症状只是"某句话好像没生效"——这种错查一整天。
+     *
+     * 空串一律当没有：发一个空 system，有的上游会把它当成"清空系统提示"。
+     */
+    fun compose(builtin: String?, global: String?, own: String?): String? = listOf(builtin, global, own)
+        .mapNotNull { layer -> layer?.takeIf { it.isNotBlank() } }
+        .joinToString("\n\n")
+        .ifBlank { null }
+
+    /**
      * 把声明过的占位符换掉。**一遍扫完**：替换结果不再被扫（见文件头第 2 条）。
      */
     fun fill(text: String, values: Map<String, String>): String {

@@ -52,6 +52,12 @@ internal object CompressRunner {
                     .put("base_url", provider.baseUrl.trim()),
             )
         if (!key.isNullOrBlank()) config.put("api_key", key)
+        // 这个角色的提示词（D318）：全局那段 + 「压缩」自己那段，站位字符串在发之前填掉。
+        // 压缩这条路是核心自己拼请求的，不从这里带进去，面板里写的东西一个字也到不了模型。
+        val composed = PromptVars.compose(null, AppSettings.globalSystem(context), AppSettings.roleSystem(context, ModelRole.Compress.key))
+        composed?.let { text ->
+            config.put("system", PromptVars.fill(text, PromptVars.values(context, ModelRole.Compress)))
+        }
         NmoiFfi.compressRun(config)
     }
 }

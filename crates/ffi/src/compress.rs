@@ -158,6 +158,13 @@ pub extern "C" fn nmoi_compress_run_json(config: *const c_char) -> *mut c_char {
                 .filter(|value| *value > 0)
                 .unwrap_or(LoopConfig::default().max_exchanges as u64)
                 as u32,
+            // 这个角色自己的提示词（D318）：拼在核心脚手架之后。空串当没有。
+            system: root
+                .get("system")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string),
             ..LoopConfig::default()
         };
         let started = now_ms();

@@ -25,12 +25,18 @@ use crate::transport::Transport;
 use super::{CompressError, CompressionJob, CompressionOutcome, JobState};
 
 /// 工具循环的预算。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopConfig {
     /// 模型往返次数上限（含被退回后继续补的轮次）。
     pub max_exchanges: u32,
     /// 覆盖基准请求里的 `max_tokens`。`None` = 不动。
     pub max_tokens: Option<u32>,
+    /// 追加在脚手架之后的一段系统提示（D318）。`None` = 只有脚手架。
+    ///
+    /// 「压缩」这个角色在默认模型页里有一份自己的提示词（还有 `<ContextMode>` 站位字符串），
+    /// 而压缩这条路是核心自己拼请求的——不从这里带进去，那份提示词一个字也到不了模型面前，
+    /// 症状是"写了没反应"，没有报错。
+    pub system: Option<String>,
 }
 
 impl Default for LoopConfig {
@@ -39,6 +45,7 @@ impl Default for LoopConfig {
             max_exchanges: 8,
             // 摘要不需要长输出，但思考型模型的思考也算在里面，别卡太死
             max_tokens: Some(16_384),
+            system: None,
         }
     }
 }
@@ -153,6 +160,29 @@ pub fn drive<T: Transport, S: ArchiveStore>(
     now: i64,
 ) -> Result<LoopReport, CompressError> {
     let mut messages = scaffold(job);
+    // 角色那段排在内置脚手架之后（D318）：脚手架说"你在干什么"，角色那段说"这个模型要怎么写"，
+    // 后者更具体，所以它靠后。空串等于没有——空 system 有的上游会当成"清空系统提示"。
+    if let Some(extra) = config.system.as_deref().map(str::trim) {
+        if !extra.is_empty() {
+            let at = messages
+                .iter()
+                .take_while(|message| message.role == Role::System)
+                .count();
+            let session = SessionId::new();
+            messages.insert(
+                at,
+                Message::text(
+                    MessageId::new(session, 2),
+                    Role::System,
+                    SourceTag::InstructionInjection,
+                    extra,
+                    estimate_tokens(extra),
+                    0,
+                    LogicalClock::new(2),
+                ),
+            );
+        }
+    }
     let mut report = LoopReport::default();
     let mut seq = 3u64;
 
@@ -461,6 +491,34 @@ mod tests {
         // 请求必须是非流式（D46：流式下这个上游不给 tool_calls）
         let requests = transport.requests();
         assert!(requests[0].contains("\"stream\":false"), "{}", requests[0]);
+    }
+
+    /// 角色那段提示词要真的进请求（D318）：拼完不发出去，是这个项目里已经踩过一次的坑
+    /// （D298 的 `merged`）。判据只看 wire 上那一份。
+    #[test]
+    fn extra_system_reaches_the_wire_after_the_scaffold() {
+        let mut job = job();
+        let transport = Scripted::new(vec![calls_body(&[("c1", "compress_draft_done", "{}")])]);
+        let client = ChatClient::new(transport.clone());
+        let mut archive = MemoryArchive::new();
+        let config = LoopConfig {
+            system: Some("这个角色的规矩：第一人称。".to_string()),
+            ..LoopConfig::default()
+        };
+        let _ = drive(&client, &base_request(), &mut job, &mut archive, &config, 0);
+
+        let requests = transport.requests();
+        let body = &requests[0];
+        assert!(body.contains("第一人称"), "角色那段没进请求：{body}");
+        // 顺序：脚手架的 system 在前，角色那段紧随其后。
+        let scaffold_at = body.find("你是上下文压缩器").expect("脚手架应在请求里");
+        let role_at = body.find("这个角色的规矩").expect("角色那段应在请求里");
+        assert!(scaffold_at < role_at, "角色那段要排在脚手架之后：{body}");
+        // 空串不该造出一条空 system。
+        assert!(
+            !body.contains("\"role\":\"system\",\"content\":\"\""),
+            "{body}"
+        );
     }
 
     #[test]
