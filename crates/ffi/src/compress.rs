@@ -158,13 +158,7 @@ pub extern "C" fn nmoi_compress_run_json(config: *const c_char) -> *mut c_char {
                 .filter(|value| *value > 0)
                 .unwrap_or(LoopConfig::default().max_exchanges as u64)
                 as u32,
-            // 这个角色自己的提示词（D318）：拼在核心脚手架之后。空串当没有。
-            system: root
-                .get("system")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_string),
+            system: system_of(&root),
             ..LoopConfig::default()
         };
         let started = now_ms();
@@ -238,4 +232,39 @@ pub extern "C" fn nmoi_compress_run_json(config: *const c_char) -> *mut c_char {
             "elapsed_ms": now_ms().saturating_sub(started),
         }))
     })
+}
+
+/// 这个角色自己的提示词（D318）：拼在核心脚手架之后。空串 / 全空白当没有。
+///
+/// 单独一个函数是为了能单独断言：这一行是"界面上写了字"到"模型真的看见"之间唯一的
+/// 那道门，而它错了不会有任何报错——请求照样成功，只是那段话没进去。
+fn system_of(root: &Value) -> Option<String> {
+    root.get("system")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_system_is_read_and_blank_is_dropped() {
+        let with = json!({ "system": "  第一人称写摘要。 " });
+        assert_eq!(system_of(&with).as_deref(), Some("第一人称写摘要。"));
+        for without in [
+            json!({}),
+            json!({ "system": "" }),
+            json!({ "system": "   " }),
+            json!({ "system": 3 }),
+        ] {
+            assert_eq!(
+                system_of(&without),
+                None,
+                "不该造出一个空 system：{without}"
+            );
+        }
+    }
 }

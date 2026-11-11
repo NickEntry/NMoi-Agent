@@ -8,7 +8,11 @@
 //! ```
 //!
 //! 环境变量：`NMOI_SMOKE_BASE`（必填）、`NMOI_SMOKE_MODEL`（必填）、
-//! `NMOI_SMOKE_KIND`、`NMOI_SMOKE_KEY`、`NMOI_SMOKE_KEEP`（保留多少 token 在窗口里，默认 300）。
+//! `NMOI_SMOKE_KIND`、`NMOI_SMOKE_KEY`、`NMOI_SMOKE_KEEP`（保留多少 token 在窗口里，默认 300）、
+//! `NMOI_SMOKE_SYSTEM`（追加在脚手架之后的角色提示词，D318）。
+//!
+//! 想证明"角色那段真的进了请求"，给它一句能自证的：`NMOI_SMOKE_SYSTEM="摘要最后单独一行写 [ROLE-OK]"`，
+//! 然后看摘要末尾有没有那四个字。
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -174,12 +178,24 @@ fn main() -> ExitCode {
     let mut archive = MemoryArchive::new();
     let started = Instant::now();
 
+    let loop_config = LoopConfig {
+        system: std::env::var("NMOI_SMOKE_SYSTEM")
+            .ok()
+            .filter(|text| !text.trim().is_empty()),
+        ..LoopConfig::default()
+    };
+    if let Some(system) = &loop_config.system {
+        println!(
+            "→ 角色提示词 {} 字（排在脚手架之后）",
+            system.chars().count()
+        );
+    }
     let report = match drive(
         &client,
         &request,
         &mut job,
         &mut archive,
-        &LoopConfig::default(),
+        &loop_config,
         nmoi_core::engine::now_ms(),
     ) {
         Ok(report) => report,

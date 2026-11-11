@@ -2406,8 +2406,15 @@ D316 把「先补取回」写死在顺序里：F2–F4 会往消息里写 `[… 
   `nmoi_compress_run_json` 读 `system`；`CompressRunner.run` 把全局 + 压缩角色那段拼好、
   填完站位字符串再传。判据是 wire 上那一份：`compress::runner` 里那条用例断言
   脚手架在前、角色那段紧随其后，且不造空 system。
-- 判据：core **706**、`PromptVarsTest` 8 条（新增 3 条：顺序 / 空层 / 只填声明过的）；
-  真机 **V128**。
+- **实测（2026-11-11，本机测试端点，`compress_smoke` + `NMOI_SMOKE_SYSTEM`）**：
+  请求体里两条 system —— 脚手架在前（457 字），角色那段紧随其后（40 字），
+  随后是 user 材料。同一轮跑三次，两次摘要最后一行出现 `[ROLE-OK]`，一次没有
+  （模型遵从度，不是通路问题；通路的判据是请求体里那两条，不是模型听不听话）。
+  证据：`/chat/outputs/d318-compress-wire.json`（请求体）、`d318-compress-run.log`（跑动记录）。
+  这一条只证明到 **core 的 `drive` 这一层**；`nmoi_compress_run_json` 读 `system` 那一行由
+  `system_of` 的单测钉住，Kotlin 那段（`CompressRunner.run` 拼 + 填站位字符串）仍是真机 **V128**。
+- 判据：core **706**、ffi **67**（+1 角色提示词读法）、`PromptVarsTest` 8 条
+  （新增 3 条：顺序 / 空层 / 只填声明过的）；真机 **V128**。
 
 ## D319 内存与资源回归进 CI（2026-11-11）
 
