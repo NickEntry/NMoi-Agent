@@ -437,6 +437,10 @@ internal object TurnRepository {
             // 同样**先建好**——目录不存在时 proot 的 `-b` 静默不生效。
             val scratch = ToolingRepository.sessionTmpRoot(context, sessionId).apply { mkdirs() }
             row.put("session_tmp", scratch.absolutePath)
+            // 归档（D317）：标记行里的 `/archive/<hex>.txt` 要在容器里读得到，所以绑成 `/archive`。
+            // 同样先建好——目录不存在时 proot 的 `-b` 静默不生效。
+            val archive = ToolingRepository.sessionArchiveRoot(context, sessionId).apply { mkdirs() }
+            row.put("archive", archive.absolutePath)
         }
 
     /** 点"停止"。没在跑不算失败：`cancelled:false` 只说明它已经收尾了。 */

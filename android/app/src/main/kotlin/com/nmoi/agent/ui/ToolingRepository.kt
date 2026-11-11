@@ -55,6 +55,17 @@ internal object ToolingRepository {
         File(File(File(context.filesDir, "sessions"), sessionId), "tmp")
 
     /**
+     * 这个会话的归档目录（`sessions/<id>/archive`，D317）。
+     *
+     * F2–F4 换掉的原文物化在这儿，标记行里写的是 `/archive/<hex>.txt`；
+     * 文件工具与容器里的 `/archive` 都是这一份。
+     *
+     * 同样不 `mkdirs()`：`put_archive` 落文件时会建，容器起之前 `EnvirSpec` 也会建。
+     */
+    fun sessionArchiveRoot(context: Context, sessionId: String): File =
+        File(File(File(context.filesDir, "sessions"), sessionId), "archive")
+
+    /**
      * 删掉这个会话自己的目录（`sessions/<id>/`，含 `chat/`、`images/` 与 `tmp/`）。
      *
      * 只在**库里的会话真的删掉之后**调：先删库再删文件，顺序反了会出现

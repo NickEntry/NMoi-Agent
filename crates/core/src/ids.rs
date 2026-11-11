@@ -249,6 +249,14 @@ impl ArchiveRef {
     pub fn parse(s: &str) -> Result<Self, IdError> {
         Self::from_str(s)
     }
+
+    /// 物化成文件时的名字：`a3f9c1d2e4b5a6c7.txt`（去掉 `ref#`）。
+    ///
+    /// 为什么不留着 `#`：它在 shell 里是注释、在 URL 里是片段、在有些 adb 转发里会被截。
+    /// 同一个 ref 换个地方就被吃掉后半截，那正是最难查的一类"东西不见了"。
+    pub fn file_name(&self) -> String {
+        format!("{}.txt", &self.0[Self::PREFIX.len()..])
+    }
 }
 
 impl fmt::Display for ArchiveRef {

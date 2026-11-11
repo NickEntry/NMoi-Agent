@@ -3,18 +3,28 @@
 //! 标记格式固定，指针必须自带判别信息：来源、位置、token 数、一句话内容。
 //! 模型只看指针就能决定要不要 `fetch_archive`，这是 §5.5 的第一层检索。
 
-use crate::archive::ArchiveEntry;
+use crate::archive::{guest_path, ArchiveEntry};
 use crate::ids::ArchiveRef;
 use crate::tokens::{estimate_tokens, format_k, head_prefix, tail_suffix};
 
 /// F3：masking 占位符，约 10 token。
 pub fn mask_marker(tokens: u32, reference: &ArchiveRef) -> String {
-    format!("[output masked: {} tok, {}]", format_k(tokens), reference)
+    format!(
+        "[output masked: {} tok, {} → {}]",
+        format_k(tokens),
+        reference,
+        guest_path(reference)
+    )
 }
 
-/// F2 尾注：`[… 8.2k tok 已归档 ref#a3f9]`。
+/// F2 尾注：`[… 8.2k tok 已归档 ref#a3f9… → /archive/a3f9….txt]`。
 pub fn truncation_marker(tokens: u32, reference: &ArchiveRef) -> String {
-    format!("[… {} tok 已归档 {}]", format_k(tokens), reference)
+    format!(
+        "[… {} tok 已归档 {} → {}]",
+        format_k(tokens),
+        reference,
+        guest_path(reference)
+    )
 }
 
 /// 渲染 F2：头 N token + 尾注 + 尾 M token。
@@ -98,14 +108,27 @@ mod tests {
     #[test]
     fn markers_carry_ref_and_tokens() {
         let entry = entry("x", 8_200);
+        let path = guest_path(&entry.rf);
         assert_eq!(
             truncation_marker(entry.tokens, &entry.rf),
-            format!("[… 8.2k tok 已归档 {}]", entry.rf)
+            format!("[… 8.2k tok 已归档 {} → {path}]", entry.rf)
         );
         assert_eq!(
             mask_marker(entry.tokens, &entry.rf),
-            format!("[output masked: 8.2k tok, {}]", entry.rf)
+            format!("[output masked: 8.2k tok, {} → {path}]", entry.rf)
         );
+    }
+
+    /// 标记行要能让模型**直接去读**：路径与文件名必须是同一份 ref 拼出来的。
+    #[test]
+    fn markers_carry_a_readable_path() {
+        let entry = entry("x", 10);
+        let marker = truncation_marker(entry.tokens, &entry.rf);
+        let path = guest_path(&entry.rf);
+        assert!(marker.contains(&path), "{marker}");
+        assert!(path.starts_with("/archive/"), "{path}");
+        assert!(path.ends_with(".txt"), "{path}");
+        assert!(!path.contains('#'), "路径里不该带 ref# 前缀：{path}");
     }
 
     #[test]

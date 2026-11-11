@@ -121,6 +121,16 @@ pub trait HistoryStore {
         None
     }
 
+    /// 这个会话的归档目录（`sessions/<id>/archive`，D317）。
+    ///
+    /// F2–F4 换掉的原文都物化在这儿，标记行里写的就是 `/archive/<hex>.txt`。
+    /// 默认 `None` = 这个实现没有归档目录：那时 `/archive` 报错，**不回落**——
+    /// 回落成"文件不存在"会让模型以为取回失败，而真正的原因是这一轮根本没有归档。
+    fn session_archive_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        let _ = session;
+        None
+    }
+
     /// 跨会话只读（D295）：别的会话的索引。
     ///
     /// 默认 `None`——内存实现、测试夹具都"看不到别的会话"，工具那边会报一句
@@ -956,6 +966,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     // 上下文图片（D248）：附件目录给 `View-Image` 用，上限跟着这一轮的配置走。
     let images_dir = store.attachment_dir(session);
     let session_tmp = store.session_tmp_dir(session);
+    let session_archive = store.session_archive_dir(session);
     // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
     let session_index = store
         .session_index()
@@ -964,6 +975,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         .with_images(images_dir.as_deref(), config.turn.image_limit)
         .with_image_room(config.turn.image_temp_limit)
         .with_session_tmp(session_tmp.as_deref())
+        .with_session_archive(session_archive.as_deref())
         .with_sessions(session_index.as_ref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
@@ -1207,6 +1219,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     ctx = ctx.with_call_session(&call_session);
     let images_dir = store.attachment_dir(session);
     let session_tmp = store.session_tmp_dir(session);
+    let session_archive = store.session_archive_dir(session);
     // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
     let session_index = store
         .session_index()
@@ -1215,6 +1228,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_images(images_dir.as_deref(), config.turn.image_limit)
         .with_image_room(config.turn.image_temp_limit)
         .with_session_tmp(session_tmp.as_deref())
+        .with_session_archive(session_archive.as_deref())
         .with_sessions(session_index.as_ref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);

@@ -966,6 +966,131 @@ mod tests {
         assert!(storage.fetch_archive(&reference).is_ok());
     }
 
+    /// 归档要**物化**（D317）：标记行里那个 `/archive/<hex>.txt` 必须真的存在，
+    /// 而且内容与库里那一份逐字节相同。
+    #[test]
+    fn put_archive_materializes_the_marker_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("物化", "device-a", "default")
+            .unwrap();
+        let content = "原始工具输出\n第 37 行\n".to_string();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            content.clone(),
+            SourceTag::ToolResult,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 0),
+            12,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+
+        let path = storage.archive_file(session, &reference);
+        assert!(path.exists(), "归档文件没落盘：{}", path.display());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        // 路径与标记行里那一段是同一份拼法。
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            reference.file_name()
+        );
+    }
+
+    /// 文件被清掉之后，同一条 ref 再写一次要把文件补回来（不清库、不重算 ref）。
+    #[test]
+    fn put_archive_heals_a_deleted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("补", "device-a", "default")
+            .unwrap();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "补回来的原文".to_string(),
+            SourceTag::ToolResult,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 0),
+            5,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry.clone()).unwrap();
+        let path = storage.archive_file(session, &reference);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists());
+
+        assert_eq!(storage.put_archive(session, entry).unwrap(), reference);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "补回来的原文",
+            "第二遍只该补文件，不该报错、也不该换 ref"
+        );
+    }
+
+    /// 删会话连归档目录一起删：`/archive` 里那些是这条会话的投影，留着就是没主的东西。
+    #[test]
+    fn deleting_a_session_removes_its_archive_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("删", "device-a", "default")
+            .unwrap();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "会被删掉的原文".to_string(),
+            SourceTag::ToolResult,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 0),
+            6,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+        let archive_dir = storage.session_archive_dir(session);
+        assert!(archive_dir.join(reference.file_name()).exists());
+
+        assert!(storage.delete_conversation(session).unwrap());
+        assert!(
+            !archive_dir.exists(),
+            "{} 该跟着会话一起没",
+            archive_dir.display()
+        );
+    }
+
+    /// 复制会话：副本里那些"已归档"要在这个会话的目录下也有文件，
+    /// 否则副本里每一处标记都变成"取不到了"。
+    #[test]
+    fn copying_a_session_copies_its_archive_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("原件", "device-a", "default")
+            .unwrap();
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "第一轮的原文".to_string(),
+            SourceTag::History,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 1),
+            5,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+        let message = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "原文在归档里",
+            5,
+            1_700_000_000_000,
+            LogicalClock::new(1),
+        )
+        .with_archive(nmoi_core::message::ContentForm::Pointer, reference.clone());
+        storage
+            .append_unit(session, &AtomicUnit::turn(message).unwrap())
+            .unwrap();
+
+        let copy = storage.copy_conversation(session, None).unwrap();
+        let copied = storage.archive_file(copy, &reference);
+        assert!(copied.exists(), "副本里没有归档文件：{}", copied.display());
+        assert_eq!(std::fs::read_to_string(&copied).unwrap(), "第一轮的原文");
+    }
+
     /// 不存在的会话复制不了：静默建出一个空会话比报错更难查。
     #[test]
     fn copy_conversation_refuses_unknown_session() {

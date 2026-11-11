@@ -235,6 +235,13 @@ pub struct EnvirSpec {
     ///
     /// 可选：没有会话上下文就不绑，容器用自己的 `/tmp`（rootfs 里那份）。
     pub session_tmp: Option<PathBuf>,
+    /// 这个会话的归档目录（`sessions/<id>/archive`），绑到容器里的 `/archive`（D317）。
+    ///
+    /// 与文件工具那个 `/archive` 是**同一份**：标记行里写的 `/archive/<hex>.txt`，
+    /// 在容器里 `cat` 得到、在工具里 `read_file` 也读得到——一个名字，两处都能用。
+    ///
+    /// 可选：没有会话上下文就不绑。
+    pub archive: Option<PathBuf>,
 }
 
 impl EnvirSpec {
@@ -279,6 +286,12 @@ impl EnvirSpec {
         if let Some(scratch) = &self.session_tmp {
             if std::fs::create_dir_all(scratch).is_ok() {
                 cmd.arg("-b").arg(format!("{}:/tmp", scratch.display()));
+            }
+        }
+        // 归档（D317）：`/archive`，与文件工具那一边是同一份。同样**先建好再绑**。
+        if let Some(archive) = &self.archive {
+            if std::fs::create_dir_all(archive).is_ok() {
+                cmd.arg("-b").arg(format!("{}:/archive", archive.display()));
             }
         }
         // 工作目录：`-w` 只认一个，模型给的相对目录就接在后面（已经过词法校验，不含 `..`）。
@@ -896,6 +909,7 @@ mod tests {
             chat: None,
             chat_images: None,
             session_tmp: None,
+            archive: None,
         }
     }
 
@@ -918,6 +932,7 @@ mod tests {
             chat: None,
             chat_images: None,
             session_tmp: None,
+            archive: None,
         };
 
         let plain: Vec<String> = base
@@ -966,6 +981,7 @@ mod tests {
             chat: None,
             chat_images: None,
             session_tmp: None,
+            archive: None,
         };
 
         let plain: Vec<String> = base
@@ -1023,6 +1039,7 @@ mod tests {
             chat: None,
             chat_images: None,
             session_tmp: None,
+            archive: None,
         };
 
         let plain: Vec<String> = base

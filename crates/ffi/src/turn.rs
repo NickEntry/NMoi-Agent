@@ -347,6 +347,11 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
         None | Some(Value::Null) => None,
         Some(_) => Some(PathBuf::from(envir_path(value, "session_tmp")?)),
     };
+    // 归档（D317）：可选。给了才绑 `/archive`——标记行里那个路径要在容器里读得到。
+    let archive = match value.get("archive") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(PathBuf::from(envir_path(value, "archive")?)),
+    };
     Ok(Some(EnvirSpec {
         proot: paths[0].clone(),
         loader: paths[1].clone(),
@@ -357,6 +362,7 @@ fn parse_envir(root: &Value) -> FfiResult<Option<EnvirSpec>> {
         chat,
         chat_images,
         session_tmp,
+        archive,
     }))
 }
 

@@ -275,6 +275,29 @@ impl Storage {
             }
             self.append_unit(target, &copy)?;
         }
+        // 归档（D317）：副本里的标记行写着 `/archive/<hex>.txt`，那条文件在这个会话的
+        // 目录下也得有一份。ref 是内容寻址的全局主键，内容本来就还在库里，照抄一份即可——
+        // 不抄的话，副本里每一处"已归档"都会变成"取不到了"。
+        let refs: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT DISTINCT archived_ref FROM messages
+                 WHERE conv_id = ?1 AND archived_ref IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([target.to_string()], |row| row.get::<_, String>(0))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            out
+        };
+        for text in refs {
+            let Ok(reference) = text.parse::<ArchiveRef>() else {
+                continue;
+            };
+            if let Ok(entry) = self.fetch_archive(&reference) {
+                self.materialize_archive(target, &entry)?;
+            }
+        }
         // 模型跟着走：副本第一次发消息时用的是"原来那个"，而不是供应商的第一个模型（D205）。
         if let Some(model) = model {
             self.set_conversation_model(target, &model)?;
@@ -531,6 +554,21 @@ impl Storage {
     /// 删会话时整目录一起删。
     pub fn session_tmp_dir(&self, session: SessionId) -> std::path::PathBuf {
         self.session_dir(session).join("tmp")
+    }
+
+    /// 会话的归档目录：`<库目录>/sessions/<会话 id>/archive/`（D317）。
+    ///
+    /// 文件工具里的 `/archive` 与容器里的 `/archive` 都是它；删会话时整目录一起删。
+    pub fn session_archive_dir(&self, session: SessionId) -> std::path::PathBuf {
+        self.session_dir(session).join("archive")
+    }
+
+    /// 一条归档物化之后落在哪儿：`…/archive/<hex>.txt`。
+    ///
+    /// 名字由 `ArchiveRef::file_name` 定（去掉 `ref#`），与标记行里那个路径是同一份拼法。
+    pub fn archive_file(&self, session: SessionId, reference: &ArchiveRef) -> std::path::PathBuf {
+        self.session_archive_dir(session)
+            .join(reference.file_name())
     }
 
     fn session_dir(&self, session: SessionId) -> std::path::PathBuf {
@@ -929,12 +967,17 @@ impl Storage {
                         entry.rf
                     )));
                 }
+                // 库里已经有了，文件可能被删过（清盘、迁移）——补回来再走。
+                // 顺序是"先落文件再认成功"：物化失败就不算这条归档可用，
+                // 调用方（`apply_forms`）会退回全文，而不是把内容换成一句取不回来的话。
+                self.materialize_archive(session, &entry)?;
                 return Ok(entry.rf);
             }
             Err(StorageError::Archive(nmoi_core::archive::ArchiveError::NotFound { .. })) => {}
             Err(err) => return Err(err),
         }
 
+        self.materialize_archive(session, &entry)?;
         self.conn.execute(
             "INSERT INTO archive(ref, conv_id, content, tokens, source, descriptor, protected,
                                   origin_session, origin_message, origin_turn, content_hash,
@@ -957,6 +1000,26 @@ impl Storage {
             ],
         )?;
         Ok(entry.rf)
+    }
+
+    /// 把一条归档写成文件（D317）：`sessions/<id>/archive/<hex>.txt`，内容逐字节照抄。
+    ///
+    /// 为什么要有这一步：库里那份只有 core 内部读得到，模型手上只有一行标记。
+    /// 物化之后 `read_file` / `grep` / 容器里的 `cat` 都能把它取回来——
+    /// 取回不通，F3 的占位符就是"内容被删了，只留一个编号"。
+    ///
+    /// 失败往上抛：物化失败而库里写着"已归档"，是最坏的一种不一致。
+    fn materialize_archive(
+        &self,
+        session: SessionId,
+        entry: &ArchiveEntry,
+    ) -> Result<(), StorageError> {
+        let path = self.archive_file(session, &entry.rf);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, entry.content.as_bytes())?;
+        Ok(())
     }
 
     /// 确定性取回。不做模糊匹配。
@@ -1753,6 +1816,10 @@ impl nmoi_core::session::HistoryStore for Storage {
     /// 这个会话自己的暂存目录（D294）：文件工具的 `/tmp` 落到它。
     fn session_tmp_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         Some(Storage::session_tmp_dir(self, session))
+    }
+
+    fn session_archive_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        Some(Storage::session_archive_dir(self, session))
     }
 
     /// 跨会话只读（D295）：别的会话的索引。查不出来就当"看不到"，不编。

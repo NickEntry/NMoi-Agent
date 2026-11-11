@@ -139,6 +139,12 @@ pub struct ToolContext<'a> {
     /// `None` = 这一轮没有会话上下文（直接 `invoke`、内存历史实现）：那时 `/tmp` 报错，
     /// 不退回宿主的 `/tmp`——退回等于让两个会话共用一份，正是要隔离掉的东西。
     pub session_tmp: Option<&'a std::path::Path>,
+    /// 这个会话的归档目录（`sessions/<id>/archive`，D317）。文件工具里的 `/archive/...`
+    /// 落到这儿；容器里同一份挂到 `/archive`。
+    ///
+    /// F2–F4 把大块工具结果换成一行标记时，标记里写的就是 `/archive/<hex>.txt`。
+    /// 没有这一格，那条标记就是一句"东西在别处"——模型读不到，等于内容被扔了。
+    pub session_archive: Option<&'a std::path::Path>,
     /// 上下文图片清单的上限（0 = 用默认 20）。见 [`crate::images`]。
     pub image_limit: u32,
     /// 满了之后还能临时多留几张（D272）：`0` = 关。见 [`crate::images::room_of`]。
@@ -171,6 +177,7 @@ impl<'a> ToolContext<'a> {
             chat_images: None,
             sessions: None,
             session_tmp: None,
+            session_archive: None,
             image_limit: 0,
             image_temp_limit: 0,
         }
@@ -192,6 +199,12 @@ impl<'a> ToolContext<'a> {
     /// 这个会话自己的暂存目录（D294）：文件工具里的 `/tmp` 落到它。
     pub fn with_session_tmp(mut self, dir: Option<&'a std::path::Path>) -> Self {
         self.session_tmp = dir;
+        self
+    }
+
+    /// 这个会话的归档目录（D317）：文件工具里的 `/archive/...` 落到它。
+    pub fn with_session_archive(mut self, dir: Option<&'a std::path::Path>) -> Self {
+        self.session_archive = dir;
         self
     }
 
@@ -464,38 +477,80 @@ fn optional_bool(args: &Value, key: &str, default: bool) -> bool {
     args.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
 
-/// 一次文件工具调用真正落到哪儿（D294）。
+/// 一次文件工具调用真正落到哪儿（D294 / D317）。
 ///
-/// 文件工具只收 **工作区相对路径**，唯一的例外是 `/tmp`：它是这条会话自己的暂存目录
-/// （`sessions/<id>/tmp`），与容器里的 `/tmp` 是同一份，两个会话之间看不见。
+/// 文件工具只收 **工作区相对路径**，另有两个固定前缀：
+///
+/// - `/tmp` —— 这条会话自己的暂存目录（`sessions/<id>/tmp`），与容器里的 `/tmp` 是同一份；
+/// - `/archive` —— 这条会话的归档（`sessions/<id>/archive`），与容器里的 `/archive` 是同一份。
+///   **只读**：归档是库的那一份投影，改文件不改库，下一轮照样按库里的内容替换它。
 ///
 /// 为什么不干脆接受更多绝对路径：绝对路径一旦放行，`Workspace::resolve` 那道
-/// "只许落在根目录里"的检查就形同虚设。这里只映射**一个固定前缀**，别的一律照旧拒绝。
+/// "只许落在根目录里"的检查就形同虚设。这里只映射**两个固定前缀**，别的一律照旧拒绝。
 struct Target<'a> {
     workspace: std::borrow::Cow<'a, Workspace>,
-    /// 相对 `workspace` 的路径；`/tmp` 本身给的是 `.`（等于那个根）。
+    /// 相对 `workspace` 的路径；前缀本身给的是 `.`（等于那个根）。
     path: String,
+    /// 这一处不许写（归档是库的投影）。
+    read_only: bool,
+}
+
+/// `path` 是不是落在 `prefix` 这个虚拟根下；是的话给出它后面那一段（前缀本身给空串）。
+fn under<'p>(path: &'p str, prefix: &str) -> Option<&'p str> {
+    if path == prefix {
+        return Some("");
+    }
+    path.strip_prefix(prefix)?.strip_prefix('/')
 }
 
 /// 把 `path` 解析成"哪个根 + 哪个相对路径"。
 ///
-/// `/tmp` 没有会话上下文时**报错，不回落**：回落到宿主 `/tmp` 等于让两个会话共用一份，
-/// 那正是这一层要隔离掉的东西。
+/// `/tmp` 与 `/archive` 没有会话上下文时**报错，不回落**：回落到宿主 `/tmp`
+/// 等于让两个会话共用一份，回落到工作区等于让"取回"变成"读不到却说文件不存在"。
 fn target<'a>(
     ctx: &ToolContext<'_>,
     workspace: &'a Workspace,
     path: &str,
 ) -> Result<Target<'a>, ToolOutcome> {
     let trimmed = path.trim();
-    let rest = if trimmed == "/tmp" {
-        Some("")
-    } else {
-        trimmed.strip_prefix("/tmp/")
-    };
-    let Some(rest) = rest else {
+    // 归档（D317）：先判它。文件不在就明说"取不到了"——
+    // 这句话是给模型看的：那一行标记还在，但它手里已经没有原文了。
+    if let Some(rest) = under(trimmed, crate::archive::ARCHIVE_DIR) {
+        let Some(root) = ctx.session_archive else {
+            return Err(ToolOutcome::failed(
+                "`/archive` 是会话私有的，这一轮没有会话上下文（或这个历史实现不存归档）；\
+                 用工作区相对路径，或先发一条消息让这一轮有会话。"
+                    .to_string(),
+            ));
+        };
+        if !rest.is_empty() && !root.join(rest).exists() {
+            return Err(ToolOutcome::failed(format!(
+                "取不到了：`{trimmed}` 不在。这一轮的那段归档已经没了\
+                 （会话删掉时整目录一起删，重新生成的历史也不会补回来）；\
+                 只能按标记那一行里的 token 数与描述处理，别再假设原文还在。"
+            )));
+        }
+        let opened = Workspace::open(root).map_err(|error| {
+            ToolOutcome::failed(format!(
+                "会话归档目录建不出来（{}）：{error}",
+                root.display()
+            ))
+        })?;
+        return Ok(Target {
+            workspace: std::borrow::Cow::Owned(opened),
+            path: if rest.is_empty() {
+                ".".to_string()
+            } else {
+                rest.to_string()
+            },
+            read_only: true,
+        });
+    }
+    let Some(rest) = under(trimmed, "/tmp") else {
         return Ok(Target {
             workspace: std::borrow::Cow::Borrowed(workspace),
             path: trimmed.to_string(),
+            read_only: false,
         });
     };
     let Some(root) = ctx.session_tmp else {
@@ -518,6 +573,7 @@ fn target<'a>(
         } else {
             rest.to_string()
         },
+        read_only: false,
     })
 }
 
@@ -928,6 +984,13 @@ impl Tool for WriteFileTool {
             Ok(spot) => spot,
             Err(outcome) => return outcome,
         };
+        if spot.read_only {
+            return ToolOutcome::failed(format!(
+                "`{}` 是归档，只读：它是库里那一份的投影，写进去下一次照样被库里的内容覆盖。\n\
+                 要改那一段内容，用 edit_message 改对应的那条消息。",
+                path.trim()
+            ));
+        }
         match spot.workspace.write_file(&spot.path, &content) {
             Ok(result) => {
                 ToolOutcome::ok(format!("已写入 {}（{} 字节）", result.path, result.bytes))
@@ -987,6 +1050,12 @@ impl Tool for EditFileTool {
             Ok(spot) => spot,
             Err(outcome) => return outcome,
         };
+        if spot.read_only {
+            return ToolOutcome::failed(format!(
+                "`{}` 是归档，只读：它是库里那一份的投影，改了不生效。要改内容用 edit_message。",
+                path.trim()
+            ));
+        }
         match spot
             .workspace
             .edit_file(&spot.path, &old, &new, replace_all)
@@ -1757,6 +1826,96 @@ mod tests {
             ToolOutcome::Ok { text, .. } => assert!(text.contains("a.txt"), "{text}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// 标记行里的 `/archive/<hex>.txt` 真的读得到（D317）：这是"取回"的全部意义。
+    #[test]
+    fn archive_marker_path_is_readable() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let archive = store.path().join("sessions").join("s_1").join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        let entry = crate::archive::ArchiveEntry::new_redacted(
+            "原始工具输出：37 行日志".to_string(),
+            crate::source::SourceTag::ToolResult,
+            crate::archive::Origin::new(
+                crate::ids::SessionId::new(),
+                crate::ids::MessageId::new(crate::ids::SessionId::new(), 1),
+                0,
+            ),
+            12,
+            0,
+        );
+        let file = archive.join(entry.rf.file_name());
+        fs::write(file, entry.content.as_bytes()).unwrap();
+        let marker = crate::form::truncation_marker(entry.tokens, &entry.rf);
+        let path = crate::archive::guest_path(&entry.rf);
+        assert!(marker.contains(&path), "{marker}");
+
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_session_archive(Some(&archive));
+        let read = registry.invoke("read_file", &format!(r#"{{"path":"{}"}}"#, path), &ctx);
+        match read {
+            ToolOutcome::Ok { text, .. } => {
+                assert!(text.contains("原始工具输出"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 归档被删掉之后，读它要说"取不到了"，不能说"路径不存在，去 list_dir 看看"——
+    /// 后者会把模型引去寻找一个本来就不会再出现的东西。
+    #[test]
+    fn a_missing_archive_says_it_is_gone() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let archive = store.path().join("sessions").join("s_1").join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_session_archive(Some(&archive));
+        let read = registry.invoke("read_file", r#"{"path":"/archive/0000.txt"}"#, &ctx);
+        match read {
+            ToolOutcome::Failed { .. } => {
+                let text = read.text();
+                assert!(text.contains("取不到了"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 归档是只读的：写进去等于写一份下一轮就被库覆盖的副本。
+    #[test]
+    fn archive_is_read_only() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let archive = store.path().join("sessions").join("s_1").join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_session_archive(Some(&archive));
+        let written = registry.invoke(
+            "write_file",
+            r#"{"path":"/archive/a.txt","content":"x"}"#,
+            &ctx,
+        );
+        assert!(matches!(written, ToolOutcome::Failed { .. }), "{written:?}");
+        assert!(!archive.join("a.txt").exists());
+        let edited = registry.invoke(
+            "edit_file",
+            r#"{"path":"/archive/a.txt","old":"x","new":"y"}"#,
+            &ctx,
+        );
+        assert!(matches!(edited, ToolOutcome::Failed { .. }), "{edited:?}");
+    }
+
+    /// 没有会话上下文时不回落：`/archive` 直接报错，不当成工作区里的一个空文件。
+    #[test]
+    fn archive_without_a_session_does_not_fall_back() {
+        let (_work, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+        let read = registry.invoke("read_file", r#"{"path":"/archive/a.txt"}"#, &ctx);
+        assert!(matches!(read, ToolOutcome::Failed { .. }), "{read:?}");
+        assert!(read.text().contains("/archive"), "{}", read.text());
     }
 
     /// 两个会话的 `/tmp` 不是同一份：一个写的，另一个读不到。

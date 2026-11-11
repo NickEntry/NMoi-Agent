@@ -104,14 +104,18 @@ impl ArchiveEntry {
         self
     }
 
-    /// 指针行（F4）：来源 + 位置 + token 数 + 一句话内容。
+    /// 指针行（F4）：来源 + 位置 + 可读路径 + token 数 + 一句话内容。
+    ///
+    /// 带上可读路径（`/archive/<hex>.txt`）是有意的：模型手上只有这一行，
+    /// 它得能自己把那一段取回来。只给 `ref#…` 的话，取回要靠猜文件叫什么。
     pub fn pointer_line(&self) -> String {
         format!(
-            "[archived {} | {} tok | {} | {} | {}]",
+            "[archived {} | {} tok | {} | {} | {} | {}]",
             self.rf,
             self.tokens,
             self.source,
             self.origin.short(),
+            guest_path(&self.rf),
             self.descriptor
         )
     }
@@ -123,6 +127,20 @@ impl ArchiveEntry {
 }
 
 pub const DEFAULT_DESCRIPTOR_MAX: usize = 60;
+
+/// 归档物化以后，模型看到的**那一个**路径前缀（D317）。
+///
+/// 文件工具把 `/archive/...` 解析成这条会话的归档目录，容器里同一份也挂在 `/archive`
+/// ——两边是同一个名字。换个名字在容器里叫 `/chat/archive`、在工具里叫 `/archive`，
+/// 模型迟早会拿着一个名字去另一个地方找，然后说"文件不存在"。
+pub const ARCHIVE_DIR: &str = "/archive";
+
+/// 一条 ref 的物化路径，形如 `/archive/a3f9c1d2e4b5a6c7.txt`。
+///
+/// 标记行、文件工具、容器挂载点三处都从这里出——写死三次，就会有一天只改了一处。
+pub fn guest_path(reference: &ArchiveRef) -> String {
+    format!("{ARCHIVE_DIR}/{}", reference.file_name())
+}
 
 fn sha256_hex(content: &str) -> String {
     let mut hasher = Sha256::new();
