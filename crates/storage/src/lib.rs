@@ -1135,6 +1135,56 @@ mod tests {
         assert_eq!(fetched.summary(), Some("失败那次的构建日志"));
     }
 
+    /// 两种中断分开数（D323）：索引欠着几条、哪几条消息没说完。
+    /// 这两样都只是列，展开请求时不看它们——标记不进上下文。
+    #[test]
+    fn interrupts_count_both_kinds_from_the_library() {
+        use nmoi_core::session::HistoryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let session = storage
+            .create_conversation("中断", "device-a", "default")
+            .unwrap();
+        assert_eq!(storage.interrupts(session).unwrap().summaries, 0);
+        assert!(storage.interrupts(session).unwrap().incomplete.is_empty());
+
+        let entry = nmoi_core::archive::ArchiveEntry::new_redacted(
+            "原文".to_string(),
+            SourceTag::ToolResult,
+            nmoi_core::archive::Origin::new(session, MessageId::new(session, 1), 0),
+            10,
+            1_700_000_000_000,
+        );
+        let reference = entry.rf.clone();
+        storage.put_archive(session, entry).unwrap();
+        HistoryStore::archive_mark_pending(&mut storage, &reference).unwrap();
+
+        let unfinished = Message::text(
+            MessageId::new(session, 1),
+            Role::Assistant,
+            SourceTag::History,
+            "说到一半",
+            4,
+            1_700_000_000_000,
+            LogicalClock::new(1),
+        )
+        .mark_incomplete(true);
+        storage
+            .append_unit(session, &AtomicUnit::turn(unfinished).unwrap())
+            .unwrap();
+
+        let seen = storage.interrupts(session).unwrap();
+        assert_eq!(seen.summaries, 1);
+        assert_eq!(seen.incomplete.len(), 1, "{seen:?}");
+
+        // 索引补上之后，摘要那一项归零；没说完那条**不归它管**，还在。
+        HistoryStore::archive_set_note(&mut storage, &reference, "写好了").unwrap();
+        let after = storage.interrupts(session).unwrap();
+        assert_eq!(after.summaries, 0);
+        assert_eq!(after.incomplete.len(), 1);
+    }
+
     /// 补索引的时候不能把已有的索引擦掉：`archive_mark_pending` 只在 `note IS NULL` 时落空串。
     ///
     /// 否则每一轮都会重新降级同一段、把上一轮写好的索引清掉，然后整轮都在补同一批。

@@ -170,6 +170,33 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listConversationsJson
     to_jstring(&mut env, text)
 }
 
+/// 这个会话欠着什么（D323）：索引待补几条、哪几条消息没说完。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_storageInterruptsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => {
+            let Ok(c_session) = CString::new(session) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `session` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_interrupts_json(
+                handle as u64,
+                c_session.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 // ---- 设置面（D86）--------------------------------------------------------
 //
 // 四个动词照着 C ABI 抄，**scope 是参数而不是函数名**：在 Kotlin 侧再包一层

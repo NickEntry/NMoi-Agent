@@ -70,6 +70,20 @@ internal data class TurnOutcome(
  *    再发请求。所以**失败时用户的话可能已经进库了**，这一点必须回给界面
  *    （[wasUserTextSaved]），否则要么丢字，要么重复发两条一样的话。
  */
+/**
+ * 这个会话欠着什么（D323）。
+ *
+ * 两样分开存：摘要是"下次请求会先补"的东西，消息生成是"这一条还没说完"。
+ * 它们清掉的方式不一样（前者做完就没，后者要续话），所以不能合成一个数。
+ * **都不进上下文**：界面上看得见，模型那边一个字没有。
+ */
+internal data class Interrupts(
+    val summaries: Int = 0,
+    val incomplete: List<String> = emptyList(),
+) {
+    val isEmpty: Boolean get() = summaries == 0 && incomplete.isEmpty()
+}
+
 internal object TurnRepository {
     suspend fun send(
         context: Context,
@@ -403,11 +417,23 @@ internal object TurnRepository {
     }
 
     /**
-     * 给输出留多少位置：优先用模型填的最大输出，没有就按窗口的四分之一，夹在 1024–8192。
+     * 这个会话欠着什么（D323）：`summaries` = 索引待补几条，`incomplete` = 没说完的消息 id。
      *
-     * 压太狠（留太多）会让上下文剩不下多少；留太少则模型可能写一半被截断。
-     * 这个区间是"能正常答完一段话"的经验值。
+     * 读不出来就当"没有"：标记是提醒，不该因为它读失败就挡住发消息。
      */
+    suspend fun interrupts(databasePath: String, sessionId: String): Interrupts =
+        withStorageHandle(databasePath) { handle ->
+            NmoiFfi.storageInterrupts(handle, sessionId).map { envelope ->
+                val ids = ArrayList<String>()
+                envelope.optJSONArray("incomplete")?.let { array ->
+                    for (index in 0 until array.length()) {
+                        array.optString(index).takeIf { it.isNotBlank() }?.let { ids.add(it) }
+                    }
+                }
+                Interrupts(summaries = envelope.optInt("summaries", 0), incomplete = ids)
+            }
+        }.getOrElse { Interrupts() }
+
     /**
      * 索引摘要那一段配置（D322）。
      *
@@ -445,6 +471,12 @@ internal object TurnRepository {
             }
     }
 
+    /**
+     * 给输出留多少位置：优先用模型填的最大输出，没有就按窗口的四分之一，夹在 1024–8192。
+     *
+     * 压太狠（留太多）会让上下文剩不下多少；留太少则模型可能写一半被截断。
+     * 这个区间是"能正常答完一段话"的经验值。
+     */
     private fun reserveOutput(maxTokens: Int?, window: Int): Long {
         val base = maxTokens ?: (window / 4)
         return base.coerceIn(1024, 8192).toLong()

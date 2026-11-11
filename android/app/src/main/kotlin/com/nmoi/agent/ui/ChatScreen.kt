@@ -611,6 +611,22 @@ internal fun ChatScreen(
     }
 
     val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()
+    // 两种中断（D323）：从库里现读，界面只画标记。`busy` 翻回 false 就是"这一轮收尾了"，
+    // 顺手读一次——续话 / 发消息都会走到这里，所以"做完就消"不用另加动作。
+    var interrupts by remember(sessionId) { mutableStateOf(Interrupts()) }
+    LaunchedEffect(sessionId, busy, allMessages.size) {
+        val sid = sessionId
+        if (sid == null) {
+            interrupts = Interrupts()
+            return@LaunchedEffect
+        }
+        if (busy) return@LaunchedEffect
+        interrupts = TurnRepository.interrupts(databasePath, sid)
+    }
+    // 没说完的那一条：续话只对"列表里最后一条可重试的消息"有意义，中间那些交给重试。
+    val stalled = interrupts.incomplete.lastOrNull()
+        ?.let { id -> allMessages.lastOrNull { it.id == id } }
+        ?.takeIf { it.canRetry }
 
     // 库里那份到了：收尾（0.15ah）。放在 `snapshot` 之后——它要等这个值换过才动。
     LaunchedEffect(snapshot) {
@@ -1581,6 +1597,8 @@ internal fun ChatScreen(
                     thinkingLabel = thinkingLabel,
                     onEditTextReady = { editTextRef.value = it },
                     onSend = sendTurn,
+                    interrupts = interrupts,
+                    onContinueStalled = stalled?.let { message -> { continueTurn(message) } },
                     onQueue = { queueSheet = true },
                     queued = if (sessionId == null) 0 else SendQueue.count(sessionId),
                     onStop = {
@@ -4723,6 +4741,10 @@ private fun Composer(
     onEditTextReady: (EditText) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    /** 两种中断（D323）：索引待补几条、有没有没说完的那一条。 */
+    interrupts: Interrupts = Interrupts(),
+    /** 点「续话」：接上没说完的那一条。`null` = 现在没有可接的（或它不可重试）。 */
+    onContinueStalled: (() -> Unit)? = null,
     /** 长按菜单里进"发送队列"那一层（用户 2026-10-31 指定的入口）。 */
     onQueue: () -> Unit,
     queued: Int,
@@ -4756,6 +4778,34 @@ private fun Composer(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp),
             )
+        }
+
+        // 中断标记（D323）：只报状态，不解释。索引那一项会**自己消掉**（下次请求先补），
+        // 没说完那一项要续话才消——所以只有它带一个动作。
+        if (!interrupts.isEmpty) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = buildString {
+                        if (interrupts.summaries > 0) append("索引待补 ${interrupts.summaries} 段")
+                        if (interrupts.summaries > 0 && interrupts.incomplete.isNotEmpty()) append(" · ")
+                        if (interrupts.incomplete.isNotEmpty()) append("有 ${interrupts.incomplete.size} 条没说完")
+                        if (interrupts.incomplete.isNotEmpty() && onContinueStalled != null) {
+                            append(" · 续话可接着写")
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (onContinueStalled != null) {
+                    ChipButton("续话", primary = false) { onContinueStalled() }
+                }
+            }
         }
 
         // 形状照 PLAN §3.12（也是 kelivo 那一套）：**输入框 + 底部一行图标按钮**。

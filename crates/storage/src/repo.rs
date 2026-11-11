@@ -6,6 +6,7 @@
 //! - 每次 append 检查逻辑时钟单调（§5.1、R7）。
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -33,6 +34,18 @@ pub enum StorageError {
     Inconsistent(String),
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// 这个会话欠着什么（D323）。
+///
+/// 两种中断分开数：摘要是"下次请求会先补"的东西，消息生成是"这一条还没说完"。
+/// 界面上它们的位置、清掉的方式都不一样，所以不能合成一个数。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInterrupts {
+    /// 还没有索引的归档条数。
+    pub summaries: usize,
+    /// 没说完的那些消息（按 seq 升序）。
+    pub incomplete: Vec<MessageId>,
 }
 
 /// 单张图片的上限（D208）。挡的是"手滑选了原图"：8 MB 的字节编成 base64 是 11 MB，
@@ -573,6 +586,35 @@ impl Storage {
 
     fn session_dir(&self, session: SessionId) -> std::path::PathBuf {
         self.data_root().join("sessions").join(session.to_string())
+    }
+
+    /// 这个会话欠着什么（D323）：两种中断都从库里现读，不靠内存标记。
+    ///
+    /// `summaries` = `archive.note` 还是空串的条数（问过、没写成）。
+    /// `incomplete` = 上一轮没说完的消息 id（`messages.incomplete = 1`），按 seq 升序。
+    ///
+    /// 两样都**不进上下文**：一个是归档列，一个是消息列，`wire` 展开时不看它们。
+    pub fn interrupts(&self, session: SessionId) -> Result<SessionInterrupts, StorageError> {
+        let summaries: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM archive WHERE conv_id = ?1 AND note = ''",
+            [session.to_string()],
+            |row| row.get(0),
+        )?;
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM messages WHERE conv_id = ?1 AND incomplete = 1 ORDER BY seq ASC",
+        )?;
+        let rows = statement.query_map([session.to_string()], |row| row.get::<_, String>(0))?;
+        let mut incomplete = Vec::new();
+        for row in rows {
+            let text = row?;
+            if let Ok(id) = MessageId::from_str_value(&text) {
+                incomplete.push(id);
+            }
+        }
+        Ok(SessionInterrupts {
+            summaries: summaries.max(0) as usize,
+            incomplete,
+        })
     }
 
     /// 跨会话只读（D295）要的索引：全部会话的 id 与名字，外加 `sessions/` 这个根。

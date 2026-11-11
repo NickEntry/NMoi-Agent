@@ -92,6 +92,10 @@ internal object NmoiFfi {
             NativeBridge.setConversationWorkspaceJson(handle, session, workspace)
         }
 
+    /** 这个会话欠着什么（D323）：索引待补几条、哪几条消息没说完。 */
+    suspend fun storageInterrupts(handle: Long, session: String): Result<JSONObject> =
+        call("storage_interrupts") { NativeBridge.storageInterruptsJson(handle, session) }
+
     /** 删会话（0.15d）。`deleted=false` 不算失败。 */
     suspend fun deleteConversation(handle: Long, session: String): Result<JSONObject> =
         call("delete_conversation") { NativeBridge.deleteConversationJson(handle, session) }

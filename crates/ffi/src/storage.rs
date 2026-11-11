@@ -202,6 +202,28 @@ pub extern "C" fn nmoi_storage_rename_conversation_json(
     })
 }
 
+/// 这个会话欠着什么（D323）：`{"summaries":N,"incomplete":["<消息 id>",…]}`。
+///
+/// 两样都**不进上下文**——一个是归档列、一个是消息列，展开请求时都不看它们。
+/// 界面拿它画两种标记：索引待补（下次请求会先补上）、这一条没说完（续话才清）。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_interrupts_json(handle: u64, session: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let session_id = parse_session(read_str(session, "session")?)?;
+        let interrupts = with_storage(handle, |storage| {
+            storage.interrupts(session_id).map_err(storage_error)
+        })?;
+        Ok(json!({
+            "summaries": interrupts.summaries,
+            "incomplete": interrupts
+                .incomplete
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>(),
+        }))
+    })
+}
+
 /// 删一个会话（0.15d）。出参：`{deleted: bool}`。
 ///
 /// `deleted=false` 不算失败：两个入口（长按菜单、多选删除）同时点到同一条是真会发生的。

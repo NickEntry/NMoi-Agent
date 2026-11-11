@@ -81,6 +81,13 @@ internal object NativeBridge {
     /** 改这条会话自己的工作区（D271）。**空串 = 跟助手**。 */
     external fun setConversationWorkspaceJson(handle: Long, session: String, workspace: String): String
 
+    /**
+     * 这个会话欠着什么（D323）：`{"summaries":N,"incomplete":["<消息 id>",…]}`。
+     *
+     * 两样都**不进上下文**——界面拿它画标记，模型一个字看不到。
+     */
+    external fun storageInterruptsJson(handle: Long, session: String): String
+
     /** 删会话（0.15d）。回 `{"deleted":bool}`；`false` = 本来就没有（不算错）。 */
     external fun deleteConversationJson(handle: Long, session: String): String
 
