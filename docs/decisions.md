@@ -2360,3 +2360,68 @@ D302 留的例外：池里那把钥匙"行不行"得用户手点徽标。要自�
 - **一条实测警告**：PLAN §P4.4 量过「只摘要」的代价（语气归零、回复长度 2.5 倍、思考长度膨胀 3 倍）。
   所以摘要只能当**索引/判别**，不能当状态的替代。F4 不是"只留摘要"，是"留摘要 + 原文可读"。
 - 判据：kotlinc 只差那 9 个 `R`；`PromptVarsTest` 5 条在 CI 里跑；真机 **V126**。
+
+## D317 归档物化到 `/archive`：标记行自带可读路径（2026-11-11）
+
+D316 把「先补取回」写死在顺序里：F2–F4 会往消息里写 `[… 8.2k tok 已归档 ref#a3f9c1d2e4b5a6c7]`，
+而模型手上没有任何东西能把那个 ref 换回原文（`Storage::fetch_archive` 只在 core 内部用）。
+这一批补的就是那一条。
+
+- **走物化，不走新工具**。`ToolContext`（`crates/core/src/tools.rs`）里没有 storage 句柄，
+  加一个 `fetch_archive` 工具要把一个 trait 对象从 session 一路穿到 ffi；而它已经有
+  `chat_images: Option<&Path>` 这种"给个目录"的先例。归档落成文件之后，
+  `read_file` / `grep` / 容器里的 `cat` 本来就在。
+- **落点**：`sessions/<id>/archive/<hex>.txt`，文件名由 `ArchiveRef::file_name()` 定（去掉 `ref#`）。
+  留 `#` 会在 shell 里被当注释、在 URL 里被当片段——同一个 ref 换个地方就被吃掉后半截。
+- **一个名字，两处都能用**：文件工具把 `/archive/...` 解析到这条会话的归档目录；
+  容器里同一份也挂在 `/archive`（`EnvirSpec.archive`，FFI 的 `envir.archive`，Kotlin 侧
+  `ToolingRepository.sessionArchiveRoot`）。容器里叫 `/chat/archive`、工具里叫 `/archive`
+  的话，模型迟早拿着一个名字去另一个地方找。
+- **标记行带路径**：`form.rs` 的 F2 尾注 / F3 占位 / F4 指针行都写出 `/archive/<hex>.txt`。
+  只给 `ref#…` 等于让模型猜文件叫什么。`archive::guest_path()` 是唯一拼法。
+- **归档只读**：`write_file` / `edit_file` 打 `/archive/...` 直接拒，并说明原因
+  （它是库那一份的投影，改了下一轮照样被库覆盖）。要改内容用 `edit_message`。
+- **文件不在就明说**：`/archive/<hex>.txt` 不存在时回"取不到了，只能按标记那一行处理"，
+  不退回成"路径不存在，去 list_dir 看看"——后者会把模型引去找一个不会再出现的东西。
+- **复制会话要带上归档**：`copy_conversation` 把副本里引用到的 ref 从库里照抄一份到新会话目录，
+  否则副本里每一处"已归档"都变成取不到。删会话时整目录一起删（`delete_conversation` 已有）。
+- 判据：core **705**（+1 标记带路径、+4 文件工具的 `/archive`）、storage **51**（+4：物化 /
+  补文件 / 删会话 / 复制会话）；真机 **V127**。
+
+## D318 全局系统提示词：三层拼在一处；压缩角色那段终于发出去了（2026-11-11）
+
+用户 2026-11-10 晚：「默认模型设置里面那个系统提示词应该做一下？」
+
+- **三层，顺序写死在一处**（`PromptVars.compose`）：内置那段（调用方给的）→ 全局 → 角色自己那段。
+  角色排最后，所以它压得过全局——"全局"是这些旁路共用的底，"这个角色"是例外。
+  空层当没有：发一个空 `system`，有的上游会当成"清空系统提示"。
+  （PLAN 0.16a 里那句"接在内置那段之前"与"角色那段压过全局"自相矛盾，按后者落：
+  压过要靠位置，位置只能在后面。）
+- **界面**：默认模型页顶上多一行「系统提示词」，行尾是值（`未设置` / `N 字`），点开是一张
+  输入面板，停手 100 ms 落盘，没有「保存」。存 prefs `role.global.system`——跟角色那几份一样，
+  是"这台设备上怎么调这些旁路"的事，不跟着导出跑。
+- **顺手补了一条一直断着的线**：「压缩」这个角色在面板里写的东西**从来没进过请求**。
+  压缩是核心自己拼的（`compress::runner::drive` 用 `scaffold`），Kotlin 只给了供应商与模型。
+  现在 `LoopConfig.system` 带一段，`drive` 把它插在脚手架之后（角色更具体，所以靠后）；
+  `nmoi_compress_run_json` 读 `system`；`CompressRunner.run` 把全局 + 压缩角色那段拼好、
+  填完站位字符串再传。判据是 wire 上那一份：`compress::runner` 里那条用例断言
+  脚手架在前、角色那段紧随其后，且不造空 system。
+- 判据：core **706**、`PromptVarsTest` 8 条（新增 3 条：顺序 / 空层 / 只填声明过的）；
+  真机 **V128**。
+
+## D319 内存与资源回归进 CI（2026-11-11）
+
+用户 2026-11-10：「review 一下做一些内存泄露之类的测试……测试最好是在 GitHub 的工作流进行」。
+
+- 新 job `leak`（`.github/workflows/ci.yml`），跑 `cargo test -p nmoi-ffi --test leak`。
+- **判据是两条数**，不是"看着没涨"：
+  ① `tests/leak.rs` 装一个计数型 `GlobalAlloc`，量"还活着多少字节"。`nmoi_estimate_tokens_json`
+  往返 2,000 次（每次 `nmoi_string_free`）之后，这个数要回到原处（< 64 KB）；
+  ② 句柄表长度（`nmoi_ffi::handle_count()`）在"开 20 次 / 关 20 次"之后回到原处。
+- **一条控制组**：同样 500 次但不 free，必须让数字涨上去（> 8 KB）。它绿了，上面那两条绿
+  才说明探针看得见泄漏——没红过的绿只说明它跑通了。
+- 四条用例共用一份计数器，所以用一把 `Mutex` 串起来（假红最贵：下次真红没人信）；
+  CI 里另外用 `--test-threads=1` 跑一遍，本地/工作区那条不受影响。
+- **还没做**（写在这，别当成已完成）：Kotlin 侧 `KeyPool` / `DraftStore` / `AppSettings`
+  的 prefs 写 N 次不涨、`Vault` / `ToolingRepository` 的 open-close 成对——那些要 Android
+  运行时，JVM 单测里 `SharedPreferences` 是桩，真机判据在 **V129**。

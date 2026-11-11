@@ -56,6 +56,15 @@ fn next_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 表里现在有几格（0.16c 的资源回归用它做判据）。
+///
+/// 只给测试看：句柄**配不配对**在界面上看不出来，漏一个的表现是"用着用着变慢"，
+/// 而那已经晚了。这里要的是一个能直接断言的数。
+#[doc(hidden)]
+pub fn handle_count() -> usize {
+    lock().len()
+}
+
 pub(crate) fn insert_storage(storage: Storage) -> u64 {
     let id = next_id();
     lock().insert(id, Entry::Storage(Box::new(storage)));

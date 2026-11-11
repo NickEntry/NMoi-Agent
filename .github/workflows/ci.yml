@@ -38,6 +38,21 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/ffi_smoke.sh
 
+  # 内存与资源回归（0.16c / D319）。用户 2026-11-10 明确要求放在 GitHub 工作流里。
+  #
+  # 挡的是"用着用着变慢"那一类：漏一个 `nmoi_string_free`、漏一格句柄，
+  # 都不会报错、不会崩，只会慢。判据是两条数（活着的字节 / 句柄表长度）回到原处，
+  # 外加一条**故意漏**的控制组——它绿了才说明探针看得见泄漏。
+  leak:
+    name: leak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 内存与句柄回归
+        run: cargo test --locked -p nmoi-ffi --test leak -- --test-threads=1
+
   msrv:
     name: msrv (1.75)
     runs-on: ubuntu-latest

@@ -28,6 +28,8 @@ use serde_json::json;
 
 mod compress;
 mod handles;
+/// 句柄表里现在有几格（0.16c）：只给资源回归测试断言"打开/关闭配不配对"。
+pub use handles::handle_count;
 mod icons;
 mod images;
 #[cfg(feature = "jni")]
@@ -39,7 +41,8 @@ mod settings;
 // `pub`：集成测试（crates/ffi/tests/versions_abi.rs）要走真实 C ABI 调这一组动词，
 // 模块私有的话外部 crate 拿不到路径。函数本身早就是 `pub extern "C"`。
 pub mod storage;
-mod text;
+/// `pub` 的理由同 `storage`：资源回归（`tests/leak.rs`）要从真实 C ABI 反复调一次补全。
+pub mod text;
 mod tools;
 // `pub` 的理由与 `storage` 那条一样：集成测试（`crates/ffi/tests/stream_e2e.rs`）要按真实 C ABI
 // 起一轮流式、中途问 `turn_busy`——那正是两次真机事故所在的那一层。
