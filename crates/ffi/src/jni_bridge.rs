@@ -349,6 +349,37 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteSettingsJson<'l
     to_jstring(&mut env, text)
 }
 
+/// `Native.deleteDividerJson(handle, divider)`：删一条分界线（D324）。
+///
+/// 为什么界面需要它：压缩**只画线、不删原文**，所以删线就是还原。这条 C ABI 早就有
+/// （`nmoi_storage_delete_divider_json`），但一直没有 JNI 那一跳——手写的这一层漏一个，
+/// 编译期一声不响，运行期只在真机上报 `No implementation found`。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteDividerJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    divider: JString<'local>,
+) -> jstring {
+    let divider = read_string(&mut env, &divider);
+    let text = guarded(move || match divider {
+        Some(divider) => {
+            let Ok(c_divider) = CString::new(divider) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `divider` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_delete_divider_json(
+                handle as u64,
+                c_divider.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.loadUnitsJson(handle, session, limit)`：读会话的原子单元（消息区的数据源）。
 ///
 /// 这一层不解释单元里有什么：`kind`（`turn` / `tool_pair`）、`source`
