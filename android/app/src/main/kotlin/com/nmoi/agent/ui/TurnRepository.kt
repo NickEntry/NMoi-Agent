@@ -27,6 +27,8 @@ internal data class TurnOutcome(
     /** 上下文到了绝对线（D90）提前停手：与"到了轮数上限"是两回事，文案要分开。 */
     val truncated: Boolean = false,
     val compression: CompressionSignal?,
+    /** 连接中途断了（D327）：残文已经落库并标成没说完，界面要说的不是"到了绝对线"。 */
+    val cut: String? = null,
     /** 这一轮模型真的改了几块消息内容（D177 / 0.14y）。`edits` 已经落库，消息区重读即可。 */
     val editedBlocks: Int,
     /** 想改但没写进去的块数（被锁定、内容没变、库拒绝）。有就一定要说。 */
@@ -49,6 +51,10 @@ internal data class TurnOutcome(
             cancelled && length == 0 ->
                 "已停止：这一轮没有正文，没有落版本（旧的那一版留着）"
             cancelled -> "已停止（这一轮留下的正文长度 $length$edited$failed）"
+            // 断流（D327）：残文已经落库、标着没说完，所以要说的是"接着写"而不是"重来"。
+            // 放在 `truncated` 前面：断流也会置 `truncated`，但那是"没说完"的老判据，
+            // 界面上这句话得按真正的原因说。
+            cut != null -> "连接断了（$cut）：已收到 $length 字，可以续话$edited$failed"
             // 这句以前写「轮数用尽，模型没收尾」——像在报错，其实是我自己设的上限。
             // 现在上限可调（D244），文案也要写清"这是上限、不是模型坏了"。
             // 两种"没做完"要分开说（D245）：到了上下文绝对线，还是（用户自己设的）轮数上限。
@@ -571,6 +577,8 @@ internal object TurnRepository {
             cancelled = envelope.optBoolean("cancelled", false),
             finished = envelope.optBoolean("finished", true),
             truncated = envelope.optBoolean("truncated", false),
+            // 断流那一版（D327）：`cut` 只在断流时非空，别的收尾原因不借这个字段。
+            cut = envelope.optString("cut", "").takeIf { it.isNotEmpty() },
             compression = null,
             editedBlocks = 0,
             failedEdits = 0,
@@ -625,6 +633,7 @@ internal object TurnRepository {
             cancelled = report?.optBoolean("cancelled", false) ?: false,
             finished = report?.optBoolean("finished", true) ?: true,
             truncated = report?.optBoolean("truncated", false) ?: false,
+            cut = report?.optString("cut", "")?.takeIf { it.isNotEmpty() },
             compression = envelope.optJSONObject("compression")?.let { signal ->
                 val trigger = signal.optJSONObject("trigger")?.optString("kind", "") ?: ""
                 val action = signal.optString("action", "")

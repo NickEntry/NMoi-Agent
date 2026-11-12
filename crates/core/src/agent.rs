@@ -29,8 +29,10 @@ use crate::clock::LogicalClock;
 use crate::ids::{MessageId, SessionId};
 use crate::message::{Message, OutgoingToolCall, Role, ToolStatus};
 use crate::retry::RetryPolicy;
+use crate::runtime::Collected;
 use crate::runtime::{ChatClient, ChatRequest};
 use crate::source::SourceTag;
+use crate::stream::Completion;
 use crate::stream::FinishReason;
 use crate::tokens::estimate_tokens;
 use crate::tools::{Lane, ToolContext, ToolOutcome, ToolRegistry};
@@ -171,6 +173,12 @@ pub struct TurnReport {
     pub cancelled: bool,
     /// 撞上绝对线被截断（D90）。此时 `finished` 也是 `false`，落库会标 `incomplete`。
     pub truncated: bool,
+    /// 连接中途断了（D327）：已经收到的正文留着，`interrupted` 里是原因。
+    ///
+    /// 和 `truncated` 分开记的理由跟 `cancelled` 一样——三种"没说完"要说三句话：
+    /// 撞了绝对线（上下文满了）、连接断了（网络）、用户点了停止。以前断流借用 `truncated`，
+    /// 界面上于是写着"上下文到了绝对线"，而用户其实什么都没满。
+    pub cut: Option<String>,
     /// 最后一次请求的用量。工具循环会发好几次，前面的那几次的 prompt 都更短，
     /// 拿它们去校准只会把因子算低——所以只留最后一次。
     pub usage: Usage,
@@ -276,18 +284,45 @@ pub fn run_turn<T: Transport>(
         // 流式（0.15n）：边收边把增量交出去，最终拼成与 `complete()` 同形的结果。
         // 断流不算失败——残文留着，下面按 `truncated` 收尾（D194）。
         let mut interrupted = false;
+        // 断在哪儿（D327）：只有"流没等到终止信号"时才填，别的收尾原因不借这个字段。
+        let mut cut_reason: Option<String> = None;
         let completion = if config.stream {
             let mut stream = client.chat(&request).map_err(|error| AgentError::Model {
                 message: error.to_string(),
                 status: error.http_status(),
             })?;
-            let collected =
-                stream
-                    .collect_all(crate::progress::emit)
-                    .map_err(|error| AgentError::Model {
+            // 边收边自己留一份（D327）：`collect_all` 出错时不会把已经收到的字还回来，
+            // 而"收到过字"正是判断这一轮该不该按断流收尾的唯一依据。
+            let mut seen_text = String::new();
+            let mut seen_reasoning = String::new();
+            let collected = stream.collect_all(|text, reasoning| {
+                seen_text.push_str(text);
+                seen_reasoning.push_str(reasoning);
+                crate::progress::emit(text, reasoning);
+            });
+            let collected = match collected {
+                Ok(collected) => collected,
+                // 收到过字：按断流收尾，残文留着（D194 的同一条规矩——丢掉才是失败）。
+                // 一个字都没有才算真失败：那种情况没有可以接的东西。
+                Err(_) if !seen_text.trim().is_empty() => Collected {
+                    completion: Completion {
+                        text: seen_text,
+                        reasoning: seen_reasoning,
+                        tool_calls: Vec::new(),
+                        finish: FinishReason::Unknown("interrupted".into()),
+                        usage: Usage::default(),
+                        model: None,
+                        id: None,
+                    },
+                    interrupted: Some("连接在生成途中断了".to_string()),
+                },
+                Err(error) => {
+                    return Err(AgentError::Model {
                         message: error.to_string(),
                         status: error.http_status(),
-                    })?;
+                    })
+                }
+            };
             // 端点不认 `stream`（回了一段普通 JSON / 干脆没回）→ 一个字都没收到、流就断了。
             // 这时候退回**非流式**重发这一轮一次：不这么做，"端点不支持流式"就变成"回答是空的"。
             //
@@ -311,6 +346,9 @@ pub fn run_turn<T: Transport>(
                 }
             } else {
                 interrupted = collected.interrupted.is_some();
+                if interrupted {
+                    cut_reason = collected.interrupted.clone();
+                }
                 collected.completion
             }
         } else {
@@ -377,6 +415,7 @@ pub fn run_turn<T: Transport>(
         if interrupted {
             report.finished = false;
             report.truncated = true;
+            report.cut = cut_reason.clone();
             return Ok(report);
         }
 
@@ -785,6 +824,85 @@ mod tests {
              \"tool_calls\":[{}]}},\"finish_reason\":\"tool_calls\"}}]}}",
             items.join(",")
         )
+    }
+
+    /// 读到一半就报错的响应体（D327）：模拟"连接在生成途中断了"。
+    ///
+    /// `Scripted` 只会给一整段完整的 body，断流这种事它造不出来——而这一条的判据
+    /// 恰恰是"已经收到的字还在不在"。
+    struct CutAfter {
+        bytes: Vec<u8>,
+        sent: usize,
+    }
+
+    impl std::io::Read for CutAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.sent >= self.bytes.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "连接被掐",
+                ));
+            }
+            let left = &self.bytes[self.sent..];
+            let take = left.len().min(buf.len());
+            buf[..take].copy_from_slice(&left[..take]);
+            self.sent += take;
+            Ok(take)
+        }
+    }
+
+    struct Cutting {
+        body: Mutex<Option<Vec<u8>>>,
+    }
+
+    impl Transport for Arc<Cutting> {
+        fn execute(&self, _request: HttpRequest) -> Result<HttpResponse, TransportError> {
+            let body = self.body.lock().unwrap().take().unwrap_or_default();
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "text/event-stream".into())],
+                body: Box::new(std::io::BufReader::new(CutAfter {
+                    bytes: body,
+                    sent: 0,
+                })),
+            })
+        }
+    }
+
+    /// 连接在生成途中断了：**已经说出来的那半段必须留着**，并且标成"断了"（D327）。
+    ///
+    /// 以前这一条是 `collect_all` 报错 → `run_turn` 直接 `Err` → 屏幕上那半段话
+    /// 连同库里的一起没了，用户只看到一张"重试/放弃"的卡，而那条回答他其实读了一半。
+    #[test]
+    fn a_stream_that_dies_midway_keeps_what_it_said() {
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"前半段还在\"}}]}\n\n";
+        let transport = Arc::new(Cutting {
+            body: Mutex::new(Some(sse.as_bytes().to_vec())),
+        });
+        let client = ChatClient::new(transport);
+        let policy = AssistantPolicy::locked_down();
+        let ctx = ToolContext::new(&policy, None);
+        let registry = ToolRegistry::default();
+        let config = TurnConfig {
+            stream: true,
+            ..TurnConfig::default()
+        };
+
+        let report = run_turn(
+            &client,
+            &base_request(),
+            &history(),
+            &registry,
+            &ctx,
+            &config,
+            &NeverCancel,
+            None,
+        )
+        .expect("收到过字就不该当失败");
+
+        assert_eq!(report.text, "前半段还在", "{report:?}");
+        assert!(!report.finished, "断掉的一轮不算说完了：{report:?}");
+        assert!(report.cut.is_some(), "要能说出是断在哪儿：{report:?}");
     }
 
     /// 第 `at` 次被问"取消了吗"时开始说"是"。用 Cell 就够：run_turn 是单线程的。

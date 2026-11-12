@@ -1065,6 +1065,9 @@ fn turn_json(turn: &SessionTurn, presets: &Value) -> Value {
             "finished": turn.report.finished,
             "cancelled": turn.report.cancelled,
             "truncated": turn.report.truncated,
+            // 断在哪儿（D327）：和 `truncated` 分开。断流也置 `truncated`（"没说完"的老判据不变），
+            // 但界面上要说的是"连接断了、可以续话"，不是"上下文到了绝对线"。
+            "cut": turn.report.cut,
             "ok_count": turn.report.ok_count(),
             "failed_count": turn.report.failed_count(),
             "finish": turn.report.finish.as_ref().map(|finish| finish.as_str().to_string()),
@@ -1637,6 +1640,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             // 用户明明是自己停的，却被告知"到了上限"（2026-11-04 真机就是这么报的）。
             "cancelled": outcome.report.cancelled,
             "truncated": outcome.report.truncated,
+            "cut": outcome.report.cut,
         }))
     })
 }
