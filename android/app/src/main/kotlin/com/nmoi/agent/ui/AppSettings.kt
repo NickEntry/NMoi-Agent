@@ -13,6 +13,7 @@ internal object AppSettings {
     private const val KEY_ALLOW_NEW_VERSION = "allow_new_version"
     private const val KEY_DEFAULT_WINDOW = "default_context_window"
     private const val KEY_IMAGE_COMPRESS = "image.compress"
+    private const val KEY_AUTO_COMPRESS = "context.auto_compress"
     private const val KEY_IMAGE_LONG = "image.long_edge"
     private const val KEY_IMAGE_SHORT = "image.short_edge"
     private const val KEY_IMAGE_QUALITY = "image.quality"
@@ -232,6 +233,19 @@ internal object AppSettings {
         prefs(context).edit()
             .putFloat(KEY_ABSOLUTE, value.coerceIn(MIN_ABSOLUTE, MAX_ABSOLUTE).toFloat())
             .apply()
+    }
+
+    /**
+     * 到了**绝对线**要不要自己压一次（2026-11-12）。
+     *
+     * 默认**关**：压缩会把一段历史移出请求，第一次必须是用户自己按下去的。
+     * 开了之后也只认绝对线——建议线只是"该压了"的提示，拿它自动动手会打断正在看的那段。
+     */
+    fun autoCompress(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_AUTO_COMPRESS, false)
+
+    fun setAutoCompress(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_AUTO_COMPRESS, value).apply()
     }
 
     /**

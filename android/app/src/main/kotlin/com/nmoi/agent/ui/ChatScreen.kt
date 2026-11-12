@@ -667,7 +667,7 @@ internal fun ChatScreen(
     // 窗口没填就不显示——显示一个猜出来的百分比比不显示更糟。
     //
     // 放在 `allMessages` 之后：它要用这个列表。写在前面会引用到还没声明的变量。
-    val contextPercent = remember(allMessages, assistant, choices) {
+    val contextPercent = remember(allMessages, snapshot, assistant, choices) {
         // 和压缩判据同一份分母：模型没填窗口就按应用设置里的默认值算。
         val window = choices
             .firstOrNull { it.first.id == assistant.providerId && it.second.id == assistant.modelId }
@@ -676,7 +676,15 @@ internal fun ChatScreen(
         if (window <= 0) {
             null
         } else {
-            val used = allMessages.sumOf { it.tokens }
+            // **窗口里的量**，不是全量（D326）：压过之后线上那些不再进请求，
+            // 拿全量算会一直停在 98%——那既不是真占用，也会让自动压缩反复触发。
+            val page = snapshot?.page
+            val used = if (page == null) {
+                allMessages.sumOf { it.tokens }
+            } else {
+                page.units.filter { !it.compacted }
+                    .sumOf { unit -> unit.messages.sumOf { it.tokens } } + page.summaryTokens
+            }
             ((used * 100.0) / window).toInt()
         }
     }
@@ -713,6 +721,57 @@ internal fun ChatScreen(
             .take(24)
         if (clean.isBlank()) return@LaunchedEffect
         ConversationRepository.rename(databasePath, sid, clean).onSuccess { onRenamed(clean) }
+    }
+
+    // 自动压缩（D326）：到了**绝对线**自己压一次。只在轮末动手，不打断正在看的那一段。
+    //
+    // 判据用屏幕上那个百分比（`contextPercent`）：用户看到 56%、线画在 55%，压缩就是他预期的；
+    // 另算一个"core 那边的数"只会让两个数字在界面上打架。
+    // `armed` 是"过一次线压一次"：压完窗口真会变小，但万一还压不动（没有可压的切点），
+    // 没有这一道就会每次重组都试一遍。
+    var autoArmed by remember(sessionId) { mutableStateOf(true) }
+    var autoCompressing by remember(sessionId) { mutableStateOf(false) }
+    // 只在**一轮真的结束之后**动手：进会话就压会让人莫名其妙（他可能只是回来看看）。
+    var turnDone by remember(sessionId) { mutableStateOf(0) }
+    var wasBusy by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(busy) {
+        if (wasBusy && !busy) turnDone += 1
+        wasBusy = busy
+    }
+    LaunchedEffect(sessionId, turnDone, contextPercent) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (turnDone == 0 || busy || autoCompressing) return@LaunchedEffect
+        if (!AppSettings.autoCompress(context)) return@LaunchedEffect
+        val percent = contextPercent ?: return@LaunchedEffect
+        val absolute = (AppSettings.absoluteLine(context) * 100).toInt()
+        if (percent < absolute) {
+            autoArmed = true
+            return@LaunchedEffect
+        }
+        if (!autoArmed) return@LaunchedEffect
+        autoArmed = false
+        autoCompressing = true
+        notice = "上下文到 $percent%（绝对线 $absolute%），自动压一次…"
+        scope.launch {
+            val role = RoleRunner.target(context, databasePath, ModelRole.Compress)
+            val useProvider = role?.first
+                ?: choices.firstOrNull { it.first.id == assistant?.providerId }?.first
+            val useModel = role?.second ?: assistant?.modelId.orEmpty()
+            if (useProvider == null || useModel.isBlank()) {
+                notice = "到了绝对线，但没有可用的模型写摘要（模型 → 压缩 里指定一个）"
+                autoCompressing = false
+                return@launch
+            }
+            CompressRunner.run(context, databasePath, sid, useProvider, useModel).fold(
+                onSuccess = { done ->
+                    notice = "已自动压缩：移走 ${done.optInt("archived")} 条 · " +
+                        "摘要 ${done.optInt("summary_chars")} 字"
+                    reloadKey += 1
+                },
+                onFailure = { notice = "自动压缩没成：${it.message}" },
+            )
+            autoCompressing = false
+        }
     }
 
     // 聊天建议（D306）：一轮结束、输入框空着、最后一条是助手时，用「聊天建议」那个角色起几条。

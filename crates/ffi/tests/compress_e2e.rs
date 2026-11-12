@@ -253,6 +253,10 @@ fn compress_lands_the_divider_and_keeps_the_originals() {
         loaded["summary"].as_str().unwrap_or("").contains("a.txt"),
         "摘要正文要能显示出来（铁律②：进了上下文的东西界面上要指得出）：{loaded}"
     );
+    assert!(
+        loaded["divider"]["summary_tokens"].as_u64().unwrap_or(0) > 0,
+        "摘要本身也占上下文，界面算占用率要用这个数：{loaded}"
+    );
     let divider_id = loaded["divider"]["id"]
         .as_str()
         .expect("divider id")

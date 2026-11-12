@@ -7,6 +7,16 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * 上下文那个安全阀报了什么（D90）。
+ *
+ * 为什么是结构、不是一句拼好的话：自动压缩（D326）要按 `trigger` 判"到绝对线了没有"，
+ * 拿中文串去 `contains("absolute")` 是拿正则猜状态——跟多 Key 那次把 401 压成自然语言同一个毛病。
+ */
+internal data class CompressionSignal(val trigger: String, val action: String) {
+    fun line(): String = "压缩信号 $trigger（$action）"
+}
+
 /** 一轮跑完之后，界面该知道的几件事（不做成"模型原文"，那是库里的活）。 */
 internal data class TurnOutcome(
     val assistant: String?,
@@ -16,7 +26,7 @@ internal data class TurnOutcome(
     val finished: Boolean,
     /** 上下文到了绝对线（D90）提前停手：与"到了轮数上限"是两回事，文案要分开。 */
     val truncated: Boolean = false,
-    val compression: String?,
+    val compression: CompressionSignal?,
     /** 这一轮模型真的改了几块消息内容（D177 / 0.14y）。`edits` 已经落库，消息区重读即可。 */
     val editedBlocks: Int,
     /** 想改但没写进去的块数（被锁定、内容没变、库拒绝）。有就一定要说。 */
@@ -51,7 +61,7 @@ internal data class TurnOutcome(
                 if (toolCalls > 0) append("，${toolCalls} 次工具调用")
                 append(edited)
                 append(failed)
-                compression?.let { append("；$it") }
+                compression?.let { append("；${it.line()}") }
             }
         }
     }
@@ -620,7 +630,7 @@ internal object TurnRepository {
                 val action = signal.optString("action", "")
                 when (trigger) {
                     "none", "" -> null
-                    else -> "压缩信号 $trigger（$action）"
+                    else -> CompressionSignal(trigger, action)
                 }
             },
             editedBlocks = edited.size,

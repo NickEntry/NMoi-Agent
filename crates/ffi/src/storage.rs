@@ -853,12 +853,18 @@ pub extern "C" fn nmoi_storage_load_units_json(
                     .map(|entry| entry.content)
             });
             let divider = line.as_ref().map(|(divider, at)| {
+                let tokens = summary
+                    .as_deref()
+                    .map(nmoi_core::estimate_tokens)
+                    .unwrap_or(0);
                 json!({
                     "id": divider.id.as_str(),
                     "after_seq": divider.after_seq,
                     "kind": divider.kind.as_str(),
                     // 线上有几个单元：界面那一行写"已移走 N 条"就用它，不自己数。
                     "covered": at,
+                    // 摘要本身也占上下文（每轮都要发），界面算占用率时要加进去。
+                    "summary_tokens": tokens,
                     "created_at": divider.created_at,
                 })
             });

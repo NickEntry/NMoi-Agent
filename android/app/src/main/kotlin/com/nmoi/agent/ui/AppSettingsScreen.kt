@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,6 +82,8 @@ internal fun AppSettingsScreen(
     // 压缩的两条线与输出预留（D274）：界面上是百分数，存的是 0–1。
     var suggestText by remember { mutableStateOf(percentText(AppSettings.suggestLine(context))) }
     var absoluteText by remember { mutableStateOf(percentText(AppSettings.absoluteLine(context))) }
+    // 自动压缩（D326）：默认关，只在绝对线动手。
+    var autoCompress by remember { mutableStateOf(AppSettings.autoCompress(context)) }
     var reserveText by remember { mutableStateOf(AppSettings.reserveOutput(context).toString()) }
     // 上下文档位与内容形态阈值（D275）。
     var formLevel by remember { mutableStateOf(AppSettings.formLevel(context)) }
@@ -421,6 +424,27 @@ internal fun AppSettingsScreen(
                                 absoluteText = percentText(AppSettings.absoluteLine(context))
                                 notice = "两条线恢复成默认"
                             }
+                        }
+
+                        // 到了绝对线要不要自己压一次（D326）。标题本身说清语义，
+                        // 不再补小字——"只在轮末、只认绝对线"是这一行的全部意思。
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "到了绝对线自动压一次",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Switch(
+                                checked = autoCompress,
+                                onCheckedChange = { on ->
+                                    autoCompress = on
+                                    AppSettings.setAutoCompress(context, on)
+                                },
+                            )
                         }
 
                         // —— 给输出留（D274）——

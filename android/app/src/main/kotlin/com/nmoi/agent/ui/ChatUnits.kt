@@ -169,6 +169,8 @@ internal data class ChatPage(
     val dividerId: String? = null,
     /** 线上有几个单元：界面写"已移走 N 条"直接用它，不自己数。 */
     val covered: Int = 0,
+    /** 摘要本身占多少 token：它每轮都发，算占用率时必须加进去（否则压完还显示满格）。 */
+    val summaryTokens: Int = 0,
 ) {
     val isEmpty: Boolean get() = units.isEmpty()
 
@@ -215,6 +217,7 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
         },
         dividerId = divider?.text("id"),
         covered = divider?.optInt("covered", 0) ?: 0,
+        summaryTokens = divider?.optInt("summary_tokens", 0) ?: 0,
     )
 }
 
