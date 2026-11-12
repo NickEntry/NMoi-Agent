@@ -173,6 +173,8 @@ internal fun ChatScreen(
     val scope = rememberCoroutineScope()
     // 存完一条要重读：`produceState` 只有 key 变了才会重跑，所以用它当"刷新一下"。
     var reloadKey by remember { mutableStateOf(0) }
+    // 压缩那一条线的详情（D324）：压过之后整段历史不再进请求，用户得能看见、也得能撤回。
+    var showCompacted by remember(sessionId) { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     // 提示"上一轮还没结束"）。原来 `remember {}` 不带 key，切会话时这个状态跟着上一场
     // 留在原地，于是新会话一进来就是 busy。
@@ -1578,7 +1580,23 @@ internal fun ChatScreen(
                             selected = setOf(id)
                             shareOpen = true
                         },
+                        onOpenCompacted = { showCompacted = true },
                     )
+                    // 压缩线的详情与还原（D324）：压在列表之上，跟别的面板同一层。
+                    // 放这里而不是放 MessageArea 里，是因为"删线"要写库，而那一层只负责画。
+                    if (showCompacted) {
+                        CompactedSheet(
+                            databasePath = databasePath,
+                            covered = snapshot?.page?.covered ?: 0,
+                            summary = snapshot?.page?.summary,
+                            dividerId = snapshot?.page?.dividerId,
+                            onRestored = {
+                                showCompacted = false
+                                reloadKey += 1
+                            },
+                            onDismiss = { showCompacted = false },
+                        )
+                    }
                 }
             }
 
@@ -2489,6 +2507,8 @@ private fun MessageArea(
     /** 会话落库了没有（重试要写版本）。 */
     retryEnabled: Boolean = false,
     onRetryMessage: (String) -> Unit = {},
+    /** 点顶上那行"已移走 N 条"（D324）：摘要正文与还原在上一层，这里只管举手。 */
+    onOpenCompacted: () -> Unit = {},
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2538,8 +2558,11 @@ private fun MessageArea(
         rows.indexOfLast { row -> row is ChatRow.Single && row.unit.messages.any { it.isUser } }
     }
     val truncated = page?.truncated == true
+    // 压缩线（D324）：压过就在列表顶上摆一行，写明"移走了几条、摘要多少字"，点开能看摘要、能还原。
+    // **线上那几条仍然画在列表里**（原文一条都没删）——不标出来，用户会以为模型还看得见它们。
+    val compacted = page?.compacted == true
     val listState = rememberLazyListState()
-    val headerCount = if (truncated) 1 else 0
+    val headerCount = (if (truncated) 1 else 0) + (if (compacted) 1 else 0)
     val maxBubble = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
@@ -2576,6 +2599,15 @@ private fun MessageArea(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                )
+            }
+        }
+        if (compacted) {
+            item {
+                CompactedBanner(
+                    covered = page?.covered ?: 0,
+                    summaryChars = page?.summary?.length ?: 0,
+                    onOpen = onOpenCompacted,
                 )
             }
         }
@@ -6533,3 +6565,161 @@ private fun CompressSheet(
 
 /** 一次旁路翻译的结果（D306）。不落库：看完就没了，要留就复制。 */
 private data class TranslateResult(val source: String, val text: String)
+
+/**
+ * 列表顶上那一行：这条会话压过（D324）。
+ *
+ * 它只回答一个问题——"模型现在还看得见上面那些吗"。所以只写两个数：移走几条、摘要多少字。
+ * 摘要正文与还原都在点开之后那一层：铺在聊天里，会把一句答案变成三屏。
+ */
+@Composable
+private fun CompactedBanner(covered: Int, summaryChars: Int, onOpen: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpen)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = ActionIcons.RotateCcw,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = "已移走 $covered 条 · 摘要 $summaryChars 字",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f).padding(start = 10.dp),
+            )
+            Text(
+                text = "›",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * 压缩那一条线的详情（D324）：摘要正文 + 还原。
+ *
+ * 为什么还原放在这里而不是"再压一次"：压缩只画线、不删原文，删线就是还原——
+ * 这是这条链路上唯一一个**能撤回**的动作，藏起来等于告诉用户"压下去就别想了"。
+ */
+@Composable
+private fun CompactedSheet(
+    databasePath: String,
+    covered: Int,
+    summary: String?,
+    dividerId: String?,
+    onRestored: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var confirming by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var failure by remember { mutableStateOf<String?>(null) }
+
+    SheetFrame(title = "压缩", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 520.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+        ) {
+            Text(
+                text = "线上 $covered 条已移走 · 摘要 ${summary?.length ?: 0} 字",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (summary == null) {
+                Text(
+                    text = "摘要取不回来了（归档里那条不在了）。还原之后整段历史重新进请求。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                ) {
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+            val text = failure
+            if (text != null) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                if (!confirming) {
+                    ChipButton("收起", primary = true, onClick = onDismiss)
+                    Spacer(Modifier.width(8.dp))
+                    ChipButton(
+                        label = "还原",
+                        primary = false,
+                        enabled = dividerId != null && !busy,
+                        onClick = { confirming = true },
+                    )
+                } else {
+                    ChipButton("算了", primary = false, onClick = { confirming = false })
+                    Spacer(Modifier.width(8.dp))
+                    ChipButton(
+                        label = if (busy) "还原中…" else "确定还原",
+                        primary = true,
+                        enabled = !busy,
+                        onClick = {
+                            val id = dividerId
+                            if (id != null) {
+                                busy = true
+                                failure = null
+                                scope.launch {
+                                    ChatRepository.deleteDivider(databasePath, id).fold(
+                                        onSuccess = { onRestored() },
+                                        onFailure = {
+                                            failure = it.message ?: "还原失败"
+                                            busy = false
+                                            confirming = false
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            if (confirming) {
+                Text(
+                    text = "原文一条都没删。删掉这条线，上面 $covered 条重新进请求。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 18.dp),
+                )
+            } else {
+                Spacer(Modifier.height(18.dp))
+            }
+        }
+    }
+}

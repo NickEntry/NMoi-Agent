@@ -208,9 +208,18 @@ pub extern "C" fn nmoi_compress_run_json(config: *const c_char) -> *mut c_char {
             )
         })?;
 
+        // 归档 + 摘要 + 分界线一次落库（D45）。**分界线才是"窗口变短"的那一刀**：
+        // 只把归档写进去、不画线，库里就是"多了 N+1 条没人引用的归档 + 会话一点没变"，
+        // 而界面照样报"归档 N 条"。放在 run 末尾而不是独立的 commit 步骤，是因为
+        // plan 已经让用户看过切点并按下了开始——这一按就是"允许写"。
+        storage
+            .commit_compression(session, &outcome)
+            .map_err(|error| FfiError::new("storage", error.to_string()))?;
+
         Ok(json!({
             "session": session.to_string(),
             "cut_after_seq": cut_after_seq,
+            "divider": outcome.divider.id.as_str(),
             "above_units": above_units,
             "keep_recent": keep_recent(&root),
             "summary": outcome.injected,

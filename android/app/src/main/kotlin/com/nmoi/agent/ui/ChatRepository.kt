@@ -255,6 +255,22 @@ internal object ChatRepository {
     }
 
     /**
+     * 删掉那条压缩线（D324）：压缩**只画线、不删原文**，所以删线就等于还原。
+     *
+     * 返回 `true` = 线真的没了；`false` = 本来就不在（重开一次页面又点了一下，不算失败）。
+     * 删完之后整段历史重新进请求——那一步由调用方重读一次列表来体现，这里不替它猜。
+     */
+    suspend fun deleteDivider(databasePath: String, dividerId: String): Result<Boolean> =
+        withHandle(databasePath) { handle ->
+            NmoiFfi.deleteDivider(handle, dividerId)
+                .onSuccess { envelope ->
+                    NLog.i("Compress", "还原：线 $dividerId -> deleted=${envelope.optBoolean("deleted")}")
+                }
+                .onFailure { NLog.w("Compress", "还原失败：线 $dividerId ${it.message}") }
+                .map { envelope -> envelope.optBoolean("deleted", false) }
+        }
+
+    /**
      * 开库 → 跑一段 → 关库。
      *
      * 实现搬到 [withStorageHandle]（D156）：模型服务那页也要同一套 open/close，

@@ -26,7 +26,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use serde_json::json;
 
-mod compress;
+// `pub` 的理由同 `storage` / `turn`：集成测试（`tests/compress_e2e.rs`）要按真实 C ABI
+// 跑完一轮压缩，再从库里读分界线——"到底落没落库"只有库能回答。
+pub mod compress;
 mod handles;
 /// 句柄表里现在有几格（0.16c）：只给资源回归测试断言"打开/关闭配不配对"。
 pub use handles::handle_count;

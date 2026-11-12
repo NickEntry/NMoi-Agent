@@ -147,6 +147,12 @@ internal data class ChatUnit(
     val createdAt: Long,
     val messages: List<ChatMessage>,
     val broken: BrokenBlock?,
+    /**
+     * 这一条在压缩线上（D324）：仍然在库里、仍然能编辑，只是**不进请求**了。
+     *
+     * 界面必须标出来——"已经压走的东西还在列表里"如果不说，用户会以为模型还看得见它。
+     */
+    val compacted: Boolean = false,
 ) {
     val isToolPair: Boolean get() = kind == "tool_pair"
 }
@@ -157,8 +163,17 @@ internal data class ChatPage(
     /** 库里的总数：`units.size < total` 时就还有更早的没读（首屏只取最后 N 个）。 */
     val total: Int,
     val truncated: Boolean,
+    /** 线上那段的摘要正文（D324）。没压过、或取不回来时是 null——不假装还在。 */
+    val summary: String? = null,
+    /** 生效的那条线的 id。删它 = 还原（原文一条都没删）。 */
+    val dividerId: String? = null,
+    /** 线上有几个单元：界面写"已移走 N 条"直接用它，不自己数。 */
+    val covered: Int = 0,
 ) {
     val isEmpty: Boolean get() = units.isEmpty()
+
+    /** 压过没有：判据只有"有没有生效的线"，不看 `covered` 之类的派生值。 */
+    val compacted: Boolean get() = dividerId != null
 }
 
 internal fun parseUnits(envelope: JSONObject): ChatPage {
@@ -181,15 +196,25 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
                             declaration = block.text("declaration", "这一段当时断了"),
                         )
                     },
+                    compacted = unit.optBoolean("compacted", false),
                 ),
             )
         }
     }
+    val divider = envelope.optJSONObject("divider")
     return ChatPage(
         sessionId = envelope.text("session"),
         units = units,
         total = envelope.optInt("units_total", units.size),
         truncated = envelope.optBoolean("truncated", false),
+        // `has("summary")` 才算问过：原生那边给 null 是"取不到"，不是"空摘要"。
+        summary = if (envelope.has("summary") && !envelope.isNull("summary")) {
+            envelope.optString("summary", "")
+        } else {
+            null
+        },
+        dividerId = divider?.text("id"),
+        covered = divider?.optInt("covered", 0) ?: 0,
     )
 }
 

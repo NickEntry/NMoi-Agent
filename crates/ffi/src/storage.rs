@@ -839,9 +839,34 @@ pub extern "C" fn nmoi_storage_load_units_json(
                 (limit as usize).min(total)
             };
             let start = total - take;
+            // 压缩线（D324）：界面要能指出"线上那几条去哪了、摘要是什么"。
+            // 只读一次 `dividers`（一条轻查询），不重跑 `load_window`——那会把整条历史再读一遍，
+            // 而这个函数在滚动与轮询里被反复调。
+            let lines = storage.load_dividers(session_id).map_err(storage_error)?;
+            let line = nmoi_core::divider::effective_divider(&units, &lines);
+            let window_start = line.as_ref().map(|(_, at)| *at).unwrap_or(0);
+            let summary = line.as_ref().and_then(|(divider, _)| {
+                let reference = divider.summary_ref()?;
+                storage
+                    .fetch_archive(&reference)
+                    .ok()
+                    .map(|entry| entry.content)
+            });
+            let divider = line.as_ref().map(|(divider, at)| {
+                json!({
+                    "id": divider.id.as_str(),
+                    "after_seq": divider.after_seq,
+                    "kind": divider.kind.as_str(),
+                    // 线上有几个单元：界面那一行写"已移走 N 条"就用它，不自己数。
+                    "covered": at,
+                    "created_at": divider.created_at,
+                })
+            });
             let items: Vec<Value> = units[start..]
                 .iter()
-                .map(|unit| {
+                .enumerate()
+                .map(|(offset, unit)| {
+                    let compacted = start + offset < window_start;
                     let messages: Vec<Value> = unit
                         .messages
                         .iter()
@@ -908,6 +933,8 @@ pub extern "C" fn nmoi_storage_load_units_json(
                         "kind": unit.kind.as_str(),
                         "closed": unit.is_closed(),
                         "created_at": unit.created_at,
+                        // 线上那几条：仍在库里、仍能编辑，只是不再进请求（D324）。
+                        "compacted": compacted,
                         "messages": messages,
                         // 断块（P4.1 / D67）：UI 的折叠卡标题就用这个声明行，
                         // 不用自己去拼"ID+块类+原因"——那种拼法迟早某个平台少个字段。
@@ -926,6 +953,12 @@ pub extern "C" fn nmoi_storage_load_units_json(
                 "returned": items.len(),
                 "truncated": start > 0,
                 "items": items,
+                // 压缩线（D324）：`compacted` 是"这条会话压过没有"，`window_start` 是线下从第几条开始，
+                // `summary` 是线上那段的摘要原文（取不到就是 null，不假装还在）。
+                "compacted": window_start > 0,
+                "window_start": window_start,
+                "summary": summary,
+                "divider": divider,
             }))
         })
     })
@@ -1263,6 +1296,29 @@ pub extern "C" fn nmoi_storage_apply_block_edit_json(
                 "tokens_after": outcome.tokens_after,
                 "before_hash": outcome.before_hash,
                 "after_hash": outcome.after_hash,
+            }))
+        })
+    })
+}
+
+/// 删掉一条分界线（D324）：这是"压缩可撤销"的唯一入口。
+///
+/// 为什么必须有它：压缩只画线、不删原文（`compress.rs` 的第一条硬规则），所以删线就等于还原——
+/// 但那句话在界面上一直是空头支票（`delete_divider` 只有定义和 storage 测试）。
+/// 返回 `deleted`：线本来就不在时给 `false`，不报错——重开一次页面再点一下不该是失败。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_delete_divider_json(
+    handle: u64,
+    divider: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(divider, "divider")?;
+        let id = nmoi_core::divider::DividerId::parse(text);
+        with_storage(handle, |storage| {
+            let deleted = storage.delete_divider(&id).map_err(storage_error)?;
+            Ok(json!({
+                "divider": id.as_str(),
+                "deleted": deleted,
             }))
         })
     })

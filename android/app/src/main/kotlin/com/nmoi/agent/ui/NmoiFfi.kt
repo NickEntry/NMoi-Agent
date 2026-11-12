@@ -402,6 +402,14 @@ internal object NmoiFfi {
     }
 
     /**
+     * 删一条分界线（D324）：压缩**只画线、不删原文**，所以删线就等于还原。
+     *
+     * 幂等：线本来就不在时返回 `deleted:false`。重开一次页面再点一下不该是失败。
+     */
+    suspend fun deleteDivider(handle: Long, divider: String): Result<JSONObject> =
+        call("divider_delete") { NativeBridge.deleteDividerJson(handle, divider) }
+
+    /**
      * 临时探针：四个 scope 各列一次，把结果打到 logcat。
      *
      * 为什么现在需要它——layer 1 只做到"能调通"，界面上一个设置项都还没接，

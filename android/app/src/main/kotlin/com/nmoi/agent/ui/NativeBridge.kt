@@ -221,6 +221,9 @@ internal object NativeBridge {
 
     external fun deleteSettingsJson(handle: Long, scope: String, key: String): String
 
+    /** 删一条分界线（D324）：压缩只画线不删原文，删线就等于还原。 */
+    external fun deleteDividerJson(handle: Long, divider: String): String
+
     /** 预设列表 + 四态（0.14t / D178）。`assets` = 从 APK 读出来的预设原文。 */
     external fun presetsJson(handle: Long, assets: String): String
 
