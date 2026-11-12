@@ -217,6 +217,76 @@ mod tests {
         .with_descriptor(descriptor)
     }
 
+    /// 一个只会记下请求体、回一句固定文本的传输层。
+    struct Recorder {
+        seen: std::sync::Mutex<Vec<String>>,
+        reply: String,
+    }
+
+    impl Recorder {
+        fn new(reply: &str) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                seen: std::sync::Mutex::new(Vec::new()),
+                reply: reply.to_string(),
+            })
+        }
+
+        fn bodies(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::transport::Transport for std::sync::Arc<Recorder> {
+        fn execute(
+            &self,
+            request: crate::transport::HttpRequest,
+        ) -> Result<crate::transport::HttpResponse, crate::transport::TransportError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&request.body).to_string());
+            Ok(crate::transport::HttpResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: Box::new(std::io::Cursor::new(
+                    format!(
+                        "{{\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\
+                         \"content\":\"{}\"}},\"finish_reason\":\"stop\"}}]}}",
+                        self.reply
+                    )
+                    .into_bytes(),
+                )),
+            })
+        }
+    }
+
+    /// 角色自己那段**排在脚手架之后**（D328）：脚手架管格式（段号、一行一段、48 字），
+    /// 用户那段管语气。反过来的话用户一句"随便写"就能把格式冲掉，`parse_lines` 直接空手而归。
+    #[test]
+    fn the_role_prompt_lands_after_the_scaffold() {
+        let transport = Recorder::new("1. 一段索引");
+        let client = crate::runtime::ChatClient::new(transport.clone());
+        let target = SummaryTarget {
+            provider: crate::provider::ProviderConfig::new(
+                "p",
+                crate::provider::ProviderKind::OpenAiCompatible,
+                "http://x/v1",
+            ),
+            model: "m".into(),
+            api_key: None,
+            thinking: crate::provider::ThinkingSetting::default(),
+            system: Some("这一段是摘要角色自己的：用第一人称写".into()),
+        };
+        let entries = vec![entry("一段工具输出", 10, "一")];
+        run(&client, &target, &entries).expect("摘要要跑得通");
+        let body = transport.bodies().join("\n");
+        let scaffold = body.find("你在给几段").expect("脚手架要在请求里");
+        let own = body
+            .find("这一段是摘要角色自己的")
+            .expect("角色那段也要在请求里");
+        assert!(scaffold < own, "角色那段必须排在脚手架之后：{body}");
+    }
+
     #[test]
     fn prompt_numbers_every_block_and_keeps_both_ends() {
         let long = format!("HEAD{}TAIL", "x".repeat(4_000));

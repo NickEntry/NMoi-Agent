@@ -482,8 +482,16 @@ internal object TurnRepository {
                 if (thinking.isNotBlank()) row.put("thinking", thinking)
             }
             .also { row ->
-                val global = AppSettings.globalSystem(context)
-                if (global.isNotBlank()) row.put("system", global)
+                // 三层拼在一处（D328）：脚手架在 core 里（不许动，`parse_lines` 靠那个格式），
+                // 这里给的是"全局那段 + 摘要自己那段"。拼完再填站位字符串。
+                val composed = PromptVars.compose(
+                    null,
+                    AppSettings.globalSystem(context),
+                    AppSettings.roleSystem(context, ModelRole.Summary.key),
+                )
+                composed?.let { text ->
+                    row.put("system", PromptVars.fill(text, PromptVars.values(context, ModelRole.Summary)))
+                }
             }
     }
 

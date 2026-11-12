@@ -169,13 +169,9 @@ internal fun ModelRolesScreen(
                         value = values[role].orEmpty(),
                         label = roleLabel(role, values[role].orEmpty(), choices),
                         onPickModel = { picking = role },
-                        // 齿轮只给真的会跑的角色（D298 / D306）：视觉覆盖、压缩、标题总结、
-                        // 聊天建议、翻译。摘要还没有消费者，所以它没有齿轮。
-                        onOpenPrompt = if (role != ModelRole.Summary) {
-                            { promptFor = role }
-                        } else {
-                            null
-                        },
+                        // 六张卡都有齿轮（D328）：摘要的消费者是索引摘要（D322），
+                        // 它的那段提示词以前没有入口——面板里能配、程序不用，比没有这个框更坏。
+                        onOpenPrompt = { promptFor = role },
                         // 卡片上那颗箭头自己算目标值：↺ → 跟随，🚫 → 初始值 / 未启用。
                         onSetValue = { next ->
                             AppSettings.setRoleValue(context, role.key, next)
@@ -464,31 +460,35 @@ private fun RolePromptSheet(
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "世界书",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "${ownBooks.count { id -> books.any { it.id == id } }}/${books.size}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 摘要这条路不读世界书：`SummaryTarget` 里没有这个字段，摆一列勾选框
+            // 就是"点了什么也不发生"（D328）。别的五个角色都有那条路，所以只对摘要收起来。
+            if (role != ModelRole.Summary) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "世界书",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "${ownBooks.count { id -> books.any { it.id == id } }}/${books.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LorebookBookList(
+                    rows = books,
+                    active = ownBooks.toSet(),
+                    onToggle = { id, on ->
+                        ownBooks = if (on) ownBooks + id else ownBooks - id
+                        AppSettings.setRoleLorebooks(context, role.key, ownBooks)
+                    },
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            LorebookBookList(
-                rows = books,
-                active = ownBooks.toSet(),
-                onToggle = { id, on ->
-                    ownBooks = if (on) ownBooks + id else ownBooks - id
-                    AppSettings.setRoleLorebooks(context, role.key, ownBooks)
-                },
-                modifier = Modifier.padding(top = 4.dp),
-            )
 
             Text(
                 text = "系统提示词",
@@ -500,7 +500,15 @@ private fun RolePromptSheet(
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                placeholder = { Text("例如：只输出译文，不要解释") },
+                placeholder = {
+                    Text(
+                        if (role == ModelRole.Summary) {
+                            "留空：只用内置的索引规则（段号、每段一行、48 字以内）"
+                        } else {
+                            "例如：只输出译文，不要解释"
+                        },
+                    )
+                },
                 minLines = 3,
                 maxLines = 6,
                 modifier = Modifier.fillMaxWidth(),
