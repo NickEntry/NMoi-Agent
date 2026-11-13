@@ -59,10 +59,21 @@ internal fun VoiceScreen(onBack: () -> Unit) {
     var phase by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    var tts by remember { mutableStateOf(VoiceRepository.entries(context, VoiceRepository.Direction.Tts)) }
+    var asr by remember { mutableStateOf(VoiceRepository.entries(context, VoiceRepository.Direction.Asr)) }
+    var ttsSelected by remember { mutableStateOf(VoiceRepository.selected(context, VoiceRepository.Direction.Tts)) }
+    var asrSelected by remember { mutableStateOf(VoiceRepository.selected(context, VoiceRepository.Direction.Asr)) }
+    var editing by remember {
+        mutableStateOf<Pair<VoiceRepository.Direction, VoiceRepository.Entry?>?>(null)
+    }
 
     fun refresh() {
         banks = VoiceBankRepository.installed(context)
         selected = VoiceBankRepository.selected(context)
+        tts = VoiceRepository.entries(context, VoiceRepository.Direction.Tts)
+        asr = VoiceRepository.entries(context, VoiceRepository.Direction.Asr)
+        ttsSelected = VoiceRepository.selected(context, VoiceRepository.Direction.Tts)
+        asrSelected = VoiceRepository.selected(context, VoiceRepository.Direction.Asr)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -85,6 +96,38 @@ internal fun VoiceScreen(onBack: () -> Unit) {
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = 28.dp),
         ) {
+            VoiceServiceSection(
+                direction = VoiceRepository.Direction.Tts,
+                entries = tts,
+                selectedId = ttsSelected,
+                onSelect = { id ->
+                    VoiceRepository.select(context, VoiceRepository.Direction.Tts, id)
+                    ttsSelected = id
+                },
+                onEdit = { entry -> editing = VoiceRepository.Direction.Tts to entry },
+                onAdd = { editing = VoiceRepository.Direction.Tts to null },
+                onDelete = { entry ->
+                    VoiceRepository.remove(context, entry)
+                    refresh()
+                },
+            )
+
+            VoiceServiceSection(
+                direction = VoiceRepository.Direction.Asr,
+                entries = asr,
+                selectedId = asrSelected,
+                onSelect = { id ->
+                    VoiceRepository.select(context, VoiceRepository.Direction.Asr, id)
+                    asrSelected = id
+                },
+                onEdit = { entry -> editing = VoiceRepository.Direction.Asr to entry },
+                onAdd = { editing = VoiceRepository.Direction.Asr to null },
+                onDelete = { entry ->
+                    VoiceRepository.remove(context, entry)
+                    refresh()
+                },
+            )
+
             VoiceSectionLabel("歌唱声库")
             VoiceCard {
                 Text(
@@ -293,6 +336,18 @@ internal fun VoiceScreen(onBack: () -> Unit) {
         }
     }
 
+    editing?.let { (direction, entry) ->
+        VoiceEntrySheet(
+            direction = direction,
+            initial = entry,
+            onDismiss = { editing = null },
+            onSaved = {
+                editing = null
+                refresh()
+            },
+        )
+    }
+
     confirmDelete?.let { id ->
         val bank = banks.firstOrNull { it.id == id }
         Box(modifier = Modifier.fillMaxSize()) {
@@ -367,5 +422,90 @@ private fun VoiceCard(content: @Composable () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
     ) {
         Column { content() }
+    }
+}
+
+@Composable
+private fun VoiceServiceSection(
+    direction: VoiceRepository.Direction,
+    entries: List<VoiceRepository.Entry>,
+    selectedId: String,
+    onSelect: (String) -> Unit,
+    onEdit: (VoiceRepository.Entry) -> Unit,
+    onAdd: () -> Unit,
+    onDelete: (VoiceRepository.Entry) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 18.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = direction.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "+",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.clickable(onClick = onAdd).padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+    VoiceCard {
+        if (entries.isEmpty()) {
+            Text(
+                text = "还没有配。点右上角的 + 加一条。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            )
+        }
+        for (entry in entries) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onEdit(entry) }
+                    .padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = entry.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = listOf(entry.provider, entry.voice, entry.language)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                Text(
+                    text = if (selectedId == entry.id) "✓" else "○",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (selectedId == entry.id) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .clickable { onSelect(entry.id) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                Text(
+                    text = "删除",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .clickable { onDelete(entry) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
+        }
     }
 }
