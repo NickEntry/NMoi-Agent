@@ -215,6 +215,8 @@ internal fun ChatScreen(
     }
     // 工具块点开的那一条（D243）：半屏弹窗，不在聊天页里就地展开。
     var toolSheet by remember(sessionId) { mutableStateOf<ToolSheetTarget?>(null) }
+    // 在等回答的那条命令（D329）。**只存这一拍的副本**：它在等，屏幕上也该写着"在等"。
+    var commandAsk by remember(sessionId) { mutableStateOf<CommandAsk?>(null) }
     // 正在跑的那条调用点开的弹窗（0.15ak）。**只存 id**：对象是这一拍的副本，
     // 而秒数每 100 ms 在变——存对象的话弹窗里的时间会冻在点开那一刻。
     // 这一轮的上下文图片（D248）：`View-Image` 拉进来的那些。界面只读它、只能移出。
@@ -547,6 +549,8 @@ internal fun ChatScreen(
                 calls = runningCallsOf(info),
                 done = doneCallsOf(info),
             )
+            // 询问跟着同一拍刷新：`asks` 空了就是已经答过 / 超时了，面板自己收掉。
+            commandAsk = asksOf(info).firstOrNull()
             when (val step = advanceLive(reply, poll, snapshot)) {
                 is LiveStep.Update -> {
                     live = step.reply
@@ -1904,6 +1908,25 @@ internal fun ChatScreen(
         // 弹窗里的那一次调用**每一拍现查**（D264）：跑着的看实时输出，跑完了看结果，
         // 整轮收尾之后看库里那一份。点开那一刻抓的那份只当兜底——
         // 拿快照画，用户看到的就是"工具跑完了，小窗口还写着正在运行"。
+        commandAsk?.let { ask ->
+            val sid = sessionId
+            CommandAskSheet(
+                ask = ask,
+                onAnswer = { verdict ->
+                    commandAsk = null
+                    if (sid != null) {
+                        scope.launch {
+                            val result = NmoiFfi.toolAnswer(sid, ask.callId, verdict)
+                            if (result.isSuccess && result.getOrNull()?.optBoolean("answered") == false) {
+                                notice = "那条询问已经结束了"
+                            }
+                        }
+                    }
+                },
+                onDismiss = { commandAsk = null },
+            )
+        }
+
         toolSheet?.let { opened ->
             val target = resolveToolSheet(opened, live?.calls, live?.done, allMessages)
             ToolDetailSheet(

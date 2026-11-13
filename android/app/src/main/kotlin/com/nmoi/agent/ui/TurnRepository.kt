@@ -280,6 +280,13 @@ internal object TurnRepository {
                     .put("native_shell", nativeShell)
                     // 跨会话只读（D295）：默认关；关着时 `Session-Files` 不声明。
                     .put("cross_session", ToolingRepository.crossSession(context))
+                    // 命令执行前询问（D329）：缺省开；关掉 = 能力开关一开就全放行。
+                    .put("shell_ask", ToolingRepository.shellAsk(context))
+                    .put("shell_blacklist", ToolingRepository.shellBlacklist(context))
+                    .put(
+                        "shell_off_groups",
+                        org.json.JSONArray(ToolingRepository.shellOffGroups(context)),
+                    )
                     .put("thinking", assistant.thinking)
                     .also { row ->
                         envir?.let { row.put("envir", envirJson(context, it, sessionId)) }

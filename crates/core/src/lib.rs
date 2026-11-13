@@ -42,6 +42,8 @@ pub mod runtime;
 pub mod session;
 pub mod settings;
 pub mod shell;
+pub mod shellask;
+pub mod shellguard;
 pub mod skills;
 pub mod source;
 pub mod speech;

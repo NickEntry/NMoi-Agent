@@ -20,6 +20,9 @@ internal object ToolingRepository {
     private const val KEY_NATIVE_SHELL = "tool.native_shell"
     private const val KEY_ENVIR_SHELL = "tool.envir_shell"
     private const val KEY_CROSS_SESSION = "tool.cross_session"
+    private const val KEY_SHELL_ASK = "tool.shell_ask"
+    private const val KEY_SHELL_BLACKLIST = "tool.shell_blacklist"
+    private const val PREFIX_SHELL_GROUP = "tool.shell_group."
 
     /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
     fun sharedRoot(context: Context): File = WorkspaceRepository.defaultRoot(context)
@@ -151,6 +154,64 @@ internal object ToolingRepository {
             .apply()
         NLog.i("Tools", "跨会话读取开关：${if (enabled) "开" else "关"}")
     }
+
+    /**
+     * 本机开关：命令执行前询问（D329）。默认**开**。
+     *
+     * 能力开关（`native_shell` / `envir_shell`）的字面意思只是"能用命令"，
+     * 不是"随便跑"。这一项才是"这一条要不要先问一句"。跟那两个一样只存本机。
+     */
+    fun shellAsk(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SHELL_ASK, true)
+
+    fun setShellAsk(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SHELL_ASK, enabled)
+            .apply()
+        NLog.i("Tools", "命令执行前询问：${if (enabled) "开" else "关"}")
+    }
+
+    /** 本机开关：黑名单模式（D329）。默认**开**——只问命中清单的，不是"安全模式"。 */
+    fun shellBlacklist(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SHELL_BLACKLIST, true)
+
+    fun setShellBlacklist(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SHELL_BLACKLIST, enabled)
+            .apply()
+        NLog.i("Tools", "黑名单模式：${if (enabled) "开" else "关"}")
+    }
+
+    /**
+     * 某一组规则还问不问。默认**问**（真值），只有显式关过的那一组是 false。
+     *
+     * 为什么按"关过哪些组"存、不按"开着哪些组"存：以后加了新组，
+     * 老用户的默认还是"问"——按"开着哪些组"存的话，新组会静默变成不问。
+     */
+    fun shellGroupAsks(context: Context, group: String): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(PREFIX_SHELL_GROUP + group, true)
+
+    fun setShellGroupAsks(context: Context, group: String, asks: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREFIX_SHELL_GROUP + group, asks)
+            .apply()
+        NLog.i("Tools", "规则组 $group：${if (asks) "问" else "不问"}")
+    }
+
+    /** 被关掉的那些组，原样递给 core（它只认组 id）。 */
+    fun shellOffGroups(context: Context): List<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .all
+            .filter { (key, value) -> key.startsWith(PREFIX_SHELL_GROUP) && value == false }
+            .keys
+            .map { it.removePrefix(PREFIX_SHELL_GROUP) }
+            .sorted()
 
     fun setEnvirShell(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

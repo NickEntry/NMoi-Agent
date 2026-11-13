@@ -130,6 +130,14 @@ pub struct CallHandle {
 }
 
 impl CallHandle {
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    pub fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
     /// 用户点过「关闭」没有。
     pub fn cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)

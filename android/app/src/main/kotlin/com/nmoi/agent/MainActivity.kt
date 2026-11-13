@@ -57,6 +57,7 @@ import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.StorageScreen
+import com.nmoi.agent.ui.ShellRulesScreen
 import com.nmoi.agent.ui.ToolsScreen
 import com.nmoi.agent.ui.WorkspaceScreen
 import com.nmoi.agent.ui.TurnRunner
@@ -93,6 +94,9 @@ private sealed interface Route {
 
     /** 工作区（D234）：列 / 新建 / 改名 / 删除。入口在「工具与工作区」里。 */
     data object Workspace : Route
+
+    /** 命令规则组（D329）：十组、一组一个开关。 */
+    data object ShellRules : Route
 
     /** 网络代理（D226）：开关 / 类型 / 地址 / 凭证 / 绕过。入口在设置根页。 */
     data object Proxy : Route
@@ -617,6 +621,10 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.ShellRules -> ShellRulesScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         Route.Workspace -> WorkspaceScreen(
                             databasePath = databasePath,
                             onBack = { backStack = backStack.dropLast(1) },
@@ -713,6 +721,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = { backStack = backStack.dropLast(1) },
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
                                 onOpenWorkspace = { backStack = backStack + Route.Workspace },
+                                onOpenShellRules = { backStack = backStack + Route.ShellRules },
                             )
 
                             SettingsGroup.Storage -> StorageScreen(

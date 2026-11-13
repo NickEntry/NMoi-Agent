@@ -42,6 +42,7 @@ use nmoi_core::session::{
     regenerate_turn, run_session_turn_with_images, SessionConfig, SessionError, SessionTurn,
 };
 use nmoi_core::shell::EnvirSpec;
+use nmoi_core::shellguard::GuardConfig;
 use nmoi_core::tools::ToolRegistry;
 use nmoi_core::vars::SubAgentEntry;
 use nmoi_core::workspace::Workspace;
@@ -280,6 +281,12 @@ struct TurnInput {
     native_shell: bool,
     /// 跨会话只读（`Session-Files`，D295）。**默认关**：关着时这个工具不声明。
     cross_session: bool,
+    /// 命令执行前询问（D329）。**缺省开**：开关一开就全放行，是这一条要堵的洞。
+    shell_ask: bool,
+    /// 黑名单模式（D329）：只问命中规则的。缺省开。
+    shell_blacklist: bool,
+    /// 被关掉的规则组。空 = 十组全问。
+    shell_off_groups: Vec<String>,
     /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
     thinking: Option<String>,
     /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
@@ -608,6 +615,9 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         avg_per_turn: optional_u64(&root, "avg_per_turn")?,
         native_shell: optional_bool(&root, "native_shell")?.unwrap_or(false),
         cross_session: optional_bool(&root, "cross_session")?.unwrap_or(false),
+        shell_ask: optional_bool(&root, "shell_ask")?.unwrap_or(true),
+        shell_blacklist: optional_bool(&root, "shell_blacklist")?.unwrap_or(true),
+        shell_off_groups: parse_str_list(&root, "shell_off_groups")?,
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
@@ -973,10 +983,38 @@ fn apply_thinking(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequ
     }))
 }
 
+fn parse_str_list(root: &Value, key: &str) -> Result<Vec<String>, crate::json::FfiError> {
+    let Some(value) = root.get(key) else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(items) = value.as_array() else {
+        return Err(crate::json::FfiError::new(
+            "bad_argument",
+            format!("{key} 必须是字符串数组"),
+        ));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item.as_str() {
+            Some(text) => out.push(text.to_string()),
+            None => {
+                return Err(crate::json::FfiError::new(
+                    "bad_argument",
+                    format!("{key} 里有一项不是字符串"),
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn policy_for(input: &TurnInput) -> AssistantPolicy {
     // 容器要有 rootfs 才能开（D172）：没有坐标就只是"界面看着能开"。
     let container = input.envir.is_some();
-    match input.workspace {
+    let mut policy = match input.workspace {
         // 没有工作区就没有可跑的目录：连带原生命令也开不了（`check` 会回 no_workspace）。
         None => AssistantPolicy::locked_down().enable_cross_session(input.cross_session),
         Some(_) if input.read_only => AssistantPolicy::locked_down()
@@ -989,7 +1027,14 @@ fn policy_for(input: &TurnInput) -> AssistantPolicy {
             .enable_native_shell(input.native_shell)
             .enable_container(container)
             .enable_cross_session(input.cross_session),
-    }
+    };
+    policy.shell_guard = GuardConfig {
+        ask: input.shell_ask,
+        blacklist: input.shell_blacklist,
+        off_groups: input.shell_off_groups.iter().cloned().collect(),
+        off_rules: Default::default(),
+    };
+    policy
 }
 
 fn action_json(action: CompressAction) -> &'static str {
@@ -1391,10 +1436,27 @@ pub extern "C" fn nmoi_turn_busy_json(session: *const c_char) -> *mut c_char {
         } else {
             Vec::new()
         };
+        let asks: Vec<Value> = if running {
+            nmoi_core::shellask::pending(session)
+                .into_iter()
+                .map(|ask| {
+                    json!({
+                        "call_id": ask.call_id,
+                        "command": ask.command,
+                        "label": ask.label,
+                        "group": ask.group,
+                        "seconds_left": ask.seconds_left,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(json!({
             "session": session,
             "running": running,
             "cancelled": cancelled,
+            "asks": asks,
             "round": round,
             "text": text,
             "text_len": text_len,

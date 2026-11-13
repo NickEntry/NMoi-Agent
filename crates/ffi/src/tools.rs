@@ -119,6 +119,54 @@ pub extern "C" fn nmoi_tool_cancel_json(input: *const c_char) -> *mut c_char {
     })
 }
 
+/// 回答一条"命令要不要跑"的询问（D329）。
+///
+/// 入参 `{"session":"...","call_id":"...","verdict":"allow_once|allow_rule|deny"}`，
+/// 回 `{"answered":bool,"verdict":"..."}`。
+///
+/// `answered:false` = 那条询问已经不在等了（超时了、被停了、或者用户点晚了一拍）。
+/// **不是错误**：界面据此写"这条已经结束了"，不该弹红字。
+#[no_mangle]
+pub extern "C" fn nmoi_tool_answer_json(input: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let raw = read_str(input, "input")?;
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| crate::json::FfiError::new("bad_json", error.to_string()))?;
+        let session = value
+            .get("session")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::json::FfiError::new("bad_argument", "缺 session"))?;
+        let call_id = value
+            .get("call_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::json::FfiError::new("bad_argument", "缺 call_id"))?;
+        let raw_verdict = value
+            .get("verdict")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::json::FfiError::new("bad_argument", "缺 verdict"))?;
+        let verdict = nmoi_core::shellask::Answer::parse(raw_verdict).ok_or_else(|| {
+            crate::json::FfiError::new(
+                "bad_argument",
+                format!("verdict 只认 allow_once / allow_rule / deny，拿到的是 {raw_verdict}"),
+            )
+        })?;
+        let answered = nmoi_core::shellask::answer(session, call_id, verdict);
+        Ok(json!({
+            "answered": answered,
+            "verdict": verdict.as_str(),
+        }))
+    })
+}
+
+/// 内置命令规则的清单：十组、每组的项、哪几项不能关（`deny`）。
+///
+/// 设置页拿它渲染分组开关；**拒绝项也在里面**——闸一旦隐形，
+/// 撞上时用户看到的是"事情做了一半就停了"，而他什么都没做错。
+#[no_mangle]
+pub extern "C" fn nmoi_shell_rules_json() -> *mut c_char {
+    run_json(|| Ok(nmoi_core::shellguard::Rules::builtin().catalog()))
+}
+
 /// 直接调一个工具。
 ///
 /// `arguments` 是**工具自己的 JSON**（比如 `{"path":"a.txt"}`），原样交给工具层。

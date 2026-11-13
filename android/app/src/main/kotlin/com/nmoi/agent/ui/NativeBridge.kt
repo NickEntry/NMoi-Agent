@@ -156,6 +156,15 @@ internal object NativeBridge {
      */
     external fun toolCancelJson(config: String): String
 
+    /**
+     * 回答一条"这条命令要不要跑"（D329）：`{"session","call_id","verdict"}`。
+     * `verdict` 只认 `allow_once` / `allow_rule` / `deny`；`answered:false` = 那条已经不在等了，不是错误。
+     */
+    external fun toolAnswerJson(config: String): String
+
+    /** 内置命令规则清单（D329）：十组、每组的项、哪几项不能关。 */
+    external fun shellRulesJson(): String
+
     /** 这一轮的上下文图片清单（D248）：`{"images":[{id,mime,bytes}],"count","max"}`。 */
     external fun imagesJson(session: String): String
 

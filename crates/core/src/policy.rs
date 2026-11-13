@@ -12,6 +12,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::shellguard::GuardConfig;
+
 /// 一项具体能力。粒度按"用户能理解的开关"来切，不按代码结构切。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +145,8 @@ pub struct AssistantPolicy {
     pub broker_enabled: bool,
     /// 跨会话只读（D295）：默认关。关着时 `Session-Files` **不声明**，不是声明了再拒绝。
     pub cross_session_enabled: bool,
+    /// 命令执行前询问（D329）：默认开。开着也不拦"能不能跑"，只决定"要不要先问一句"。
+    pub shell_guard: GuardConfig,
 }
 
 impl AssistantPolicy {

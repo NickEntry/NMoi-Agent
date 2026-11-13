@@ -286,6 +286,26 @@ internal object NmoiFfi {
         }
 
     /**
+     * 回答一条命令询问（D329）。
+     *
+     * `answered:false` = 那条已经不在等了（超时 / 被停 / 点晚了一拍），**不是失败**。
+     */
+    suspend fun toolAnswer(session: String, callId: String, verdict: String): Result<JSONObject> =
+        call("tool_answer") {
+            NativeBridge.toolAnswerJson(
+                JSONObject()
+                    .put("session", session)
+                    .put("call_id", callId)
+                    .put("verdict", verdict)
+                    .toString(),
+            )
+        }
+
+    /** 内置命令规则清单（D329）：设置页照它渲染分组开关。 */
+    suspend fun shellRules(): Result<JSONObject> =
+        call("shell_rules") { NativeBridge.shellRulesJson() }
+
+    /**
      * 前缀重发：重试 / 续话（0.15h / D185）。**阻塞**到模型收尾，和 [turnRun] 一样在 IO 上跑。
      *
      * `up_to` / `target` 由调用方按"段内第几条"算好再传——这一层不替它算，

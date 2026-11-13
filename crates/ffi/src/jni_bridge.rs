@@ -1211,6 +1211,38 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_toolCancelJson<'local
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.toolAnswerJson(config)`：回答一条"这条命令要不要跑"（D329）。
+///
+/// `config` = `{"session":"...","call_id":"...","verdict":"allow_once|allow_rule|deny"}`。
+/// 回 `{"answered":bool,"verdict":"..."}`，字段的权威解释在
+/// `crate::tools::nmoi_tool_answer_json` 的头上。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_toolAnswerJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::tools::nmoi_tool_answer_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.shellRulesJson()`：内置命令规则清单（D329）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_shellRulesJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+) -> jstring {
+    let text = guarded(|| take_json(crate::tools::nmoi_shell_rules_json()));
+    to_jstring(&mut env, text)
+}
+
 /// `NativeBridge.imagesJson(session)`：这一轮的上下文图片清单（D248）。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_imagesJson<'local>(

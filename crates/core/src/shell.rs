@@ -171,6 +171,10 @@ impl Tool for SystemShellTool {
             Err(outcome) => return outcome,
         };
 
+        if let Err(outcome) = ask_first(ctx, &command) {
+            return outcome;
+        }
+
         match run(&command, &cwd, timeout, ctx.call) {
             Ok(completed) => ToolOutcome::Ok {
                 text: completed.to_json(&command).to_string(),
@@ -423,6 +427,10 @@ impl Tool for EnvirShellTool {
             Err(outcome) => return outcome,
         };
 
+        if let Err(outcome) = ask_first(ctx, &command) {
+            return outcome;
+        }
+
         let cmd = envir.command(workspace.root(), cwd_arg, &command);
         match execute(cmd, timeout, ctx.call) {
             Ok(completed) => ToolOutcome::Ok {
@@ -431,6 +439,70 @@ impl Tool for EnvirShellTool {
             },
             Err(message) => ToolOutcome::failed(message),
         }
+    }
+}
+
+fn one_line(command: &str) -> String {
+    let flat: String = command
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= 120 {
+        return flat;
+    }
+    let head: String = flat.chars().take(120).collect();
+    format!("{head}…")
+}
+
+fn ask_first(ctx: &ToolContext<'_>, command: &str) -> Result<(), ToolOutcome> {
+    use crate::shellask::{Answer, AskOutcome};
+
+    let hit = match crate::shellguard::decide(command, &ctx.policy.shell_guard) {
+        crate::shellguard::Decision::Allow => return Ok(()),
+        crate::shellguard::Decision::Deny(hit) => {
+            return Err(ToolOutcome::failed(format!(
+                "这条命令被拒绝，没有「允许一次」（{}）：{}。换一种做法，或者让用户自己跑。",
+                hit.label,
+                one_line(command)
+            )))
+        }
+        crate::shellguard::Decision::Ask(hit) => hit,
+    };
+
+    let (Some(session), Some(call)) = (ctx.call_session, ctx.call) else {
+        return Ok(());
+    };
+    if crate::shellask::allows_rule(session, &hit.id) {
+        return Ok(());
+    }
+
+    match crate::shellask::ask(
+        session,
+        call.call_id(),
+        command,
+        &hit,
+        || call.cancelled(),
+        crate::shellask::ASK_TIMEOUT,
+    ) {
+        AskOutcome::Answered(Answer::AllowOnce) => Ok(()),
+        AskOutcome::Answered(Answer::AllowRule) => {
+            crate::shellask::allow_rule(session, &hit.id);
+            Ok(())
+        }
+        AskOutcome::Answered(Answer::Deny) => Err(ToolOutcome::failed(format!(
+            "用户拒绝了这条命令（{}）：{}。不要原样重试。",
+            hit.label,
+            one_line(command)
+        ))),
+        AskOutcome::TimedOut => Err(ToolOutcome::failed(format!(
+            "等了 {} 秒没有回答，按拒绝处理（{}）：{}。不要原样重试。",
+            crate::shellask::ASK_TIMEOUT.as_secs(),
+            hit.label,
+            one_line(command)
+        ))),
+        AskOutcome::Cancelled => Err(ToolOutcome::failed("用户停掉了这一轮，命令没有执行。")),
+        AskOutcome::Gone => Err(ToolOutcome::failed("确认窗口关掉了，命令没有执行。")),
     }
 }
 

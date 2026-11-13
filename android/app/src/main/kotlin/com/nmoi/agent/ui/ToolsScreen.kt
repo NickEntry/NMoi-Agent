@@ -54,10 +54,14 @@ internal fun ToolsScreen(
     onBack: () -> Unit,
     onOpenEnvir: () -> Unit,
     onOpenWorkspace: () -> Unit,
+    onOpenShellRules: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var nativeShell by remember { mutableStateOf(ToolingRepository.nativeShell(context)) }
     var confirmShell by remember { mutableStateOf(false) }
+    var shellAsk by remember { mutableStateOf(ToolingRepository.shellAsk(context)) }
+    var shellBlacklist by remember { mutableStateOf(ToolingRepository.shellBlacklist(context)) }
+    var confirmAskOff by remember { mutableStateOf(false) }
     val root = remember { ToolingRepository.workspaceRoot(context).absolutePath }
     // 工作区有几个、默认那个在哪儿：这一行要能回答"文件工具的根到底在哪"，不能为了知道点进去。
     val workspaces = remember { WorkspaceRepository.list(context) }
@@ -164,6 +168,74 @@ internal fun ToolsScreen(
                             }
                         },
                     )
+
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 14.dp),
+                    )
+                    ToolSwitchRow(
+                        title = "命令执行前询问",
+                        subtitle = if (shellAsk) {
+                            "每条命令跑之前问一句。关掉就是「能力一开就全放行」。"
+                        } else {
+                            "已关：命中清单的命令也会直接跑，收不回来。"
+                        },
+                        checked = shellAsk,
+                        enabled = nativeShell || (envir != null && envirShell),
+                        onChecked = { next ->
+                            if (next) {
+                                ToolingRepository.setShellAsk(context, true)
+                                shellAsk = true
+                            } else {
+                                confirmAskOff = true
+                            }
+                        },
+                    )
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 14.dp),
+                    )
+                    ToolSwitchRow(
+                        title = "黑名单模式",
+                        subtitle = if (shellBlacklist) {
+                            "只问清单里的（删除、磁盘、权限、git --force 那些）。清单永远不完备——它降低打扰，不是安全保证。"
+                        } else {
+                            "每条命令都问。"
+                        },
+                        checked = shellBlacklist,
+                        enabled = shellAsk && (nativeShell || (envir != null && envirShell)),
+                        onChecked = { next ->
+                            ToolingRepository.setShellBlacklist(context, next)
+                            shellBlacklist = next
+                        },
+                    )
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 14.dp),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenShellRules)
+                            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "规则组",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 SectionLabel("隔离环境")
@@ -237,6 +309,17 @@ internal fun ToolsScreen(
                         NLog.w("Proxy", "容器接线没成功：${it.message}")
                     }
                 }
+            },
+        )
+    }
+
+    if (confirmAskOff) {
+        ConfirmAskOffDialog(
+            onCancel = { confirmAskOff = false },
+            onConfirm = {
+                confirmAskOff = false
+                ToolingRepository.setShellAsk(context, false)
+                shellAsk = false
             },
         )
     }
@@ -345,6 +428,49 @@ private fun ConfirmShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
                         DialogChip("取消", onClick = onCancel)
                         Spacer(Modifier.size(8.dp))
                         DialogChip("打开", primary = true, onClick = onConfirm)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 关掉「命令执行前询问」前的确认：这是把闸整个抬起来的那一下。 */
+@Composable
+private fun ConfirmAskOffDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(onClick = onCancel),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "关掉之后命令不再问？",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "模型接下来可以直接跑任何命令，包括删除和覆盖。清单里的那几条也不问了。" +
+                            "你随时可以在这一页重新打开。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        DialogChip("取消", onClick = onCancel)
+                        Spacer(Modifier.size(8.dp))
+                        DialogChip("关掉", primary = true, onClick = onConfirm)
                     }
                 }
             }
