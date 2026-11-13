@@ -268,6 +268,33 @@ variance 18 + vocoder 56 ≈ **526 MB**。
 - 英文只认 CMUdict 里的词，生造词给显式音素；
 - 时长现在是"平均分给音素"，真时长（`dsdur`）是运行时那一步的事。
 
+## 3.9 TTS / ASR 两条列表（已落地，2026-11-14）
+
+设置 → 工具与工作区 → 语音 → 语音服务，上面那两段：
+
+- **各自单选**：同一段里只有一个 `✓`（`voice.tts.selected` / `voice.asr.selected`）。
+- **条目**：名称、服务提供方（九家：OpenAI / Gemini / MiniMax / Qwen / xAI / Groq / 系统 TTS / 本地模型 / 自定义）、
+  API 基址、模型、音色 ID、语言。密钥进 `Vault`（`vault/provider-voice-<id>.bin`），prefs 里只留 id。
+- **音色那一格**：右边 `ˇ` 点开变 `^`，下面是这一家的已知音色，能点；**同时可以直接打字**。
+  清单是快捷方式，不是白名单——账号后台多出来的音色不该等到我们发版才能用。
+- **能力表**：每家带一份（`speed` / `pitch` / `style` / `instruct` / `ssml` / `format` …），
+  编辑页底下直接写"这一条支持：…"。将来 `Speak` 的 schema 就按它裁。
+- **不给假默认**：MiniMax / xAI 的音色清单没核实，就写"按后台填"，不编一串看着像真的 ID。
+
+内置的默认值：
+
+| 提供方 | 默认模型 | 已知音色 |
+|---|---|---|
+| OpenAI | `tts-1` | alloy / ash / ballad / coral / echo / fable / onyx / nova / sage / shimmer / verse |
+| Gemini | `gemini-2.5-flash-preview-tts` | Kore / Puck / Charon / Fenrir / Leda / Orus / Zephyr / Aoede |
+| MiniMax | `speech-02-hd` | 按后台填 |
+| Qwen | `qwen-tts` | Cherry / Serena / Ethan / Chelsie |
+| xAI | `grok-voice` | eve（未核实） |
+| Groq | `playai-tts` | Arista-PlayAI / Atlas-PlayAI |
+
+还没做的：`Speak` / `Transcribe` / `Voice-Caps` 三个工具本体（要 HTTP 那条链）。
+条目先能配、能选，是因为工具声明要按"选中的那一条"现生成——那一层依赖这个。
+
 ## 4. 复杂编排：一个工具，两种写法
 
 用户要的"写好脚本再调用"，落成一个 `Speak` 的三选一入参：
