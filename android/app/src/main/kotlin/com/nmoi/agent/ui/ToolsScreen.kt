@@ -55,6 +55,7 @@ internal fun ToolsScreen(
     onOpenEnvir: () -> Unit,
     onOpenWorkspace: () -> Unit,
     onOpenShellRules: () -> Unit,
+    onOpenVoice: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var nativeShell by remember { mutableStateOf(ToolingRepository.nativeShell(context)) }
@@ -251,6 +252,37 @@ internal fun ToolsScreen(
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f),
                         )
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                SectionLabel("语音")
+                GroupCard {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenVoice)
+                            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "语音服务",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "歌唱声库：装一个、选一个、删一个",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
                         Text(
                             text = "›",
                             style = MaterialTheme.typography.titleMedium,

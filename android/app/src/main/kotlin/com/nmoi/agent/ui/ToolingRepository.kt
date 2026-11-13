@@ -231,13 +231,16 @@ internal object ToolingRepository {
         NLog.i("Tools", "唱歌开关：${if (enabled) "开" else "关"}")
     }
 
-    /** 装好的歌唱引擎（模型目录）。现在还没有下载/安装这条线，所以恒为 null。 */
+    /**
+     * 歌唱引擎（运行时）装好没有。
+     *
+     * 声库装在 `voice/svs/<id>/`（见 `VoiceBankRepository`），但**运行时还没接**——
+     * 这里认的是运行时自己写的 `runtime.json`，它现在不存在，所以恒为 null。
+     * 判据用"有没有运行时"而不是"有没有声库"：声库装上不能唱，跟没装一样。
+     */
     fun svsEngine(context: Context): File? {
-        val dir = File(File(context.filesDir, "voice"), "svs")
-        val acoustic = File(dir, "acoustic.onnx")
-        val vocoder = File(dir, "vocoder.onnx")
-        val dict = File(dir, "phonemes.json")
-        return if (acoustic.isFile && vocoder.isFile && dict.isFile) dir else null
+        val runtime = File(File(File(context.filesDir, "voice"), "svs"), "runtime.json")
+        return if (runtime.isFile) runtime.parentFile else null
     }
 
     fun setEnvirShell(context: Context, enabled: Boolean) {

@@ -59,6 +59,7 @@ import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.StorageScreen
 import com.nmoi.agent.ui.ShellRulesScreen
 import com.nmoi.agent.ui.ToolsScreen
+import com.nmoi.agent.ui.VoiceScreen
 import com.nmoi.agent.ui.WorkspaceScreen
 import com.nmoi.agent.ui.TurnRunner
 import com.nmoi.agent.ui.theme.NMoiTheme
@@ -97,6 +98,9 @@ private sealed interface Route {
 
     /** 命令规则组（D329）：十组、一组一个开关。 */
     data object ShellRules : Route
+
+    /** 语音服务（0.17b）：歌唱声库的装/选/删。 */
+    data object Voice : Route
 
     /** 网络代理（D226）：开关 / 类型 / 地址 / 凭证 / 绕过。入口在设置根页。 */
     data object Proxy : Route
@@ -621,6 +625,10 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Voice -> VoiceScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         Route.ShellRules -> ShellRulesScreen(
                             onBack = { backStack = backStack.dropLast(1) },
                         )
@@ -722,6 +730,7 @@ class MainActivity : ComponentActivity() {
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
                                 onOpenWorkspace = { backStack = backStack + Route.Workspace },
                                 onOpenShellRules = { backStack = backStack + Route.ShellRules },
+                                onOpenVoice = { backStack = backStack + Route.Voice },
                             )
 
                             SettingsGroup.Storage -> StorageScreen(
