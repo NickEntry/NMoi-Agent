@@ -192,6 +192,34 @@ vocoder   in : mel_out [1,T,80]  f0 [1,T]      out: wav [1,S]
 `svsEngine()` 找不到 acoustic + vocoder + phonemes.json 三样就不点亮。
 按老规矩：灰的判据是"有没有东西可跑"，不是"功能写没写"。
 
+## 3.6 真跑起来了一个 SVS（2026-11-14，英文声库）
+
+工具链：`erz0r/warble`（MIT，DiffSinger + UTAU 两套引擎，CLI 全 JSON）。声库：
+`geckl/cyber-singer` 仓库里带的 `EcklDaTiger`（英文，ARPAbet 音素表）。
+
+在这台机器（aarch64 / PRoot）上实测：
+
+```
+warble sing -e "twin:C4:1 kle:C4:1 twin:G4:1 kle:G4:1 lit:A4:1 tle:A4:1 star:G4:2" \
+  --bank EcklDaTiger --lang en -o t1.wav
+→ 4.35 s / 44.1 kHz / 92% 有声帧 / 渲染 44 s（vocoder 21 s 占大头）
+ASR 反听：「Twinkle, twinkle, let's last star!」——前两句全对，little 听岔了
+```
+
+体积（这个声库的真实账）：acoustic **327 MB** + linguistic 51 + dur 14 + pitch 60 +
+variance 18 + vocoder 56 ≈ **526 MB**。
+
+三条结论：
+
+1. **400 MB 这条线对这类四段式声库不现实。** 最省的装法（acoustic + vocoder + dur +
+   linguistic）也 448 MB。要么把预算调到 ~550 MB，要么换单说话人、无 pitch/variance 的三段式
+   （这种一般 150–250 MB）。
+2. **词表不是问题**——声库自带 `phonemes.txt` 与 `dsdict-*.yaml`，`warble probe` 能直接读出来。
+   之前那个 172 MB 的 ONNX 之所以卡住，是因为它不是"声库包"，只是一对模型文件。
+3. **中文还缺一个声库**。`dsdict-zh.yaml` 这一层（拼音→音素）是通用的，随便找得到；
+   缺的是**用中文音素训过的 acoustic**。这类声库作者通常只在自己的发布页放 zip，不放 repo，
+   所以下一轮要么按发布页找，要么由用户提供。
+
 ## 4. 复杂编排：一个工具，两种写法
 
 用户要的"写好脚本再调用"，落成一个 `Speak` 的三选一入参：
