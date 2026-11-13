@@ -161,6 +161,37 @@ Gemini、Groq `whisper-large-v3` 等）。
 
 ---
 
+## 3.5 真找了个 SVS 小模型来试（2026-11-13）
+
+`LogiAI10/diffsinger-mobile-onnx`（HF，镜像可下）：`diffsinger_acoustic.onnx` **107 MB** +
+`hifigan_vocoder.onnx` **59 MB**，MIT。两个加起来 166 MB，在 400 MB 预算里。
+
+实测（`scripts/svs_probe.py`）：
+
+```
+acoustic  in : txt_tokens int64[1,N]  pitch_midi int64[1,N]  midi_dur f32[1,N]  is_slur int64[1,N]
+          out: decoder_inp [1,T,256]  mel_out [1,T,80]
+vocoder   in : mel_out [1,T,80]  f0 [1,T]      out: wav [1,S]
+        词表上限：62（也就是 63 个 token）
+```
+
+形状是"每个音符一个 token + 该音符的帧数"，正是我们要的那种（不用自己做音素时长预测）。
+
+**但它没带词典**：没有 `dsconfig.yaml`、没有 `phonemes.txt`，63 个 id 对应哪些音素不知道。
+这不是"模型跑不起来"——它跑得起来，mel 出得来（`[1,1590,80]`）——而是**没有 token↔音素这张表，
+就念不出字**。所以下一步不是调参，是拿到词表，三条路：
+
+1. 找同一作者/同一转换工具的配置（HF 仓里没有，去作者的其他仓或 GitHub 上找）；
+2. 换成 OpenUTAU 声库包（**那套格式一定带 dsconfig.yaml**），体积通常也在 200–300 MB；
+3. 自己训（走不通：要数据、要算力）。
+
+判据很硬：拿"啦啦啦"（`l a` 三个音）先试，ASR 能转回"啦啦啦"才算接对；
+转不回来就说明 id 映射错了，改顺序重试。
+
+与此同时，界面上那个「唱歌」开关已经摆上去了，但**现在是灰的**——
+`svsEngine()` 找不到 acoustic + vocoder + phonemes.json 三样就不点亮。
+按老规矩：灰的判据是"有没有东西可跑"，不是"功能写没写"。
+
 ## 4. 复杂编排：一个工具，两种写法
 
 用户要的"写好脚本再调用"，落成一个 `Speak` 的三选一入参：

@@ -147,6 +147,9 @@ pub struct AssistantPolicy {
     pub cross_session_enabled: bool,
     /// 命令执行前询问（D329）：默认开。开着也不拦"能不能跑"，只决定"要不要先问一句"。
     pub shell_guard: GuardConfig,
+    /// 唱歌（`Sing`）：默认关，而且**还要有引擎**才声明得出工具来。
+    /// 现在没有任何引擎落地，所以这一项在界面上一律是灰的——灰的判据是"有没有东西可跑"。
+    pub sing_enabled: bool,
 }
 
 impl AssistantPolicy {

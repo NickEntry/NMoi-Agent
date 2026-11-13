@@ -23,6 +23,7 @@ internal object ToolingRepository {
     private const val KEY_SHELL_ASK = "tool.shell_ask"
     private const val KEY_SHELL_BLACKLIST = "tool.shell_blacklist"
     private const val PREFIX_SHELL_GROUP = "tool.shell_group."
+    private const val KEY_SING = "tool.sing"
 
     /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
     fun sharedRoot(context: Context): File = WorkspaceRepository.defaultRoot(context)
@@ -212,6 +213,32 @@ internal object ToolingRepository {
             .keys
             .map { it.removePrefix(PREFIX_SHELL_GROUP) }
             .sorted()
+
+    /**
+     * 本机开关：唱歌（`Sing`，0.17b）。默认关。
+     *
+     * 开着也还要有引擎：`svsEngine(context)` 为空时这一行是灰的——
+     * "拨了也不会生效"的开关比没有更糟，所以灰的判据是"有没有东西可跑"。
+     */
+    fun sing(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_SING, false)
+
+    fun setSing(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SING, enabled)
+            .apply()
+        NLog.i("Tools", "唱歌开关：${if (enabled) "开" else "关"}")
+    }
+
+    /** 装好的歌唱引擎（模型目录）。现在还没有下载/安装这条线，所以恒为 null。 */
+    fun svsEngine(context: Context): File? {
+        val dir = File(File(context.filesDir, "voice"), "svs")
+        val acoustic = File(dir, "acoustic.onnx")
+        val vocoder = File(dir, "vocoder.onnx")
+        val dict = File(dir, "phonemes.json")
+        return if (acoustic.isFile && vocoder.isFile && dict.isFile) dir else null
+    }
 
     fun setEnvirShell(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

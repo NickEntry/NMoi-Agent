@@ -287,6 +287,8 @@ struct TurnInput {
     shell_blacklist: bool,
     /// 被关掉的规则组。空 = 十组全问。
     shell_off_groups: Vec<String>,
+    /// 唱歌（0.17b）：开关开着也还要有引擎，缺一样 `Sing` 都不声明。
+    sing: bool,
     /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
     thinking: Option<String>,
     /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
@@ -618,6 +620,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         shell_ask: optional_bool(&root, "shell_ask")?.unwrap_or(true),
         shell_blacklist: optional_bool(&root, "shell_blacklist")?.unwrap_or(true),
         shell_off_groups: parse_str_list(&root, "shell_off_groups")?,
+        sing: optional_bool(&root, "sing")?.unwrap_or(false),
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
@@ -1028,6 +1031,7 @@ fn policy_for(input: &TurnInput) -> AssistantPolicy {
             .enable_container(container)
             .enable_cross_session(input.cross_session),
     };
+    policy.sing_enabled = input.sing;
     policy.shell_guard = GuardConfig {
         ask: input.shell_ask,
         blacklist: input.shell_blacklist,

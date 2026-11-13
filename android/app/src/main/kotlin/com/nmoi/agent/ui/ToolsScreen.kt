@@ -60,6 +60,8 @@ internal fun ToolsScreen(
     var nativeShell by remember { mutableStateOf(ToolingRepository.nativeShell(context)) }
     var confirmShell by remember { mutableStateOf(false) }
     var shellAsk by remember { mutableStateOf(ToolingRepository.shellAsk(context)) }
+    val singEngine = remember { ToolingRepository.svsEngine(context) }
+    var sing by remember { mutableStateOf(ToolingRepository.sing(context)) }
     var shellBlacklist by remember { mutableStateOf(ToolingRepository.shellBlacklist(context)) }
     var confirmAskOff by remember { mutableStateOf(false) }
     val root = remember { ToolingRepository.workspaceRoot(context).absolutePath }
@@ -169,6 +171,25 @@ internal fun ToolsScreen(
                         },
                     )
 
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(start = 14.dp),
+                    )
+                    ToolSwitchRow(
+                        title = "唱歌",
+                        subtitle = if (singEngine == null) {
+                            "还没有装歌唱引擎，这一行先灰着。"
+                        } else {
+                            "按音符唱：给它歌词语句和音高，它出一段人声。"
+                        },
+                        checked = sing && singEngine != null,
+                        enabled = singEngine != null,
+                        onChecked = { next ->
+                            ToolingRepository.setSing(context, next)
+                            sing = next
+                        },
+                    )
                     HorizontalDivider(
                         thickness = 1.dp,
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
