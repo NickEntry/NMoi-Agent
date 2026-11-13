@@ -48,7 +48,7 @@ internal object VoiceBankRepository {
     /** 装好的声库。只认带 `dsconfig.yaml` 或 `oto.ini` 的目录，别的一律不算。 */
     fun installed(context: Context): List<Installed> {
         val root = root(context)
-        if (!root.isDir) return emptyList()
+        if (!root.isDirectory) return emptyList()
         return root.listFiles()
             .orEmpty()
             .filter { it.isDirectory }
@@ -107,7 +107,7 @@ internal object VoiceBankRepository {
         runCatching {
             val id = safeId(name)
             val root = root(context)
-            if (!root.isDir && !root.mkdirs()) error("建不了目录：${root.absolutePath}")
+            if (!root.isDirectory && !root.mkdirs()) error("建不了目录：${root.absolutePath}")
             val target = File(root, id)
             if (target.exists()) error("已经装过一个叫「$name」的声库了，先删掉再装")
 
