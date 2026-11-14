@@ -159,15 +159,15 @@ pub fn normalize(wav: &mut Wav, peak: f32, allow_boost: bool) -> f32 {
 pub fn fade(wav: &mut Wav, in_ms: u32, out_ms: u32) {
     let rate = wav.sample_rate as usize;
     let fade_in = (rate * in_ms as usize / 1000).min(wav.samples.len());
-    for index in 0..fade_in {
+    for (index, sample) in wav.samples.iter_mut().enumerate().take(fade_in) {
         let gain = 0.5 - 0.5 * (PI * index as f32 / fade_in.max(1) as f32).cos();
-        wav.samples[index] *= gain;
+        *sample *= gain;
     }
     let fade_out = (rate * out_ms as usize / 1000).min(wav.samples.len());
     let start = wav.samples.len() - fade_out;
-    for offset in 0..fade_out {
+    for (offset, sample) in wav.samples[start..].iter_mut().enumerate() {
         let gain = 0.5 + 0.5 * (PI * offset as f32 / fade_out.max(1) as f32).cos();
-        wav.samples[start + offset] *= gain;
+        *sample *= gain;
     }
 }
 
