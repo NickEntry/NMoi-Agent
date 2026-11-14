@@ -194,4 +194,4 @@ echo
 echo "说明："
 echo "- 1x1 的测试图只能证明端点收不收这个字段，证明不了它看得懂；要验后者请 --image 传真图。"
 echo "- 'rejected' 是结论（这个模型/端点不收），'unknown' 是没结论（鉴权、限流、5xx）。"
-echo "- 结论请写回 docs/model-data.md 或 issue，别只留在终端里。"
+echo "- 结论请写回 notes/model-data.md 或 issue，别只留在终端里。"

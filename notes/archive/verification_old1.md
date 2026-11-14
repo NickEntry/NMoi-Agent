@@ -1,7 +1,7 @@
 # 真机清单（归档 1：V0–V46）
 
-> 从 `docs/verification.md` 切出来的。**已经走过**的那些留在这里，正文只留还没走完的与最近的几条。
-> 切分规则见 `docs/archive/README.md`。
+> 从 `notes/verification.md` 切出来的。**已经走过**的那些留在这里，正文只留还没走完的与最近的几条。
+> 切分规则见 `notes/archive/README.md`。
 
 ---
 

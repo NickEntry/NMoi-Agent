@@ -4,7 +4,7 @@
 //! 四个端口（`openai_compatible` / `openai_responses` / `anthropic` / `gemini`）
 //! 各有各的字段名，UI 不该知道这些差别——所以差异全部收在这一层。
 //!
-//! 字段名不是凭记忆写的：`docs/provider-runtime.md` 记了每个字段的来源（官方文档或实测）。
+//! 字段名不是凭记忆写的：`notes/provider-runtime.md` 记了每个字段的来源（官方文档或实测）。
 //!
 //! ## usage 的口径统一（重要）
 //!
@@ -1186,7 +1186,7 @@ fn int_field(value: &Value, key: &str) -> u32 {
 
 fn openai_usage(usage: &Value) -> Usage {
     // 有的中转在 chat/completions 上回的是 Anthropic 风格字段
-    // （cache_read_input_tokens / reasoning_tokens），实测见 docs/provider-runtime.md。
+    // （cache_read_input_tokens / reasoning_tokens），实测见 notes/provider-runtime.md。
     let cached = usage
         .get("prompt_tokens_details")
         .map(|details| int_field(details, "cached_tokens"))

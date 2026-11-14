@@ -114,7 +114,7 @@ impl ProviderCapabilities {
 
 /// 思考强度档位。
 ///
-/// 档位不是我们发明的，是各家实际接受的字符串的并集（实测分布见 docs/model-data.md）：
+/// 档位不是我们发明的，是各家实际接受的字符串的并集（实测分布见 notes/model-data.md）：
 /// `none`（显式关）/ `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
 /// **某个模型支持哪几档由模型元数据说了算**（`ModelProfile::supported_efforts`），
 /// UI 的滑块只列支持的那些。
@@ -400,7 +400,7 @@ pub fn remove_path(value: &mut Value, path: &str) -> bool {
     }
 }
 
-/// 供应商配置。真实密钥不存在这里——密钥走 vault / 凭据代理（见 docs/secrets.md）。
+/// 供应商配置。真实密钥不存在这里——密钥走 vault / 凭据代理（见 notes/secrets.md）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,

@@ -1,7 +1,7 @@
 # 决策记录（归档 2：D93–D146）
 
-> 从 `docs/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
-> 切分规则见 `docs/archive/README.md`。
+> 从 `notes/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
+> 切分规则见 `notes/archive/README.md`。
 
 ---
 
@@ -244,7 +244,7 @@ D97 把两条线接上了，但"现在用了多少 token"这件事当时有三�
 - 包名 **`com.NMoi.agent`**（照用户给的写，大小写照原样；Kotlin 的 `namespace` 另用
   `com.nmoi.agent`，避开大小写带来的风格与工具链麻烦。两者不必相同）。
 - **1.0 之前不把"keystore 不能丢"当硬约束**：项目还没对外宣传，丢了就生成新的一套、卸载重装，
-  数据从零再来一次的成本是零。`docs/signing.md` 里"离线两份"那套等 1.0 再严格执行。
+  数据从零再来一次的成本是零。`notes/signing.md` 里"离线两份"那套等 1.0 再严格执行。
 - 但**从第一个 APK 起就要固定同一套 keystore**：CI runner 每次是全新的，Android 的 debug
   keystore 由构建机自己生成，不固定签名就装不上第二个包（只能卸载，数据全丢）。
   这条和"换签名无所谓"不冲突——它说的是"同一个阶段内不要每次都变"。
@@ -402,7 +402,7 @@ Compose 编译器插件 2.0.21 / JDK 17 / compileSdk 34。
 ## D111 骨架阶段只出 debug 包，release 不冒充
 
 CI 只跑 `:app:assembleDebug`：debug 签名由构建机自己生成，不需要任何材料。
-release 需要 4 个 environment secret（`docs/signing.md`），一个都没有——所以这条路**关着**，
+release 需要 4 个 environment secret（`notes/signing.md`），一个都没有——所以这条路**关着**，
 不写一个"看起来能签名其实用的是 debug keystore"的兜底。
 
 - `allowBackup=false`：自动备份会把 SQLite 主库和 `-wal` 分两次搬走，恢复时可能拿到
@@ -482,7 +482,7 @@ D106 要求声明随每个产物走。Android 这一侧落到三件事：
 ## D115 压缩的失败阶梯：多步 → 备用多步 → 单步 → 分段 → 兜底
 
 压缩失败不是"再试一次"，是**逐档降级**，每档的失败判据和降级目标都不一样
-（细则与提示词见 `docs/compression.md`）。
+（细则与提示词见 `notes/compression.md`）。
 
 - **L0 多步**（现状）→ **L1 备用多步**（先剔除思考块压事实层，再把思考要点合并回去压第二遍）
   → **L2 单步** → **L3 分段**（约 16 段，窗口 1–5/5–9/9–13/13–16，逐段走 L0 再合并）
@@ -642,7 +642,7 @@ PLAN §3.12 的第一层：聊天页 = 顶栏（返回 / 标题 / 抽屉）+ 消
 - 依据：material3 1.3 的 `surfaceContainer*` 色阶（BOM 2024.09 已带）。
 
 两条 2026-10-24 已实现（同轮：`ChatScreen.kt` 重写、列表页删除、抽屉加「＋新会话」）。
-真机还没验——验收步骤在 `docs/verification.md` V7。
+真机还没验——验收步骤在 `notes/verification.md` V7。
 
 **落地时补的两条细则**（形状之外、当时没写）：
 - 气泡**按内容收放**，`widthIn(max = 屏宽 × 0.78)`；之前那种 `fillMaxWidth(0.86f)` 会让每条都撑成
@@ -688,7 +688,7 @@ D126 一来，`androidx.compose.material3` 就从"顺带被 BOM 拖进来"变成
   于是 LICENSE 没进包也能绿。现在用 `awk '$NF == "assets/notices/<名字>"'` 逐行比最后一个字段。
   这道闸的失效方式只有一个：**假绿**，所以它自己也要能被检查。
 
-已实现并跑过 CI（`292d2c8` 之后的这一轮）；真机验收见 `docs/verification.md` V7。
+已实现并跑过 CI（`292d2c8` 之后的这一轮）；真机验收见 `notes/verification.md` V7。
 
 ## D129 消息区形状（2026-10-24 按截图重定）：助手**没有气泡**
 
@@ -1115,7 +1115,7 @@ delete → load_units → 拒绝删最后一版 → switch(keep)），**全过**
 ## D143 压缩后保「人格 / 文风连续」：窗口最小形状按**轮**定，不按消息定
 
 **问题**：压缩把线上原文换成摘要后，模型自己最近说过的话**一条原文都不剩**——
-`compress.draft` 只要求"数字/路径/命令/版本号逐字保留"（`docs/compression.md` §2.1 第 3 条），
+`compress.draft` 只要求"数字/路径/命令/版本号逐字保留"（`notes/compression.md` §2.1 第 3 条），
 没有一条要求保住语气、自称、句法。同一个会话压过一次就会前后不像同一个人。
 
 **用户方案（2026-10-24）**：压缩结果最多带 3 条助手 + 2 条用户，顺序强制 `A1 → U1 → A2 → U2 → A3`。

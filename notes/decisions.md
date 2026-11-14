@@ -258,7 +258,7 @@ D230（服务停止询问）**没动**：它依赖 D219 的持久会话，而那
 
 ## D231 每个会话自己的 `/chat`（0.15ao，2026-11-03）
 
-用户 2026-11-02 提，设计在 `docs/chat-isolation.md`。这一轮落地：
+用户 2026-11-02 提，设计在 `notes/chat-isolation.md`。这一轮落地：
 
 1. **数据侧**：schema **v12**，`conversations.workspace_mode TEXT NOT NULL DEFAULT 'shared'`。
    新会话由 `create_conversation` 显式写 `chat`；**老会话升级上来是 `shared`**——
@@ -338,7 +338,7 @@ M 条没成（原因在日志）"——不假装全成了。
 **没做**：自检结果不进日志页（只在 `state.json` 与界面上）；`detail` 字段界面上还没展开显示。
 
 **验证**：本机 `kotlinc` 不可用（这台机器没装，本轮没下载），Kotlin 只做了括号/引用自查；
-真机判据见 `docs/verification.md` V59。**未实测**。
+真机判据见 `notes/verification.md` V59。**未实测**。
 
 ## D234 工作区：用户建的目录 + 助手绑定（v13 / 0.15az，2026-11-03）
 
@@ -633,7 +633,7 @@ base64 编进请求，三处都按同一份字节算，压得越早越省。三�
   「一次任务里读几个文件、改几处，12 轮够用；再多通常说明模型在打转」。
 - D51 第 3 条只定了"轮数用尽要诚实回报（`finished=false`），不装做完"，**没定具体数字**，
   也没说 12 从哪来。这个数是我拍的安全阀（防模型无限调工具），从来没写进需求。
-- 它还漏进了三处：`TurnConfig::default`、`ffi` 的 `parse_config` 兜底、`docs/PLAN.md` 的示例 JSON。
+- 它还漏进了三处：`TurnConfig::default`、`ffi` 的 `parse_config` 兜底、`notes/PLAN.md` 的示例 JSON。
 - 界面上那句「轮数用尽，模型没收尾」也是我写的——像在报错，其实是自己设的上限。
 
 **改法三条**：
@@ -793,7 +793,7 @@ Kotlin **102 条 @Test / 10 个文件**；JNI 符号 **47**；APK `17,971,961` �
 点开是半屏弹窗：每张的缩略图、`1024 × 2048 · image/jpeg`、大小与附件 id。
 理由还是铁律②：图是发出去的东西，界面上只有气泡里那两张缩略图，用户没法确认
 "进上下文的是哪几张、什么格式、多大"。**只读**——管理（移出上下文 / 只留这一轮）见
-`docs/image-context.md` 的设计，动库之前先想清"移出之后气泡里那张还在不在"。
+`notes/image-context.md` 的设计，动库之前先想清"移出之后气泡里那张还在不在"。
 
 **实测**：CI 见提交后的 run；本机 `kotlinc` 全量类型检查只剩那三类已知 error，
 `LiveStreamTest` 5 条 + `LivePollTest` 9 条本机 JUnit 全绿；Rust `kills::` 16 条绿。
@@ -833,7 +833,7 @@ turn 的 config 多一项 `image_limit`（0 = 默认 20）。JNI 符号 **47 →
 以前把 `finished` 的思考画成独立思考卡、正文排在后面，看着像"正文被并进思考里"。
 
 **没做**：图钉（固定优先保留）、「自动管理历史图片」开关、「再加到输入框」、
-用户发的图是否也占 12 张的额度。见 `docs/image-context.md` §3。
+用户发的图是否也占 12 张的额度。见 `notes/image-context.md` §3。
 
 ## D249 「正在生成」卡死：状态收尾放进 finally，再加一条以原生为准的对账（2026-11-04）
 
@@ -959,7 +959,7 @@ truncated -> "上下文到了绝对线…"
 
 用户 2026-11-04 定：「只存结束，不存进行时。无论是停止导致截断/网络问题导致停止并截断，
 或是完整结束，都算是结束，这个时候开存」。契约与四种结束的处理表在
-`docs/persist-on-finish.md`，这一条只记落地时改了什么。
+`notes/persist-on-finish.md`，这一条只记落地时改了什么。
 
 **为什么这条值得单独立一条决策**：它把"空版本 / `（空消息）` / 半截记录"从
 "靠闸门挡"变成"结构上不可能"。上一轮 D251 加的那道闸（正文为空不落版本）只是补丁，
@@ -1020,7 +1020,7 @@ OpenAI 兼容端口不要求角色交替。
 
 ## D254 工具批次并行：四条车道，结果按调用顺序回填（2026-11-04）
 
-用户 2026-11-02 问「一次要调好几个工具能不能并行」，设计在 `docs/tool-execution.md`。
+用户 2026-11-02 问「一次要调好几个工具能不能并行」，设计在 `notes/tool-execution.md`。
 这一条落地的是其中的 **0.15an-a**：`Tool::lane()` + 批次执行器。
 
 **改动**：`agent::run_turn` 里那个 `for call in &outgoing` 换成 `execute_batch`。
@@ -1078,7 +1078,7 @@ Gemini 老接口的同名并行（`functionResponse` 只认函数名，要等 In
 `request_pieces` 因此从 `Vec<&str>` 变成 `Vec<String>`——多一次分配，换来不用管生命周期。
 
 **没做**：库还是老列（`content` / `reasoning` / `tool_calls`），读写两侧在 `repo.rs` 里做投影；
-v15 的表、折行、版本 `parts_json`、编辑按 part id 都在后面的批次（见 `docs/message-parts.md` §12）。
+v15 的表、折行、版本 `parts_json`、编辑按 part id 都在后面的批次（见 `notes/message-parts.md` §12）。
 
 **测试**：`parts_are_the_only_source_of_text_reasoning_and_calls`（投影与顺序）、
 `set_text_replaces_instead_of_appending`（改正文是替换，不是追加）。
@@ -1491,7 +1491,7 @@ kotlinc 全量只剩 9 个 `R`。
 没做：用户原话里还有一句「超过上下文上限时先不丢、留到这一轮结束前」。
 这一条没动工——图片上限是**每请求张数**的硬顶（100 是三家端点里最弱的 Anthropic），
 "先不丢"会直接把请求顶成 400。要落它，得先说清指的是哪一条上限（张数还是上下文 token），
-以及"这一轮结束前"之后这些图去哪。见 `docs/PLAN.md` 的 0.15al 那一行。
+以及"这一轮结束前"之后这些图去哪。见 `notes/PLAN.md` 的 0.15al 那一行。
 
 判据：`path_mode_sends_the_file_names_instead_of_the_bytes`（先在旧行为上红过）、
 `path_mode_falls_back_to_inline_when_view_image_cannot_run`、
@@ -1590,7 +1590,7 @@ kotlinc 全量只剩 9 个 `R`。
   （`trigger()` 里把 absolute 抬到 suggest）——两处都做，因为脚本也能直接调 FFI。
 - 输出预留 `0` = 老行为（模型 `max_tokens`，夹 1024–8192）；填了就用那个数。
 
-**与 `docs/context-modes.md` 的一处偏差**：设计稿说存 `settings` 表（跟着库走），
+**与 `notes/context-modes.md` 的一处偏差**：设计稿说存 `settings` 表（跟着库走），
 这一批存的是 SharedPreferences。理由：它和「默认上下文窗口」是同一组参数，那个已经
 在 SharedPreferences 里；拆成两处，用户改完一个找不到另一个。换设备时窗口本来就要按
 那台设备的模型重算，跟着库走的意义不大。等档位那一批真要写进 settings 表时一起搬。
@@ -1727,7 +1727,7 @@ F4 下连"小于阈值"的内容都会被换成指针。现在：
 
 内置册 id `builtin`：不可删、不可减项、能增项、可恢复默认；导入同 id 时按 id 补缺。
 内容来源是 `assets/presets` 的词条（不复制数据，和「预设」页共用一份四态）。
-细节与判据写在 `docs/lorebook.md` §10。**未动工。**
+细节与判据写在 `notes/lorebook.md` §10。**未动工。**
 
 ## D284 重试一条旧消息：只换这一条（2026-11-07 夜）
 
@@ -1813,7 +1813,7 @@ LogSettingsScreen 1。另外两处压成一句定义（档位 F1–F4、路由�
 - 挑多了（超过剩余额度）只取前几张，回话写「一轮最多 4 张，多出来的没加」。
 - 管道本来就支持多张（`TurnRepository` 把 `List<PendingImage>` 编成数组），这次只动了选图那一段。
 
-判据：kotlinc 只剩 9 个 `R`；真机 **V99**。文件附件还没做，见 `docs/model-roles.md` §6 第 5 批。
+判据：kotlinc 只剩 9 个 `R`；真机 **V99**。文件附件还没做，见 `notes/model-roles.md` §6 第 5 批。
 
 ## D289 默认模型页：六个角色、三种状态（2026-11-08）
 
@@ -1839,7 +1839,7 @@ LogSettingsScreen 1。另外两处压成一句定义（档位 F1–F4、路由�
 用户 2026-11-08：「世界书在设置里面的开关只代表世界书会不会显示在聊天里加号的世界书里，
 加号里面的勾选上才是真正生效」「这里的技能和世界书开关都是跟着助手走，跟助手设置里面的是相同数据存储」。
 
-**三层启用，三个数字**（`docs/model-roles.md` §2）：
+**三层启用，三个数字**（`notes/model-roles.md` §2）：
 
 | 层 | 存在哪 | 管什么 |
 |---|---|---|

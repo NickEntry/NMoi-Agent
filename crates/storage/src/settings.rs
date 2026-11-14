@@ -39,7 +39,7 @@ pub enum Scope {
     /// 模型服务（D156）：端点、模型名、供应商类型。key = `default`。
     ///
     /// **密钥不在这份文档里**——它由平台侧用 Keystore 加密后单独落在 `vault/` 下
-    /// （`docs/secrets.md` 的 L1）。这里存的是"能不能发请求"的那几个非敏感字段，
+    /// （`notes/secrets.md` 的 L1）。这里存的是"能不能发请求"的那几个非敏感字段，
     /// 所以导出/备份带着它走也不会带走凭据。
     Provider,
     /// 预设词条（0.14t / D178）。key = `<预设 id>/<词条 id>`，值是[`nmoi_core::preset::EntryDoc`]。

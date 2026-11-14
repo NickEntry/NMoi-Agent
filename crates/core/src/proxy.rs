@@ -13,7 +13,7 @@
 //! | HTTPS（本地凭据） | TLS 到代理，验**本机**信任库 | 同上 |
 //!
 //! 「本地凭据」这一档在 Android 上要平台 TrustManager + `network_security_config`，
-//! 这一版**明确报不支持**（`Unsupported`），不假装能验——见 `docs/proxy.md` §1。
+//! 这一版**明确报不支持**（`Unsupported`），不假装能验——见 `notes/proxy.md` §1。
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};

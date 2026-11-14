@@ -86,7 +86,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Android 骨架：只出 debug APK。debug 签名由构建机自己生成，不需要任何 secret；
-  # release 签名要 4 个 environment secret（见 docs/signing.md），那是下一步。
+  # release 签名要 4 个 environment secret（见 notes/signing.md），那是下一步。
   # 这一版**还没有** Rust 核心（没有 JNI 层），所以这里只证明"工具链能出包"。
   android:
     name: android (debug apk)

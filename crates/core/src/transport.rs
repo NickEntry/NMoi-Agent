@@ -5,7 +5,7 @@
 //! HTTP/1.1，覆盖 `http://`（本机 llama.cpp / ollama / 本机代理这条路）。
 //!
 //! `https://` 不在这里——TLS 要么落在平台侧原生栈（Android OkHttp / Windows WinHTTP /
-//! Linux），要么落在某个 TLS 依赖上。取舍与理由见 `docs/decisions.md` D38。
+//! Linux），要么落在某个 TLS 依赖上。取舍与理由见 `notes/decisions.md` D38。
 //!
 //! 响应体一律是 [`ResponseBody`]（`BufRead`）：**流式必须能读一半就走**，
 //! 所以不提供 `execute` 的"一次性返回整个 body"变体——那会把 SSE 逼成等待完整响应。

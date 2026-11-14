@@ -5,18 +5,18 @@
 > 每次开工先读本表，收工前把变动写回去。
 
 - 上游设计：`docs/design/context-modes-design-v1.1.md`、`docs/design/platform-client-plan.md`、`docs/design/context-experiments-report.md`
-- 决策记录：`docs/decisions.md`（D1–D9 来自计划文档，D10 起是本仓库新增）
+- 决策记录：`notes/decisions.md`（D1–D9 来自计划文档，D10 起是本仓库新增）
 - 最近更新：2026-10-27（**一步到位那一轮**：0.14j 供应商多套 + 模型表（D157）、
   0.14k `turn_run` 接进聊天页 —— `↑` 真的发请求、生成中同一按钮变停止。两件都是
-  **已实现、待真机验证**（Kotlin 只能在 CI 里编）；同轮：文档同步 `docs/decisions.md` D157、
-  `docs/ui/structure.md` 供应商三页、`docs/verification.md` V9）
+  **已实现、待真机验证**（Kotlin 只能在 CI 里编）；同轮：文档同步 `notes/decisions.md` D157、
+  `docs/ui/structure.md` 供应商三页、`notes/verification.md` V9）
 - 上一轮：2026-10-24（0.14g **已实现、待真机验证**：助手去气泡 + 头像/名字/时间 + 动作行、长按选择消息、自研 Markdown 渲染，D129–D131；同轮 0.14e/0.14f：聊天页升主页 D125、气泡照 M3 D126；
   同轮：M3 的许可义务（`LICENSES/Apache-2.0.txt` + 声明 §3 + CI 闸，D127）、
   应用内「关于 → 开源许可」页 + 自己的 GPL 全文进包 + 闸改精确比对（D128））
 - 同轮（2026-10-26）：**压缩后窗口的最小形状** —— 人格/文风连续性怎么保（D143、§3.4.2）；结构 + 两模型行为都已实测（口癖率 / 思考要点命中 / 思考膨胀倍数）；另量了四本真实世界书的占用预算（D144）；侧面验证方法定在“文件口吻率”（D145）；**core 已落地**：`choose_cut_for_window_shape` + `compress::excerpt`，504 项测试；**目标改写**：让 AI 觉得此前对话是它自己说的（归属感，不是措辞相似）；返回键分层（D146）
-- 上一轮：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 docs/compression.md、D115）
+- 上一轮：2026-10-22（0.15：压缩失败阶梯 + 提示词全部可自定义；**设计已定未实现**，见 notes/compression.md、D115）
 - 同轮：0.14（应用图标 4 款 × 黑白底、设置里可切、默认 4 号黑底；D114）
-- 同轮：0.13（JNI 桥接上原生层，列表读真库；D112；真机清单 docs/verification.md）
+- 同轮：0.13（JNI 桥接上原生层，列表读真库；D112；真机清单 notes/verification.md）
 - 上一轮：2026-10-22（0.12：Android 骨架 + CI 出 debug APK；D110 / D111）
 - 上一轮：2026-10-21（0.8：自动重试 —— `retry` 模块 + `complete_retrying`，D99）
 - 同轮：2026-10-21（0.7：双线压缩接线 —— `Threshold` 双单位、`decide` 动作表、造请求前拒绝、生成中截断，D97）
@@ -37,37 +37,37 @@
 | P2 | Provider / 模型配置层 | 已实现 core | `core::provider` + `core::model`（归一名、家族兜底、来源可解释）；**模型快照已接入**（1729 条家族-版本，1.2MB） | `crates/core/src/provider.rs`、`model.rs`、`data/models.snapshot.json` |
 | P2.1 | 传输层（明文 HTTP/1.1 + 分块/定长/关闭定界） | 已实现 core | `core::transport`：`Transport` trait + `PlainHttpTransport`（std 手写）。`https` 明确报 `Unsupported`（TLS 见 D38 的待定项）；有本机 socket 单测（CI 可跑，不需要外网） | `crates/core/src/transport.rs`、D38 |
 | P2.2 | SSE 帧解析 | 已实现 core | `core::sse`：空行断帧 / 多行 data 拼接 / 注释行 / EOF 前无空行不吞帧 / 单行上限 1 MiB；有"逐字节切碎"的测试 | `crates/core/src/sse.rs` |
-| P2.3 | 四端口流式适配 + usage 归一 | 已实现 core | `core::stream`：`StreamEvent` 统一形状；OpenAI 兼容 / Responses / Anthropic / Gemini；工具参数分片、`thought:true`、`[DONE]`、流内 error、无终止信号=Interrupted；usage 口径归一（D39） | `crates/core/src/stream.rs`、`docs/provider-runtime.md` |
+| P2.3 | 四端口流式适配 + usage 归一 | 已实现 core | `core::stream`：`StreamEvent` 统一形状；OpenAI 兼容 / Responses / Anthropic / Gemini；工具参数分片、`thought:true`、`[DONE]`、流内 error、无终止信号=Interrupted；usage 口径归一（D39） | `crates/core/src/stream.rs`、`notes/provider-runtime.md` |
 | P2.4 | 请求构造 / 错误映射 / 重试 | 已实现 core | `core::runtime`：四端口请求体、屏蔽顺序沿用 D33、`max_tokens` 字段按端口分、鉴权头按端口分、`OverflowHint` 两档线索、429/5xx 重试（只在零字节阶段） | `crates/core/src/runtime.rs`、D40 |
-| P2.4a | 真机冒烟 | 已实测 | `cargo run -p nmoi-core --example provider_smoke`（2026-10-20，`relay-b/DeepSeek-V4.1-Flash`）：正文/思考/usage/finish/done 全通，引擎落库 2 个原子单元 | `docs/provider-runtime.md` §1 |
+| P2.4a | 真机冒烟 | 已实测 | `cargo run -p nmoi-core --example provider_smoke`（2026-10-20，`relay-b/DeepSeek-V4.1-Flash`）：正文/思考/usage/finish/done 全通，引擎落库 2 个原子单元 | `notes/provider-runtime.md` §1 |
 | P2.6 | 非流式回复 + 工具消息接线 | 已实现 core + 已实测 | `ChatClient::complete()` + `stream::parse_complete`（四端口解析）；`Completion { text, reasoning, tool_calls, finish, usage }`。工具消息四端口映射（D41）；工具声明三端口已做、Gemini 报 `Unsupported`。真机非流式实测通过 | `core::runtime`、`core::stream`、D41 |
-| P2.5 | 模型元数据抓取流水线 | 已跑通 | `scripts/fetch_models.py`（三源合并、只存事实字段、--offline 可复现）；来源与许可见 `docs/model-data.md` | `scripts/fetch_models.py` |
+| P2.5 | 模型元数据抓取流水线 | 已跑通 | `scripts/fetch_models.py`（三源合并、只存事实字段、--offline 可复现）；来源与许可见 `notes/model-data.md` | `scripts/fetch_models.py` |
 | P2.7 | 逐参数覆盖（默认/已修改 + 恢复） | 已实现 core | `core::config`：`OverrideState`、`ModelOverrides`、跟随规则、`ThinkingChoice`；UI 未接（P6） | `crates/core/src/config.rs` |
 | P2.9 | 思考滑块语义（关闭显式 / 自动不发 / 滑块最少两格） | 已实现 core | `ThinkingChoice::slider`；关闭对 Anthropic 预算式走 `type: disabled`，其余走显式 `none` | `crates/core/src/config.rs` |
 | P2.8 | 思考档位数据（每模型支持哪些强度） | 已跑通 | 脚本从 `reasoning_options` 提取，**厂商数据优先**（DeepSeek 实测 low/high/max） | `data/models.snapshot.json` |
 | P3 | 五类模型角色（标题/压缩/翻译/视觉/建议） | 已实现 core | `core::roles`：角色配置与默认值、内置提示词、标题清洗、失败静默降级、单独计量账本（不进会话预算）；视觉角色按"未显式指定则置灰"实现门控 | `crates/core/src/roles.rs`、D42 |
 | P3.1 | 视觉图片通道（图片 → 文字描述） | 未开始 | 需要：`SourceTag::VisionBridge`（**已加**）、四种端口的图片内容块、工作区的二进制读、尺寸/格式限制。当前视觉角色只有门控，发不出图 | D22、D42 |
 | P3.3 | **视觉覆盖**（开着就由视觉模型看，主模型只收文字） | 契约已定 + 决策函数已实现 + FFI 可读默认提示词 | `core::vision`：`VisionOverride` / `VisionPlan` / `Task::request_text`；两套默认提示词（`data/vision.image.md` 逐字收用户给的 11888 字节、`data/vision.video.md` 另写），`nmoi_vision_defaults_json` 读给 UI。缺：附件库、真把媒体发出去（等 P3.4 的内容块） | §3.14、D62、D63 |
-| P3.4 | 多模态内容块 + Gemini 全模态 | 设计已定 + 探针可用 | 四端口能力矩阵见 §3.15；`scripts/modality_probe.sh` 已写并在本机跑通 text/image 两行（结果与"为什么不能读成支持"记在 `docs/model-data.md`）。Gemini Files API **未实测** | §3.15、D64 |
+| P3.4 | 多模态内容块 + Gemini 全模态 | 设计已定 + 探针可用 | 四端口能力矩阵见 §3.15；`scripts/modality_probe.sh` 已写并在本机跑通 text/image 两行（结果与"为什么不能读成支持"记在 `notes/model-data.md`）。Gemini Files API **未实测** | §3.15、D64 |
 | P6.3 | 聊天页 / 侧栏布局（形状冻结） | 设计已定 | §3.12：三层消息页 + 抽屉，每一块标出数据来自哪个调用。UI 本体等平台工具链 | §3.12 |
 | P4.1 | **断块修复**（不完整调用/思考 → 文字块） | 已实现 core | `core::repair`：`diagnose` / `BrokenBlock::declaration` / `normalize`；声明行 = ID+块类+原因、ID 稳定、信息保留。接在 `run_session_turn` 汇总历史那一步，**不动库** | §3.17、D66、D67 |
 | P6.4 | 上下文窗口面板（分段用量 + 三个操作） | 已实现 core + FFI | `budget::Segment`（八行，顺序固定、含 0 行）/ `breakdown_of_units` / `nmoi_context_breakdown_json`（库里算历史与工具，`extra` 由调用方给系统提示词/技能/世界书/工作区/草稿；未知字段报错，不静默双算）；core 7 项测试 + C 侧 19 项检查。面板 UI 本体仍等平台工具链 | §3.12、`crates/core/src/budget.rs`、`crates/ffi/src/storage.rs` |
-| P6.5 | 字体与图标（内置 OFL / 导入变单槽 / 系统字体） | 设计已定 + 图标已画 | `docs/fonts.md`：内置 Noto Sans SC + Inter + JetBrains Mono + 得意黑（全部 OFL-1.1），导入字体自动改名为 `Imported Font` 且换走即删；Android 只给系统默认，Windows DirectWrite + 搜索，Linux fontconfig。图标：`docs/ui/icons/thinking-*.svg` 七个（自绘，D69）+ `actions/` 31 个（Lucide ISC）+ `brands/` 14 个（Lobe Icons MIT）+ 规范 `docs/ui/icons/README.md`（D103/D104）；预览工具 `scripts/icon_preview.py`（支持 dark/light 两档）；运行时用 PNG 图标包（原版不可删、可导入导出、正则规则可自定义，D105），供应商 `providers/` 与模型 `models/` 两套、彩色标；第三方声明随每个产物走（D106，`THIRD-PARTY-NOTICES.md` + `LICENSES/`）；规则匹配与排序已在 `core::icons` 落地（20 项测试，D107）：优先级 0–1000、有效字面量长度、全序落 `id`、供应商按 kind→host→name 三字段查 | `docs/fonts.md`、`docs/ui/icons/README.md`、`docs/ui/icon-packs.md`、`docs/packaging.md`、§3.18、D68、D69、D103–D106 |
-| P6.7 | Android 骨架 + CI 出 debug APK | 骨架已实现（未接 JNI） | `android/`：Gradle 8.7 / AGP 8.5.2 / Kotlin 2.0.21（D110），`applicationId = com.nmoi.agent`（D102）；第一屏是会话列表的**形状**，数据写死在 `ui/PlaceholderData.kt`；CI 有 `android` job 出 debug APK（D111，release 无签名材料、不冒充）。**缺**：`crates/jni` + `cargo-ndk`、图标包进 assets、instrumentation 测试，全部未在真机跑过 | `android/`、`docs/android.md`、`.github/workflows/ci.yml` |
+| P6.5 | 字体与图标（内置 OFL / 导入变单槽 / 系统字体） | 设计已定 + 图标已画 | `notes/fonts.md`：内置 Noto Sans SC + Inter + JetBrains Mono + 得意黑（全部 OFL-1.1），导入字体自动改名为 `Imported Font` 且换走即删；Android 只给系统默认，Windows DirectWrite + 搜索，Linux fontconfig。图标：`docs/ui/icons/thinking-*.svg` 七个（自绘，D69）+ `actions/` 31 个（Lucide ISC）+ `brands/` 14 个（Lobe Icons MIT）+ 规范 `docs/ui/icons/README.md`（D103/D104）；预览工具 `scripts/icon_preview.py`（支持 dark/light 两档）；运行时用 PNG 图标包（原版不可删、可导入导出、正则规则可自定义，D105），供应商 `providers/` 与模型 `models/` 两套、彩色标；第三方声明随每个产物走（D106，`THIRD-PARTY-NOTICES.md` + `LICENSES/`）；规则匹配与排序已在 `core::icons` 落地（20 项测试，D107）：优先级 0–1000、有效字面量长度、全序落 `id`、供应商按 kind→host→name 三字段查 | `notes/fonts.md`、`docs/ui/icons/README.md`、`docs/ui/icon-packs.md`、`notes/packaging.md`、§3.18、D68、D69、D103–D106 |
+| P6.7 | Android 骨架 + CI 出 debug APK | 骨架已实现（未接 JNI） | `android/`：Gradle 8.7 / AGP 8.5.2 / Kotlin 2.0.21（D110），`applicationId = com.nmoi.agent`（D102）；第一屏是会话列表的**形状**，数据写死在 `ui/PlaceholderData.kt`；CI 有 `android` job 出 debug APK（D111，release 无签名材料、不冒充）。**缺**：`crates/jni` + `cargo-ndk`、图标包进 assets、instrumentation 测试，全部未在真机跑过 | `android/`、`notes/android.md`、`.github/workflows/ci.yml` |
 | P6.9 | UI 骨架：会话 / 聊天 / 设置三页 + 日志门面 | 已实现（未真机验证） | `sealed interface Route` 三页切换 + `BackHandler` 只在非根注册；聊天页 = 顶栏 + 消息区空态 + 输入岛（`AndroidView` 包原生 `EditText`，D5）；**发送按钮禁用**（turn 面未接，不假装）；设置分「外观 / 调试 / 关于」（现已改成分组索引，见 P6.9b）；`NLog` 日志门面默认开、`app_log/enabled` 可关（D117）。缺：消息区数据（`load_units`）、图标按钮（等图标包进 assets） | `android/.../ui/{ChatScreen,SettingsGroup,SettingsIndexScreen,NLog}.kt`、`MainActivity.kt` |
 | P6.9d | 新建会话 + 存入（真机自验的写入口） | 已实现（待真机验证） | `createConversationJson` / `appendTextJson` 两个 JNI 符号；列表页左上「＋」新建并进入；输入岛「存入」= 存为用户消息、长按 = 存为助手消息；存完重读（`reloadKey`）。**动机**：没有写入口时，消息区只能靠桌面 CLI 造库才验得了 | `crates/ffi/src/jni_bridge.rs`、`ui/{ConversationRepository,ChatRepository,ChatScreen,ConversationListScreen}.kt` |
 | P6.9c | 消息区接 `load_units` | 已实现（待真机验证） | `loadUnitsJson` 走 JNI → `ChatRepository`（自己开库/关库、异常不冒到 UI）→ `ChatUnits` 一对一映射 core 的词（`turn` / `tool_pair` / `model_thinking` / `tool_call` / `tool_result` / `broken_block`）；渲染：用户右气泡、助手左气泡、思考块默认收起、工具单元折叠卡、断块显示 core 给的声明行、`incomplete` 显式标注；打开会话自动滚到最后一条。**缺**：分界线（FFI 还没提供）、往上翻页（只取最后 80 个单元）、Markdown 渲染 | `android/.../ui/{ChatUnits,ChatRepository,ChatScreen}.kt`、`crates/ffi/src/jni_bridge.rs` |
 | P6.9b | 应用内日志页（真机证据不再依赖 logcat） | 已实现：**三种通道**（上下文 / 请求 / 调试）；索引页 + 齿轮页 + 通道子页（待真机验证） | `NLog` 每条记录双写：logcat + `files/logs/nmoi.log`；上限默认 **8 MB**（2/4/8/16/32 可选，存 SharedPreferences `app_log/limit_bytes`），超限保留最新一半（`.tmp` → rename，D48）；通道子页 `LogChannelScreen`：查看（尾 64 KB）/ 复制（尾 256 KB）/ 导出（SAF 整份）/ 清除（二次确认）。起因：2026-10-23 真机冷启动后 `NMoi/` 前缀日志整段消失（`I` 级被 ROM 吞）。**已拆**：三种通道（上下文 / 请求 / 调试）各自文件与上限 + 索引页 + 齿轮设置页 + 通道子页（`LogKind` / `LogListScreen` / `LogChannelScreen` / `LogSettingsScreen`） | `android/.../ui/{LogKind,LogFile,NLog,LogListScreen,LogChannelScreen,LogSettingsScreen}.kt`、`{SettingsGroup,SettingsIndexScreen,AppearanceScreen,DebugScreen,GroupScreen}.kt`、`MainActivity.kt` |
 | P6.11 | 返回键分层：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出 | 已实现 Android（待真机验证） | 用户 2026-10-26 报：自绘浮层弹出来后按返回直接退应用。`ChatScreen` 一个按优先级分发的 `BackHandler`（编辑对话框 → 更多面板 → 分享面板 → 选择模式），`ConversationDrawer` 里助手面板各自一个；抽屉与页面栈仍在 `MainActivity`，内层后注册所以先轮到 | D146 |
 | P6.10 | 聊天页抽屉 + 面板契约第一批 | 已实现（未真机验证） | 会话列表收进左侧抽屉（宽 300dp、遮罩 alpha 0.60、点遮罩关闭、只位移不缩放、返回键在面板层先关抽屉）；落地与未落地清单见 D119。**缺**：拖动关闭/35% 阈值/8dp 阻尼/动画中不可点/令牌时长 | `android/.../ui/ConversationDrawer.kt`、`ChatScreen.kt`、D119 |
-| P6.8 | JNI 桥（Android ↔ Rust） | 已实现（未真机验证） | `crates/ffi/src/jni_bridge.rs`：4 个符号（版本 / 开库 / 关库 / 列会话），每个都转手调 C ABI（D112）；`jni` feature 默认关（MSRV 1.75 vs jni-sys 1.76+）；Kotlin 侧 `ui/NativeBridge.kt` + `ui/ConversationRepository.kt`，加载失败退回占位数据并在界面上直说；CI 用 cargo-ndk 编 `arm64-v8a/libnmoi_ffi.so`。**缺**：真机验证（V0–V5 在 `docs/verification.md`）、其它 ABI | `crates/ffi/src/jni_bridge.rs`、`android/.../ui/NativeBridge.kt`、`docs/verification.md` |
+| P6.8 | JNI 桥（Android ↔ Rust） | 已实现（未真机验证） | `crates/ffi/src/jni_bridge.rs`：4 个符号（版本 / 开库 / 关库 / 列会话），每个都转手调 C ABI（D112）；`jni` feature 默认关（MSRV 1.75 vs jni-sys 1.76+）；Kotlin 侧 `ui/NativeBridge.kt` + `ui/ConversationRepository.kt`，加载失败退回占位数据并在界面上直说；CI 用 cargo-ndk 编 `arm64-v8a/libnmoi_ffi.so`。**缺**：真机验证（V0–V5 在 `notes/verification.md`）、其它 ABI | `crates/ffi/src/jni_bridge.rs`、`android/.../ui/NativeBridge.kt`、`notes/verification.md` |
 | P6.6 | 平台自适应排版（竖屏 / 横屏 / 桌面） | 设计已定 + 草稿图 | §3.12 下半：Android 竖屏保留底部弹层；横屏与桌面把高频项提成输入岛按钮行、左栏常驻、右栏上下文窗口。草稿：`docs/ui/draft-composer.svg`、`docs/ui/draft-desktop.svg` | §3.12 |
 | P7.7 | 加号菜单与附件管线 | 设计已定 | §3.13：图片/拍照/文件/音频/粘贴/语音输入/视觉覆盖开关 + 内容寻址的附件库。缺：一个"点了图片就少一张图"的反面案例要靠置灰来防 | §3.13 |
 | P7.8 | 图片管线：上传压缩 + `view_image` + 历史摘图 | 设计已定（D72 / D73 / D74） | 原图不动、只生成发送副本（长边/总像素/字节三上限，Lanczos3，不超不重编码）；`view_image` 返回值是文字、分析在隔离子上下文里、思考落库；历史图片在下一次请求构造时换成占位引用（视觉覆盖开着才摘） | §3.20、D72–D74 |
-| P5.7 | token 估算（L0 / L1 / L2 校准） | L0 **已实测**，L1/L2 设计已定 | L0 对账结果（`relay-a/DeepSeek-V4-Flash`，1000/10000 字符各四类）：ASCII 0.62、中文 0.63、**混排 1.32（低估）**、代码 1.01。结论：不能乘全局系数，L2 按 (模型, 会话内容) 校准；未校准时绝对线判定乘 1.3。缺 L1 与 timing | `docs/token-estimation.md`、`scripts/token_check.py`、D91 |
+| P5.7 | token 估算（L0 / L1 / L2 校准） | L0 **已实测**，L1/L2 设计已定 | L0 对账结果（`relay-a/DeepSeek-V4-Flash`，1000/10000 字符各四类）：ASCII 0.62、中文 0.63、**混排 1.32（低估）**、代码 1.01。结论：不能乘全局系数，L2 按 (模型, 会话内容) 校准；未校准时绝对线判定乘 1.3。缺 L1 与 timing | `notes/token-estimation.md`、`scripts/token_check.py`、D91 |
 | P4.2 | 双线压缩（建议线 / 绝对线，单位可切） | 设计已定（D90） | 内部统一存 token；判定只在"造请求前"与"生成结束"；绝对线截断标 `incomplete`；压缩不可重入 | §3.22、D90 |
 | P4.4 | 压缩后窗口的最小形状（人格 / 文风连续性） | **已实现 core**（切点形状 + 摘录选择器 + 摘录进 commit + 第一人称脚手架 + 摘要长度闸 + 预算扣固定成本）；未接 FFI / 请求构造 | 切点按"轮"定义：钉轮边界、A 槽 = 整轮助手发言组、结尾不强钉；摘录 **3 条**（饱和点）、挑干活原话、代码原样搬；**摘要用第一人称**（D147，比摘录更管用）；验收看"要点命中 ≥0.9 + 思考长度膨胀 ≤1.5× + 文件口吻 ≤5%"；触发线先扣固定成本（D144） | §3.4.2、D143、D144 |
-| P9.1 | 签名密钥与 CI 注入 | 设计已定（`docs/signing.md`） | environment secret + tag-only + 即用即焚；主密钥离线保存，CI 只是副本。**没有任何签名材料，未实测** | §3.16 |
+| P9.1 | 签名密钥与 CI 注入 | 设计已定（`notes/signing.md`） | environment secret + tag-only + 即用即焚；主密钥离线保存，CI 只是副本。**没有任何签名材料，未实测** | §3.16 |
 | P3.2 | 设置持久化（模型覆盖 / 助手 / 会话 / 角色） | 已实现 storage + FFI + Kotlin 绑定 | `settings(scope, doc_key, doc_version, payload, updated_at)` + `settings_repair`；`put/get/load_setting/list/delete` + 三态 `Loaded::{Missing,Ready,Reset}`。版本过新与解析失败都记一条修复（摘要只存哈希前 16 位），**不硬读、不静默**。FFI 面 `nmoi_settings_{put,get,list,delete,repairs,trim_repairs}_json`（C 侧 242 项检查）。Android 侧：`jni_bridge.rs` 加四个符号 + `NmoiFfi.kt`（IO 线程、`Result`、`SettingsScope` 枚举），CI 对账 8 个符号。**缺**：`SettingsRepository` 与逐项界面接线（layer 2/3） | `crates/storage/src/settings.rs`、`crates/ffi/src/settings.rs`、`crates/ffi/src/jni_bridge.rs`、`android/.../ui/NmoiFfi.kt`、D86 |
 | P2.10 | 断流标记落库（`incomplete`） | 已实现 core + storage | `Message.incomplete`（`#[serde(default)]`，旧数据能读）；`MemoryEngine::finish_turn_incomplete`；`TurnCompleted` 事件带标记；schema v2 = `ALTER TABLE messages ADD COLUMN incomplete`；往返与迁移各有测试 | D21、D43 |
 | P2.11 | 自动重试（四张可编辑列表 + 范围时间点） | 设计已定（D70 / D71） | 判定顺序：停止项 → 可重试状态码 → 可重试关键词 → 放弃；只在零字节阶段重试（D40）；等待可中断、总时长上限 180s。时间点写成范围（两位小数），进项时 roll 一次、等完即丢，随机源可注入。缺 core 实现 | §3.19、D70、D71 |
@@ -80,7 +80,7 @@
 | P6.1 | FFI 接口面（手写 C ABI） | stage F1 + F2 已实现，真 C 程序验收 | 契约见 §3.11：JSON 信封 + 整数句柄 + 字符串所有权 + panic 不外传。F1：元信息/自检、storage（打开/体检/落单元/读单元/备份/收口）、workspace（读/写/改/列/stat）、工具声明表与直接调用、脱敏、token 估算。F2：`nmoi_turn_run_json`（整轮：发一句话 → 工具循环 → 落库 → 压缩判据）+ `nmoi_turn_cancel_json`（协作式取消）+ turn 期间 storage 句柄 `busy` 而不卡锁。缺：事件回调（逐字流式） | `crates/ffi/src/`、`crates/ffi/include/nmoi.h`、`crates/ffi/tests/c/abi_smoke.c`、`scripts/ffi_smoke.sh`、D53–D60；C 侧 178 项检查本机全过（含真端点整轮），顺带修了备份 `<dest>.tmp-wal` 残留（D48 补记） |
 | P6.2 | 会话列表（UI 第一屏的数据） | 已实现 storage + FFI | `Storage::list_conversations` → `nmoi_storage_list_conversations_json`：标题/时间/条数/用量/incomplete/最后一条预览，`updated_at DESC, id DESC`，`has_more` 而不是总数（D61） | `crates/storage/src/repo.rs`、本文件 §3.11；storage 往返测试 + C 侧 190 项检查（含真端点整轮） |
 | P7 | 工具生态（工作区 + 沙盒 + MCP） | 工具层 + 工具循环已实现 core，真机跑通 | `core::tools`：`Tool` / `ToolRegistry` / `ToolContext`；六个内置工作区工具 + 能力门控 + 按策略过滤声明表。缺：MCP、沙盒执行、UI 接线 | `crates/core/src/tools.rs`、D50 |
-| P7.5 | 密钥隔离 + 凭据代理（容器里跑 git / gh） | 设计已定 | Android 定透明代理（helper 兜底）；Linux/Windows 用系统原语不自研；实现未开始 | `docs/secrets.md`、D28–D30 |
+| P7.5 | 密钥隔离 + 凭据代理（容器里跑 git / gh） | 设计已定 | Android 定透明代理（helper 兜底）；Linux/Windows 用系统原语不自研；实现未开始 | `notes/secrets.md`、D28–D30 |
 | P7.6 | 能力门控（默认关 + 工作区绑定） | 已实现 core | `core::policy`：7 项能力、两层门、拒绝原因带人话；有单测；UI 未接 | `crates/core/src/policy.rs` |
 | P8 | 云同步（变更日志，非文件同步） | 未开始 | 设计已在计划文档 §5 | — |
 | P11 | README 双语 + 名字由来 | 待做（不急） | `README.md` 保持中文为默认；新增英文版；名字的梗只在中文版写。见 §3.10 | 本文件 §3.10 |
@@ -119,7 +119,7 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 `cargo clippy --workspace --all-targets` 无告警；`cargo check -p nmoi-core --no-default-features` 无告警
 （关掉 `bpe` 的那条路也得编得过，否则它会悄悄烂掉）。
 
-**本地跑测试的口径（2026-10-20 修订，见 `docs/decisions.md` D16.1）**：
+**本地跑测试的口径（2026-10-20 修订，见 `notes/decisions.md` D16.1）**：
 短测试本地跑（本次改动那个 crate 的 `--lib` 过滤测试，单次 ≤ 60s），全量留 CI。
 实测：core 单模块 2–3s，整个 `-p nmoi-core --lib`（238 项）3s，改一个文件后的增量重建约 21s——
 贵的是编译不是运行。新写的测试**推之前先在本机跑一次**（这条是被一轮 CI 换 20 秒能发现的两个 bug 换来的）。
@@ -138,7 +138,7 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 | `locked` 字段 + 持久化 | 已实现 | `messages.locked`，`storage.set_message_locked` |
 | 锁定拦截内容编辑 | 已实现 | `core::edit::apply_edit` 返回 `EditError::Locked` |
 | 锁定**不**拦截压缩 | 已实现 | 压缩走形态变化与分界线，不经过 `apply_edit` |
-| 与 `protected` / `pinned` 的正交关系 | 已实现 | 见 `docs/decisions.md` D11 |
+| 与 `protected` / `pinned` 的正交关系 | 已实现 | 见 `notes/decisions.md` D11 |
 | UI：长按菜单里的锁定开关 | 未开始 | 等 P6 |
 
 ### 2.2 上下文分界线（已实现模型层）
@@ -224,7 +224,7 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 | 流式解析 | 已实现 core | SSE 帧 + 四端口适配，统一成 `StreamEvent`；usage 口径归一 | `core::sse`、`core::stream`、D39 |
 | 非流式 / 工具消息 | 已实现 core | `complete()` + `parse_complete`；工具消息四端口映射；工具声明三端口（Gemini 未做） | D41 |
 | 五类模型角色 | 已实现 core | `core::roles`：配置 + 提示词 + 门控 + 降级 + 单独计量；图片通道未做（P3.1） | D42 |
-| 实现 | 已实现 core | 落 `core::provider` + `core::model` + `core::runtime`（真机冒烟见 `docs/provider-runtime.md`） | `crates/core/src/` |
+| 实现 | 已实现 core | 落 `core::provider` + `core::model` + `core::runtime`（真机冒烟见 `notes/provider-runtime.md`） | `crates/core/src/` |
 
 ### 3.3 五类模型角色
 
@@ -423,7 +423,7 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
    而第一人称摘要的回答是"名字是我自己认的，不是随便贴的标签……这些不是设定，是我自己的事"。
    高置信靠**视角**，不是靠信息量。
 
-**已落进提示词**：`docs/compression.md` §2.0 把"通篇用第一人称"写成所有摘要类提示词的第一条硬要求，
+**已落进提示词**：`notes/compression.md` §2.0 把"通篇用第一人称"写成所有摘要类提示词的第一条硬要求，
 `compress.draft` / `compress.single` 的正文里也各加了一条。
 
 **数据可信度**：这个测试模型有质量缺陷（中文里蹦英文残词 `wholes` / `preventable` / `gnaws`），
@@ -539,7 +539,7 @@ C 侧 ABI **242 项**全部通过；`cargo fmt --all -- --check` 干净；
 | read / write / edit / list / find / search | 已实现 + **已接工具层** | `core::tools` 六个 `Tool` 实现，先过能力门；`specs_for(policy)` 按策略裁剪声明 |
 | bash（可选，仅沙盒内） | 未开始 | 无沙盒时工具置灰，不假装能跑 |
 | MCP 接入 | 未开始 | 参考 kelivo 的能力面，独立实现 |
-| 容器（可选）：PRoot + Alpine rootfs | 设计已定 | 见 `docs/sandbox.md`：GPL-2.0-or-later / GPL-3.0-only 决定了整体许可切 GPL-3.0；PRoot 不能嵌套，开发沙箱里测不了 |
+| 容器（可选）：PRoot + Alpine rootfs | 设计已定 | 见 `notes/sandbox.md`：GPL-2.0-or-later / GPL-3.0-only 决定了整体许可切 GPL-3.0；PRoot 不能嵌套，开发沙箱里测不了 |
 | 工具调用循环 | 已实现 core | `core::agent::run_turn`：非流式、工具失败即结果、轮数上限、`finished` 诚实回报；真机读→改→读确证通过 |
 | 工具执行放平台侧 | 部分实现 | core 已有 `Tool` trait + 工作区实现；容器/原生命令仍只留能力位，执行在平台侧 |
 | 能力门控（默认关 + 绑定工作区） | 已实现 core | `core::policy`；所有工具入口先问一次 `allows()` |
@@ -984,7 +984,7 @@ UI 本体要等有平台工具链的机器，但**形状可以现在就冻结**�
 
 要签的东西：Android keystore（`.jks`）、Windows 代码签名证书（`.pfx`）、Linux 包签名（GPG）。
 
-**存哪儿，写在 `docs/signing.md`**，这里只说结论：
+**存哪儿，写在 `notes/signing.md`**，这里只说结论：
 
 - **CI secret 只是副本，主密钥离线保存**。keystore 丢了 = 已发出去的应用从此更新不了
   （Android 的包名绑定签名），这不是"重新生成一个"能解决的。所以：离线备份两份，放两处。
@@ -1001,7 +1001,7 @@ UI 本体要等有平台工具链的机器，但**形状可以现在就冻结**�
 **两处都存 = 两份泄露面。** 建议：主密钥只存 Codeberg（主仓在那儿），GitHub 只在确实要发
 GitHub Release 时临时注入；如果哪天不在 GitHub 发版，那条路直接不配。
 
-（这一段的具体命令与可粘贴的 workflow 在 `docs/signing.md`；workflow 文件没有直接放进
+（这一段的具体命令与可粘贴的 workflow 在 `notes/signing.md`；workflow 文件没有直接放进
 `.github/workflows/`——现在没有任何签名材料，放进去只会让 CI 天天红，红久了就没人看了。）
 
 ### 3.17 断块修复：把不完整的调用/思考块"翻译成文字块"再发出去（P4.1）
@@ -1180,7 +1180,7 @@ L2 是重点：一次真实值校准后面 N 次估算。在线 tokenizer 服务
 国内没有对等端点、跨境可达性差，且高频调用等于滥用。
 
 **L1 的实测误差**（同一批文本，真值取自 `relay-a/DeepSeek-V4-Flash` 的 `usage.prompt_tokens`，
-模型×词表见 `docs/token-estimation.md`）：ASCII 1.025、中文 0.804、混排 1.061、代码 1.050
+模型×词表见 `notes/token-estimation.md`）：ASCII 1.025、中文 0.804、混排 1.061、代码 1.050
 （数 = 真实/估算，>1 是低估）。同一个 L0 在这些文本上是 0.62 / 0.63 / **1.32** / 1.01。
 结论：**L1 把"随内容种类摆动 2 倍"压到"±6%"**，剩余偏差交给 L2。
 
@@ -1248,7 +1248,7 @@ L0 的 `estimate_tokens` 保留原样给流式与兜底。**接线已完成**（
 | 0.11 | **UI 外壳**（P6） | 需要平台工具链；在那之前只维护契约与草稿 |
 | 0.12 | **Android 骨架**（P6.7）**已完成，（未接 JNI）**：`android/` + CI 出 debug APK | 先要有一条"改完能出包"的链路，否则后面每加一个界面都在赌；只写 Gradle/Compose 结构不依赖 secret，出包也只要 debug |
 | 0.13 | ~~**JNI 桥 + `cargo-ndk`**~~ **已完成，未真机验证**（D112）：4 个符号转手 C ABI，CI 编 `arm64-v8a/libnmoi_ffi.so`，列表读真库 | 骨架有了才接核心，否则又是一个没人调的接口 |
-| 0.14 | **真机验证一次**（`docs/verification.md` V0→V5） | 在这之前"能跑"不能用；装包 / `.so` 加载 / 建库 / 列表这四段没有任何证据 |
+| 0.14 | **真机验证一次**（`notes/verification.md` V0→V5） | 在这之前"能跑"不能用；装包 / `.so` 加载 / 建库 / 列表这四段没有任何证据 |
 | 0.14e | **聊天页升为主页**（D125） | **已实现（待真机验证）**：启动 `backStack = [Chat(新会话, null)]`，`sessionId == null` 就是没落库的空白会话；首次存消息走 `onCreateSession`，父层把这条路由**原地换成带 id 的同一条**（栈深不变，不闪不跳）；左上角改成抽屉、右上角「＋新建会话」；**列表页 `ConversationListScreen.kt` 整个删除**，换会话与新会话都在抽屉里（抽屉顶部新增「＋ 新会话」，当前项按 **id** 高亮而非标题） | `MainActivity.kt`、`ui/ChatScreen.kt`、`ui/ConversationDrawer.kt`；D125 |
 | 0.14f | **气泡照 Material 3**（D126） | **已实现（待真机验证）**：用户 `primaryContainer` 右、圆角 16、无尾巴；`widthIn(max = 屏宽 × 0.78)` 按内容收放；同角色 4dp / 异角色 12dp；时间 `labelSmall`；`createdAt == 0` 时不显示 | `ui/ChatScreen.kt`；D126 |
 | 0.14h | **消息动作与分享**（D132 / D133 / D134） | **已实现（待真机验证）**：时间改成毫秒 + 跟系统 12/24 小时制（真机上出现过 `+58782-03-11`）；助手侧缩到 26+8、思考/工具卡放开到整行；动作行固定四图标（复制真做，刷新 / TTS / 翻译灰）；「更多」按序：编辑 / 增强编辑（待接）/ 用工具改这一版（临时探针）/ 分享 / 选择消息 / 复制为新版本（临时探针）/ 创建分支（待接）/ 删除此版本（多版才出现）/ 删除这条消息（含所有版本）（**总在**，D152/D153）；分享底部两排（思考调用 / 详细信息 + MD / 图片（灰）），MD 走 `ACTION_SEND` | `ui/ChatScreen.kt`、`ui/ConversationRepository.kt`；D132–D134、D153 |
@@ -1303,7 +1303,7 @@ Kotlin 数据层（`AssistantRepository.list/active/setActive/load/delete`、
 **补证据的进度（2026-10-28）**：工具批次那条缺口已补
 （`crates/core/src/session.rs` 的 `three_tool_calls_in_one_message_yield_three_paired_results`：
 三个调用 → 三个闭合单元、顺序与 id 一一对应，顺带把"一次调用一个单元"这个**与文档不一致**的现状钉住了，
-差异记在 `docs/decisions.md` 的「待定」一节）。
+差异记在 `notes/decisions.md` 的「待定」一节）。
 **`parseFences` 那条已补**（2026-10-28，走的是"加脚手架"那条路而不是搬进 core）：
 `android/app/src/test/kotlin/com/nmoi/agent/ui/EditFencesTest.kt` 八条边界，
 `build.gradle.kts` 加 `testImplementation("junit:junit:4.13.2")`，CI 的 android job 加
@@ -1365,7 +1365,7 @@ Anthropic / Gemini / Responses 三个端口的图片、图片在"编辑消息"�
 **未实测**：全部界面行为（V43）。
 
 **0.15ab 第二批真机反馈（2026-11-02，D210）**：`draft` 状态对象跨会话稳定（发送键不再变灰）；
-推断模态不再拦图片入口，来源与置信度写进模型编辑页与 `docs/model-data.md`；
+推断模态不再拦图片入口，来源与置信度写进模型编辑页与 `notes/model-data.md`；
 新建模型默认全档位 + 允许关闭；模型选择器去掉「全部」、供应商 chip 可长按进编辑。
 **未实测**：V44。
 
@@ -1399,8 +1399,8 @@ FFI 加 `list_all_attachments` / `delete_attachment`；设置里新增「存储�
 **未实测**：V49。
 
 | 0.15ah | **发送即时显示 + 流式渲染**（用户 2026-11-02 定；**已实现，未实测**，D218） | ① 用户消息**先上屏再发**：点发送 → 立刻在消息区插一条本地用户消息（带"发送中"标记），落库成功后换成真 id；失败时留在原地并标"没发出去"，不静默丢字。② AI 回复**逐字长出来**：现有 `ChatStream` 已能把增量交出来（0.15n 第一层），缺的是 FFI 增量通道（stage F3）与界面订阅；思考块与正文各自增长，思考块标题的字数实时变。③ 流式期间气泡不跳：沿用"只画尾部 + 与落库同一套字体边距"的口径（D196）。**判据**：发出去 100ms 内看到自己的消息；回复逐字出现，停止键随时可用；断流时已收到的部分留在屏幕上。 **落地**：`LiveReply`（正文/思考/轮号/断流标记）+ `growText` 按码点拼接；`turn_busy` 多给一个 `round`，工具往返之后清缓冲；用户消息在 `TurnRunner.start` 返回时就上屏（不等 Started 事件，新建会话那一下会晚一拍）；收尾等一次重读再换掉内存里那条（气泡不闪）。**没做**：重试/续话仍走非流式（FFI 那条路 `stream:false`）。 **实测**：Rust 775 项、Kotlin 12 项（`LiveStreamTest` 5 条）；真机 V51 未走。 |
-| 0.15ak | **非持久命令：超时放长 + 手动关闭**（用户 2026-11-02 提；**已实现，未实测**，见 D246；设计见 `docs/persistent-sessions.md` §4） | ① `timeout_ms` 接受 1–36 000 秒与字符串 `"inf"`（`0` 不合法，不超时只有 `"inf"` 一种写法）。② 每个工具调用在 core 登记 `call_id → AtomicBool`，等待循环每 20 ms 看一眼；置上了就杀进程组，结果写 `killed_by_user: true`、`timed_out: false`（两件事不许合成一个）。③ FFI `nmoi_tool_cancel_json`；工具卡展开后运行中有「关闭」文字按钮，结果回来写「被用户关闭（不是命令自己退出）」。**先做这一批**：不依赖会话模型，也是持久会话的进程管理底座。 |
-| 0.15an | **工具批次并行 + 单条关闭**（用户 2026-11-02 问「能不能并行调用和阻塞调用」；**0.15an-a 已实现，未实测**，见 D254；设计见 `docs/tool-execution.md`） | ① 一次 assistant 消息里的 N 个调用算一个批次，**并行执行、按调用顺序回填结果**（现在 `agent.rs` 326–350 是 `for` 串行）。② 四条车道：`read`（4）/ `workspace`（1）/ `session:<id>`（1）/ `process`（4），默认 `workspace`（新工具不声明就串行）。③ 每调用一个 `call_id → AtomicBool`，工具卡上单条「关闭」；整轮停止时全置上。④ 端点已确认：OpenAI `parallel_tool_calls` 默认开、Anthropic 一条消息多个 `tool_use`、Gemini 有 Parallel function calling；**Gemini 老接口的 `functionResponse` 只认函数名，同名并行配不上**，要等 Interactions 的 `call_id`。⑤ 界面：每条调用各自一行进度（运行中 / 完成 / 被用户关闭），结果按调用顺序排。**落地（2026-11-04，D254）**：`Tool::lane()`（read 4 / workspace 1 / process 4，默认 workspace）+ `agent::execute_batch`（`thread::scope`，结果按 index 回填，单个工具 panic 只让那一条失败）；`Cancellation` 加 `Send + Sync`。单条关闭的界面本来就有（kills 按 call_id），并行之后天然对上。**没做**：`session:<id>` 车道（等 0.15aj）、Gemini 同名并行。真机清单 V74。 |
+| 0.15ak | **非持久命令：超时放长 + 手动关闭**（用户 2026-11-02 提；**已实现，未实测**，见 D246；设计见 `notes/persistent-sessions.md` §4） | ① `timeout_ms` 接受 1–36 000 秒与字符串 `"inf"`（`0` 不合法，不超时只有 `"inf"` 一种写法）。② 每个工具调用在 core 登记 `call_id → AtomicBool`，等待循环每 20 ms 看一眼；置上了就杀进程组，结果写 `killed_by_user: true`、`timed_out: false`（两件事不许合成一个）。③ FFI `nmoi_tool_cancel_json`；工具卡展开后运行中有「关闭」文字按钮，结果回来写「被用户关闭（不是命令自己退出）」。**先做这一批**：不依赖会话模型，也是持久会话的进程管理底座。 |
+| 0.15an | **工具批次并行 + 单条关闭**（用户 2026-11-02 问「能不能并行调用和阻塞调用」；**0.15an-a 已实现，未实测**，见 D254；设计见 `notes/tool-execution.md`） | ① 一次 assistant 消息里的 N 个调用算一个批次，**并行执行、按调用顺序回填结果**（现在 `agent.rs` 326–350 是 `for` 串行）。② 四条车道：`read`（4）/ `workspace`（1）/ `session:<id>`（1）/ `process`（4），默认 `workspace`（新工具不声明就串行）。③ 每调用一个 `call_id → AtomicBool`，工具卡上单条「关闭」；整轮停止时全置上。④ 端点已确认：OpenAI `parallel_tool_calls` 默认开、Anthropic 一条消息多个 `tool_use`、Gemini 有 Parallel function calling；**Gemini 老接口的 `functionResponse` 只认函数名，同名并行配不上**，要等 Interactions 的 `call_id`。⑤ 界面：每条调用各自一行进度（运行中 / 完成 / 被用户关闭），结果按调用顺序排。**落地（2026-11-04，D254）**：`Tool::lane()`（read 4 / workspace 1 / process 4，默认 workspace）+ `agent::execute_batch`（`thread::scope`，结果按 index 回填，单个工具 panic 只让那一条失败）；`Cancellation` 加 `Send + Sync`。单条关闭的界面本来就有（kills 按 call_id），并行之后天然对上。**没做**：`session:<id>` 车道（等 0.15aj）、Gemini 同名并行。真机清单 V74。 |
 | 0.15ao | **每个会话一个 `/chat`**（用户 2026-11-02 提；**已实现，未实测**，见 D231） | ① 工具根：`chat` → `files/sessions/<会话>/chat`，`shared` → `files/workspace`；容器挂载点改成 `/chat`。② schema **v12** `conversations.workspace_mode`（默认 `shared`）：新建会话写 `chat`，**老会话升级上来留 `shared`**（迁成 chat 等于把老文件藏起来），副本跟着原会话走。③ 入口：抽屉长按会话 →「改用共享/独立工作区」，现读库；**切换不搬已有文件**。④ 删会话：先删库、再删 `sessions/<id>/`。**没做**：备份带 `sessions/`（0.15ai）。**实测**：`workspace_mode` 4 条 + Rust 800 项 + JNI 48 个；真机 V57 未走。 |
 | 0.15av-2 | **启动时迁移老会话到独立工作区**（用户 2026-11-03 提；**已实现，未实测**，见 D232） | 启动时判断：共享目录里有文件 + 还有 `shared` 会话 + 没问过 → 弹卡片。「迁移」= 每条老会话复制一份共享目录到 `sessions/<id>/chat`，成功后才切模式；「以后再说」= 标记问过，以后在会话菜单里单独切。先复制再改模式；同名文件不覆盖；共享目录不动。**没做**：进度条、迁完清理共享目录。**实测**：kotlinc 全量类型检查通过；真机 V58 未走。 |
 | 0.15aw | **流式输出开关进助手设置**（用户 2026-11-03 提；**未动工**） | ① `assistants` 加 `stream` 列（schema v13，默认 1）。② 助手设置页一个 switch，文案写清关掉之后是"空白到结果回来"。③ `TurnRepository` 两处写死的 `stream = true` 改成读助手；`turn_run` / `turn_regen` 原样接收。**判据**：关掉之后正文不再逐字长，收尾一次出现；开着与现在一致。 |
@@ -1413,18 +1413,18 @@ FFI 加 `list_all_attachments` / `delete_attachment`；设置里新增「存储�
 | 0.15ba | **流式不实时 + 新消息串上一条内容 + 过程块合并**（用户 2026-11-04 报；**已实现，未实测**，见 D236 / D238） | ① `turn_busy` 在没登记时一律给空（`Started` 早于 `turn_run` 登记，界面读到的是上一轮残字）；界面轮询在见过一次 `running:true` 之前不退出。② 带工具调用的那一轮：正文那条消息身上的思考并进同一个过程大块（`reasoningItemOf`），正文自己一行、思考不再在气泡里画第二遍。**判据**：发第二条消息时第一帧就是空的「正在生成…」，正文逐字长；工具 + 思考是一块，不是两张卡。 |
 | 0.15bb | **容器垫片：不再注入 + 装完清理**（用户 2026-11-04 报「覆盖安装修不好」；**已实现，未实测**，见 D237） | ① `ProxyContainer.sync` 不再往 rootfs 写 `ld.so.preload`（垫片是 bionic 编的，进 glibc 容器会让每个程序都起不来）；② 每次装完 `cleanStale` 摘掉老版本留下的那一行；③ 自检原因里点名 preload；④ 环境页加「清容器垫片」。**判据**：删过重装的容器不再被垫片弄挂；老版本升上来点一次覆盖安装，`/bin/sh` 能跑。 |
 | 0.15az | **工作区：用户建的目录 + 助手绑定**（用户 2026-11-03 纠正模型；**已实现，未实测**，见 D234） | ① 工作区 = `files/workspaces/<id>/` 一个目录，名字写在目录自己的 `.nmoi-workspace.json` 里；默认那个是老的 `files/workspace`（id `default`，不能改名/删除）。不建表：除了名字没有第二个字段，而 id 稳定才让改名不用去改助手。② 绑定在**助手**身上（`assistants.workspace_id`，settings 字段）：工具根与容器里的 `/workspace` 都跟着它走；会话自己的 `/chat`（`sessions/<id>/chat`）另算，附件目录再绑到 `/chat/images`。③ 设置 → 工具与工作区 →「工作区」：列 / 新建 / 改名 / 删除（删除确认里点名还绑着它的助手）。④ schema **v13** 删掉 `conversations.workspace_mode`，连带删掉它的 FFI 与 Kotlin 桥（JNI 48 → 46）；D231 的两档模式与 D232 的迁移提示一起退场。**判据**：换一个工作区之后 `read_file` 的根跟着变；容器里 `/workspace` 是它、`/chat` 是这条会话的；老库升上来会话一条不少、`files/workspace` 里的文件还在。**实测**：clippy 零告警；`workspace_v13` 2 条本地通过；真机 V60 未走。 |
-| 0.15ap | **完整世界书 + kelivo / RikkaHub 导入**（用户 2026-11-02 提；**未动工**，设计见 `docs/lorebook.md`） | core 的 `lorebook`（解析/激活/plan/summarize）已经写好但**没接库、没接 FFI、没接界面、没接请求组装**。① 读取层大小写不敏感（kelivo 大写、RikkaHub 小写），认不出的 position/role 报错不猜；正则逐条校验。② `lorebooks` 表（整本 JSON，导入导出逐字可回）+ 助手绑定列。③ 列表 / 导入预览 / 条目编辑 / 导出。④ `run_session_turn` 按位置注入，算进 `reserve_fixed`；上下文面板显示命中/未命中原因。 |
-| 0.15aq | **上下文管理档位与压缩参数进设置**（用户 2026-11-02 提；**未动工**，设计见 `docs/context-modes.md`） | ① 设置 → 应用设置 →「上下文管理」：**一个旋钮 F1–F4**（全文 / 截断 / 占位 / 指针），下面是建议线 / 绝对线 / 输出预留，档位 ≥F2 时才可调 2k/8k/32k 与头尾 1k。② 档位是**上限**：router 照常逐条判，结果不许超过档位。③ **永不路由**：用户消息 / 系统提示 / 工具定义 / 报错（protected）/ 这一轮最新一条工具结果，无论档位多高都保持 F1。④ 存 `settings` 表；改完立即生效；**切档位不改写历史**（F2→F1 老的那条仍截断，原文在归档里）。⑤ F2–F4 要先把 `router`/`form`/`archive` 接进请求组装（现在没接）。 |
-| 0.15aj | **持久会话（临时会话 / 服务启动）**（用户 2026-11-02 提；**未动工**，设计见 `docs/persistent-sessions.md`） | ① `Session-Open / Write / Read / Close / List` 五个工具；`block_ms` 0–30 000（默认 1 000；**不是超时**——到点不杀进程、不算失败，只是这次调用先回去；0 = 不等，立刻交 id），第一次阻塞期间的输出随返回一起给，带 `session_id` 与 `cursor`。② 输出进每会话 256 KiB 环形缓冲，溢出记 `dropped_bytes`，不假装完整。③ 设置 → 工具与工作区 →「持久会话」两子页：临时会话（模型开的，应用退出就没）/ 服务启动（有启动配置，开关是运行时真开关，**关掉即销毁**，**应用启动不自动起**）。④ schema v12 `shell_services`（`enabled` 不入库，避免"开关是开、进程不在"两个答案）。⑤ 模型不能 `Session-Close` 服务会话，只能去管理页关。 |
-| 0.15al | **多模态预算与保留**（用户 2026-11-02 问"图片多了会怎样、视频呢"；**未动工**，证据与设计见 `docs/modality.md`） | ① 附件落盘时算 `est_tokens` 存进 `attachments`（按端口公式；未知 1 600 并标 estimated），`budget.used` / `contextPercent` 把它算进去——**现在图片对压缩两条线是瞎的**。② 设置 → 会话与上下文 →「上下文里的图片」：0 / 2 / 4 / 8 / 全部，默认 4；只发最近 N 张，更早的在 wire 上换成一行文本占位，缩略图下标「已从上下文移除」。③ 视频不传原件：抽帧（1 fps、最多 8 帧）当图片走，原文件留盘；音频转写另排。④ 压缩时先丢超出 N 的图，再压文本。 |
+| 0.15ap | **完整世界书 + kelivo / RikkaHub 导入**（用户 2026-11-02 提；**未动工**，设计见 `notes/lorebook.md`） | core 的 `lorebook`（解析/激活/plan/summarize）已经写好但**没接库、没接 FFI、没接界面、没接请求组装**。① 读取层大小写不敏感（kelivo 大写、RikkaHub 小写），认不出的 position/role 报错不猜；正则逐条校验。② `lorebooks` 表（整本 JSON，导入导出逐字可回）+ 助手绑定列。③ 列表 / 导入预览 / 条目编辑 / 导出。④ `run_session_turn` 按位置注入，算进 `reserve_fixed`；上下文面板显示命中/未命中原因。 |
+| 0.15aq | **上下文管理档位与压缩参数进设置**（用户 2026-11-02 提；**未动工**，设计见 `notes/context-modes.md`） | ① 设置 → 应用设置 →「上下文管理」：**一个旋钮 F1–F4**（全文 / 截断 / 占位 / 指针），下面是建议线 / 绝对线 / 输出预留，档位 ≥F2 时才可调 2k/8k/32k 与头尾 1k。② 档位是**上限**：router 照常逐条判，结果不许超过档位。③ **永不路由**：用户消息 / 系统提示 / 工具定义 / 报错（protected）/ 这一轮最新一条工具结果，无论档位多高都保持 F1。④ 存 `settings` 表；改完立即生效；**切档位不改写历史**（F2→F1 老的那条仍截断，原文在归档里）。⑤ F2–F4 要先把 `router`/`form`/`archive` 接进请求组装（现在没接）。 |
+| 0.15aj | **持久会话（临时会话 / 服务启动）**（用户 2026-11-02 提；**未动工**，设计见 `notes/persistent-sessions.md`） | ① `Session-Open / Write / Read / Close / List` 五个工具；`block_ms` 0–30 000（默认 1 000；**不是超时**——到点不杀进程、不算失败，只是这次调用先回去；0 = 不等，立刻交 id），第一次阻塞期间的输出随返回一起给，带 `session_id` 与 `cursor`。② 输出进每会话 256 KiB 环形缓冲，溢出记 `dropped_bytes`，不假装完整。③ 设置 → 工具与工作区 →「持久会话」两子页：临时会话（模型开的，应用退出就没）/ 服务启动（有启动配置，开关是运行时真开关，**关掉即销毁**，**应用启动不自动起**）。④ schema v12 `shell_services`（`enabled` 不入库，避免"开关是开、进程不在"两个答案）。⑤ 模型不能 `Session-Close` 服务会话，只能去管理页关。 |
+| 0.15al | **多模态预算与保留**（用户 2026-11-02 问"图片多了会怎样、视频呢"；**未动工**，证据与设计见 `notes/modality.md`） | ① 附件落盘时算 `est_tokens` 存进 `attachments`（按端口公式；未知 1 600 并标 estimated），`budget.used` / `contextPercent` 把它算进去——**现在图片对压缩两条线是瞎的**。② 设置 → 会话与上下文 →「上下文里的图片」：0 / 2 / 4 / 8 / 全部，默认 4；只发最近 N 张，更早的在 wire 上换成一行文本占位，缩略图下标「已从上下文移除」。③ 视频不传原件：抽帧（1 fps、最多 8 帧）当图片走，原文件留盘；音频转写另排。④ 压缩时先丢超出 N 的图，再压文本。 |
 | 0.15am | **助手设置页**（用户 2026-11-02 给参考图；**未动工**，设计见 `docs/ui/assistant-settings.md`） | ① 先接 `top_p`（core 已有字段、FFI 没接）、流式开关（现在写死 true）、使用助手头像/名字。② 上下文消息数量（core 加一道条数截断）+ 默认工作区。③ 聊天背景（选图 → webp → `files/backgrounds/`，按助手存路径）。**不做渐变背景**；模型那一行不回退到"全局默认"（D161）。 |
-| 0.15ar | **网络代理**（用户 2026-11-02 提；**core 已落地，未接线**，设计见 `docs/proxy.md`） | ① `core::proxy`：SOCKS5（含用户名密码）/ HTTP（明文用绝对 URI、https 用 CONNECT）/ HTTPS（TLS 到代理，内置根）；绕过列表支持精确、`*.后缀`、CIDR v4/v6。`PlainHttpTransport` / `HttpsTransport` 各挂一个 `proxy` 字段。**已做**：`core::proxy` + `core::proxy_server`（本地端点，随机凭证，上游热改）+ FFI 四条（apply/status/server start/stop，4 条单测）+ 设置页（工具与工作区 → 网络代理，密码进 Vault，保存即 apply，启动时也 apply 一次）。19 条代理相关单测（本机假代理/假端点，真 socket）。**实时生效**：`ProxyHandle` 每次请求现读；容器里按连接读配置文件；垫片常驻（与代理开关解耦），所以持久会话也即时生效；垫片缺失时界面不显示"已开启"。**未做**：FFI 配置、探测与 60 秒缓存、设置页、Vault 存密码、供应商级覆盖、「本地凭据」（平台 TrustManager + network_security_config）。**容器内透明代理不做**：VpnService 已排除；不用它就没有无痕方案（proot 无 netns、无 root，iptables/DNS 改道都不成立），垫片 + unix socket 可做但可被检测，默认不注入任何代理配置。 |
+| 0.15ar | **网络代理**（用户 2026-11-02 提；**core 已落地，未接线**，设计见 `notes/proxy.md`） | ① `core::proxy`：SOCKS5（含用户名密码）/ HTTP（明文用绝对 URI、https 用 CONNECT）/ HTTPS（TLS 到代理，内置根）；绕过列表支持精确、`*.后缀`、CIDR v4/v6。`PlainHttpTransport` / `HttpsTransport` 各挂一个 `proxy` 字段。**已做**：`core::proxy` + `core::proxy_server`（本地端点，随机凭证，上游热改）+ FFI 四条（apply/status/server start/stop，4 条单测）+ 设置页（工具与工作区 → 网络代理，密码进 Vault，保存即 apply，启动时也 apply 一次）。19 条代理相关单测（本机假代理/假端点，真 socket）。**实时生效**：`ProxyHandle` 每次请求现读；容器里按连接读配置文件；垫片常驻（与代理开关解耦），所以持久会话也即时生效；垫片缺失时界面不显示"已开启"。**未做**：FFI 配置、探测与 60 秒缓存、设置页、Vault 存密码、供应商级覆盖、「本地凭据」（平台 TrustManager + network_security_config）。**容器内透明代理不做**：VpnService 已排除；不用它就没有无痕方案（proot 无 netns、无 root，iptables/DNS 改道都不成立），垫片 + unix socket 可做但可被检测，默认不注入任何代理配置。 |
 | 0.15as | **重试就地渲染**（用户 2026-11-03 提；**已实现，未实测**，见 D227） | ① `turn_regen` 多一个 `stream`（界面传 `true`）：重试走 SSE，增量进 partial 表。② 界面多一个 `regenTarget`：这一轮的正文与思考画在**目标消息**上，底部那块不再出现；生成期间不画动作行。③ 目标为空（用户消息重试、下面没有回答可挂）时仍在底部——结果会落成新消息。④ 续话不流式（拼接规则不在 Kotlin 里再写一遍），期间显示原正文 +「正在生成…」。**改了设计的一处**：不预先落空版本——`Message::validate` 把空正文判成 `EmptyMessage`，`load_units` 会整页读不出来（实测）。版本仍在结果回来时才建。**实测**：Rust 788 项、Kotlin 类型检查通过（只剩 9 条已知 `R`）；真机 V54 未走。 |
 | 0.15av | **续话也流式 + 动作行里的重试**（用户 2026-11-03 提；**已实现，未实测**） | ① 续话的落库正文是「原正文 + 续文」，流里只有续文那一截，所以把**原正文 + 连接符**垫进 partial 缓冲：FFI 在 `append && stream` 时取目标消息现在的正文，第一段增量用 `core::session::join_continuation` 垫一次，换轮再垫一次；界面把 `live.text` 预置成原正文（`LiveReply.prefix`），换轮回到 prefix。拼接规则**只有一份**（在 core 里），Kotlin 不重写。② 每条消息下方动作行里那颗「刷新」接上：`enabled = 有会话 id && canRetry`，描述写「重试这一轮 / 重试这条之后」，不可用时灰着并写原因；「...」菜单里的重试保留（同一动作两个入口，打开的是同一个动作）。 **判据**：续话时正文在原正文后面逐字长、收尾不跳；动作行那颗点了就重试，会话没落库时是灰的。 |
 | 0.15at | **过程块合并 + 折叠**（用户 2026-11-03 给参考图；**已实现，未实测**，见 D229） | ① 一次回合里连续的思考/工具合成一个大块（中间夹正文就断开），左侧 1dp 竖线串起来。② ≥3 才折，折叠保留最新 2 个；正在跑的不折；结束才参与折叠。③ 折叠状态只在本次浏览会话内记忆（`remember(sessionId)` 的 state map），键取组的第一项 id。④ **没做**：运行中的工具块显示最新 3 行输出——没有单条调用的实时输出通道（0.15an 才有）。**实测**：`ProcessRowsTest` 8 条 + `LiveStreamTest` 5 条本机 JUnit 全绿；真机 V56 未走。 |
 | 0.15au | **重试失败三选一 + 服务停止询问**（用户 2026-11-03 提；**三选一已实现，服务询问未动工**，见 D228/D230） | ① 重试/续话失败且 `target != null` → 弹窗：保留上一版（默认）/ 保留这一版 / 都保留；必须处理（遮罩不吃点击、返回键无效）；这一轮一个字都没收到时后两项灰掉并写「这一版是空的」；「保留这一版」= 存残文再删上一版，「都保留」= 只存不删，版号现读。② 服务停止询问（D230）**未动工**：依赖 D219 持久会话，那一层还没做。③ MCP 的「重试」文案随 ② 一起做。**实测**：同上；真机 V54 第 5–7 条未走。 |
-| 0.15ai | **备份带上 `sessions/` + `view_image` + 存储分类**（用户 2026-11-02 提；**`view_image` 已做**，见 D248 与 `docs/image-context.md`；备份与存储分类仍未动工） | ① `Storage::backup` = `.db` + `sessions/` 目录，校验时核对两边数量与总大小（现在只复制库，恢复出来是"消息在、图没了"）。② `view_image` 工具：给附件 id 或会话内相对路径，返回图像——需要**工具结果的多模态通道**（`ToolOutcome` + wire + 历史落库三处），或者先做视觉覆盖（另一个模型描述）。③ 存储页按大类分：图片 / 文件 / 聊天记录 / 缓存 / 日志 / 工作区 / 沙箱 / 技能 / 会话文件，带占用条与"清理无对话的会话文件"。 |
-| 0.16p | **消息 = parts（大改）**（用户 2026-11-04 问「会不会影响编辑与上下文工具的设计」；**第一、二批 + 按块编辑 + 折行 + 版本快照 + 编辑器 v2 + 渲染四修 + 整轮替换已实现**，见 D255–D263；设计见 `docs/message-parts.md`） | 一条消息 = 有序 parts（text / reasoning / tool / image / notice），schema **v15** 新表 `message_parts`；`role=tool` 的行并进对应 `tool` part 的 `output`；`messages` 的 content / reasoning / tool_calls / tool_call_id 已删；unit_* 三列留着但已**由块形状派生**（`write_part_list` 顺带改），删它们要重建 `messages` 表，单独一批。版本 = 全部 parts 的快照（`message_versions.parts_json`），切版本连工具结果一起换。编辑选择器从序号轴（`tool:<i>`）换成 part id，删一个调用不再错位。压缩切点只允许 `round_end`（消息末尾）——库消息边界天然就是 wire 安全切点。**明确不做**：`tool.output` 嵌套 parts（撞铁律②）、mid-message 切点、按 part 各自切红蓝。**迁移的三个坑**：`dividers.after_seq` 指向被并入行要重映射（否则窗口静默退回整条历史）、`archive.archived_ref` 要跟着搬、版本回填不回溯工具块。**判据**：一轮「正文→工具→正文」是库里一条消息三个 part；改第 1 个工具结果只有那个 part 变红；展开的 wire 里每条 tool 消息前面都紧跟带对应 call_id 的 assistant。 | 现在「一轮」= 1 条 assistant + N 条 tool 行，正文只能出现在调用之前，工具结果没有版本，编辑靠序号轴；而单框编辑器早就按块在编辑了——同一结构三份表示，迟早对不上（D188 已经对不上一次） |
+| 0.15ai | **备份带上 `sessions/` + `view_image` + 存储分类**（用户 2026-11-02 提；**`view_image` 已做**，见 D248 与 `notes/image-context.md`；备份与存储分类仍未动工） | ① `Storage::backup` = `.db` + `sessions/` 目录，校验时核对两边数量与总大小（现在只复制库，恢复出来是"消息在、图没了"）。② `view_image` 工具：给附件 id 或会话内相对路径，返回图像——需要**工具结果的多模态通道**（`ToolOutcome` + wire + 历史落库三处），或者先做视觉覆盖（另一个模型描述）。③ 存储页按大类分：图片 / 文件 / 聊天记录 / 缓存 / 日志 / 工作区 / 沙箱 / 技能 / 会话文件，带占用条与"清理无对话的会话文件"。 |
+| 0.16p | **消息 = parts（大改）**（用户 2026-11-04 问「会不会影响编辑与上下文工具的设计」；**第一、二批 + 按块编辑 + 折行 + 版本快照 + 编辑器 v2 + 渲染四修 + 整轮替换已实现**，见 D255–D263；设计见 `notes/message-parts.md`） | 一条消息 = 有序 parts（text / reasoning / tool / image / notice），schema **v15** 新表 `message_parts`；`role=tool` 的行并进对应 `tool` part 的 `output`；`messages` 的 content / reasoning / tool_calls / tool_call_id 已删；unit_* 三列留着但已**由块形状派生**（`write_part_list` 顺带改），删它们要重建 `messages` 表，单独一批。版本 = 全部 parts 的快照（`message_versions.parts_json`），切版本连工具结果一起换。编辑选择器从序号轴（`tool:<i>`）换成 part id，删一个调用不再错位。压缩切点只允许 `round_end`（消息末尾）——库消息边界天然就是 wire 安全切点。**明确不做**：`tool.output` 嵌套 parts（撞铁律②）、mid-message 切点、按 part 各自切红蓝。**迁移的三个坑**：`dividers.after_seq` 指向被并入行要重映射（否则窗口静默退回整条历史）、`archive.archived_ref` 要跟着搬、版本回填不回溯工具块。**判据**：一轮「正文→工具→正文」是库里一条消息三个 part；改第 1 个工具结果只有那个 part 变红；展开的 wire 里每条 tool 消息前面都紧跟带对应 call_id 的 assistant。 | 现在「一轮」= 1 条 assistant + N 条 tool 行，正文只能出现在调用之前，工具结果没有版本，编辑靠序号轴；而单框编辑器早就按块在编辑了——同一结构三份表示，迟早对不上（D188 已经对不上一次） |
 | 0.16a | **默认模型页的系统提示词**（用户 2026-11-10 提；**已做，D318**） | 「默认模型设置里面那个系统提示词应该做一下」——现在是**每个角色各一份**（`role.<key>.system`，D298 / D313），没有一个"所有角色共用"的那一层。要做的是：默认模型页顶上一条全局系统提示词，接在内置那段之前、角色那段之后再拼；顺序写死并在一处拼（谁在前谁在后只能有一个答案）。判据：写一句只在全局那层，六个角色跑起来都受它影响；角色自己那段仍然压过全局那段。 |
 | 0.16b | **破甲提示词不许影响默认模型自己的工作**（用户 2026-11-10 提；**结构审计过，见 D321**） | 「想办法保证无论在哪里注入一些破甲类提示词都不会影响默认模型的工作本身」。用户装的世界书里有大量"越狱"型条目（破甲合集那几册，几十上百条），它们进上下文是**给主模型看的**，不该把一次性旁路（标题总结 / 聊天建议 / 翻译 / 压缩 / 视觉覆盖）也带偏。做法候选：① 角色那条 `nmoi_complete_json` 默认**不带**世界书（D313 已经是空集默认，但要确认没有任何一条路径漏进去）；② 角色请求里加一句"这是内部工具调用"的系统前缀；③ 世界书条目按册标记"仅主对话"，注入旁路时整册跳过。**判据**：往主对话注入一堆破甲条目之后，标题仍是正常的会话名、建议仍是具体动作、翻译不夹带人设。验法：本机测试端点（地址只在 `NMoi-Notes/constraints.md`，**不进仓库**）。 |
 | 0.16c | **内存与资源回归进 CI**（用户 2026-11-10 提；**Rust 侧已做，D319；Kotlin 侧未做**） | 「review 一下做一些内存泄露之类的测试，避免有类似现象(测试最好是在 GitHub 的工作流进行)」。可测的几类：① Rust 侧 `cargo test` 已有的 65 条 ffi 之外，加"C ABI 调用 N 次之后常驻内存不涨"（`nmoi_string_free` 全覆盖，用 `/proc/self/statm` 前后比）；② 每条 FFI 返回的 `*mut c_char` 必须被 free——写一个计数型分配器在测试里对账；③ Kotlin 侧：`KeyPool` / `DraftStore` / `AppSettings` 的 prefs 写入不累积（同一键写 N 次文件不涨）；④ 监听器/游标：`Vault`、`ModelSnapshot`、`ToolingRepository.open/close` 成对。**放在 GitHub 工作流**（用户明说）：新 job `leak`，跑得慢也没关系。判据：故意漏一个 free，这个 job 变红。 |
@@ -1432,9 +1432,9 @@ FFI 加 `list_all_attachments` / `delete_attachment`；设置里新增「存储�
 | 0.16e | **摘要角色 = 内容落盘**（用户 2026-11-10 定；**①取回 D317 / ②③ 索引摘要 D322 已做**；④ 物化副本的清理由 D317 的删会话覆盖） | ① **先补取回**：F2–F4 已经会写 `[… 8.2k tok 已归档 ref#a3f9]`，但模型拿不到 ref 指的东西——`storage.fetch_archive` 只在 core 内部用，工具表里没有。补 `fetch_archive` 工具，或把归档物化成 `sessions/<id>/chat/archive/<ref>.txt` 让它 `read_file` / `grep`。② 摘要只在**真的降级**时生成（F2 尾注 / F3 占位 / F4 指针），一次请求批量给 3–5 个片段，别每条工具结果打一次模型；失败退回纯标记，不阻塞主流程。③ 摘要写进那段被替换的文本里，指针仍然带着（原文随时可读）。④ archive 是唯一真相，`/chat` 下是物化副本，删会话一起删。**判据**：F3 档下工具输出变成一行摘要 + ref，模型能自己把原文取回来继续干活；删掉归档文件之后那一行如实说"取不到了"，不假装还在。 |
 | 0.16g | **中断标记（两种）**（用户 2026-11-11 提；**已做，D323**） | 摘要中断（索引欠着）下一次请求先补完、发普通消息即消；消息生成中断（`incomplete`）只有续话才清。两样都从库里现读、都**不进上下文**，界面在输入框上方一行报状态。 |
 | 0.16f | **提示词站位字符串**（用户 2026-11-10 提；**引擎与界面已做**，见 D316） | 角色提示词里写 `<ContextMode>`，发请求前换成 `F1`–`F4`，同一段提示词按档分叉（F3/F4 原文还落着、会话有编辑工具能补救，可以写得极短甚至不写）。已落地：`ui/PromptVars.kt`（单遍、不递归、未声明的原样留）、`RoleRunner` 发送前替换、角色面板框外一行「变量：…」、`PromptVarsTest` 5 条（CI）。**没做**：给更多角色加变量（走进来的时候再加，别先摆一排占位符）；变量值的来源目前只有 `AppSettings.formLevel`。 |
-| 0.17a | **命令执行前询问（两个开关 + 规则表）**（用户 2026-11-12 提；**已落地**，`docs/command-safety.md`） | `shell.ask`（默认开）+ `shell.blacklist_mode`（只在 ask 打开时出现，默认开）。十组 75 条内置规则，每组一个开关；自定义可加字面量或正则（≤200 字）。判定是**三段式**：按 `; && \|\| \|` 换行拆子命令 → 归一化（去引号、剥 `sudo`/`xargs` 套壳、不展开变量）→ 匹配。危险参数项走**结构化判据**（`rm` 的短选项里出现 `r`/`R`），所以 `-rf` `-fr` `-vrf` `-f -r` 全命中，不靠正则猜顺序；正则只留给自定义规则。三档结果：放行 / 询问（允许一次 · 本会话不再问 · 拒绝，超时=拒绝）/ 拒绝（`rm -rf /` 那几条）。 | 现在能力开关（`NativeShell` / `ContainerExec`）一开就是全放行，而它的字面意思只是"能用命令"——中间缺一道"这一条要不要点头"。 |
-| 0.17b | **语音服务 + 工具开关 + 唱歌**（用户 2026-11-13 提；**设计稿 `docs/voice.md`；渲染流水线原型`scripts/tts_sing_prototype.py` 已跑通**） | 三件：①聊天页「工具」面板逐项开关（本地工具 / MCP / 工作区），关掉的工具**不声明**；TTS、ASR 各占一项。②语音服务两条列表各自单选（对号），条目=连接+模型+能力表，音色字段 `ˇ` 展开清单且可手填。③`Speak` 三选一：一句话 / 分段脚本 / `sing`（逐音符 midi+歌词）。唱歌先试过「念字重合成」（每音单独念 → 估基频 → 拉伸 → 移到目标音高）：音高能对，但用 ASR 反听一测，拉伸 2–3 倍会把辅音稀释掉（a 版 10/11 字、b/c 错 4–6 字），**不足以像人声**；主路线改为接一个中文 SVS 小模型（DiffSinger 一类，≤400 MB），重合成留作兜底；另配 `audio-*` 小工具（trim/normalize/fade/pitch/tempo/mix/concat）。本地模型按 **0.7 GB** 上限做（用户 2026-11-14 放宽）：声库装/选/删已落地（`VoiceBankRepository` + 语音服务页，从 URL 装 zip、验 sha256、防穿越、同名不覆盖）；中/日/英三种声库由用户给地址装，不随包发。**歌词→音素→音符已落地**（`crates/core/src/voice.rs`：中文查 6763 字拼音表、日文假名表、英文 CMUdict 135k 词；出口是每音符的音素+帧数）；引擎运行时（onnxruntime）未接，「唱歌」开关在此之前保持灰。 | 现在没有任何"换声音"的地方；而各家 TTS 参数集差得远，能力差异必须由数据说、由 schema 体现——否则每换一个 provider 就错一遍。唱歌要的是"编排"，不是一个更贵的音色。 |
-| 0.17c | **`Voice-Caps`（只读能力表）**（用户 2026-11-14 的"继续"；**已落地**，D330 / `docs/voice.md` §3.11） | `Voice-Caps` 返回选中的 TTS / ASR 各自的提供方、模型、音色、语种、支持哪些参数，以及唱歌能不能用（引擎 + 声库都在才行）。新能力位 `Capability::Voice` 默认关，请求里带了 `voice` 且真有条目才声明——只装了声库、引擎没接时不占位。密钥不过这一层（`has_key` 只是布尔）。`Speak` 的 schema 就以这份能力表为依据。**判据**：换 provider → 回答里的 `supports` 跟着变；两条都空 → 工具消失；`sing.ready:false` 时 `reason` 说清缺哪一样。core 758 / ffi 69；真机 V139。 |
-| 0.17d | **`Speak`（一句话 / 分段脚本 → wav）**（用户 2026-11-14 的"继续"；**已落地**，D331 / `docs/voice.md` §3.12） | 只接 OpenAI 形状的 `POST /audio/speech`，`response_format` 写死 wav；`text` 与 `script` 二选一，分段每段一次请求再拼（末段之后的停顿不算）。`rate` 按 `supports` 裁（没有 `speed` 就点名拒绝）。产物落 `sessions/<id>/audio/<hash>.wav`，先写 `.part` 再改名；归一（允许抬升）+ 两端 8 ms 淡入淡出。密钥只从 Kotlin 的 `Vault` 递到 core 拼一次 `Authorization`，`Voice-Caps` 的回包里没有它。工具详情里认回包的 `path`，就地一个播放键（关弹窗即释放）。**判据**：念一句能听到；两段脚本第二次请求的 `speed` 不同、总时长含停顿；`system` / `local` / `minimax` 各回一句"还没接"并说清支持哪种。core 767 / ffi 69；真机 V140。 |
+| 0.17a | **命令执行前询问（两个开关 + 规则表）**（用户 2026-11-12 提；**已落地**，`notes/command-safety.md`） | `shell.ask`（默认开）+ `shell.blacklist_mode`（只在 ask 打开时出现，默认开）。十组 75 条内置规则，每组一个开关；自定义可加字面量或正则（≤200 字）。判定是**三段式**：按 `; && \|\| \|` 换行拆子命令 → 归一化（去引号、剥 `sudo`/`xargs` 套壳、不展开变量）→ 匹配。危险参数项走**结构化判据**（`rm` 的短选项里出现 `r`/`R`），所以 `-rf` `-fr` `-vrf` `-f -r` 全命中，不靠正则猜顺序；正则只留给自定义规则。三档结果：放行 / 询问（允许一次 · 本会话不再问 · 拒绝，超时=拒绝）/ 拒绝（`rm -rf /` 那几条）。 | 现在能力开关（`NativeShell` / `ContainerExec`）一开就是全放行，而它的字面意思只是"能用命令"——中间缺一道"这一条要不要点头"。 |
+| 0.17b | **语音服务 + 工具开关 + 唱歌**（用户 2026-11-13 提；**设计稿 `notes/voice.md`；渲染流水线原型`scripts/tts_sing_prototype.py` 已跑通**） | 三件：①聊天页「工具」面板逐项开关（本地工具 / MCP / 工作区），关掉的工具**不声明**；TTS、ASR 各占一项。②语音服务两条列表各自单选（对号），条目=连接+模型+能力表，音色字段 `ˇ` 展开清单且可手填。③`Speak` 三选一：一句话 / 分段脚本 / `sing`（逐音符 midi+歌词）。唱歌先试过「念字重合成」（每音单独念 → 估基频 → 拉伸 → 移到目标音高）：音高能对，但用 ASR 反听一测，拉伸 2–3 倍会把辅音稀释掉（a 版 10/11 字、b/c 错 4–6 字），**不足以像人声**；主路线改为接一个中文 SVS 小模型（DiffSinger 一类，≤400 MB），重合成留作兜底；另配 `audio-*` 小工具（trim/normalize/fade/pitch/tempo/mix/concat）。本地模型按 **0.7 GB** 上限做（用户 2026-11-14 放宽）：声库装/选/删已落地（`VoiceBankRepository` + 语音服务页，从 URL 装 zip、验 sha256、防穿越、同名不覆盖）；中/日/英三种声库由用户给地址装，不随包发。**歌词→音素→音符已落地**（`crates/core/src/voice.rs`：中文查 6763 字拼音表、日文假名表、英文 CMUdict 135k 词；出口是每音符的音素+帧数）；引擎运行时（onnxruntime）未接，「唱歌」开关在此之前保持灰。 | 现在没有任何"换声音"的地方；而各家 TTS 参数集差得远，能力差异必须由数据说、由 schema 体现——否则每换一个 provider 就错一遍。唱歌要的是"编排"，不是一个更贵的音色。 |
+| 0.17c | **`Voice-Caps`（只读能力表）**（用户 2026-11-14 的"继续"；**已落地**，D330 / `notes/voice.md` §3.11） | `Voice-Caps` 返回选中的 TTS / ASR 各自的提供方、模型、音色、语种、支持哪些参数，以及唱歌能不能用（引擎 + 声库都在才行）。新能力位 `Capability::Voice` 默认关，请求里带了 `voice` 且真有条目才声明——只装了声库、引擎没接时不占位。密钥不过这一层（`has_key` 只是布尔）。`Speak` 的 schema 就以这份能力表为依据。**判据**：换 provider → 回答里的 `supports` 跟着变；两条都空 → 工具消失；`sing.ready:false` 时 `reason` 说清缺哪一样。core 758 / ffi 69；真机 V139。 |
+| 0.17d | **`Speak`（一句话 / 分段脚本 → wav）**（用户 2026-11-14 的"继续"；**已落地**，D331 / `notes/voice.md` §3.12） | 只接 OpenAI 形状的 `POST /audio/speech`，`response_format` 写死 wav；`text` 与 `script` 二选一，分段每段一次请求再拼（末段之后的停顿不算）。`rate` 按 `supports` 裁（没有 `speed` 就点名拒绝）。产物落 `sessions/<id>/audio/<hash>.wav`，先写 `.part` 再改名；归一（允许抬升）+ 两端 8 ms 淡入淡出。密钥只从 Kotlin 的 `Vault` 递到 core 拼一次 `Authorization`，`Voice-Caps` 的回包里没有它。工具详情里认回包的 `path`，就地一个播放键（关弹窗即释放）。**判据**：念一句能听到；两段脚本第二次请求的 `speed` 不同、总时长含停顿；`system` / `local` / `minimax` 各回一句"还没接"并说清支持哪种。core 767 / ffi 69；真机 V140。 |
 | 0.17e | **工具面板逐项开关（b1）**（用户 2026-11-13 提、2026-11-14 收；**已落地**，D332） | 聊天页「工具」面板顶部「本地工具 N/M」+ 每行一个开关；清单来自 native 注册表（新 JNI `toolNamesJson`），关掉的名字随这一轮下发（`tools_off`），core 的 `specs_excluding` 剔掉——关掉 = **不声明**，不是声明了再拒绝。`gate::plan_tools` 也认同一份清单（`ToolSwitches.disabled`），理由单列 `ToolDrop::ToolOff`。**判据**：关掉「读取文件」之后同一句话不再触发它；面板计数跟着变；重开应用还是关的。core 769 / ffi 70 / JNI 59；真机 V141。 |
 | 0.17f | **`tool_call_*` 覆写工具定义**（用户 2026-11-14 提；**核心层已落地**，D333） | 世界书条目名为 `tool_call_<工具名>` 时，正文（纯文本或 `{description,parameters}`）覆写请求体里那一份工具定义；空正文 = 应用默认；只对存在的工具有效；这类条目不进上下文。**未做**：内置册自动生成条目、「已修改 / 恢复默认」、工具面板分组折叠与"读→写→搜→命令"的排序。core 776；真机 V143。 |

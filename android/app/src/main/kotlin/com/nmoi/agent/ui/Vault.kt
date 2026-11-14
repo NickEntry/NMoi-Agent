@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * 密钥仓（D156 / `docs/secrets.md` 的 L1；D157 起按供应商分开）。
+ * 密钥仓（D156 / `notes/secrets.md` 的 L1；D157 起按供应商分开）。
  *
  * 只解决一件事：**落盘的是密文**。设备被拿走、备份被翻出来，看到的是
  * `[12 字节 IV][密文]`，主密钥在 AndroidKeyStore 里不可导出。

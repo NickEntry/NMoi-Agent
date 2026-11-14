@@ -26,20 +26,20 @@
 
 | 归档 | 覆盖 | 来源 |
 |---|---|---|
-| `decisions_old1.md` | D10 – D92 | `docs/decisions.md` |
+| `decisions_old1.md` | D10 – D92 | `notes/decisions.md` |
 | `decisions_old2.md` | D93 – D146 | 同上 |
 | `decisions_old3.md` | D147 – D183 | 同上 |
 | `decisions_old4.md` | D184 – D225 | 同上 |
-| `verification_old1.md` | V0 – V46 | `docs/verification.md` |
+| `verification_old1.md` | V0 – V46 | `notes/verification.md` |
 
-`docs/decisions.md` 现在只留 D226 起；`docs/verification.md` 只留 V47 起（前言仍在正文里，
+`notes/decisions.md` 现在只留 D226 起；`notes/verification.md` 只留 V47 起（前言仍在正文里，
 它是"怎么读这份清单"的说明，不该被切走）。
 
 ## 4. 还没切的（盯着）
 
 | 文件 | 现在 | 什么时候切 |
 |---|---|---|
-| `docs/PLAN.md` | 168 KB | 过 200 KB 时切 §1（已完成项）与 §3 里已经落地的那几节。**先别切**：全仓库按 `§3.14` 这种编号引用它，切之前要先把引用改成"节名 + 文件" |
+| `notes/PLAN.md` | 168 KB | 过 200 KB 时切 §1（已完成项）与 §3 里已经落地的那几节。**先别切**：全仓库按 `§3.14` 这种编号引用它，切之前要先把引用改成"节名 + 文件" |
 | `NMoi-Notes/pitfalls.md` | 62 KB | 过 200 KB 时按年份切（`## 2026-10…` 是天然边界） |
 | `NMoi-Notes/ui-taste.md` | 66 KB | 同上（按 `## 2026-…` 切） |
 

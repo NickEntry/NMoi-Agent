@@ -298,7 +298,7 @@ internal fun LicenseDocScreen(doc: LicenseDoc, onBack: () -> Unit) {
                 DocState.Loading -> StateMessage(message = "正在读…", error = false)
                 DocState.Missing -> StateMessage(
                     message = "包里没有这份文件：assets/${doc.assetPath}\n" +
-                        "不是这一页坏了，是构建时没把它同步进包（见 docs/packaging.md 的 syncNotices）。",
+                        "不是这一页坏了，是构建时没把它同步进包（见 notes/packaging.md 的 syncNotices）。",
                     error = true,
                 )
 

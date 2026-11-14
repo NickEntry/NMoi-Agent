@@ -9,7 +9,7 @@
 //!    否则"起了个标题"会让上下文提前触发压缩——荒唐但很容易发生。
 //! 2. **失败不外抛**：`run` 只返回 [`RoleOutcome`]，永远不 `Err`。
 //!    聊天建议拿不到是小事，主对话不该因为收尾工作挂掉。
-//! 3. **能不能用要说清楚**：视觉角色没指定模型就是不能用（`docs/PLAN.md` §3.3 的"置灰"），
+//! 3. **能不能用要说清楚**：视觉角色没指定模型就是不能用（`notes/PLAN.md` §3.3 的"置灰"），
 //!    但"不能用"必须带人话原因，不能只是没反应。
 //!
 //! 没做：图片通道（P3.1）。视觉角色现在只有门控与请求形状，发不出图——
@@ -99,7 +99,7 @@ pub struct RoleConfig {
 }
 
 impl RoleConfig {
-    /// 按 `docs/PLAN.md` §3.3 的表给默认值。
+    /// 按 `notes/PLAN.md` §3.3 的表给默认值。
     pub fn new(role: ModelRole) -> Self {
         let (enabled, follow_chat, thinking, max_tokens, temperature) = match role {
             // 便宜小模型；没配就跟着当前模型。标题短、且**不该让它思考**。

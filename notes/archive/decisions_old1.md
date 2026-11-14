@@ -1,7 +1,7 @@
 # 决策记录（归档 1：D10–D92）
 
-> 从 `docs/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
-> 切分规则见 `docs/archive/README.md`。
+> 从 `notes/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
+> 切分规则见 `notes/archive/README.md`。
 
 ---
 
@@ -173,7 +173,7 @@ UniFFI（Kotlin / C#）留到 stage 2 接口稳定后再加；手写 C ABI 同�
 
 文件读写 / 查找 / 搜索 / 编辑独立实现，Android 上先跑通这些；
 容器（PRoot / chroot）是**可选增强**，只影响 bash 与沙箱内工具是否可用。
-选型、许可影响与实现步骤见 `docs/sandbox.md`。
+选型、许可影响与实现步骤见 `notes/sandbox.md`。
 
 ## D26 bundled SQLite 默认开启外键
 
@@ -194,7 +194,7 @@ UniFFI（Kotlin / C#）留到 stage 2 接口稳定后再加；手写 C ABI 同�
 前提写死：**PRoot 不是安全边界**（同 UID、ptrace、共享文件系统视图；loopback TCP 全设备可见）。
 Android Keystore 的密钥不可导出，但同 UID 的代码可以让 App 自己解密，所以"密钥本身难提取"不等于"密钥安全"。
 
-因此分五层（详见 `docs/secrets.md`）：
+因此分五层（详见 `notes/secrets.md`）：
 
 1. 密钥只以密文存在（Keystore / StrongBox 优先，TEE 回落）；
 2. **凭据代理（broker）是唯一持有者**，通过 App 私有目录下的 Unix domain socket 交付（不用 abstract namespace，它没有任何权限控制）；
@@ -283,7 +283,7 @@ UI 必须显示"参数是猜的、可手动覆盖"。正则填出来的默认值
 
 ## D34 模型元数据来自公开快照，只存事实字段
 
-三个源分工（详见 `docs/model-data.md`）：models.dev（MIT）作主结构，
+三个源分工（详见 `notes/model-data.md`）：models.dev（MIT）作主结构，
 OpenRouter 与 aihubmix 的公开 API 补能力位与覆盖。
 
 三条硬规定：
@@ -418,7 +418,7 @@ edition2024，于是本地连 `cargo check` 都做不了（D10 的"锁死版本"
 - **空 `messages` 前置拒绝**：实测上游对空 messages 回的是
   `HTTP 400 / upstream_rejected`，信息量为零；与其等它，不如在本地就说清楚。
 - **超窗只能给线索，不能当判据**：`OverflowHint` 分 `Likely` / `Unreliable` 两档，
-  而且三种不同的溢出失败里只有一种措辞提到了上下文（`docs/provider-runtime.md` §1.4 引用）。
+  而且三种不同的溢出失败里只有一种措辞提到了上下文（`notes/provider-runtime.md` §1.4 引用）。
   真正的兜底仍然是客户端自己维护预算。
 - **密钥不进 Debug**：`ApiKey` 的 `Debug`/`Display` 都打码，`ChatRequest` 的 `Debug` 只印头部
   名字不印值（`ProviderConfig.extra_headers` 里很容易混进密钥）。
@@ -428,7 +428,7 @@ edition2024，于是本地连 `cargo check` 都做不了（D10 的"锁死版本"
 **非流式不是"另一种协议"，是同一批字段的另一种排布。**
 
 - 流式出口：[`StreamEvent`]（边到边显示）；非流式出口：`Completion`（整段拿走）。
-- 解析都放在 `core::stream`，字段来源与流式共用一份（`docs/provider-runtime.md`）。
+- 解析都放在 `core::stream`，字段来源与流式共用一份（`notes/provider-runtime.md`）。
 - 模式由**方法**决定，不由字段暗地里决定：`chat()` 只吃 `stream: true`，
   `complete()` 只吃 `stream: false`，给错了明确报错。半路改主意就必须显式换方法。
 - 非流式响应体有 **8 MiB 上限**（流式那条路没有）：整段解析本来就得先收完，
@@ -473,7 +473,7 @@ edition2024，于是本地连 `cargo check` 都做不了（D10 的"锁死版本"
 temperature, prompt }`。「跟随当前聊天模型」与「自己指定 provider+model」是互斥的两条路，
 `follow_chat` 为真时后者忽略——界面也不会让你同时填。
 
-默认值按 `docs/PLAN.md` §3.3 的表：
+默认值按 `notes/PLAN.md` §3.3 的表：
 
 | 角色 | 默认开 | 跟随当前模型 | 思考默认 | max_tokens |
 |---|---|---|---|---|
@@ -617,7 +617,7 @@ P4 落地时顺手定下来的四条。
 
 实测（本机代理，`relay-b/DeepSeek-V4.1-Flash`）：同一份请求体，只改 `stream`，
 非流式回 2 条 `tool_calls`（arguments 完整），流式整条流**一帧都没有**。详见
-`docs/provider-runtime.md` §1.2.1。
+`notes/provider-runtime.md` §1.2.1。
 
 第一次跑真机压缩就是这么翻的：8 次往返、0 次工具调用、草稿 0 字。
 现象很像"模型不会用工具"，实际是上游把调用吞了——**这种错最难查，因为它长得像模型能力问题**。
@@ -990,7 +990,7 @@ Android 的包名绑死签名：keystore 丢了，已发布的应用就再也更
 能解决的（Play 有 upload key 重置流程，但我们是自己分发，没有那条路）。所以第一条规矩是
 **离线备份两份、放两处物理介质**，CI secret 只是其中一份副本。
 
-存放与注入（细节在 `docs/signing.md`）：
+存放与注入（细节在 `notes/signing.md`）：
 
 - **GitHub 用 environment secret**（`release` 环境 + 人工批准），不用仓库级 secret：
   仓库级 secret 任何 workflow 都能读，被改坏一次就是全泄。
@@ -1004,7 +1004,7 @@ Android 的包名绑死签名：keystore 丢了，已发布的应用就再也更
 GitHub 只在确实要发 Release 时临时注入。哪天不在 GitHub 发版，这条配置直接不建。
 
 workflow 文件**没有**直接放进 `.github/workflows/`：现在没有任何签名材料，放进去
-CI 会天天红，红久了就没人看了。可粘贴的版本在 `docs/signing.md` 里，等材料到位再搬过去。
+CI 会天天红，红久了就没人看了。可粘贴的版本在 `notes/signing.md` 里，等材料到位再搬过去。
 
 ## D66 断块声明：ID + 块类 + 原因，中间不隔符号，而且 ID 是稳定的
 
@@ -1081,7 +1081,7 @@ max 三环（紫/深蓝/淡蓝）；off 沿用上一版（环 + 中心点 + 斜�
 淡蓝比深蓝弱一档，视觉上不会抢针。
 
 **实测结论**：16px 时内环会糊（1.5 的线宽缩到 1px），UI 里用 18px（桌面 20px）——
-这条写进 `docs/fonts.md` 与 §3.12，免得有人在工具栏里塞 16px 然后说"图标看不清"。
+这条写进 `notes/fonts.md` 与 §3.12，免得有人在工具栏里塞 16px 然后说"图标看不清"。
 
 **标签规则**：名字 ≥ 6 字母就缩（minimal→min、medium→mid）。缩到 3–5 个字母是刻意的：
 chip 要窄，英文名只是给"这几档叫什么"一个锚点。文字基线取 chip 中心 + 0.28em（3.4px），
@@ -1473,7 +1473,7 @@ DeepSeek 系 / Qwen 系等）→ 都不匹配就用**中文混合基准**（Deep
 2. `cargo test --release` 里量 L0 与 L1 的耗时（**release**，debug 数字没意义）；
 3. 拿本机代理端点（`relay-b/DeepSeek-V4.1-Flash`，有 usage）发同一段文本，
    记录 `prompt_tokens`，得到"估算 vs 真实"的误差表，按语言分开；
-4. 结论写进 `docs/token-estimation.md`，并把这三种文本存成测试夹具，防止以后改算法悄悄退化。
+4. 结论写进 `notes/token-estimation.md`，并把这三种文本存成测试夹具，防止以后改算法悄悄退化。
 
 **依赖风险先说**：`tiktoken-rs` 之类 crate 对 rustc 1.75 的兼容性**没验**（本机没有 rustup，
 升不了工具链）。验不过就退到"手写 BPE + 自带词表"或干脆只用 L0+L2 校准——
@@ -1496,7 +1496,7 @@ D38 那条"不升 MSRV"在这里同样适用，不能让一个 tokenizer 把整�
 3. 所以 L2 校准要按 **(模型, 会话内容构成)** 算，不按语言分类；未校准时绝对线判定
    先乘 1.3（测出的最坏低估幅度）。
 
-明细见 `docs/token-estimation.md`（含未测项：L1 耗时、crate 兼容性、多轮模板开销）。
+明细见 `notes/token-estimation.md`（含未测项：L1 耗时、crate 兼容性、多轮模板开销）。
 
 ## D92 消息块按原始顺序渲染，不给工具调用与思考固定位置
 

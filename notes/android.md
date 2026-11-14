@@ -62,7 +62,7 @@ android/
 7. 清点产物 + 上传 `nmoi-debug-apk` 工件（14 天）
 
 **只有 debug**。debug 签名由构建机自己生成，不需要任何 secret；release 签名要 4 个
-environment secret（`docs/signing.md`），现在一个都没有，所以不出 release，也不假装能出。
+environment secret（`notes/signing.md`），现在一个都没有，所以不出 release，也不假装能出。
 
 ## 4. 现在能做什么
 
@@ -107,7 +107,7 @@ environment secret（`docs/signing.md`），现在一个都没有，所以不出
 ## 5. 现在不能做什么（写清楚，免得被当成已完成）
 
 - **一次都没在真机上跑过**：装包、加载 `.so`、建库、列表，全是纸面。要跑的东西在
-  `docs/verification.md`，按 V0→V5 走。
+  `notes/verification.md`，按 V0→V5 走。
 - **启动器图标**：4 设计 × 黑/白底共 8 套，设置里可切，默认 4 号黑底（D114、`docs/ui/icons/app/README.md`）。
   真机上**没验过**切换效果：manifest 的 alias 开关是标准做法，但各家桌面刷新快慢不一样。
 - **能存不能发**：输入岛有了（整条圆角 + 圆形 ↑），点 ↑ 只是把话写进库里，`nmoi_turn_run_json` 还没接，
@@ -127,9 +127,9 @@ environment secret（`docs/signing.md`），现在一个都没有，所以不出
 
 ## 6. 下一步
 
-1. **真机验证一次**（`docs/verification.md` V0→V5）。在这之前，"能跑"这三个字不能用。
+1. **真机验证一次**（`notes/verification.md` V0→V5）。在这之前，"能跑"这三个字不能用。
 2. 输入岛（`AndroidView` 包原生 `EditText`）→ 然后才有 `nmoi_turn_run_json` 可接，
    库里也才会有真会话。
 3. 签名：4 个 secret 到位后再开 release 那条路。
-4. 图标包进 `assets/`（`assets/icon-packs/original/`），跟 `docs/packaging.md` 对齐。
+4. 图标包进 `assets/`（`assets/icon-packs/original/`），跟 `notes/packaging.md` 对齐。
 5. 补别的 ABI（armv7 / x86_64）——等真机反馈需要再说，不提前编。

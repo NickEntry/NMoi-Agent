@@ -1,7 +1,7 @@
 # 决策记录（归档 3：D147–D183）
 
-> 从 `docs/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
-> 切分规则见 `docs/archive/README.md`。
+> 从 `notes/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
+> 切分规则见 `notes/archive/README.md`。
 
 ---
 
@@ -400,7 +400,7 @@ AI 改过的痕迹只剩正文本身。用户要的就是这个。
 ## D156 模型服务（设置 → 模型与提示词 → 模型服务）
 
 增强编辑、`turn_run` 那条路都要"发一次请求"，而界面上一直没有填端点/密钥的地方（D59 把系统提示词留给调用方，
-这一步也就一直空着）。这一条把它补上，形状按 `docs/secrets.md` 的口径分两处存：
+这一步也就一直空着）。这一条把它补上，形状按 `notes/secrets.md` 的口径分两处存：
 
 | 存什么 | 在哪 | 跟着库走吗 |
 |---|---|---|
@@ -862,7 +862,7 @@ proot 里编译死的默认路径是 `/data/data/com.termux/files/usr/libexec/pr
 - CI：`android` job 里 `解出签名材料`（secret → `$RUNNER_TEMP/nmoi-release.jks`，umask 077，
   不打印内容）→ 打包 → `验签`（`apksigner verify --print-certs`，指纹与仓库里那串比对，
   不一致直接红）。
-- secret 名字四处一致（`docs/signing.md`）：`ANDROID_KEYSTORE_B64`、`ANDROID_KEYSTORE_PASSWORD`、
+- secret 名字四处一致（`notes/signing.md`）：`ANDROID_KEYSTORE_B64`、`ANDROID_KEYSTORE_PASSWORD`、
   `ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`；GitHub 与 Codeberg 各一份。
 
 **为什么签名跑在 debug 变体上**：现在唯一在发、也唯一被装的就是 `app-debug.apk`。

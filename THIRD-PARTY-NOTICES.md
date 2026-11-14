@@ -10,7 +10,7 @@
 - Apache-2.0（§4(a)）：`You must give any other recipients of the Work or Derivative Works a copy of this License.`
 
 所以源码仓库、APK、桌面安装目录、便携包、导出/导入的图标包，**每一处都要有**
-`THIRD-PARTY-NOTICES.md` 与本文件提到的 `LICENSES/`。具体放哪见 `docs/packaging.md`。
+`THIRD-PARTY-NOTICES.md` 与本文件提到的 `LICENSES/`。具体放哪见 `notes/packaging.md`。
 
 ## 1. 界面图标（`docs/ui/icons/actions/`，34 个）
 
@@ -72,7 +72,7 @@ Feather 派生清单与 MIT 全文，所以这次追加**不新增许可文件**
 
 **M3 是"库"还是"规范"，分清楚**：这里声明的是 `androidx.compose.material3` 这个**代码库**。
 Google 的 Material Design 3 **规范文档**不是随包分发的软件，不在这份声明里；
-规范里提到的 Roboto 字体本项目**没内置**（Android 侧只用系统默认字体，见 `docs/fonts.md`），
+规范里提到的 Roboto 字体本项目**没内置**（Android 侧只用系统默认字体，见 `notes/fonts.md`），
 所以没有额外的字体许可要挂。
 
 **`META-INF/AL2.0` 是刻意剔掉的**：`packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }`
@@ -102,7 +102,7 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
 | 便携包（zip / tar.gz） | **压缩包根目录**内，解压即见 |
 | 图标包（导出 / 导入的 zip） | 包内根目录 `NOTICE.txt`（图标是再分发，声明必须跟着走） |
 
-细则、路径与"安装后能解压覆盖到安装目录"这条约束见 `docs/packaging.md`。
+细则、路径与"安装后能解压覆盖到安装目录"这条约束见 `notes/packaging.md`。
 
 
 ### 3.x TLS（D161，进包）

@@ -32,7 +32,7 @@ import org.json.JSONObject
 /**
  * 网络代理（D226）。设置 → 应用设置 →「网络代理」。
  *
- * 三条口径，跟 `docs/proxy.md` 对齐：
+ * 三条口径，跟 `notes/proxy.md` 对齐：
  *
  * 1. **热生效**：保存后立刻 `proxyApply`，下一次请求就用新的；正在飞的那条不变。
  * 2. **密码进 Vault**：`prefs` 里只存非密字段，密码在 `vault/proxy.bin`。

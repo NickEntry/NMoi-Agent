@@ -87,7 +87,7 @@ Linux 上 PRoot 没有必要：命名空间是真的，伪 chroot 只会更慢�
 
 ## 5. 密钥怎么办
 
-容器里跑陌生代码，密钥必须按 `docs/secrets.md` 的方案走：**长期令牌不进容器**，
+容器里跑陌生代码，密钥必须按 `notes/secrets.md` 的方案走：**长期令牌不进容器**，
 git / gh 通过凭据代理（credential helper / 透明代理 / SSH agent 转发）现用现取，只给短时能力。
 
 ## 6. 参考

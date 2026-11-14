@@ -1,7 +1,7 @@
 # 决策记录（归档 4：D184–D225）
 
-> 从 `docs/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
-> 切分规则见 `docs/archive/README.md`。
+> 从 `notes/decisions.md` 切出来的。**编号不变**，D 编号全仓库唯一，所以引用照样指得到。
+> 切分规则见 `notes/archive/README.md`。
 
 ---
 
@@ -487,7 +487,7 @@ FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 +
   有一条单测盯着这件事。
 - **↺ = 回到"打开这一页时库里的值"**。现在没有"数据源给的原始值"可回：快照还没读进来，
   所以真正的"重置为推断值"要等资源更新页（分片 3）。这一版把它做成"撤销这一格的改动"，
-  并在 `docs/decisions.md` 与本条写清，免得下一轮以为已经做完。
+  并在 `notes/decisions.md` 与本条写清，免得下一轮以为已经做完。
 - **三态 chip 一律三颗**（不知道 / 支持 / 不支持、不知道 / 可以关 / 不能关、不知道 / 允许 / 不允许）：
   `null` 与 `false` 是两件事，界面上必须能分别点出来。
 - **`Efforts.LEVELS`**（不含 `none`）给「支持的级别」用：关闭不是档位，是「允许关闭」。
@@ -499,7 +499,7 @@ FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 +
 
 **验证**：`ModelFieldsTest` 16 条（新增 2 条：徽标与落盘同规则、`LEVELS` 不含 `none`），
 本机 JVM 16/16 绿；kotlinc 全量类型检查只有 9 条 `unresolved reference 'R'`（允许的那一类）。
-真机路径见 `docs/verification.md` 的 **V33**（11 条）。
+真机路径见 `notes/verification.md` 的 **V33**（11 条）。
 
 ### D201 第三片（资源更新页）已落地（2026-10-31）
 
@@ -530,7 +530,7 @@ FFI 那一层只改 `crates/ffi/src/turn.rs` 一个文件（`stream` 读配置 +
 （本机 JVM 全绿，42/42）。快照解析与匹配另外用真的 `org.json` 在本机跑过一遍：
 `data/models.snapshot.json` → **1727 条**、`fetched_at=2026-10-20T13:20:53Z`、解析 **887 ms**（JVM；
 真机更慢，所以页面有 loading 态）、抽查 6 条自带 id 全命中、大小写/分隔符变体命中、乱名不命中。
-kotlinc 全量类型检查只剩 9 条 `unresolved reference 'R'`。真机路径见 `docs/verification.md` **V34**。
+kotlinc 全量类型检查只剩 9 条 `unresolved reference 'R'`。真机路径见 `notes/verification.md` **V34**。
 
 ### D201 第四片（接读取点：Headers / Body / 推理真的进请求）已落地（2026-10-31）
 
@@ -569,7 +569,7 @@ kotlinc 全量类型检查只剩 9 条 `unresolved reference 'R'`。真机路径
 storage 108 等）；`cargo fmt --check` 与 `clippy -D warnings` 干净；
 `scripts/ffi_smoke.sh` **321 项 0 失败**；`scripts/check_jni_symbols.sh --expected-only`
 仍是 33 个符号（这一片没加 JNI）；Kotlin 单测 **42/42**；kotlinc 全量类型检查只剩 9 条
-`unresolved reference 'R'`。真机路径见 `docs/verification.md` **V35**。
+`unresolved reference 'R'`。真机路径见 `notes/verification.md` **V35**。
 
 ## D202 真机第一轮反馈的返工（用户 2026-10-31 晚，8 条）
 
@@ -659,7 +659,7 @@ storage 108 等）；`cargo fmt --check` 与 `clippy -D warnings` 干净；
 
 **验证**：`SendQueueTest` 7 条（先进先出 / 会话隔离 / 上下移到头 / 删除 / 阻塞按会话 /
 清空与会话删除不留孤行 / 版本号推送），四个测试类合计 **52/52 绿**；
-kotlinc 全量只剩 9 条 `unresolved reference 'R'`。真机路径见 `docs/verification.md` **V38**。
+kotlinc 全量只剩 9 条 `unresolved reference 'R'`。真机路径见 `notes/verification.md` **V38**。
 
 ## D204 模型的增删与空状态（用户 2026-11-01 的五条）
 
@@ -690,7 +690,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`。真机路径见 `docs/ve
 
 **验证**：`ResourceUpdateTest` 增到 16 条（新加"自动填只补空的"），
 四个测试类合计 **53/53 绿**；kotlinc 全量只剩 9 条 `unresolved reference 'R'`。
-真机路径见 `docs/verification.md` **V39**。
+真机路径见 `notes/verification.md` **V39**。
 
 ## D205 模型缺失就报错 + 远程图片改成开关（用户 2026-11-01）
 
@@ -788,7 +788,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 `cargo fmt --check` / `clippy -D warnings` 干净；`scripts/ffi_smoke.sh` **321 项 0 失败**；
 `check_jni_symbols.sh --expected-only` 的期望表已含 `copyConversationJson`；
 本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；`ConversationSelectionTest` **7/7 绿**。
-真机路径见 `docs/verification.md` **V41**（未实测）。
+真机路径见 `notes/verification.md` **V41**（未实测）。
 
 ## D208 图片附件 + 能力位置灰（用户 2026-11-01 定的顺序第 2 条）
 
@@ -827,7 +827,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 `scripts/ffi_smoke.sh` **321 项 0 失败**；JNI 期望表 39 条（含三条 attachment + copy）；
 本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Kotlin 单测 **11/11 绿**
 （`ConversationSelectionTest` 7 + `ModelCapabilitiesTest` 4）。
-真机路径见 `docs/verification.md` **V42**（未实测；实际发图必须真机走）。
+真机路径见 `notes/verification.md` **V42**（未实测；实际发图必须真机走）。
 
 ## D209 真机反馈六条（2026-11-02）
 
@@ -845,7 +845,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
    `turn_run` 共用 `parse_config`，而重试不发新消息、不带 `user_text`。
    现在 `user_text` 在解析层可选，**由 `turn_run` 自己校验非空**；重试那条路不再被它挡住。
 4. **模态默认值**：快照脚本开始保存 `input_modalities` / `output_modalities`（models.dev 的
-   MIT 数据，原本只取了并集里的 `images` 布尔）。数据源不变（`docs/model-data.md` 那三家），
+   MIT 数据，原本只取了并集里的 `images` 布尔）。数据源不变（`notes/model-data.md` 那三家），
    只是把"收什么/吐什么"这个事实留下来。快照刷新时**保留旧条目**：上游下架的模型还在用户的
    配置里，删掉就等于匹配不到。添加模型时：命中快照就按清单写；没命中就给
    「text 进 / text 出」的默认（记成「推断」），不再留一格空白。
@@ -859,7 +859,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 **验证**：Rust `cargo test` 全绿（`user_text` 那条用例改成"解析层放行、turn_run 校验"）；
 本机 kotlinc 全量只剩 9 条 `unresolved reference 'R'`；Kotlin 单测新增四条模态用例
 （完整清单 / 明确不收图 / 输出模态 / 已填不覆盖），由 CI 的 `testDebugUnitTest` 跑。
-真机路径见 `docs/verification.md` **V43**。
+真机路径见 `notes/verification.md` **V43**。
 
 ### D209 补丁：抽屉列表被搬丢了（2026-11-02 真机截图）
 
@@ -882,7 +882,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 2. **模态目录不可靠**：真机上 `deepseek-v4.1-flash` 实际能收图，快照写的是纯文本。
    目录（models.dev / OpenRouter）是社区维护的，滞后是常态。两条对策：
    ① 只有**用户自己勾的**（`FieldSource.Custom`）模态才用来灰掉图片入口；
-   ② 模型编辑页「基本」页底部写清每个字段的来源与置信度（表在 `docs/model-data.md`）。
+   ② 模型编辑页「基本」页底部写清每个字段的来源与置信度（表在 `notes/model-data.md`）。
 3. **思考强度默认值**：新建模型时如果快照没给档位，落「全部档位 + 允许关闭」（标「推断」）；
    聊天页在档位为空时也按全开处理、`allow_disable` 为空时按"可以关"处理。
    档位数据的一手来源是 models.dev 的 `reasoning_options`（`toggle` / `effort.values`）——
@@ -892,7 +892,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
    超出在列表内滚动。
 
 **验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `testDebugUnitTest` 跑 Kotlin 单测。
-真机路径见 `docs/verification.md` **V44**。
+真机路径见 `notes/verification.md` **V44**。
 
 ## D211 数据源按字段分优先级 + 图片不再被拦（2026-11-02）
 
@@ -918,7 +918,7 @@ kotlinc 全量只剩 9 条 `unresolved reference 'R'`；JNI 符号脚本从 Kotl
 
 **验证**：`scripts/fetch_models.py` 重跑 + 合并；快照 1806 条（1529 条带模态）；
 Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（含 `blocksImages` 两条）。
-真机路径见 `docs/verification.md` **V45**。
+真机路径见 `notes/verification.md` **V45**。
 
 ## D212 行内思考标签与行内工具调用（2026-11-02）
 
@@ -966,7 +966,7 @@ Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（�
    `deepseek-v4-1-flash-1017`：`tools=true`、`input=["image","text"]`、ctx 1048576、out 384000。
 
 **验证**：`cargo test` 770 项全绿；本机 kotlinc 只剩 9 条 `R`；快照里那条数据已逐字核对。
-真机路径见 `docs/verification.md` **V46**。
+真机路径见 `notes/verification.md` **V46**。
 
 ## D214 模型多选与拉取模型的批量操作（2026-11-02）
 
@@ -985,7 +985,7 @@ Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（�
    不给这一步留缓冲太危险。单条删除不需要确认。
 
 **验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `compileDebugKotlin` 与 `testDebugUnitTest` 会跑。
-真机路径见 `docs/verification.md` **V47**。
+真机路径见 `notes/verification.md` **V47**。
 
 ## D215 模型行左滑：红底铺在 Box 上 + 删除图标（2026-11-02）
 
@@ -1004,7 +1004,7 @@ Rust 770 项全绿；本机 kotlinc 只剩 9 条 `R`；Kotlin 单测 33 项（�
 顺带：`clipToBounds()` 让滑开的行不会画到卡片左边距外面；进多选时把滑开的那一行收回去。
 
 **验证**：本机 kotlinc 全量只剩 9 条 `R`；CI 的 `compileDebugKotlin` 会跑。
-真机路径见 `docs/verification.md` **V48**。
+真机路径见 `notes/verification.md` **V48**。
 
 ## D216 附件落到会话私有目录 + 存储管理（2026-11-02）
 
@@ -1101,7 +1101,7 @@ JNI 期望表含两条新符号；本机 kotlinc 全量只剩 9 条 `R`。真机
 5. **`enabled` 不入库**：存了它，重启后开关是「开」而进程不在，界面上就有两个答案。
 6. **应用被杀时**子进程靠 stdin EOF 自己退出；这是唯一跨进程的收尾，文档里写清，不假装可靠。
 
-完整设计（JSON 形状、失败表、验收）在 `docs/persistent-sessions.md`。
+完整设计（JSON 形状、失败表、验收）在 `notes/persistent-sessions.md`。
 **先做 0.15ak**（超时 + 手动关闭），它是同一套进程管理的底座。
 
 ## D220 上下文里的图片：默认只发最近 4 张，并且要先被算进预算（设计已定，未动工）
@@ -1116,7 +1116,7 @@ JNI 期望表含两条新符号；本机 kotlinc 全量只剩 9 条 `R`。真机
 
 所以：附件落盘时算 `est_tokens` 并计入预算；「上下文里的图片」设置默认 **4 张**，
 更早的在 wire 上换成一行文本占位，缩略图下标「已从上下文移除」；视频只抽帧（≤8 帧）。
-证据、公式与核对脚本在 `docs/modality.md`。
+证据、公式与核对脚本在 `notes/modality.md`。
 
 ## D221 助手设置页：先接小项，背景图不做渐变（设计已定，未动工）
 
@@ -1149,7 +1149,7 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
 - **Gemini 的坑**：老接口 `functionResponse` 只认函数名，同名并行配不上；
   要等 Interactions 那套 `call_id`，在那之前 Gemini 上不并行同名工具。
 
-完整设计（车道表、撞车表、验收）在 `docs/tool-execution.md`。
+完整设计（车道表、撞车表、验收）在 `notes/tool-execution.md`。
 
 ## D223 每个会话一个 `/chat`：隔离是默认，共享要显式绑（设计已定，未动工）
 
@@ -1162,7 +1162,7 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
 - 老会话迁成 `shared`，不然升级后"文件全没了"；新建会话才隔离。
 - 删会话连 `sessions/<id>/` 一起删（图片与 chat 都在里面）；备份带整个 `sessions/`。
 
-完整边界与验收在 `docs/chat-isolation.md`。
+完整边界与验收在 `notes/chat-isolation.md`。
 
 ## D224 世界书：整本 JSON 存一份，读取层吃两种大小写（设计已定，未动工）
 
@@ -1178,7 +1178,7 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
 - 注入是**新增消息**、不改写历史；算进 `reserve_fixed`（D144）。
 - 导入先预览：条目数、常驻/关键词、**正则不合法的那几条点名**，跳过或取消。
 
-细节在 `docs/lorebook.md`。
+细节在 `notes/lorebook.md`。
 
 ## D225 上下文管理：档位是策略，F1–F5 是形态（设计已定，未动工）
 
@@ -1198,4 +1198,4 @@ Gemini 文档里专门有一节 Parallel function calling）。卡住的是我�
 - 现在 `router` / `form` 没接进请求组装，所以先做设置页 + 档位 1 的参数，
   再接档位 2；3/4 等有实现再说。
 
-细节在 `docs/context-modes.md`。
+细节在 `notes/context-modes.md`。

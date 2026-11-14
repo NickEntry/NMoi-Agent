@@ -21,7 +21,7 @@ docs/ui/icons/{actions,providers,models}/*.svg    设计母版（入库）
 ```
 
 Android 的 `assets/` 只读：原版包在 `assets/icon-packs/original/`，导入包与自建图标
-在应用私有目录。桌面端原版包**不藏起来**，用户可以按 `docs/packaging.md` §2 直接覆盖。
+在应用私有目录。桌面端原版包**不藏起来**，用户可以按 `notes/packaging.md` §2 直接覆盖。
 
 ## 2. 包格式
 
@@ -213,7 +213,7 @@ CRC 不符。缺 `NOTICE.txt` 只 warning 不拒，但导出时一定补上。
 ```
 <pack_id>-<version>.zip
   manifest.json
-  NOTICE.txt          ← 第三方声明，图标是再分发，必须跟着走（docs/packaging.md §1）
+  NOTICE.txt          ← 第三方声明，图标是再分发，必须跟着走（notes/packaging.md §1）
   actions/…
   providers/…
   models/…

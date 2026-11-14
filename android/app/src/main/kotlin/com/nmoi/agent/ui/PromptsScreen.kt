@@ -60,7 +60,7 @@ internal fun PromptsScreen(onBack: () -> Unit) {
 
 private data class PromptInfo(val key: String, val role: String, val slots: String)
 
-/** 与 docs/compression.md §3 的那张表一一对应；改那边记得改这里。 */
+/** 与 notes/compression.md §3 的那张表一一对应；改那边记得改这里。 */
 private val PROMPTS = listOf(
     PromptInfo("compress.draft", "L0 多步压缩", "{{must_keep}} {{draft}} {{history}}"),
     PromptInfo("compress.fallback.strip", "L1 Pass A（剔思考块压事实层）", "{{must_keep}} {{history}}"),

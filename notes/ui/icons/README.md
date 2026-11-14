@@ -106,7 +106,7 @@
 
 - 许可是**宽松许可**（ISC / MIT），与本项目 GPL-3.0-only 兼容；全文在根目录 `LICENSES/`。
 - 汇总声明在根目录 [`THIRD-PARTY-NOTICES.md`](../../../THIRD-PARTY-NOTICES.md)，
-  **随每个分发物走**（APK / 安装目录 / 便携包 / 图标包 zip），细则见 `docs/packaging.md`。
+  **随每个分发物走**（APK / 安装目录 / 便携包 / 图标包 zip），细则见 `notes/packaging.md`。
 - 品牌图形是商标，只做指明性使用：不改色不改形、不用作品牌标志、不暗示背书。
   设置里有"无品牌图标"开关，打开即完全不使用任何商标图形。
 

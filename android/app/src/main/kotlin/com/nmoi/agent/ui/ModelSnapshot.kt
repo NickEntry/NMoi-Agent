@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /**
  * 一份模型快照条目 —— 只取**事实字段**（长度 / 能力 / 档位 / 价格），
- * 描述文本、基准分、链接一律不取（见 `docs/model-data.md` 第 1 节）。
+ * 描述文本、基准分、链接一律不取（见 `notes/model-data.md` 第 1 节）。
  */
 internal data class SnapshotEntry(
     val id: String,

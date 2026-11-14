@@ -3,8 +3,8 @@
 一个本地优先的 LLM 客户端。Rust 无头核心 + 各平台原生 UI；数据留在自己设备上。
 
 > 状态：**stage 0（地基）代码完成，测试待 CI 执行。**
-> 进度写在 [`docs/PLAN.md`](docs/PLAN.md)，每一项做到哪一步都在表里。
-> 决策与理由写在 [`docs/decisions.md`](docs/decisions.md)。
+> 进度写在 [`notes/PLAN.md`](notes/PLAN.md)，每一项做到哪一步都在表里。
+> 决策与理由写在 [`notes/decisions.md`](notes/decisions.md)。
 
 ---
 
@@ -33,7 +33,7 @@ Compose 的 `BasicTextField` 自己重实现 IME 协议且镜像出错（横屏�
 | 上下文分界线 | 一条线把窗口切成两段；压缩工具画线，用户也能手动插线 / 长按删线 |
 | 块级编辑 | 正文、思考块、工具调用块可分别编辑；每次编辑留前后哈希与 revision |
 | 工作区工具 | 读 / 写 / 编辑 / 看目录 / 查找 / 搜索；三级截断，`force_full` 优先级最高 |
-| 容器（可选） | 只在用户显式开通后提供 `bash`；选型与许可影响见 `docs/sandbox.md` |
+| 容器（可选） | 只在用户显式开通后提供 `bash`；选型与许可影响见 `notes/sandbox.md` |
 | 退化检测 | n-gram 连续重复（流式 + 整段）、多样性、跨轮相似度代理 |
 | 预算与触发器 | 缓存代价 `(L−i)(w−r)`、回本周期、回灌双份成本、安全阀升级（软→强制→截断） |
 
@@ -43,7 +43,7 @@ Compose 的 `BasicTextField` 自己重实现 IME 协议且镜像出错（横屏�
 cargo check --workspace --all-targets     # 本地必做（语法/类型）
 cargo test -p nmoi-core --lib -- <模块>::  # 本地可跑：短测试，单次 ≤ 60s（D16.1）
 cargo test --workspace                     # 全量留给 CI
-bash scripts/target_usage.sh               # 看 target 多大；--clean 是整目录清（见 docs/build.md）
+bash scripts/target_usage.sh               # 看 target 多大；--clean 是整目录清（见 notes/build.md）
 ```
 
 CLI：
@@ -76,7 +76,7 @@ NMOI_SMOKE_MODEL="<模型名>" cargo run -p nmoi-core --example provider_smoke
 
 它会把一次真实请求走完：请求构造 → 明文 HTTP → SSE 解析 → 归一事件 → 引擎落库，
 并把 `usage` 与首字延迟打出来。环境变量表在同名文件的顶部注释里，
-实测记录在 `docs/provider-runtime.md`。
+实测记录在 `notes/provider-runtime.md`。
 
 压缩那一路有单独的例子（脚手架 → 多步草稿 → 覆盖率校验 → 归档 + 画线）：
 
@@ -85,7 +85,7 @@ NMOI_SMOKE_MODEL="<模型名>" cargo run -p nmoi-core --example compress_smoke
 ```
 
 它走的是**非流式**（`complete()`）——实测本机代理在流式模式下根本不下发 `tool_calls`，
-见 `docs/decisions.md` D46。想抓我们实际发出去的请求体，设 `NMOI_SMOKE_DUMP=/tmp/req.json`。
+见 `notes/decisions.md` D46。想抓我们实际发出去的请求体，设 `NMOI_SMOKE_DUMP=/tmp/req.json`。
 
 工具循环有第三个例子，让模型真的读文件、改文件、再读回来确证：
 
@@ -98,10 +98,10 @@ NMOI_SMOKE_MODEL="<模型名>" cargo run -p nmoi-core --example tool_smoke
 ## 致谢
 
 - **kelivo**（Chevey339，AGPL-3.0）：参考了它的**部分 UI 设计和部分交互设计**。
-  只参考设计与行为，未复制任何代码（AGPL 与 GPL 不兼容，见 `docs/decisions.md` D15）。
+  只参考设计与行为，未复制任何代码（AGPL 与 GPL 不兼容，见 `notes/decisions.md` D15）。
 - kelivo 自身标注的设计来源 **RikkaHub**，以及它提到的 **Minis**、**PRoot / Termux**（沙盒基础）。
 - 模型元数据来自 [models.dev](https://models.dev)（MIT）、OpenRouter 与 aihubmix 的公开 API，
-  只取事实字段；来源与刷新方式见 `docs/model-data.md`。
+  只取事实字段；来源与刷新方式见 `notes/model-data.md`。
 
 ## 许可
 
@@ -110,7 +110,7 @@ NMOI_SMOKE_MODEL="<模型名>" cargo run -p nmoi-core --example tool_smoke
 用的第三方东西**不并进** `LICENSE`，而是单独记在
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)（聚合说明）与 `LICENSES/`（各许可全文）。
 这份声明随每个分发物走——APK、安装目录、便携包、导出的图标包，都带一份，
-细则见 [`docs/packaging.md`](docs/packaging.md)。
+细则见 [`notes/packaging.md`](notes/packaging.md)。
 
-切到 GPL 的原因写在 `docs/decisions.md` D15：容器可选项要分发 PRoot（GPL-2.0-or-later），
-整体取 GPL-3.0 最干净。工作区文件工具本身不依赖容器，见 `docs/sandbox.md`。
+切到 GPL 的原因写在 `notes/decisions.md` D15：容器可选项要分发 PRoot（GPL-2.0-or-later），
+整体取 GPL-3.0 最干净。工作区文件工具本身不依赖容器，见 `notes/sandbox.md`。
