@@ -152,6 +152,13 @@ pub struct ToolContext<'a> {
     /// 这一轮的语音现状（0.17c）。`None` = 没配、或者语音总开关关着——
     /// 两种情况下 `Voice-Caps` 都不声明（`Capability::Voice` 也开不起来）。
     pub voice: Option<&'a crate::voicecaps::VoiceCaps>,
+    /// 发请求用的传输层（0.17d）。`None` = 这个入口没有网络：`Speak` 会如实说一句。
+    ///
+    /// 与 `ToolContext` 里别的东西一样，是**借用**而不是所有权：谁建的谁留着，
+    /// 工具只在这一次调用里用它。
+    pub transport: Option<&'a dyn crate::transport::Transport>,
+    /// 这条会话的音频目录（`sessions/<id>/audio`）。`Speak` 的产物落这儿。
+    pub session_audio: Option<&'a std::path::Path>,
 }
 
 /// 手写而不是 derive：这里面有一个 `&dyn SessionCatalog`，它不该被打印出来，
@@ -184,12 +191,29 @@ impl<'a> ToolContext<'a> {
             image_limit: 0,
             image_temp_limit: 0,
             voice: None,
+            transport: None,
+            session_audio: None,
         }
     }
 
     /// 这一轮的语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
     pub fn with_voice(mut self, voice: Option<&'a crate::voicecaps::VoiceCaps>) -> Self {
         self.voice = voice;
+        self
+    }
+
+    /// 发请求的传输层（0.17d）。`Speak` 靠它；别的工具用不着。
+    pub fn with_transport(
+        mut self,
+        transport: Option<&'a dyn crate::transport::Transport>,
+    ) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// 这条会话的音频目录（0.17d）。
+    pub fn with_audio(mut self, dir: Option<&'a std::path::Path>) -> Self {
+        self.session_audio = dir;
         self
     }
 
@@ -344,6 +368,8 @@ impl ToolRegistry {
         registry.register(Box::new(SessionFilesTool));
         // 语音能力表（0.17c）：只读、不联网，`Capability::Voice` 门控，默认关。
         registry.register(Box::new(crate::voicecaps::VoiceCapsTool));
+        // 合成一段话（0.17d）：同一道门；只接 OpenAI 形状，别的明确回"还没接"。
+        registry.register(Box::new(crate::speak::SpeakTool));
         registry
     }
 
@@ -2140,12 +2166,13 @@ mod tests {
         // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）
         // + 模型改消息（`edit_unit` D177）+ 把图拉进上下文（`View-Image` D248）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
-        assert_eq!(names.len(), 12, "{names:?}");
+        assert_eq!(names.len(), 13, "{names:?}");
         for name in [
             "System-Shell",
             "WorkSpace-EnvirShell",
             "View-Image",
             "Voice-Caps",
+            "Speak",
             "edit_unit",
         ] {
             assert!(names.contains(&name), "缺少 {name}");
@@ -2161,7 +2188,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 12);
+        assert_eq!(specs.len(), 13);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }

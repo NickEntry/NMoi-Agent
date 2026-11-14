@@ -41,6 +41,19 @@ pub(crate) fn client() -> nmoi_core::runtime::ChatClient<nmoi_core::transport::H
     nmoi_core::runtime::ChatClient::new(nmoi_core::transport::HttpsTransport { plain })
 }
 
+/// 只拿传输层（不带 `ChatClient` 那套 JSON 语义）：`Speak` 要发的是二进制回包。
+///
+/// 与 [`client`] 共用同一个代理句柄——两处各建一份的话，设置页改完，
+/// 对话走新代理、语音还走旧的，而且没人看得出为什么。
+pub(crate) fn transport() -> nmoi_core::transport::HttpsTransport {
+    nmoi_core::transport::HttpsTransport {
+        plain: nmoi_core::transport::PlainHttpTransport {
+            proxy: handle().clone(),
+            ..Default::default()
+        },
+    }
+}
+
 fn parse_proxy(value: &Value) -> Result<Option<ProxyConfig>, FfiError> {
     if value.is_null() {
         return Ok(None);

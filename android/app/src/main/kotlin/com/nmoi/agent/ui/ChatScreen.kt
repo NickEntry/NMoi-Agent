@@ -63,6 +63,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -4639,6 +4640,100 @@ private fun ThinkingProcessRow(message: ChatMessage, expanded: Boolean, onToggle
 }
 
 /**
+ * 工具结果里的音频（0.17d）：`Speak` 的回包是 JSON，认 `path` 那一格。
+ *
+ * 只认 `.wav` / `.mp3` 且文件真的在——认不出来就不画这一行，
+ * 摆一个点了没反应的播放键比不摆更坏。
+ */
+private data class AudioResult(val path: String, val durationMs: Long)
+
+private fun audioResultOf(output: String?): AudioResult? {
+    if (output.isNullOrBlank()) return null
+    val row = runCatching { JSONObject(output) }.getOrNull() ?: return null
+    val path = row.optString("path", "")
+    if (path.isBlank()) return null
+    val lower = path.lowercase()
+    if (!lower.endsWith(".wav") && !lower.endsWith(".mp3")) return null
+    if (!java.io.File(path).isFile) return null
+    return AudioResult(path, row.optLong("duration_ms", 0L))
+}
+
+/**
+ * 播放一行音频。用系统的 `MediaPlayer`：一个 wav 文件不值得为它引一个播放库。
+ *
+ * 播放器跟着这一行活：换一条消息、关掉弹窗，`DisposableEffect` 释放。
+ * 不释放的话，弹窗关掉之后声音还在响，用户找不到是谁在放。
+ */
+@Composable
+private fun AudioResultRow(audio: AudioResult) {
+    val context = LocalContext.current
+    var playing by remember(audio.path) { mutableStateOf(false) }
+    var problem by remember(audio.path) { mutableStateOf<String?>(null) }
+    val player = remember(audio.path) { android.media.MediaPlayer() }
+    DisposableEffect(audio.path) {
+        onDispose {
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
+    }
+    val seconds = (audio.durationMs / 100).toFloat() / 10f
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "音频",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = java.io.File(audio.path).name + " · " + seconds + " s",
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f).padding(start = 8.dp),
+        )
+        Text(
+            text = if (playing) "停" else "播放",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .clickable {
+                    problem = null
+                    if (playing) {
+                        runCatching { player.stop() }
+                        playing = false
+                        return@clickable
+                    }
+                    val outcome = runCatching {
+                        player.reset()
+                        player.setDataSource(audio.path)
+                        player.setOnCompletionListener { playing = false }
+                        player.prepare()
+                        player.start()
+                    }
+                    if (outcome.isSuccess) {
+                        playing = true
+                    } else {
+                        playing = false
+                        problem = "打不开这个文件：" + (outcome.exceptionOrNull()?.message ?: "未知原因")
+                    }
+                }
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+        )
+    }
+    problem?.let { message ->
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
+}
+
+/**
  * 一次调用的详情弹窗（D243 / D261）：**初始最高半屏**，里面自己滚。
  *
  * 为什么半屏而不是整屏：它是"看一眼这次调用干了什么"，看完就收；
@@ -5369,6 +5464,8 @@ private fun ToolCallBlock(command: ToolCallArg, result: ToolCallArg?) {
         )
         MonoBox(text = shown.ifEmpty { command.arguments })
         CopyHint(text = shown.ifEmpty { command.arguments }, onCopied = { putClipboard(context, "命令", it) })
+        // 合成出来的音频（0.17d）：光给一条路径用户听不到，所以这里就地放一个播放键。
+        audioResultOf(result?.output)?.let { audio -> AudioResultRow(audio) }
 
         if (payload == null) {
             if (result != null) {

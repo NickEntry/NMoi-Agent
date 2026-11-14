@@ -2748,3 +2748,34 @@ core **713**（+1）；真机 **V136**（五步）。
 `voice.tts.model`；`voice` 缺席与 `null` 等价；能力位跟着条目走、只装声库不算）。
 core **758**（749 + 9）、ffi **69**（67 + 2）；Kotlin 全量类型检查只剩那 9 个已知 `R`。
 真机 **V139**（六步）。未实测：真机一次都没走，FFI 那条路目前只有单测。
+
+## D331 `Speak`：先接一家形状，其余明确回"还没接"（2026-11-14）
+
+`Voice-Caps`（D330）回答"这一条支持什么"，`Speak` 就是照着那句回答动手的那一步。
+
+- **只接 OpenAI 形状**。`{model, input, voice, response_format, speed}` → `POST <base>/audio/speech`。
+  MiniMax `t2a_v2`、Gemini 的音频模态、系统 TTS、本地模型各有各的请求体，硬凑一个"通用体"
+  会得到一个各家都不认的 400，而报错还看不出是谁的错。所以它们在这里**按名字回一句"还没接"**，
+  并说清现在支持哪一种（"provider=openai，或者按 custom 配一个兼容基址"）。
+- **`response_format` 写死 wav**。`trim` / `normalize` / `fade` 只认 16-bit PCM；
+  收 mp3 就只能原样落盘，于是"后处理"变成一个说法而不是事实。回包不是 WAV 时，
+  报错带**开场 16 字节**——这一条认不认 wav，看那一眼就知道。
+- **两种写法**：`text` / `script`。分段是**每段一次请求**，再按 `concat` 拼；每段自己的
+  `rate` 与 `pause_ms`。末段之后的停顿清零（多一截静音没有意义，还会让时长判据错）。
+- **参数按能力表裁**：`rate` 只在 `supports` 含 `speed` 时接受。这是判据 5 的落点：
+  不支持的参数**点名拒绝**，而不是悄悄忽略——忽略会让模型以为它生效了。
+- **落点 `sessions/<id>/audio/<hash>.wav`**，先写 `.part` 再改名。删会话整目录一起删
+  （`session_dir` 本来就整目录删，这一层不用另加清理）。
+- **密钥只走一步**：Kotlin 从 `Vault` 读出来塞进这一轮的 `voice.tts.api_key`，core 只拿它拼
+  `Authorization`。结果、日志、库里都不出现；`Voice-Caps` 的回包里也没有。
+  **只给 TTS**：ASR 那条链还没接，用不上的东西不往前递。
+- **听得见才算做完**：工具详情里认回包的 `path`，就地一个播放键（`MediaPlayer`，
+  关弹窗 `DisposableEffect` 释放）。只给路径的话，用户拿到的是一句"文件在某个私有目录里"。
+
+判据：`speak` 9 条（真 socket 假端点：`POST /v1/audio/speech`、`Authorization`、
+`response_format=wav`、产物是能解析的 wav 且峰值接近 0.95；分段两次请求 + 时长含停顿；
+三家不支持各自点名；缺密钥 / 缺基址；两种写法同时给；`rate` 不被支持；非 WAV 回包带字节；
+能力位关着不声明；密钥不出 `Voice-Caps`）。
+core **767**（758 + 9）、ffi **69**、storage 全绿；kotlinc 只剩那 9 个 `R`。
+真机 **V140**（七步）。未实测：真端点一次都没打过（本机端点只有 chat 那条路），
+真机也没装过这一版。

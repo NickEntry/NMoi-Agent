@@ -1259,6 +1259,8 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             .calibrations(&input.model, input.now_ms)
             .map_err(|error| FfiError::new("storage", error.to_string()))?;
 
+        // 语音合成（0.17d）：与 `client` 共用同一份代理句柄，但走二进制回包那条路。
+        let voice_transport = crate::proxy::transport();
         let session_config = SessionConfig {
             calibrations: &calibrations,
             // 自动重试还没接到设置面（D70 的 UI 还不存在），所以 FFI 这条路先不重发：
@@ -1280,6 +1282,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             lorebook: input.lorebook.as_ref(),
             summary: input.summary.as_ref(),
             voice: input.voice.as_ref(),
+            transport: Some(&voice_transport),
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1622,6 +1625,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
         let calibrations = storage
             .calibrations(&input.model, input.now_ms)
             .map_err(|error| FfiError::new("storage", error.to_string()))?;
+        let voice_transport = crate::proxy::transport();
         let session_config = SessionConfig {
             calibrations: &calibrations,
             retry: None,
@@ -1646,6 +1650,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             lorebook: input.lorebook.as_ref(),
             summary: input.summary.as_ref(),
             voice: input.voice.as_ref(),
+            transport: Some(&voice_transport),
         };
 
         let client = crate::proxy::client();

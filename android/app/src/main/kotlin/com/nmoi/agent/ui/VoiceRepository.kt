@@ -170,13 +170,19 @@ internal object VoiceRepository {
         val sing = singStatus(context)
         if (tts == null && asr == null && !sing.optBoolean("ready")) return null
         return JSONObject().apply {
-            tts?.let { put("tts", slotJson(it)) }
-            asr?.let { put("asr", slotJson(it)) }
+            tts?.let { put("tts", slotJson(context, it)) }
+            asr?.let { put("asr", slotJson(context, it)) }
             put("sing", sing)
         }
     }
 
-    private fun slotJson(entry: Entry): JSONObject {
+    /**
+     * 这一条要发出去时的那份形状。
+     *
+     * **密钥只给 TTS**：`Speak` 要拼 `Authorization`，而 ASR 那条链还没接——
+     * 用不上的东西不往前递，多递一次就多一个可能被看到的地方。
+     */
+    private fun slotJson(context: Context, entry: Entry): JSONObject {
         val preset = preset(entry.provider)
         return JSONObject()
             .put("name", entry.name)
@@ -188,6 +194,12 @@ internal object VoiceRepository {
             .put("known_voices", JSONArray(preset.voices))
             .put("known_languages", JSONArray(preset.languages))
             .put("has_key", entry.hasKey)
+            .put("base_url", entry.baseUrl.trim())
+            .also { row ->
+                if (entry.direction == Direction.Tts) {
+                    Vault.load(context, keyId(entry.id))?.let { row.put("api_key", it) }
+                }
+            }
     }
 
     /**

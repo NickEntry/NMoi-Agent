@@ -292,7 +292,8 @@ variance 18 + vocoder 56 ≈ **526 MB**。
 | xAI | `grok-voice` | eve（未核实） |
 | Groq | `playai-tts` | Arista-PlayAI / Atlas-PlayAI |
 
-`Voice-Caps` 已落地（§3.11）。还没做的：`Speak` / `Transcribe` 两个工具本体（要 HTTP 那条链）。
+`Voice-Caps`（§3.11）与 `Speak`（§3.12）已落地。还没做的：`Transcribe`、以及 `Speak` 的
+唱歌那一支（要 SVS 引擎）。
 条目先能配、能选，是因为工具声明要按"选中的那一条"现生成——那一层依赖这个。
 
 ## 3.10 音频小工具（已落地，2026-11-14）
@@ -337,6 +338,31 @@ core **748**（+8）。这些函数还没挂成工具：挂上去要等 `Speak` 
 判据：`voicecaps` 9 条（`to_json` 的形状 / 显式的 `null` / 解析点名到 `voice.tts.model` /
 能力位关着时拒绝 / 没有配置时那句提示 / 注册表里不被声明），ffi 2 条（坏字段点名、
 `voice` 缺席与 `null` 等价、能力位跟着条目走）。core **758**、ffi **69**。
+
+## 3.12 `Speak`（已落地，2026-11-14）
+
+一句话或一段脚本 → 一个 wav 文件。只接 **OpenAI 形状**（`POST /audio/speech`）：
+`{model, input, voice, response_format, speed}`。别的形状明确回"还没接"，
+并说清现在支持哪一种（`provider=openai`，或者把这一条按 `custom` 配一个兼容基址）。
+
+- **只要 wav**：`response_format` 写死 `"wav"`。`trim` / `normalize` / `fade` 只认 16-bit PCM，
+  mp3 进来只能原样落盘——那就成了"后处理看着有、其实没做"。
+- **两种写法**：`text` 一句话；`script` 分段（每段自己的 `rate` 与 `pause_ms`）。
+  分段是**每段一次请求**，然后按 `concat` 拼起来；最后一段之后的停顿不算（多一截静音没有意义）。
+- **参数按能力表裁**：`rate` 只有在 `supports` 里有 `speed` 时才接受，否则点名报错。
+  倍率 0.25–4，超出点名。
+- **后处理**：归一（峰值 0.95，**允许抬升**——合成音只有一条声源，底噪本来就低）+ 两端 8 ms 淡入淡出。
+- **落点**：`sessions/<id>/audio/<hash>.wav`。`hash` 由 provider / model / 文本 / 音色 / 倍率算，
+  同样的输入落同一个名字。先写 `.part` 再改名，中途被杀不会留半截音频。删会话时整目录一起删。
+- **密钥只往前走一步**：Kotlin 从 `Vault` 读出来、塞进这一轮的 `voice.tts.api_key`，
+  core 只拿它拼 `Authorization`，不进结果、不进日志、不进库。`Voice-Caps` 的回包里没有它。
+- **界面上能听**：工具详情里认回包的 `path`（`.wav` / `.mp3` 且文件在），就地给一个播放键；
+  关掉弹窗就释放播放器——不然声音还在响，用户找不到是谁在放。
+
+判据：`speak` 9 条（一句落地 + Authorization + 回包形状、分段两次请求与停顿时长、
+三家不支持的 provider 各自点名、缺密钥 / 缺基址、两种写法同时给、`rate` 不被支持、
+回包不是 WAV 时带开场字节、能力位关着不声明、密钥不出 `Voice-Caps`）。
+core **767**、ffi **69**。真机 **V140**。
 
 ## 4. 复杂编排：一个工具，两种写法
 

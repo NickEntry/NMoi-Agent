@@ -47,6 +47,7 @@ pub mod shellask;
 pub mod shellguard;
 pub mod skills;
 pub mod source;
+pub mod speak;
 pub mod speech;
 pub mod sse;
 pub mod stream;

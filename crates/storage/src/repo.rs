@@ -576,6 +576,13 @@ impl Storage {
         self.session_dir(session).join("archive")
     }
 
+    /// 会话的音频目录：`<库目录>/sessions/<会话 id>/audio/`（0.17d）。
+    ///
+    /// `Speak` 的产物落这儿；与 `images` / `tmp` / `archive` 同级，删会话时整目录一起删。
+    pub fn session_audio_dir(&self, session: SessionId) -> std::path::PathBuf {
+        self.session_dir(session).join("audio")
+    }
+
     /// 一条归档物化之后落在哪儿：`…/archive/<hex>.txt`。
     ///
     /// 名字由 `ArchiveRef::file_name` 定（去掉 `ref#`），与标记行里那个路径是同一份拼法。
@@ -1862,6 +1869,11 @@ impl nmoi_core::session::HistoryStore for Storage {
 
     fn session_archive_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         Some(Storage::session_archive_dir(self, session))
+    }
+
+    /// 这个会话的音频目录（0.17d）：`Speak` 的产物落它。
+    fn session_audio_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        Some(Storage::session_audio_dir(self, session))
     }
 
     /// 跨会话只读（D295）：别的会话的索引。查不出来就当"看不到"，不编。

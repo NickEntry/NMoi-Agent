@@ -121,6 +121,14 @@ pub trait HistoryStore {
         None
     }
 
+    /// 这个会话的音频目录（`sessions/<id>/audio`，0.17d）。`Speak` 的产物落这儿。
+    ///
+    /// 默认 `None` = 这个实现没有会话目录：那时合成会如实说一句，**不回落到别的目录**。
+    fn session_audio_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        let _ = session;
+        None
+    }
+
     /// 这个会话的归档目录（`sessions/<id>/archive`，D317）。
     ///
     /// F2–F4 换掉的原文都物化在这儿，标记行里写的就是 `/archive/<hex>.txt`。
@@ -436,6 +444,8 @@ pub struct SessionConfig<'a> {
     /// 这一轮的语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
     /// `None` = 没配、或者语音总开关关着——`Voice-Caps` 那时不声明。
     pub voice: Option<&'a crate::voicecaps::VoiceCaps>,
+    /// 发请求的传输层（0.17d）：`Speak` 靠它。`None` = 这个入口没有网络。
+    pub transport: Option<&'a dyn crate::transport::Transport>,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -482,6 +492,7 @@ impl Default for SessionConfig<'_> {
             lorebook: None,
             summary: None,
             voice: None,
+            transport: None,
         }
     }
 }
@@ -1166,6 +1177,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     let images_dir = store.attachment_dir(session);
     let session_tmp = store.session_tmp_dir(session);
     let session_archive = store.session_archive_dir(session);
+    let session_audio = store.session_audio_dir(session);
     // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
     let session_index = store
         .session_index()
@@ -1176,7 +1188,9 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         .with_session_tmp(session_tmp.as_deref())
         .with_session_archive(session_archive.as_deref())
         .with_sessions(session_index.as_ref())
-        .with_voice(config.voice);
+        .with_voice(config.voice)
+        .with_transport(config.transport)
+        .with_audio(session_audio.as_deref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1422,6 +1436,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     let images_dir = store.attachment_dir(session);
     let session_tmp = store.session_tmp_dir(session);
     let session_archive = store.session_archive_dir(session);
+    let session_audio = store.session_audio_dir(session);
     // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
     let session_index = store
         .session_index()
@@ -1432,7 +1447,9 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_session_tmp(session_tmp.as_deref())
         .with_session_archive(session_archive.as_deref())
         .with_sessions(session_index.as_ref())
-        .with_voice(config.voice);
+        .with_voice(config.voice)
+        .with_transport(config.transport)
+        .with_audio(session_audio.as_deref());
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

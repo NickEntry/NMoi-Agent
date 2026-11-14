@@ -29,6 +29,9 @@ pub struct VoiceSlot {
     pub known_voices: Vec<String>,
     pub known_languages: Vec<String>,
     pub has_key: bool,
+    pub base_url: String,
+    /// 只往 `Speak` 那一步传，`to_json` 里没有它——模型不需要看密钥，看得见就会有别的用法。
+    pub api_key: Option<String>,
 }
 
 impl VoiceSlot {
@@ -47,6 +50,12 @@ impl VoiceSlot {
             known_voices: list(object, key, "known_voices")?,
             known_languages: list(object, key, "known_languages")?,
             has_key: flag(object, key, "has_key")?,
+            base_url: text(object, key, "base_url", false)?,
+            api_key: match text(object, key, "api_key", false) {
+                Ok(key) if key.is_empty() => None,
+                Ok(key) => Some(key),
+                Err(message) => return Err(message),
+            },
         })
     }
 
@@ -273,6 +282,8 @@ mod tests {
             known_voices: vec!["alloy".into(), "nova".into()],
             known_languages: vec!["auto".into(), "zh".into()],
             has_key: true,
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: Some("sk-test".into()),
         }
     }
 
