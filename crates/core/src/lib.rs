@@ -61,6 +61,7 @@ pub mod vars;
 pub mod view_image;
 pub mod vision;
 pub mod voice;
+pub mod voicecaps;
 pub mod wire;
 pub mod workspace;
 pub mod zip;

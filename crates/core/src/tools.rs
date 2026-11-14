@@ -149,6 +149,9 @@ pub struct ToolContext<'a> {
     pub image_limit: u32,
     /// 满了之后还能临时多留几张（D272）：`0` = 关。见 [`crate::images::room_of`]。
     pub image_temp_limit: u32,
+    /// 这一轮的语音现状（0.17c）。`None` = 没配、或者语音总开关关着——
+    /// 两种情况下 `Voice-Caps` 都不声明（`Capability::Voice` 也开不起来）。
+    pub voice: Option<&'a crate::voicecaps::VoiceCaps>,
 }
 
 /// 手写而不是 derive：这里面有一个 `&dyn SessionCatalog`，它不该被打印出来，
@@ -180,7 +183,14 @@ impl<'a> ToolContext<'a> {
             session_archive: None,
             image_limit: 0,
             image_temp_limit: 0,
+            voice: None,
         }
+    }
+
+    /// 这一轮的语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
+    pub fn with_voice(mut self, voice: Option<&'a crate::voicecaps::VoiceCaps>) -> Self {
+        self.voice = voice;
+        self
     }
 
     /// 这个会话的附件目录与图片清单上限（D248）。
@@ -332,6 +342,8 @@ impl ToolRegistry {
         // 别的会话的 `/tmp` 与 `/chat`（D295）：`Capability::CrossSessionRead` 门控，
         // 默认关——关着时**不声明**，模型连它会去试的机会都没有。
         registry.register(Box::new(SessionFilesTool));
+        // 语音能力表（0.17c）：只读、不联网，`Capability::Voice` 门控，默认关。
+        registry.register(Box::new(crate::voicecaps::VoiceCapsTool));
         registry
     }
 
@@ -2128,11 +2140,12 @@ mod tests {
         // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）
         // + 模型改消息（`edit_unit` D177）+ 把图拉进上下文（`View-Image` D248）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
-        assert_eq!(names.len(), 11, "{names:?}");
+        assert_eq!(names.len(), 12, "{names:?}");
         for name in [
             "System-Shell",
             "WorkSpace-EnvirShell",
             "View-Image",
+            "Voice-Caps",
             "edit_unit",
         ] {
             assert!(names.contains(&name), "缺少 {name}");
@@ -2148,7 +2161,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 11);
+        assert_eq!(specs.len(), 12);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }

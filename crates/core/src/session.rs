@@ -433,6 +433,9 @@ pub struct SessionConfig<'a> {
     ///
     /// 摘要走「摘要」这个角色指定的模型：它是一次内部调用，跟主对话用哪个模型无关。
     pub summary: Option<&'a crate::summary::SummaryTarget>,
+    /// 这一轮的语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
+    /// `None` = 没配、或者语音总开关关着——`Voice-Caps` 那时不声明。
+    pub voice: Option<&'a crate::voicecaps::VoiceCaps>,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -478,6 +481,7 @@ impl Default for SessionConfig<'_> {
             router: crate::router::RouterConfig::default(),
             lorebook: None,
             summary: None,
+            voice: None,
         }
     }
 }
@@ -1171,7 +1175,8 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         .with_image_room(config.turn.image_temp_limit)
         .with_session_tmp(session_tmp.as_deref())
         .with_session_archive(session_archive.as_deref())
-        .with_sessions(session_index.as_ref());
+        .with_sessions(session_index.as_ref())
+        .with_voice(config.voice);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1426,7 +1431,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_image_room(config.turn.image_temp_limit)
         .with_session_tmp(session_tmp.as_deref())
         .with_session_archive(session_archive.as_deref())
-        .with_sessions(session_index.as_ref());
+        .with_sessions(session_index.as_ref())
+        .with_voice(config.voice);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

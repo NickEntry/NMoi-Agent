@@ -161,7 +161,8 @@ fn axis_of(capability: Capability) -> ToolAxis {
         | Capability::NativeShell
         | Capability::Network
         | Capability::SecretsBroker
-        | Capability::CrossSessionRead => ToolAxis::Local,
+        | Capability::CrossSessionRead
+        | Capability::Voice => ToolAxis::Local,
     }
 }
 

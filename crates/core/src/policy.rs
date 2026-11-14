@@ -34,10 +34,13 @@ pub enum Capability {
     SecretsBroker,
     /// 读**别的会话**的 `/tmp` 与 `/chat`（D295）。只读，默认关。
     CrossSessionRead,
+    /// 语音（0.17c）：`Voice-Caps` 回答"选中的那一条支持什么"。
+    /// 默认关；关着时它**不声明**，而且没配任何一条时本来也没有可问的东西。
+    Voice,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 9] = [
         Capability::WorkspaceRead,
         Capability::WorkspaceWrite,
         Capability::WorkspaceSearch,
@@ -46,6 +49,7 @@ impl Capability {
         Capability::Network,
         Capability::SecretsBroker,
         Capability::CrossSessionRead,
+        Capability::Voice,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -58,6 +62,7 @@ impl Capability {
             Capability::Network => "network",
             Capability::SecretsBroker => "secrets_broker",
             Capability::CrossSessionRead => "cross_session_read",
+            Capability::Voice => "voice",
         }
     }
 
@@ -150,6 +155,9 @@ pub struct AssistantPolicy {
     /// 唱歌（`Sing`）：默认关，而且**还要有引擎**才声明得出工具来。
     /// 现在没有任何引擎落地，所以这一项在界面上一律是灰的——灰的判据是"有没有东西可跑"。
     pub sing_enabled: bool,
+    /// 语音（0.17c）：`Voice-Caps` 的声明位。默认关，而且**配了那一条才开**——
+    /// 开着但没有条目时它只会回一句"没配"，那是噪音。
+    pub voice_enabled: bool,
 }
 
 impl AssistantPolicy {
@@ -186,6 +194,11 @@ impl AssistantPolicy {
 
     pub fn enable_cross_session(mut self, enabled: bool) -> Self {
         self.cross_session_enabled = enabled;
+        self
+    }
+
+    pub fn enable_voice(mut self, enabled: bool) -> Self {
+        self.voice_enabled = enabled;
         self
     }
 
@@ -236,6 +249,13 @@ impl AssistantPolicy {
             }
             Capability::CrossSessionRead => {
                 if self.cross_session_enabled {
+                    Ok(())
+                } else {
+                    Err(DenyReason::FeatureDisabled)
+                }
+            }
+            Capability::Voice => {
+                if self.voice_enabled {
                     Ok(())
                 } else {
                     Err(DenyReason::FeatureDisabled)
@@ -345,6 +365,18 @@ mod tests {
             .enable_container(true)
             .enable_network(true)
             .allows_container_with_network());
+    }
+
+    #[test]
+    fn voice_needs_its_own_switch_and_no_workspace() {
+        let off = AssistantPolicy::locked_down();
+        assert_eq!(
+            off.check(Capability::Voice),
+            Err(DenyReason::FeatureDisabled)
+        );
+        assert!(!Capability::Voice.needs_workspace(), "语音不跟工作区走");
+        let on = AssistantPolicy::locked_down().enable_voice(true);
+        assert!(on.allows(Capability::Voice));
     }
 
     #[test]

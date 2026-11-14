@@ -2725,3 +2725,26 @@ core **713**（+1）；真机 **V136**（五步）。
 判据：`shellguard` 13 条、`shellask` 5 条，core **732**（714 + 18）；真机 **V138**。
 未验：Kotlin 只过了本机那次类型检查的**准备**没跑成（`/tmp` 清空后要重下 kotlinc，
 本机网络超时），所以界面这一层目前只有 CI 的 `testDebugUnitTest` 与 android job 会碰它。
+
+## D330 `Voice-Caps`：先让模型问得出"这一条支持什么"（2026-11-14）
+
+`Speak` 的参数该有哪几格，取决于**选中那一条**的能力表：`tts-1` 不收 `instructions`，
+`gemini-*-tts` 收自然语言风格、输出还是裸 PCM。先定 schema 就是拿一个猜出来的并集去顶所有家，
+每家都收到自己不认的字段；先让模型能问，schema 才有依据。
+
+- **一个只读工具**，`{tts, asr, sing, note}`。`tts` / `asr` 带 name / provider / model /
+  voice / language / supports / known_* / has_key。没配的那一条**显式给 `null`**：
+  缺字段与"没有"是两件事，模型没法从缺失里读出"这条没配"。
+- **新能力位 `Capability::Voice`（默认关）**。两层都满足才声明：请求里带了 `voice`（Kotlin 只在
+  总开关开着、且至少有一条选中或唱歌真的能用时才带），且 `VoiceCaps::any()` 为真。
+  为什么两层：`Capability` 说"这一档允许"，`any()` 说"这一轮有东西可答"。
+  只装了声库、引擎没接的时候不算——它只会回一句"唱不了"，占着声明位让模型白试一次。
+- **密钥不过这一层**：`has_key` 是布尔值。`Voice-Caps` 不上网，`Speak` 落地时才谈密钥怎么走。
+- **`sing` 的判据与工具页同源**：`svsEngine()` + `VoiceBankRepository.installed`。
+  界面能拨、模型问不出，或者反过来，都是两份真相。
+- `known_*` 只是快捷清单，不是白名单——这一条写进了返回体自己的 `note` 里，模型不会把它当枚举。
+
+判据：`crates/core/src/voicecaps.rs` 9 条、`crates/ffi/src/turn.rs` 2 条（坏字段点名到
+`voice.tts.model`；`voice` 缺席与 `null` 等价；能力位跟着条目走、只装声库不算）。
+core **758**（749 + 9）、ffi **69**（67 + 2）；Kotlin 全量类型检查只剩那 9 个已知 `R`。
+真机 **V139**（六步）。未实测：真机一次都没走，FFI 那条路目前只有单测。

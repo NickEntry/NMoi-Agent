@@ -1199,3 +1199,19 @@ adb shell pm list packages | grep -i nmoi
    （它只是内存里的临时决定，不是设置）。
 6. 新建一个文件 `.nmoi-ask-test`，让它跑 `rm -rf .nmoi-ask-test`；询问放着不管 60 秒。
    **判据**：自动变成"拒绝"，命令没执行——**超时不等于允许**。
+
+### V139 `Voice-Caps` 只读能力表（0.17c，已实现，待真机）
+
+1. 设置 → 工具与工作区 → 语音 → 语音服务：TTS / ASR 两条都空着。回聊天问「你现在的语音
+   支持什么」。**判据**：模型那边**没有** `Voice-Caps` 这个工具（它只会说没有语音能力，
+   不会先调一次再告诉你没配）。
+2. 加一条 TTS（OpenAI，音色 `alloy`），选中它。再问一次。**判据**：它调用 `Voice-Caps`，
+   结果里 `tts` 有 provider / model / voice / `supports`（speed / format / instructions），
+   `asr` 是 `null`。
+3. 换成「系统 TTS」。**判据**：同样一句话，`supports` 变成 speed / pitch，
+   `known_voices` 是「跟随系统」——换条目，回答跟着变。
+4. 把语音服务的总开关关掉，再问一次。**判据**：工具消失（不声明），模型说没有这条能力。
+5. 装一个声库但不接引擎，问「能唱歌吗」。**判据**：`sing.ready` 是 `false`，
+   `reason` 写「引擎运行时还没接」，`bank` 是那个声库的名字。
+6. 删掉唯一选中的那条。**判据**：再问时 `tts` 变成 `null`；两条都空、唱歌又不能用时，
+   这个工具整个从声明里消失。

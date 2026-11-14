@@ -292,7 +292,7 @@ variance 18 + vocoder 56 ≈ **526 MB**。
 | xAI | `grok-voice` | eve（未核实） |
 | Groq | `playai-tts` | Arista-PlayAI / Atlas-PlayAI |
 
-还没做的：`Speak` / `Transcribe` / `Voice-Caps` 三个工具本体（要 HTTP 那条链）。
+`Voice-Caps` 已落地（§3.11）。还没做的：`Speak` / `Transcribe` 两个工具本体（要 HTTP 那条链）。
 条目先能配、能选，是因为工具声明要按"选中的那一条"现生成——那一层依赖这个。
 
 ## 3.10 音频小工具（已落地，2026-11-14）
@@ -314,6 +314,29 @@ variance 18 + vocoder 56 ≈ **526 MB**。
 
 core **748**（+8）。这些函数还没挂成工具：挂上去要等 `Speak` 那条链（HTTP）——
 现在它们是"能测、能用、还没有入口"的一层，下一批跟 `Speak` 一起接。
+
+## 3.11 `Voice-Caps`（已落地，2026-11-14）
+
+只读、不联网、不碰密钥。模型要合成或识别之前先问它一次，参数用哪几格就以它的回答为准。
+
+- **声明位**：`Capability::Voice`（默认关）。FFI 只在请求里带了 `voice` 时才开这一位，
+  而 Kotlin 只在"语音总开关开着 + 至少有一条选中的（或唱歌真的能用）"时才带这一段。
+  两头都满足才声明——配了东西却不让模型知道，等于没配。
+- **形状**（`crates/core/src/voicecaps.rs`）：`{tts, asr, sing, note}`。`tts` / `asr` 是
+  `{direction, name, provider, model, voice, language, supports, known_voices, known_languages, has_key}`，
+  没配的那一条显式给 `null`——缺字段与"没有"是两件事。
+- **`known_*` 是快捷清单，不是白名单**：账号后台多出来的音色照样能写进 `Speak`。
+- **`has_key` 只说有没有**，密钥不出 `Vault`：core 收到的是布尔值。
+- **`sing`**：`{ready, engine, bank, reason}`。判据与工具页那一行**同源**
+  （`svsEngine()` + `VoiceBankRepository.installed`）——两处各写一套的话，
+  界面能拨、模型却问不出，迟早对不上。只装了声库没有引擎时 `ready:false`，
+  `reason` 直说"引擎运行时还没接"。
+- **只装了声库不算"有东西可问"**：`ready:false` 时它不参与声明。一个只会回"唱不了"的
+  工具占着声明位，模型会去试，用户会看到一串没结果的过程块。
+
+判据：`voicecaps` 9 条（`to_json` 的形状 / 显式的 `null` / 解析点名到 `voice.tts.model` /
+能力位关着时拒绝 / 没有配置时那句提示 / 注册表里不被声明），ffi 2 条（坏字段点名、
+`voice` 缺席与 `null` 等价、能力位跟着条目走）。core **758**、ffi **69**。
 
 ## 4. 复杂编排：一个工具，两种写法
 

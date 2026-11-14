@@ -156,6 +156,67 @@ internal object VoiceRepository {
         return entries(context, direction).firstOrNull { it.id == id }
     }
 
+    /**
+     * 这一轮交给 core 的语音现状（0.17c，`Voice-Caps` 读它）。
+     *
+     * 只读快照，**不含密钥**：`has_key` 只说有没有，值不出 `Vault`。
+     * 没配任何一条、或者总开关关着就返回 null——打一个空的 `voice` 进去，
+     * core 只会多判一次"没配"。
+     */
+    fun turnJson(context: Context): JSONObject? {
+        if (!enabled(context)) return null
+        val tts = active(context, Direction.Tts)
+        val asr = active(context, Direction.Asr)
+        val sing = singStatus(context)
+        if (tts == null && asr == null && !sing.optBoolean("ready")) return null
+        return JSONObject().apply {
+            tts?.let { put("tts", slotJson(it)) }
+            asr?.let { put("asr", slotJson(it)) }
+            put("sing", sing)
+        }
+    }
+
+    private fun slotJson(entry: Entry): JSONObject {
+        val preset = preset(entry.provider)
+        return JSONObject()
+            .put("name", entry.name)
+            .put("provider", entry.provider)
+            .put("model", entry.model)
+            .put("voice", entry.voice)
+            .put("language", entry.language)
+            .put("supports", JSONArray(preset.caps))
+            .put("known_voices", JSONArray(preset.voices))
+            .put("known_languages", JSONArray(preset.languages))
+            .put("has_key", entry.hasKey)
+    }
+
+    /**
+     * 唱歌的现状：**引擎与声库都要在**才算能唱。
+     *
+     * 判据与工具页那一行同源（`ToolingRepository.svsEngine` + `VoiceBankRepository`），
+     * 两处各写一套的话，界面能拨、模型却问不出，迟早对不上。
+     */
+    private fun singStatus(context: Context): JSONObject {
+        val engineDir = ToolingRepository.svsEngine(context)
+        val engine = engineDir
+            ?.let { runCatching { JSONObject(java.io.File(it, "runtime.json").readText()) }.getOrNull() }
+            ?.optString("engine")
+            .orEmpty()
+        val selected = VoiceBankRepository.selected(context)
+        val bank = VoiceBankRepository.installed(context).firstOrNull { it.id == selected }
+        val reason = when {
+            bank == null && engineDir == null -> "引擎运行时还没接，也还没装声库"
+            engineDir == null -> "引擎运行时还没接（装了声库也唱不了）"
+            bank == null -> "还没选声库"
+            else -> ""
+        }
+        return JSONObject()
+            .put("ready", engineDir != null && bank != null)
+            .put("engine", engine)
+            .put("bank", bank?.name.orEmpty())
+            .put("reason", reason)
+    }
+
     fun newId(direction: Direction): String =
         "v${direction.wire}${System.currentTimeMillis().toString(36)}"
 

@@ -287,6 +287,9 @@ internal object TurnRepository {
                         "shell_off_groups",
                         org.json.JSONArray(ToolingRepository.shellOffGroups(context)),
                     )
+                    // 语音现状（0.17c）：`Voice-Caps` 只读这一段。没配就不发——
+                    // core 那边"没这一段"= 不声明这个工具。
+                    .also { row -> VoiceRepository.turnJson(context)?.let { row.put("voice", it) } }
                     .put("thinking", assistant.thinking)
                     .also { row ->
                         envir?.let { row.put("envir", envirJson(context, it, sessionId)) }

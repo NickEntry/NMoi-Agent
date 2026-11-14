@@ -289,6 +289,9 @@ struct TurnInput {
     shell_off_groups: Vec<String>,
     /// 唱歌（0.17b）：开关开着也还要有引擎，缺一样 `Sing` 都不声明。
     sing: bool,
+    /// 语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
+    /// **不传 = 没配或总开关关着**，`Voice-Caps` 不声明。
+    voice: Option<nmoi_core::voicecaps::VoiceCaps>,
     /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
     thinking: Option<String>,
     /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
@@ -621,6 +624,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         shell_blacklist: optional_bool(&root, "shell_blacklist")?.unwrap_or(true),
         shell_off_groups: parse_str_list(&root, "shell_off_groups")?,
         sing: optional_bool(&root, "sing")?.unwrap_or(false),
+        voice: parse_voice(&root)?,
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
@@ -1014,6 +1018,19 @@ fn parse_str_list(root: &Value, key: &str) -> Result<Vec<String>, crate::json::F
     Ok(out)
 }
 
+/// 语音现状（0.17c）。只读快照，**不含密钥**：`has_key` 只说有没有。
+fn parse_voice(root: &Value) -> FfiResult<Option<nmoi_core::voicecaps::VoiceCaps>> {
+    let Some(value) = field(root, "voice") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let caps =
+        nmoi_core::voicecaps::VoiceCaps::from_json(value).map_err(|error| bad("voice", &error))?;
+    Ok(Some(caps))
+}
+
 fn policy_for(input: &TurnInput) -> AssistantPolicy {
     // 容器要有 rootfs 才能开（D172）：没有坐标就只是"界面看着能开"。
     let container = input.envir.is_some();
@@ -1032,6 +1049,12 @@ fn policy_for(input: &TurnInput) -> AssistantPolicy {
             .enable_cross_session(input.cross_session),
     };
     policy.sing_enabled = input.sing;
+    // 语音（0.17c）：配了东西才开这一位。开着却没有条目时 `Voice-Caps` 只会回一句"没配"。
+    policy.voice_enabled = input
+        .voice
+        .as_ref()
+        .map(|voice| voice.any())
+        .unwrap_or(false);
     policy.shell_guard = GuardConfig {
         ask: input.shell_ask,
         blacklist: input.shell_blacklist,
@@ -1256,6 +1279,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             router: input.router,
             lorebook: input.lorebook.as_ref(),
             summary: input.summary.as_ref(),
+            voice: input.voice.as_ref(),
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1621,6 +1645,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             router: input.router,
             lorebook: input.lorebook.as_ref(),
             summary: input.summary.as_ref(),
+            voice: input.voice.as_ref(),
         };
 
         let client = crate::proxy::client();
@@ -2176,6 +2201,43 @@ mod tests {
         not_array["sub_agents"] = json!("writer");
         let error = parse(&not_array.to_string()).expect_err("必须是数组");
         assert!(error.message.contains("数组"), "{}", error.message);
+    }
+
+    /// 语音现状（0.17c）：这一段错了要点名到具体那一格，别让人猜。
+    #[test]
+    fn voice_parsing_names_the_bad_field() {
+        let bad = json!({
+            "voice": { "tts": { "name": "x", "provider": "openai", "model": 5 } }
+        });
+        let error = parse_voice(&bad).expect_err("model 不是字符串要报错");
+        assert!(
+            error.message.contains("voice.tts.model"),
+            "{}",
+            error.message
+        );
+
+        let absent = parse_voice(&json!({})).expect("没这一段就不管");
+        assert!(absent.is_none());
+        let nulled = parse_voice(&json!({ "voice": null })).expect("null 与没给一样");
+        assert!(nulled.is_none());
+    }
+
+    /// 配了东西才开 `Voice` 这一位；没配时 `Voice-Caps` 连声明都不该出现。
+    #[test]
+    fn voice_capability_follows_the_configured_entries() {
+        let off = with_extra(json!({}));
+        assert!(!policy_for(&off).allows(nmoi_core::policy::Capability::Voice));
+
+        let on = with_extra(json!({
+            "voice": { "tts": { "name": "本机", "provider": "system", "voice": "跟随系统" } }
+        }));
+        assert!(policy_for(&on).allows(nmoi_core::policy::Capability::Voice));
+
+        // 只装了声库、没有引擎：唱不了，也不该占用一个声明位。
+        let sing_only = with_extra(json!({
+            "voice": { "sing": { "ready": false, "bank": "EcklDaTiger", "reason": "引擎还没接" } }
+        }));
+        assert!(!policy_for(&sing_only).allows(nmoi_core::policy::Capability::Voice));
     }
 
     fn minimal() -> String {
