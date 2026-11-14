@@ -1181,6 +1181,11 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     let session_tmp = store.session_tmp_dir(session);
     let session_archive = store.session_archive_dir(session);
     let session_audio = store.session_audio_dir(session);
+    // 工具定义覆写（0.17f）：从这一册世界书里取出 `tool_call_*` 那几条。
+    let tool_overrides = config
+        .lorebook
+        .map(crate::tooldefs::overrides_from)
+        .unwrap_or_default();
     // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
     let session_index = store
         .session_index()
@@ -1194,7 +1199,8 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         .with_voice(config.voice)
         .with_transport(config.transport)
         .with_audio(session_audio.as_deref())
-        .with_tools_off(config.tools_off);
+        .with_tools_off(config.tools_off)
+        .with_tool_overrides(&tool_overrides);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1441,6 +1447,11 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     let session_tmp = store.session_tmp_dir(session);
     let session_archive = store.session_archive_dir(session);
     let session_audio = store.session_audio_dir(session);
+    // 工具定义覆写（0.17f）：从这一册世界书里取出 `tool_call_*` 那几条。
+    let tool_overrides = config
+        .lorebook
+        .map(crate::tooldefs::overrides_from)
+        .unwrap_or_default();
     // 跨会话只读（D295）：只有开关打开时才现查一次索引，关着的时候不碰库。
     let session_index = store
         .session_index()
@@ -1454,7 +1465,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_voice(config.voice)
         .with_transport(config.transport)
         .with_audio(session_audio.as_deref())
-        .with_tools_off(config.tools_off);
+        .with_tools_off(config.tools_off)
+        .with_tool_overrides(&tool_overrides);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

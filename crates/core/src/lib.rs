@@ -54,6 +54,7 @@ pub mod stream;
 pub mod summary;
 pub mod thinkparse;
 pub mod tokens;
+pub mod tooldefs;
 pub mod toolparse;
 pub mod tools;
 pub mod transport;

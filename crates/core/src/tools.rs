@@ -162,6 +162,8 @@ pub struct ToolContext<'a> {
     /// 面板上被关掉的工具（0.17e）。关掉 = **不声明**，不是声明了再拒绝。
     /// 空切片 = 一个都没关（默认）。
     pub tools_off: &'a [String],
+    /// 世界书里的工具定义覆写（0.17f）：`tool_call_<名字>` 那几条。
+    pub tool_overrides: &'a [crate::tooldefs::ToolOverride],
 }
 
 /// 手写而不是 derive：这里面有一个 `&dyn SessionCatalog`，它不该被打印出来，
@@ -197,6 +199,7 @@ impl<'a> ToolContext<'a> {
             transport: None,
             session_audio: None,
             tools_off: &[],
+            tool_overrides: &[],
         }
     }
 
@@ -224,6 +227,12 @@ impl<'a> ToolContext<'a> {
     /// 面板上被关掉的工具（0.17e）。
     pub fn with_tools_off(mut self, off: &'a [String]) -> Self {
         self.tools_off = off;
+        self
+    }
+
+    /// 世界书里的工具定义覆写（0.17f）。
+    pub fn with_tool_overrides(mut self, overrides: &'a [crate::tooldefs::ToolOverride]) -> Self {
+        self.tool_overrides = overrides;
         self
     }
 

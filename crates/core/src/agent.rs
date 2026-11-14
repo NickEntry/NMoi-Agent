@@ -272,10 +272,11 @@ pub fn run_turn<T: Transport>(
             // 收尾那一轮不给工具：给了它就会继续调，永远收不了尾。
             Vec::new()
         } else {
-            match ctx.declared {
+            let specs = match ctx.declared {
                 Some(names) => registry.specs_named(names),
                 None => registry.specs_excluding(ctx.policy, ctx.tools_off),
-            }
+            };
+            crate::tooldefs::apply(specs, ctx.tool_overrides)
         };
         if let Some(tokens) = config.max_tokens {
             request.max_tokens = Some(tokens);

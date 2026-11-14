@@ -192,6 +192,31 @@ fn default_depth() -> usize {
 }
 
 impl LorebookEntry {
+    /// 一个空条目（测试与"新建"用）：位置与角色取默认值，关键词为空。
+    pub fn blank() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            enabled: true,
+            priority: 0,
+            position: Position::AfterSystemPrompt,
+            content: String::new(),
+            inject_depth: default_depth(),
+            role: InjectionRole::User,
+            keywords: Vec::new(),
+            use_regex: false,
+            case_sensitive: false,
+            scan_depth: default_depth(),
+            constant_active: false,
+            key_secondary: Vec::new(),
+            selective_logic: SelectiveLogic::default(),
+            match_whole_words: false,
+            sticky: 0,
+            cooldown: 0,
+            delay: 0,
+        }
+    }
+
     /// 这条条目该不该注入。`history` 按时间顺序（最后一条是最近的）。
     ///
     /// 两步（D307）：主关键词先命中，再由次级关键词和 [SelectiveLogic] 决定算不算激活。
@@ -331,6 +356,19 @@ pub struct LorebookData {
     pub enabled: bool,
     #[serde(default)]
     pub entries: Vec<LorebookEntry>,
+}
+
+impl LorebookData {
+    /// 一个空册（测试用）。
+    pub fn blank() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            description: None,
+            enabled: true,
+            entries: Vec::new(),
+        }
+    }
 }
 
 /// 一个世界书文件。
@@ -788,6 +826,9 @@ pub fn plan(book: &LorebookData, history: &[HistoryLine<'_>]) -> Vec<Injection> 
     let mut active: Vec<&LorebookEntry> = book
         .entries
         .iter()
+        // `tool_call_` 那几条管的是请求体里的工具定义（0.17f），不是给人看的设定：
+        // 它们既不进上下文，也不该因为关键词命中而变成一条空消息。
+        .filter(|entry| !entry.name.trim().starts_with(crate::tooldefs::PREFIX))
         .filter(|entry| entry.is_active(history))
         .collect();
 
