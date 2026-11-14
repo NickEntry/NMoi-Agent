@@ -24,6 +24,7 @@ internal object ToolingRepository {
     private const val KEY_SHELL_BLACKLIST = "tool.shell_blacklist"
     private const val PREFIX_SHELL_GROUP = "tool.shell_group."
     private const val KEY_SING = "tool.sing"
+    private const val PREFIX_TOOL_OFF = "tool.off."
 
     /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
     fun sharedRoot(context: Context): File = WorkspaceRepository.defaultRoot(context)
@@ -120,6 +121,27 @@ internal object ToolingRepository {
     fun close(handle: Long) {
         runCatching { NativeBridge.closeWorkspaceJson(handle) }
             .onFailure { NLog.w("Tools", "解绑工作区失败：${it.message}") }
+    }
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * 面板上被**逐个关掉**的工具名（0.17e）。
+     *
+     * 关掉 = 这一轮**不声明**它，不是声明了再拒绝：声明了再拒绝，模型会一直试，
+     * 用户看到的是一串"被拒绝"。默认一个都没关。
+     */
+    fun toolsOff(context: Context): List<String> =
+        prefs(context).all
+            .filter { (key, value) -> key.startsWith(PREFIX_TOOL_OFF) && value == true }
+            .keys
+            .map { it.removePrefix(PREFIX_TOOL_OFF) }
+            .sorted()
+
+    fun setToolOff(context: Context, name: String, off: Boolean) {
+        prefs(context).edit().putBoolean(PREFIX_TOOL_OFF + name, off).apply()
+        NLog.i("Tools", "$name：${if (off) "不声明" else "声明"}")
     }
 
     /** 本机开关：原生命令（`System-Shell`）。默认关。 */

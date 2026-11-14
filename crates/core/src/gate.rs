@@ -104,6 +104,8 @@ pub enum ToolDrop {
     Policy(DenyReason),
     /// 本地工具开关关着（聊天面板上那个）。
     LocalToolsOff,
+    /// 这一条在面板上被单独关掉了（0.17e）。
+    ToolOff,
     /// MCP 服务器启用了，但没连上——两级门的第一级没过。
     McpNotConnected { server: String },
     /// 名字不是 `mcp__<server>__<tool>` 的形状，认不出属于哪个服务器。
@@ -116,6 +118,7 @@ impl ToolDrop {
             ToolDrop::ModelHasNoTools => "此模型不支持工具调用",
             ToolDrop::Policy(reason) => reason.explain(),
             ToolDrop::LocalToolsOff => "本地工具已关闭",
+            ToolDrop::ToolOff => "这一项在面板里关着",
             ToolDrop::McpNotConnected { .. } => "MCP 服务器未连接",
             ToolDrop::McpNameNotAttributable => "MCP 工具名认不出属于哪个服务器",
         }
@@ -236,6 +239,11 @@ pub fn plan_tools(
 
         // 先看用户开关，再看门控。顺序反过来的话，"没开权限"与"用户关了"
         // 会报成同一个原因，用户会去改错地方。
+        // 用户单独关掉的这一条先说：那是他自己做的决定，比权限解释更好懂。
+        if switches.disabled.iter().any(|off| off == name) {
+            plan.dropped.push((name.to_string(), ToolDrop::ToolOff));
+            continue;
+        }
         if axis_of(capability) == ToolAxis::Local && !switches.local {
             plan.dropped
                 .push((name.to_string(), ToolDrop::LocalToolsOff));
@@ -530,5 +538,25 @@ mod tests {
         assert_eq!(mcp_server_of("mcp__fs"), None);
         assert_eq!(mcp_server_of("mcp____x"), None);
         assert_eq!(mcp_server_of("read_file"), None);
+    }
+
+    /// 面板上单独关掉的工具：进 `dropped`，理由与"权限没开"分开（0.17e）。
+    #[test]
+    fn a_tool_off_on_the_panel_is_dropped_with_its_own_reason() {
+        let registry = ToolRegistry::workspace_defaults();
+        let policy = AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_only("ws"));
+        let capabilities = ProviderCapabilities {
+            tools: true,
+            ..ProviderCapabilities::conservative()
+        };
+        let switches = ToolSwitches {
+            local: true,
+            mcp: Default::default(),
+            disabled: vec!["read_file".to_string()],
+        };
+        let plan = plan_tools(&registry, &switches, &policy, &capabilities, &[]);
+        assert!(!plan.declares("read_file"), "{:?}", plan.declared);
+        assert_eq!(plan.drop_reason("read_file"), Some(&ToolDrop::ToolOff));
+        assert!(plan.declares("list_dir"), "{:?}", plan.declared);
     }
 }

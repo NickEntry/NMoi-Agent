@@ -289,6 +289,8 @@ struct TurnInput {
     shell_off_groups: Vec<String>,
     /// 唱歌（0.17b）：开关开着也还要有引擎，缺一样 `Sing` 都不声明。
     sing: bool,
+    /// 面板上被关掉的工具（0.17e）：这一轮不声明它们。空 = 一个都没关。
+    tools_off: Vec<String>,
     /// 语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
     /// **不传 = 没配或总开关关着**，`Voice-Caps` 不声明。
     voice: Option<nmoi_core::voicecaps::VoiceCaps>,
@@ -625,6 +627,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         shell_off_groups: parse_str_list(&root, "shell_off_groups")?,
         sing: optional_bool(&root, "sing")?.unwrap_or(false),
         voice: parse_voice(&root)?,
+        tools_off: parse_str_list(&root, "tools_off")?,
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
@@ -1283,6 +1286,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             summary: input.summary.as_ref(),
             voice: input.voice.as_ref(),
             transport: Some(&voice_transport),
+            tools_off: &input.tools_off,
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1651,6 +1655,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             summary: input.summary.as_ref(),
             voice: input.voice.as_ref(),
             transport: Some(&voice_transport),
+            tools_off: &input.tools_off,
         };
 
         let client = crate::proxy::client();
@@ -2225,6 +2230,24 @@ mod tests {
         assert!(absent.is_none());
         let nulled = parse_voice(&json!({ "voice": null })).expect("null 与没给一样");
         assert!(nulled.is_none());
+    }
+
+    /// 面板上关掉的工具名只认字符串，写错一个类型就要点名（0.17e）。
+    #[test]
+    fn tools_off_is_a_list_of_names() {
+        let input = with_extra(json!({ "tools_off": ["read_file", "Speak"] }));
+        assert_eq!(
+            input.tools_off,
+            vec!["read_file".to_string(), "Speak".to_string()]
+        );
+
+        let mut broken: Value = serde_json::from_str(&minimal()).unwrap();
+        broken["tools_off"] = json!([1, 2]);
+        let error = parse(&broken.to_string()).expect_err("不是字符串要报错");
+        assert!(error.message.contains("tools_off"), "{}", error.message);
+
+        let empty = with_extra(json!({}));
+        assert!(empty.tools_off.is_empty());
     }
 
     /// 配了东西才开 `Voice` 这一位；没配时 `Voice-Caps` 连声明都不该出现。

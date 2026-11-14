@@ -287,6 +287,8 @@ internal object TurnRepository {
                         "shell_off_groups",
                         org.json.JSONArray(ToolingRepository.shellOffGroups(context)),
                     )
+                    // 面板上关掉的工具（0.17e）：core 只负责"不声明"。
+                    .put("tools_off", org.json.JSONArray(ToolingRepository.toolsOff(context)))
                     // 语音现状（0.17c）：`Voice-Caps` 只读这一段。没配就不发——
                     // core 那边"没这一段"= 不声明这个工具。
                     .also { row -> VoiceRepository.turnJson(context)?.let { row.put("voice", it) } }

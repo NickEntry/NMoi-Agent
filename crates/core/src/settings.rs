@@ -67,6 +67,11 @@ pub struct ToolSwitches {
     /// MCP：两级门——这里启用了才会去连接；**连不上就不进工具表**。
     /// 键是服务器配置 id，值是启用与否。
     pub mcp: BTreeMap<String, bool>,
+    /// 聊天面板上被逐项关掉的工具（0.17e）。空 = 一个都没关。
+    ///
+    /// 存的是工具名（`read_file` / `Speak` 这种），不是序号：注册顺序会变，名字不会。
+    #[serde(default)]
+    pub disabled: Vec<String>,
 }
 
 impl ToolSwitches {

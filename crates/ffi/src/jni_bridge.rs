@@ -1435,6 +1435,19 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_undoLogJson<'local>(
     to_jstring(&mut env, text)
 }
 
+/// `NativeBridge.toolNamesJson()`：注册表里的全部工具名（0.17e）。
+///
+/// 面板上的逐项开关按它渲染：清单在 Rust 那一份，界面不在 Kotlin 里另数一遍——
+/// 两份清单迟早只改一份，然后"新工具没有开关"这件事没人发现。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_toolNamesJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+) -> jstring {
+    let text = guarded(|| take_json(crate::tools::nmoi_tool_names_json()));
+    to_jstring(&mut env, text)
+}
+
 /// `NativeBridge.presetsJson(handle, assets)`：预设列表 + 四态（D178 / 0.14t）。
 ///
 /// `assets` 是平台侧从 APK 的 `assets/presets/` 读出来拼好的 JSON——

@@ -400,6 +400,9 @@ internal object NmoiFfi {
     suspend fun presets(handle: Long, assets: String): Result<JSONObject> =
         call("presets") { NativeBridge.presetsJson(handle, assets) }
 
+    /** 注册表里的全部工具名（0.17e）。面板按它渲染，不在 Kotlin 里另列一份。 */
+    suspend fun toolNames(): Result<JSONObject> = call("tool_names") { NativeBridge.toolNamesJson() }
+
     /**
      * 这一轮会注入什么（自检用）。真正跑一轮时 `turn_run` 在里面算同一份，
      * 所以这里的结果与请求里的那一段不会各说各话。

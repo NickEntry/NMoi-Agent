@@ -159,6 +159,9 @@ pub struct ToolContext<'a> {
     pub transport: Option<&'a dyn crate::transport::Transport>,
     /// 这条会话的音频目录（`sessions/<id>/audio`）。`Speak` 的产物落这儿。
     pub session_audio: Option<&'a std::path::Path>,
+    /// 面板上被关掉的工具（0.17e）。关掉 = **不声明**，不是声明了再拒绝。
+    /// 空切片 = 一个都没关（默认）。
+    pub tools_off: &'a [String],
 }
 
 /// 手写而不是 derive：这里面有一个 `&dyn SessionCatalog`，它不该被打印出来，
@@ -193,6 +196,7 @@ impl<'a> ToolContext<'a> {
             voice: None,
             transport: None,
             session_audio: None,
+            tools_off: &[],
         }
     }
 
@@ -214,6 +218,12 @@ impl<'a> ToolContext<'a> {
     /// 这条会话的音频目录（0.17d）。
     pub fn with_audio(mut self, dir: Option<&'a std::path::Path>) -> Self {
         self.session_audio = dir;
+        self
+    }
+
+    /// 面板上被关掉的工具（0.17e）。
+    pub fn with_tools_off(mut self, off: &'a [String]) -> Self {
+        self.tools_off = off;
         self
     }
 
@@ -414,9 +424,18 @@ impl ToolRegistry {
     /// 为什么要在发请求前过滤：模型看到 `write_file` 就会去写，而没开写权限时它拿到的是
     /// 一连串"拒绝执行"——白烧好几轮。不如一开始就不告诉它有这个工具。
     pub fn specs_for(&self, policy: &AssistantPolicy) -> Vec<ToolSpec> {
+        self.specs_excluding(policy, &[])
+    }
+
+    /// 按能力与"面板上没关"两道条件过滤（0.17e）。
+    ///
+    /// 关掉的那一条**不进声明表**：声明了再拒绝，模型会一直试，用户看到一串"被拒绝"。
+    /// 名字对不上注册表时什么也不做——面板上留一个旧名字不该让整张表塌掉。
+    pub fn specs_excluding(&self, policy: &AssistantPolicy, off: &[String]) -> Vec<ToolSpec> {
         self.tools
             .values()
             .filter(|tool| policy.allows(tool.capability()))
+            .filter(|tool| !off.iter().any(|name| name == tool.name()))
             .map(|tool| tool.spec())
             .collect()
     }
@@ -2210,6 +2229,32 @@ mod tests {
         // 完全没绑工作区：一个都不要给
         let empty = AssistantPolicy::locked_down();
         assert!(registry.specs_for(&empty).is_empty());
+    }
+
+    #[test]
+    fn specs_skip_the_tools_turned_off_on_the_panel() {
+        let registry = ToolRegistry::workspace_defaults();
+        let policy =
+            AssistantPolicy::locked_down().with_binding(WorkspaceBinding::read_write("ws-1"));
+        let all: Vec<String> = registry
+            .specs_for(&policy)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(all.contains(&"read_file".to_string()), "{all:?}");
+
+        let off = vec!["read_file".to_string(), "write_file".to_string()];
+        let kept: Vec<String> = registry
+            .specs_excluding(&policy, &off)
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(!kept.contains(&"read_file".to_string()), "{kept:?}");
+        assert!(!kept.contains(&"write_file".to_string()), "{kept:?}");
+        assert!(kept.contains(&"list_dir".to_string()), "{kept:?}");
+        // 关掉一个不存在的名字不该把整张表带走
+        let stale = registry.specs_excluding(&policy, &["nope".to_string()]);
+        assert_eq!(stale.len(), all.len());
     }
 
     #[test]

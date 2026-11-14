@@ -54,6 +54,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.animation.core.RepeatMode
@@ -4564,6 +4565,10 @@ private fun toolDisplayName(name: String): String = when (name) {
     "list_dir" -> "列出目录"
     "find_files" -> "查找文件"
     "search" -> "搜索内容"
+    "edit_unit" -> "修改消息"
+    "Session-Files" -> "读别的会话"
+    "Voice-Caps" -> "语音能力"
+    "Speak" -> "文字转语音"
     else -> name
 }
 
@@ -6102,6 +6107,23 @@ private fun ToolSheet(
     // 一上来就画"跟随助手"会让人以为这就是库里的答案。
     var bound by remember(sessionId) { mutableStateOf<String?>(null) }
     var loaded by remember(sessionId) { mutableStateOf(sessionId == null) }
+    // 逐个工具的开关（0.17e）：关掉的名字与注册表里的名字都**现读**。
+    var off by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
+    var toolNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        toolNames = withContext(Dispatchers.IO) {
+            NmoiFfi.toolNames().getOrNull()
+                ?.optJSONArray("names")
+                ?.let { array ->
+                    buildList {
+                        for (index in 0 until array.length()) {
+                            array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
+                        }
+                    }
+                }
+                .orEmpty()
+        }
+    }
     var picking by remember(sessionId) { mutableStateOf(false) }
     val workspaces = remember { WorkspaceRepository.list(context) }
     val assistantName = remember(assistantWorkspaceId) {
@@ -6133,6 +6155,49 @@ private fun ToolSheet(
                 .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
         ) {
             if (!picking) {
+                // 逐个工具开关（0.17e）：关掉 = 这一轮**不声明**它。
+                // 清单从 native 的注册表读——在 Kotlin 里另列一份，迟早只改一份。
+                val names = toolNames
+                if (names.isNotEmpty()) {
+                    val open = names.count { !off.contains(it) }
+                    Text(
+                        text = "本地工具 $open/${names.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "关掉的不发给模型",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    names.forEach { name ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = toolDisplayName(name),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Switch(
+                                checked = !off.contains(name),
+                                onCheckedChange = { on ->
+                                    ToolingRepository.setToolOff(context, name, !on)
+                                    off = if (on) off - name else off + name
+                                },
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp, bottom = 8.dp)
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+                }
                 Text(
                     text = "这一轮的工具根",
                     style = MaterialTheme.typography.labelMedium,

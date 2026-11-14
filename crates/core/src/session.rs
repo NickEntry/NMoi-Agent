@@ -446,6 +446,8 @@ pub struct SessionConfig<'a> {
     pub voice: Option<&'a crate::voicecaps::VoiceCaps>,
     /// 发请求的传输层（0.17d）：`Speak` 靠它。`None` = 这个入口没有网络。
     pub transport: Option<&'a dyn crate::transport::Transport>,
+    /// 面板上被关掉的工具（0.17e）：这一轮不声明它们。
+    pub tools_off: &'a [String],
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -493,6 +495,7 @@ impl Default for SessionConfig<'_> {
             summary: None,
             voice: None,
             transport: None,
+            tools_off: &[],
         }
     }
 }
@@ -1190,7 +1193,8 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         .with_sessions(session_index.as_ref())
         .with_voice(config.voice)
         .with_transport(config.transport)
-        .with_audio(session_audio.as_deref());
+        .with_audio(session_audio.as_deref())
+        .with_tools_off(config.tools_off);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1449,7 +1453,8 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_sessions(session_index.as_ref())
         .with_voice(config.voice)
         .with_transport(config.transport)
-        .with_audio(session_audio.as_deref());
+        .with_audio(session_audio.as_deref())
+        .with_tools_off(config.tools_off);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }

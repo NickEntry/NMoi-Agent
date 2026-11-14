@@ -2779,3 +2779,24 @@ core **758**（749 + 9）、ffi **69**（67 + 2）；Kotlin 全量类型检查�
 core **767**（758 + 9）、ffi **69**、storage 全绿；kotlinc 只剩那 9 个 `R`。
 真机 **V140**（七步）。未实测：真端点一次都没打过（本机端点只有 chat 那条路），
 真机也没装过这一版。
+
+## D332 工具面板逐项开关：关掉 = 不声明（2026-11-14）
+
+`NativeShell` / `ContainerExec` 那些开关管的是"这台机器允不允许"，语音那一层管的是
+"这一条支不支持"。还差一层：**用户不想让模型看见某个工具**——它占着声明位、被模型反复调用、
+每次都要占一轮上下文。补上（b1）：
+
+- **清单从 native 读**（`NativeBridge.toolNamesJson()` → `nmoi_tool_names_json`）：
+  在 Kotlin 里另列一份 13 行，下一个工具落地时没人会记得加，而且两处数字迟早对不上。
+- **关掉的名字随这一轮下发**：`tools_off: ["read_file", "Speak"]` → `SessionConfig.tools_off`
+  → `ToolContext.tools_off` → `specs_excluding(policy, off)`。**不声明**，不是声明了再拒绝。
+- **两条路同一份语义**：`gate::plan_tools` 也认 `ToolSwitches.disabled`，理由单列
+  `ToolDrop::ToolOff`（"这一项在面板里关着"）。冻结那条路现在没接，但语义不能两样。
+- **顺序**：先看"用户关没关"，再看"权限开没开"。前者是他自己的决定，后者要他去别处改；
+  报错报成后者，他会去改错地方。
+- **清单只存名字**：`tool.off.<name>` 存本机（跟别的工具开关一样不进库）。注册顺序会变，名字不会。
+- **面板上只有一行规则**："关掉的不发给模型"。不逐行写解释——一屏十几行小字，没人读。
+
+判据：`specs_excluding` 2 条（关掉的不出现、名字对不上时整张表不受影响）、`plan_tools` 1 条
+（`ToolDrop::ToolOff` 与"权限没开"分开）、ffi 1 条（`tools_off` 只认字符串、缺席为空）。
+core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **V141**。

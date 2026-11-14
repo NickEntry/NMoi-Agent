@@ -274,7 +274,7 @@ pub fn run_turn<T: Transport>(
         } else {
             match ctx.declared {
                 Some(names) => registry.specs_named(names),
-                None => registry.specs_for(ctx.policy),
+                None => registry.specs_excluding(ctx.policy, ctx.tools_off),
             }
         };
         if let Some(tokens) = config.max_tokens {

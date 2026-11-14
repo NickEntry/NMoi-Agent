@@ -233,6 +233,9 @@ internal object NativeBridge {
     /** 删一条分界线（D324）：压缩只画线不删原文，删线就等于还原。 */
     external fun deleteDividerJson(handle: Long, divider: String): String
 
+    /** 注册表里的全部工具名（0.17e）：面板上的逐项开关按它渲染。 */
+    external fun toolNamesJson(): String
+
     /** 预设列表 + 四态（0.14t / D178）。`assets` = 从 APK 读出来的预设原文。 */
     external fun presetsJson(handle: Long, assets: String): String
 
