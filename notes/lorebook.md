@@ -261,4 +261,5 @@ CREATE TABLE lorebooks (
 
 ## 12. 用户手册
 
-`tool_call_*` 的用法与整册世界书的写法，见 `docs/worldbook.md`（给人看的那一份）。
+这一节的内容是给用户看的，正文在 `docs/worldbook.md`（**以那边为准**）：
+条目各字段怎么填、`tool_call_*` 怎么写、一个能抄的骨架。这里不复制，只指向。
