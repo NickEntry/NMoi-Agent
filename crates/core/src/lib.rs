@@ -28,6 +28,7 @@ pub mod kills;
 pub mod lorebook;
 pub mod message;
 pub mod model;
+pub mod overflow;
 pub mod policy;
 pub mod preset;
 pub mod progress;

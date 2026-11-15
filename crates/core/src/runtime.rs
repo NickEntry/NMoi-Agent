@@ -295,34 +295,31 @@ impl OverflowHint {
     }
 }
 
-const OVERFLOW_LIKELY: &[&str] = &[
-    "context length",
-    "context_length_exceeded",
-    "maximum context",
-    "max context",
-    "too many tokens",
-    "prompt is too long",
-    "input is too long",
-    "exceeds the maximum",
-    "reduce the length",
-    "token limit",
-];
-
 const OVERFLOW_UNRELIABLE: &[&str] = &["the param is invalid", "all models failed"];
 
-fn classify_overflow(body: &str) -> OverflowHint {
-    let lowered = body.to_lowercase();
-    for pattern in OVERFLOW_LIKELY {
-        if lowered.contains(pattern) {
-            return OverflowHint::Likely(pattern);
+/// 判定交给 `overflow` 模块（D335）：它分 `Sure` / `Maybe`，只有 `Sure` 才允许动手。
+/// 这一层只把三档映射回原有的 `OverflowHint`，界面与日志的措辞不变。
+fn classify_overflow(
+    status: u16,
+    code: Option<&str>,
+    error_type: Option<&str>,
+    message: &str,
+    raw: &str,
+) -> OverflowHint {
+    match crate::overflow::classify(status, code, error_type, message) {
+        crate::overflow::Overflow::Sure(why) => OverflowHint::Likely(why),
+        crate::overflow::Overflow::Maybe(why) => OverflowHint::Unreliable(why),
+        crate::overflow::Overflow::No => {
+            // 结构化字段里读不出东西（HTML、纯文本）：退回整段的弱匹配。
+            let lowered = raw.to_lowercase();
+            for pattern in OVERFLOW_UNRELIABLE {
+                if lowered.contains(pattern) {
+                    return OverflowHint::Unreliable(pattern);
+                }
+            }
+            OverflowHint::None
         }
     }
-    for pattern in OVERFLOW_UNRELIABLE {
-        if lowered.contains(pattern) {
-            return OverflowHint::Unreliable(pattern);
-        }
-    }
-    OverflowHint::None
 }
 
 /// 上游拒绝的细节。字段名各家不同，能读到的都收进来。
@@ -906,13 +903,20 @@ pub fn parse_error_body(status: u16, text: &str, retry_after: Option<Duration>) 
         }
     });
 
+    let overflow = classify_overflow(
+        status,
+        code.as_deref(),
+        error_type.as_deref(),
+        &message,
+        text,
+    );
     HttpErrorBody {
         status,
         code,
         error_type,
         message,
         raw: truncate(text, 2000),
-        overflow: classify_overflow(text),
+        overflow,
         retry_after,
     }
 }

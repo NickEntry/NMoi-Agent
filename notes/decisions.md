@@ -2845,3 +2845,19 @@ core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **
 判据：`SecurityModel` 8 条（合并/停用/删除/升级回来/自建/名字来源/四个值同源）、
 `ToolGroups` 6 条（四组、顺序、其他、空、重复、空串）、`shellguard` 2 条
 （自建名字只认命令名、不撬开拒绝档）。core **778**、ffi **70**、clippy 零告警。
+
+## D335 超窗判定分三档，只有"确定"才允许撤回（0.17h，2026-11-15）
+
+用户提的是"撤回那一条工具结果、换成提醒"，不是"按部就班压缩"。压缩的代价是整段历史被摘要，
+而这次超窗的成因常常只有一条 8 MB 的输出。这一批先落判定那一层（设计见 `notes/overflow-rollback.md`）：
+
+- `crates/core/src/overflow.rs`：`Overflow::{No, Sure, Maybe}` + `classify(status, code, type, message)`。
+- 防误检三条：状态码只认 400/413/422；只扫 `error.message`/`code`/`type`（不扫回显的 body）；
+  `context|prompt|input|message` 要配上 `too long|exceed|超过` 才算 `Sure`。
+  `tokens` 不当主语（`max_tokens: must be >= 1` 会误伤，测试红过一次）。
+- `runtime::classify_overflow` 改成调它，`OverflowHint` 的对外措辞不变；
+  实测那两条没提上下文的失败仍是 `Unreliable/Maybe`（历史判据不退）。
+- 撤回与重发**没做**：要在 `agent.rs` 把 5 处请求调用提成一个函数、再让外层重发一次，
+  并且落库形状跟着变。按"大改先写稿"留在下一批。
+
+判据：`overflow` 7 条 + `runtime` 原有 3 条 + "普通 400 不算超窗"；core **785**（778 + 7）。
