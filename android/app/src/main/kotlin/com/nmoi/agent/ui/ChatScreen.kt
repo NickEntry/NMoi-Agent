@@ -6110,6 +6110,8 @@ private fun ToolSheet(
     // 逐个工具的开关（0.17e）：关掉的名字与注册表里的名字都**现读**。
     var off by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
     var toolNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 收起的分组（0.17g）：只管这一次面板打开；关掉面板再开是全部展开。
+    var foldedGroups by remember { mutableStateOf(setOf<String>()) }
     LaunchedEffect(Unit) {
         toolNames = withContext(Dispatchers.IO) {
             NmoiFfi.toolNames().getOrNull()
@@ -6170,24 +6172,64 @@ private fun ToolSheet(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    names.forEach { name ->
+                    toolGroups(names).forEach { group ->
+                        val folded = foldedGroups.contains(group.title)
+                        val groupOpen = group.names.count { !off.contains(it) }
                         Row(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 40.dp)
+                                .clickable {
+                                    foldedGroups = if (folded) {
+                                        foldedGroups - group.title
+                                    } else {
+                                        foldedGroups + group.title
+                                    }
+                                },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = toolDisplayName(name),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
+                                text = group.title,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(1f),
                             )
-                            Switch(
-                                checked = !off.contains(name),
-                                onCheckedChange = { on ->
-                                    ToolingRepository.setToolOff(context, name, !on)
-                                    off = if (on) off - name else off + name
-                                },
+                            Text(
+                                text = "$groupOpen/${group.names.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            Icon(
+                                imageVector = if (folded) {
+                                    ActionIcons.ChevronRight
+                                } else {
+                                    ActionIcons.ChevronDown
+                                },
+                                contentDescription = if (folded) "展开「${group.title}」" else "收起「${group.title}」",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                            )
+                        }
+                        if (folded) return@forEach
+                        group.names.forEach { name ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = toolDisplayName(name),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Switch(
+                                    checked = !off.contains(name),
+                                    onCheckedChange = { on ->
+                                        ToolingRepository.setToolOff(context, name, !on)
+                                        off = if (on) off - name else off + name
+                                    },
+                                )
+                            }
                         }
                     }
                     Box(

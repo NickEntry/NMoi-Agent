@@ -137,6 +137,7 @@ private fun summaryFor(
     SettingsGroup.Lorebook -> "册与条目"
     SettingsGroup.Proxy -> "开关与端口"
     SettingsGroup.Tools -> toolsSummary
+    SettingsGroup.Security -> "询问与规则组"
     SettingsGroup.Storage -> "附件"
     SettingsGroup.Debug -> logSummary
     SettingsGroup.About -> "GPL-3.0-only"

@@ -16,6 +16,7 @@ internal enum class SettingsGroup(val title: String, val keywords: String) {
     Lorebook("世界书", "世界书 册 条目 关键词 注入 导入 导出 常驻"),
     Proxy("网络代理", "代理 网络 端口 绕过 容器"),
     Tools("工具与工作区", "工具 工作区 文件 技能 MCP 隔离环境 容器"),
+    Security("安全", "安全 规则 组 询问 命令 审批 拒绝 黑名单 rm"),
     Appearance("外观", "外观 图标 主题 深色 浅色"),
     App("应用设置", "应用设置 生成 上下文 图片 界面 刷新 档位 阈值"),
     Storage("存储", "存储 附件 图片 导出 删除"),

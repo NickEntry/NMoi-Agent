@@ -57,6 +57,7 @@ import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.StorageScreen
+import com.nmoi.agent.ui.SecurityScreen
 import com.nmoi.agent.ui.ShellRulesScreen
 import com.nmoi.agent.ui.ToolsScreen
 import com.nmoi.agent.ui.VoiceScreen
@@ -96,7 +97,10 @@ private sealed interface Route {
     /** 工作区（D234）：列 / 新建 / 改名 / 删除。入口在「工具与工作区」里。 */
     data object Workspace : Route
 
-    /** 命令规则组（D329）：十组、一组一个开关。 */
+    /** 安全（0.17g）：两颗总开关 + 规则组（主项与子项）。入口在设置根页。 */
+    data object Security : Route
+
+    /** 内置规则清单（D329）：十组 79 条，只读。入口在安全页。 */
     data object ShellRules : Route
 
     /** 语音服务（0.17b）：歌唱声库的装/选/删。 */
@@ -629,6 +633,11 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Security -> SecurityScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                            onOpenRules = { backStack = backStack + Route.ShellRules },
+                        )
+
                         Route.ShellRules -> ShellRulesScreen(
                             onBack = { backStack = backStack.dropLast(1) },
                         )
@@ -683,6 +692,7 @@ class MainActivity : ComponentActivity() {
                                     SettingsGroup.Assistants -> Route.Assistant
                                     SettingsGroup.Lorebook -> Route.Lorebook
                                     SettingsGroup.Proxy -> Route.Proxy
+                                    SettingsGroup.Security -> Route.Security
                                     else -> Route.SettingsGroupRoute(group)
                                 }
                             },
@@ -729,7 +739,6 @@ class MainActivity : ComponentActivity() {
                                 onBack = { backStack = backStack.dropLast(1) },
                                 onOpenEnvir = { backStack = backStack + Route.Envir },
                                 onOpenWorkspace = { backStack = backStack + Route.Workspace },
-                                onOpenShellRules = { backStack = backStack + Route.ShellRules },
                                 onOpenVoice = { backStack = backStack + Route.Voice },
                             )
 

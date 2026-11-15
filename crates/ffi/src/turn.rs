@@ -283,6 +283,8 @@ struct TurnInput {
     cross_session: bool,
     /// 命令执行前询问（D329）。**缺省开**：开关一开就全放行，是这一条要堵的洞。
     shell_ask: bool,
+    /// 用户自己加的命令名（设置 → 安全 → 规则组里的子项）。命中也先问一句。
+    shell_extra: Vec<String>,
     /// 黑名单模式（D329）：只问命中规则的。缺省开。
     shell_blacklist: bool,
     /// 被关掉的规则组。空 = 十组全问。
@@ -625,6 +627,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         shell_ask: optional_bool(&root, "shell_ask")?.unwrap_or(true),
         shell_blacklist: optional_bool(&root, "shell_blacklist")?.unwrap_or(true),
         shell_off_groups: parse_str_list(&root, "shell_off_groups")?,
+        shell_extra: parse_str_list(&root, "shell_extra")?,
         sing: optional_bool(&root, "sing")?.unwrap_or(false),
         voice: parse_voice(&root)?,
         tools_off: parse_str_list(&root, "tools_off")?,
@@ -1063,6 +1066,12 @@ fn policy_for(input: &TurnInput) -> AssistantPolicy {
         blacklist: input.shell_blacklist,
         off_groups: input.shell_off_groups.iter().cloned().collect(),
         off_rules: Default::default(),
+        extra: input
+            .shell_extra
+            .iter()
+            .map(|name| name.trim().to_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect(),
     };
     policy
 }

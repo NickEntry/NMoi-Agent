@@ -27,6 +27,8 @@ pub struct GuardConfig {
     pub blacklist: bool,
     pub off_groups: BTreeSet<String>,
     pub off_rules: BTreeSet<String>,
+    /// 用户自己加的命令名（小写，已去重）。命中就按"问"处理，`deny` 不受它影响。
+    pub extra: BTreeSet<String>,
 }
 
 impl Default for GuardConfig {
@@ -36,6 +38,7 @@ impl Default for GuardConfig {
             blacklist: true,
             off_groups: BTreeSet::new(),
             off_rules: BTreeSet::new(),
+            extra: BTreeSet::new(),
         }
     }
 }
@@ -221,6 +224,21 @@ pub fn decide_with(rules: &Rules, line: &str, config: &GuardConfig) -> Decision 
         }
     }
 
+    if asked.is_none() {
+        if let Some(name) = segments(&normalized)
+            .iter()
+            .find_map(|segment| extra_hit(&config.extra, segment))
+        {
+            asked = Some(Hit {
+                id: format!("extra:{name}"),
+                group: "extra".into(),
+                group_name: "自建".into(),
+                label: format!("{name}（自建规则）"),
+                deny: false,
+            });
+        }
+    }
+
     if !config.blacklist {
         return Decision::Ask(asked.unwrap_or_else(|| Hit {
             id: "every".into(),
@@ -343,6 +361,17 @@ fn command_at(tokens: &[&str]) -> Option<usize> {
         return Some(index);
     }
     None
+}
+
+/// 自建规则只认"这条命令叫什么"，不认参数：`rm` 命中 `rm -rf build`，但不命中 `echo rm`。
+fn extra_hit(extra: &BTreeSet<String>, segment: &str) -> Option<String> {
+    if extra.is_empty() {
+        return None;
+    }
+    let tokens: Vec<&str> = segment.split(' ').filter(|t| !t.is_empty()).collect();
+    let at = command_at(&tokens)?;
+    let name = command_name(tokens[at]);
+    extra.contains(&name).then_some(name)
 }
 
 fn command_name(token: &str) -> String {
@@ -564,6 +593,27 @@ mod tests {
             ..GuardConfig::default()
         };
         assert_eq!(decide("rm -rf /", &config), Decision::Allow);
+    }
+
+    #[test]
+    fn an_extra_name_asks_for_that_command_only() {
+        let mut config = GuardConfig::default();
+        config.extra.insert("mytool".into());
+        assert!(
+            matches!(decide("mytool --flag", &config), Decision::Ask(hit) if hit.id == "extra:mytool")
+        );
+        assert!(matches!(
+            decide("cd build && mytool", &config),
+            Decision::Ask(hit) if hit.id == "extra:mytool"
+        ));
+        assert_eq!(decide("echo mytool", &config), Decision::Allow);
+    }
+
+    #[test]
+    fn an_extra_name_does_not_unlock_the_deny_list() {
+        let mut config = GuardConfig::default();
+        config.extra.insert("rm".into());
+        assert!(matches!(decide("rm -rf /", &config), Decision::Deny(_)));
     }
 
     #[test]

@@ -211,3 +211,20 @@ rm -rf /        rm -rf ~        dd of=/dev/sd*        mkfs.* /dev/sd*
 2. 「本会话不再问这一条」要不要也给"永久放行"（即改设置里的组开关）？我倾向不给：
    永久放行应该去设置里改，弹窗只给临时决定。
 3. 拒绝档那四条（`rm -rf /`、`rm -rf ~`、`dd of=/dev/sd*`、`mkfs.*`）够不够，要不要再加。
+
+## 0.1 安全页（0.17g，2026-11-15）
+
+开关与规则表原先挤在「工具与工作区」里，规则组另开一页只有开关。用户 2026-11-15 要求
+把三颗总开关与规则组收进一个「安全」页，并且**主项与子项都能管**。
+
+- 页面：`设置 → 安全`。工具与工作区只剩能力开关（`System-Shell` / 容器 / 唱歌 / 跨会话）。
+- 存储：`files/security.json`。`ask` / `blacklist` / `groups[]`；每个组记
+  `id / name / builtin / asks / hidden / count / items`。
+  旧键 `tool.shell_ask`、`tool.shell_blacklist`、`tool.shell_group.<id>` 在第一次读时搬进来并删掉。
+- 子项是一次**命令名**：`rm`、`mytool`。`GuardConfig.extra` 只拿它和命令名比，
+  不碰参数；`rm -rf /` 这类 `deny` 规则不受影响（拒绝档是地板）。
+- 组开关与子项不是两件事：关掉一组，这一组里加的名字也一起不问。
+- 「内置组删了会回来」靠 `count`：删的时候记条数，下一版条数变了就放回来。
+- 这一批**没摆** MCP 询问开关：MCP 客户端还没有，没有消费者的开关就是假开关。
+
+真机判据见 `verification.md` V144。

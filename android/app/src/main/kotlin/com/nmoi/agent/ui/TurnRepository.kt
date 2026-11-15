@@ -251,6 +251,8 @@ internal object TurnRepository {
             NLog.w("Turn", "工作区绑不上：${workspace.exceptionOrNull()?.message}")
         }
         val nativeShell = ToolingRepository.nativeShell(context) && workspace.isSuccess
+        // 安全页那三样一次读定：分开读会在中途被改出两套答案（D331 的老坑）。
+        val guard = SecurityRepository.guard(context)
         try {
             withStorageHandle(databasePath) { handle ->
                 // 隔离环境（D172）：**装好了 + 开关开着**才把坐标交给 core。
@@ -280,13 +282,12 @@ internal object TurnRepository {
                     .put("native_shell", nativeShell)
                     // 跨会话只读（D295）：默认关；关着时 `Session-Files` 不声明。
                     .put("cross_session", ToolingRepository.crossSession(context))
-                    // 命令执行前询问（D329）：缺省开；关掉 = 能力开关一开就全放行。
-                    .put("shell_ask", ToolingRepository.shellAsk(context))
-                    .put("shell_blacklist", ToolingRepository.shellBlacklist(context))
-                    .put(
-                        "shell_off_groups",
-                        org.json.JSONArray(ToolingRepository.shellOffGroups(context)),
-                    )
+                    // 安全页那三样（D329 / 0.17g）：一次读进来，四个值同源。
+                    // 关掉询问 = 能力开关一开就全放行；自建的名字命中也先问一句。
+                    .put("shell_ask", guard.ask)
+                    .put("shell_blacklist", guard.blacklist)
+                    .put("shell_off_groups", org.json.JSONArray(guard.offGroups))
+                    .put("shell_extra", org.json.JSONArray(guard.extra))
                     // 面板上关掉的工具（0.17e）：core 只负责"不声明"。
                     .put("tools_off", org.json.JSONArray(ToolingRepository.toolsOff(context)))
                     // 语音现状（0.17c）：`Voice-Caps` 只读这一段。没配就不发——
