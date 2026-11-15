@@ -133,6 +133,17 @@ pub struct ToolRecord {
 ///
 /// 为什么要按轮记：`text` 每轮都被覆盖，多轮工具往返时**只有最后一轮的正文**能落库——
 /// 前面几轮模型说过的话，用户屏幕上看见过，重开会话就没了。
+/// 撤回了一条工具结果（D336）：块里留的是提醒，原文落到了会话的 `/archive`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShrunkOutput {
+    /// 被撤回那一段的字节数。
+    pub bytes: u64,
+    /// 它大约占多少 token（估算，给界面写"约 N token"用）。
+    pub tokens: u32,
+    /// 落到 `/archive` 的那一份在 guest 里的路径。`None` = 没写盘（没有归档目录）。
+    pub path: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnRound {
     /// 这一轮的正文（已切掉行内工具标签）。
@@ -173,6 +184,8 @@ pub struct TurnReport {
     pub cancelled: bool,
     /// 撞上绝对线被截断（D90）。此时 `finished` 也是 `false`，落库会标 `incomplete`。
     pub truncated: bool,
+    /// 这一轮撤回并换成了提醒的那一条工具结果（D336）。`None` = 没撤过。
+    pub shrunk: Option<ShrunkOutput>,
     /// 连接中途断了（D327）：已经收到的正文留着，`interrupted` 里是原因。
     ///
     /// 和 `truncated` 分开记的理由跟 `cancelled` 一样——三种"没说完"要说三句话：
@@ -202,6 +215,8 @@ pub enum AgentError {
         /// 上游回的 HTTP 状态。401/403 说明**这把钥匙不行**，界面要据此标那一把。
         /// 拿不到（断流、解析失败、自己造的错误）就是 `None`。
         status: Option<u16>,
+        /// 上游明确说"上下文超了"（D335）。`Some` 才允许撤回一条工具结果再重发。
+        overflow: Option<&'static str>,
     },
 }
 
@@ -209,6 +224,13 @@ impl AgentError {
     pub fn http_status(&self) -> Option<u16> {
         match self {
             AgentError::Model { status, .. } => *status,
+        }
+    }
+
+    /// 上游说超窗了（`Sure` 那一档）。拿它决定"撤回一条再重发"，而不是交给压缩。
+    pub fn overflow(&self) -> Option<&'static str> {
+        match self {
+            AgentError::Model { overflow, .. } => *overflow,
         }
     }
 }
@@ -233,6 +255,9 @@ pub fn run_turn<T: Transport>(
     retry: Option<&RetryPolicy>,
 ) -> Result<TurnReport, AgentError> {
     let mut messages: Vec<Message> = history.to_vec();
+    // 这一轮从哪一条开始（D336）：撤回只动**这一次**长出来的工具结果，
+    // 历史里那些是用户看得见、也已经习惯的东西。
+    let turn_start = messages.len();
     let mut report = TurnReport::default();
     let mut seq = messages
         .iter()
@@ -250,6 +275,8 @@ pub fn run_turn<T: Transport>(
     // 到上限之后**再给一轮**：这一轮不带工具，让它把话说完（D244）。
     // 直接返回的话，用户看到的是"回答被砍了一半"，而他什么都没做错。
     let mut wrap_up = false;
+    // 这一轮撤回过没有（D336）：一轮最多撤回一条、最多重发一次。
+    let mut shrunk = false;
     // 这一轮清单里那些图的字节（D269）：`request` 每轮从 `base` 重建，所以每轮都要重挂，
     // 但**同一张图只读一遍盘**。键是附件 id。
     let mut context_images: Vec<(String, crate::message::ImagePart)> = Vec::new();
@@ -284,92 +311,125 @@ pub fn run_turn<T: Transport>(
 
         // 流式（0.15n）：边收边把增量交出去，最终拼成与 `complete()` 同形的结果。
         // 断流不算失败——残文留着，下面按 `truncated` 收尾（D194）。
-        let mut interrupted = false;
-        // 断在哪儿（D327）：只有"流没等到终止信号"时才填，别的收尾原因不借这个字段。
-        let mut cut_reason: Option<String> = None;
-        let completion = if config.stream {
-            let mut stream = client.chat(&request).map_err(|error| AgentError::Model {
-                message: error.to_string(),
-                status: error.http_status(),
-            })?;
-            // 边收边自己留一份（D327）：`collect_all` 出错时不会把已经收到的字还回来，
-            // 而"收到过字"正是判断这一轮该不该按断流收尾的唯一依据。
-            let mut seen_text = String::new();
-            let mut seen_reasoning = String::new();
-            let collected = stream.collect_all(|text, reasoning| {
-                seen_text.push_str(text);
-                seen_reasoning.push_str(reasoning);
-                crate::progress::emit(text, reasoning);
-            });
-            let collected = match collected {
-                Ok(collected) => collected,
-                // 收到过字：按断流收尾，残文留着（D194 的同一条规矩——丢掉才是失败）。
-                // 一个字都没有才算真失败：那种情况没有可以接的东西。
-                Err(_) if !seen_text.trim().is_empty() => Collected {
-                    completion: Completion {
-                        text: seen_text,
-                        reasoning: seen_reasoning,
-                        tool_calls: Vec::new(),
-                        finish: FinishReason::Unknown("interrupted".into()),
-                        usage: Usage::default(),
-                        model: None,
-                        id: None,
-                    },
-                    interrupted: Some("连接在生成途中断了".to_string()),
-                },
-                Err(error) => {
-                    return Err(AgentError::Model {
+        // 请求这一块提成一个闭包（D336）：超窗时要把"撤回一条 + 重发"走一遍，
+        // 而重发的必须是**同一轮**（重跑工具会重复副作用）。
+        let attempt = || -> Result<(Completion, bool, Option<String>), AgentError> {
+            let mut interrupted = false;
+            // 断在哪儿（D327）：只有"流没等到终止信号"时才填，别的收尾原因不借这个字段。
+            let mut cut_reason: Option<String> = None;
+            let completion =
+                if config.stream {
+                    let mut stream = client.chat(&request).map_err(|error| AgentError::Model {
                         message: error.to_string(),
                         status: error.http_status(),
-                    })
-                }
-            };
-            // 端点不认 `stream`（回了一段普通 JSON / 干脆没回）→ 一个字都没收到、流就断了。
-            // 这时候退回**非流式**重发这一轮一次：不这么做，"端点不支持流式"就变成"回答是空的"。
-            //
-            // 只有**一个字都没有**才退回：已经收到过正文的话，重发会把两段拼成一条不存在的回答（D40）。
-            if collected.interrupted.is_some() && collected.completion.text.trim().is_empty() {
-                let mut plain = request.clone();
-                plain.stream = false;
-                match retry {
-                    Some(policy) => {
-                        client
-                            .complete_retrying(&plain, policy, cancel)
+                        overflow: error.overflow_hint(),
+                    })?;
+                    // 边收边自己留一份（D327）：`collect_all` 出错时不会把已经收到的字还回来，
+                    // 而"收到过字"正是判断这一轮该不该按断流收尾的唯一依据。
+                    let mut seen_text = String::new();
+                    let mut seen_reasoning = String::new();
+                    let collected = stream.collect_all(|text, reasoning| {
+                        seen_text.push_str(text);
+                        seen_reasoning.push_str(reasoning);
+                        crate::progress::emit(text, reasoning);
+                    });
+                    let collected = match collected {
+                        Ok(collected) => collected,
+                        // 收到过字：按断流收尾，残文留着（D194 的同一条规矩——丢掉才是失败）。
+                        // 一个字都没有才算真失败：那种情况没有可以接的东西。
+                        Err(_) if !seen_text.trim().is_empty() => Collected {
+                            completion: Completion {
+                                text: seen_text,
+                                reasoning: seen_reasoning,
+                                tool_calls: Vec::new(),
+                                finish: FinishReason::Unknown("interrupted".into()),
+                                usage: Usage::default(),
+                                model: None,
+                                id: None,
+                            },
+                            interrupted: Some("连接在生成途中断了".to_string()),
+                        },
+                        Err(error) => {
+                            return Err(AgentError::Model {
+                                message: error.to_string(),
+                                status: error.http_status(),
+                                overflow: error.overflow_hint(),
+                            })
+                        }
+                    };
+                    // 端点不认 `stream`（回了一段普通 JSON / 干脆没回）→ 一个字都没收到、流就断了。
+                    // 这时候退回**非流式**重发这一轮一次：不这么做，"端点不支持流式"就变成"回答是空的"。
+                    //
+                    // 只有**一个字都没有**才退回：已经收到过正文的话，重发会把两段拼成一条不存在的回答（D40）。
+                    if collected.interrupted.is_some()
+                        && collected.completion.text.trim().is_empty()
+                    {
+                        let mut plain = request.clone();
+                        plain.stream = false;
+                        match retry {
+                            Some(policy) => client
+                                .complete_retrying(&plain, policy, cancel)
+                                .map_err(|error| AgentError::Model {
+                                    message: error.to_string(),
+                                    status: error.error.http_status(),
+                                    overflow: error.error.overflow_hint(),
+                                })?,
+                            None => client.complete(&plain).map_err(|error| AgentError::Model {
+                                message: error.to_string(),
+                                status: error.http_status(),
+                                overflow: error.overflow_hint(),
+                            })?,
+                        }
+                    } else {
+                        interrupted = collected.interrupted.is_some();
+                        if interrupted {
+                            cut_reason = collected.interrupted.clone();
+                        }
+                        collected.completion
+                    }
+                } else {
+                    match retry {
+                        Some(policy) => client
+                            .complete_retrying(&request, policy, cancel)
                             .map_err(|error| AgentError::Model {
                                 message: error.to_string(),
                                 status: error.error.http_status(),
-                            })?
+                                overflow: error.error.overflow_hint(),
+                            })?,
+                        None => client
+                            .complete(&request)
+                            .map_err(|error| AgentError::Model {
+                                message: error.to_string(),
+                                status: error.http_status(),
+                                overflow: error.overflow_hint(),
+                            })?,
                     }
-                    None => client.complete(&plain).map_err(|error| AgentError::Model {
-                        message: error.to_string(),
-                        status: error.http_status(),
-                    })?,
+                };
+            Ok((completion, interrupted, cut_reason))
+        };
+
+        let (completion, interrupted, cut_reason) = match attempt() {
+            Ok(answer) => answer,
+            Err(error) => {
+                // 上游**确定**说超窗，而且这一轮还没撤回过：把最大的那条工具结果换成提醒，
+                // 重发同一次请求。仍然超窗就把错误交回上层——那时候才轮到压缩。
+                let can_retry = error.overflow().is_some() && !shrunk;
+                let shrunk_now = if can_retry {
+                    shrink_largest_tool_output(&mut messages, turn_start, ctx.session_archive)
+                } else {
+                    None
+                };
+                match shrunk_now {
+                    Some(entry) => {
+                        shrunk = true;
+                        report.shrunk = Some(entry);
+                        continue;
+                    }
+                    None => return Err(error),
                 }
-            } else {
-                interrupted = collected.interrupted.is_some();
-                if interrupted {
-                    cut_reason = collected.interrupted.clone();
-                }
-                collected.completion
-            }
-        } else {
-            match retry {
-                Some(policy) => {
-                    client
-                        .complete_retrying(&request, policy, cancel)
-                        .map_err(|error| AgentError::Model {
-                            message: error.to_string(),
-                            status: error.error.http_status(),
-                        })?
-                }
-                None => client
-                    .complete(&request)
-                    .map_err(|error| AgentError::Model {
-                        message: error.to_string(),
-                        status: error.http_status(),
-                    })?,
             }
         };
+
         report.rounds += 1;
         report.finish = Some(completion.finish);
         // 临时多留的图（D272）：这一轮的思考已经结束，它们该走了。
@@ -726,6 +786,7 @@ pub fn ensure_non_empty(messages: &[Message]) -> Result<Vec<Message>, AgentError
                 "history 是空的：至少要有一条用户消息（空 messages 上游只会回一个看不出原因的 400）"
                     .to_string(),
             status: None,
+            overflow: None,
         });
     }
     Ok(messages.to_vec())
@@ -1719,5 +1780,129 @@ mod tests {
         assert_eq!(report.rounds, 1);
         assert_eq!(report.tool_calls.len(), 1, "第二个工具不该被执行");
         assert_eq!(report.tool_calls[0].name, "list_dir");
+    }
+}
+
+const SHRINK_MARK: &str = "[已撤回";
+
+/// 把这一轮里**最大**的那条工具结果换成一行提醒（D336）。
+///
+/// 为什么按"最大"挑：撑爆上下文的通常就是它，换小的一条不解决问题。
+/// 已经在提醒里的不再动（`SHRINK_MARK`），所以重发之后不会被反复改写。
+fn shrink_largest_tool_output(
+    messages: &mut [Message],
+    from: usize,
+    archive: Option<&std::path::Path>,
+) -> Option<ShrunkOutput> {
+    let mut best: Option<(usize, String, usize)> = None;
+    for (index, message) in messages.iter().enumerate().skip(from) {
+        for part in message.parts() {
+            let crate::message::Part::Tool(tool) = part else {
+                continue;
+            };
+            let size = tool.output.len();
+            if size < 2000 || tool.output.starts_with(SHRINK_MARK) {
+                continue;
+            }
+            if best.as_ref().map(|(_, _, top)| size > *top).unwrap_or(true) {
+                best = Some((index, tool.part.clone(), size));
+            }
+        }
+    }
+    let (index, part_id, bytes) = best?;
+    let text = messages[index].part_field(&part_id, true)?;
+    let tokens = crate::tokens::estimate_tokens(&text);
+    let reference = crate::ids::ArchiveRef::from_content(&text);
+    let guest = crate::archive::guest_path(&reference);
+    // 原文落到会话的 `/archive`：文件工具和容器里都读得到同一份。
+    // 写盘失败就**不写路径**——给一个打不开的路径比不给糟。
+    let kept = match archive {
+        Some(dir) => {
+            let _ = std::fs::create_dir_all(dir);
+            let target = dir.join(reference.file_name());
+            let part = dir.join(format!("{}.part", reference.file_name()));
+            let ok = std::fs::write(&part, text.as_bytes()).is_ok()
+                && std::fs::rename(&part, target).is_ok();
+            ok.then_some(guest)
+        }
+        None => None,
+    };
+    let kb = bytes as f64 / 1024.0;
+    let reminder = match &kept {
+        Some(path) => format!(
+            "{SHRINK_MARK}：这一条输出 {kb:.0} KB（约 {tokens} token）把上下文撑爆了。\
+             原文在 {path}，要看得用 read_file 分段取，或把命令改成 `| head -n 200` / `| grep 关键词`。]"
+        ),
+        None => format!(
+            "{SHRINK_MARK}：这一条输出 {kb:.0} KB（约 {tokens} token）把上下文撑爆了，没有留副本。\
+             要看就重新取一段：read_file 用 offset/limit，命令加 `| head -n 200`。]"
+        ),
+    };
+    if !messages[index].set_part_field(&part_id, true, reminder) {
+        return None;
+    }
+    Some(ShrunkOutput {
+        bytes: bytes as u64,
+        tokens,
+        path: kept,
+    })
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use super::*;
+    use crate::clock::LogicalClock;
+    use crate::message::{Message, OutgoingToolCall, ToolStatus};
+
+    fn turn_with_big_output(size: usize) -> Vec<Message> {
+        let mut message = Message::tool_call_message(
+            crate::ids::MessageId::new(crate::ids::SessionId::new(), 1),
+            vec![OutgoingToolCall::new(
+                "c1",
+                "read_file",
+                "{\"path\":\"big.log\"}",
+            )],
+            10,
+            0,
+            LogicalClock::new(1),
+        );
+        message.set_tool_output("c1", "x".repeat(size), ToolStatus::Ok);
+        vec![message]
+    }
+
+    #[test]
+    fn 撤回最大的那条并把原文落到归档目录() {
+        let dir = std::env::temp_dir().join(format!("nmoi-shrink-{}", std::process::id()));
+        let mut messages = turn_with_big_output(8000);
+        let entry = shrink_largest_tool_output(&mut messages, 0, Some(&dir)).expect("应当撤回");
+        assert_eq!(entry.bytes, 8000);
+        let path = entry.path.expect("有归档目录就该给路径");
+        assert!(path.starts_with("/archive/"), "{path}");
+        let file = dir.join(path.trim_start_matches("/archive/"));
+        assert_eq!(std::fs::read_to_string(file).unwrap().len(), 8000);
+
+        let output = messages[0].part_field("p1", true).unwrap_or_default();
+        assert!(output.starts_with("[已撤回"), "{output}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 已经撤回过的不再动() {
+        let mut messages = turn_with_big_output(8000);
+        assert!(shrink_largest_tool_output(&mut messages, 0, None).is_some());
+        assert!(shrink_largest_tool_output(&mut messages, 0, None).is_none());
+    }
+
+    #[test]
+    fn 这一轮之前的历史不动() {
+        let mut messages = turn_with_big_output(8000);
+        // from = 1：这一轮从第 2 条开始，历史里那条大输出不该被碰。
+        assert!(shrink_largest_tool_output(&mut messages, 1, None).is_none());
+    }
+
+    #[test]
+    fn 小结果不值得撤回() {
+        let mut messages = turn_with_big_output(200);
+        assert!(shrink_largest_tool_output(&mut messages, 0, None).is_none());
     }
 }

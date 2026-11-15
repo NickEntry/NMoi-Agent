@@ -377,6 +377,19 @@ impl ChatError {
     ///
     /// 为什么单拎出来：`401/403` 不只是"这次失败"，它说明**这把钥匙不行**。
     /// 界面要能把那一把标成错误，光有一句自然语言是做不到的（在文案里找数字等于猜）。
+    /// 上游**确定**说超窗了（D335）。`None` = 不是超窗，或者只是"也许"。
+    ///
+    /// 单独一个方法而不是让调用方读 `HttpErrorBody`：这一层往后就只剩 `ChatError`，
+    /// 类型信息在边界上丢一次，后面每一层都只能猜（401 那条教训）。
+    pub fn overflow_hint(&self) -> Option<&'static str> {
+        match self {
+            ChatError::Http(body) if matches!(body.overflow, OverflowHint::Likely(_)) => {
+                body.overflow.matched()
+            }
+            _ => None,
+        }
+    }
+
     pub fn http_status(&self) -> Option<u16> {
         match self {
             ChatError::Http(body) => Some(body.status),
