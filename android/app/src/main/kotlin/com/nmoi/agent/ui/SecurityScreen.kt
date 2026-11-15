@@ -222,6 +222,33 @@ internal fun SecurityScreen(
                     }
                 }
 
+                val hiddenCount = merged.count { it.hidden }
+                if (hiddenCount > 0) {
+                    GroupCard {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    commit(merged.map { it.copy(hidden = false) })
+                                }
+                                .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "恢复删掉的组（$hiddenCount）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "›",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
                 SectionLabel("拒绝档")
                 GroupCard {
                     Text(
