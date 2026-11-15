@@ -181,7 +181,7 @@ internal fun SecurityScreen(
                                 val name = draft.trim().lowercase()
                                 when {
                                     name.isEmpty() -> notice = "写一个名字再添加"
-                                    name.contains(' ') -> notice = "名字里不能有空格——它匹配的是命令名/工具名"
+                                    name.contains(' ') -> notice = "名字里不能有空格——它只匹配命令名"
                                     group.items.contains(name) -> notice = "「$name」已经在这一组里了"
                                     else -> {
                                         commit(
@@ -453,7 +453,7 @@ private fun GroupBlock(
                             SettingField(
                                 value = draft,
                                 onChange = onDraft,
-                                placeholder = "命令名或工具名，如 rm",
+                                placeholder = "命令名，如 rm",
                             )
                         }
                         TinyChip("取消", onClick = onCancelAdd)
