@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""把 docs/ui/icons 下的一组 SVG 排成一张预览图（需要 rsvg-convert）。
+"""把 notes/ui/icons 下的一组 SVG 排成一张预览图（需要 rsvg-convert）。
 
 为什么要有这个：图标是 24px 画布上的东西，光看 XML 判断不出"22px 还认不认得出"。
 改完图标跑一遍，看 **小尺寸那张**——24px 好看不代表 18px 能读。
 
 用法：
-    python3 scripts/icon_preview.py docs/ui/icons/actions /tmp/actions.png
-    python3 scripts/icon_preview.py docs/ui/icons/actions /tmp/small.png --icon 22 --cols 10
+    python3 scripts/icon_preview.py notes/ui/icons/actions /tmp/actions.png
+    python3 scripts/icon_preview.py notes/ui/icons/actions /tmp/small.png --icon 22 --cols 10
 
 依赖：rsvg-convert（PRoot 里是手装的；Ubuntu: librsvg2-bin）。
 

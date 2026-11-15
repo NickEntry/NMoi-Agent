@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MANIFEST="android/app/src/main/AndroidManifest.xml"
-GENERATED="docs/ui/icons/app/manifest-aliases.xml"
+GENERATED="notes/ui/icons/app/manifest-aliases.xml"
 CATALOG="android/app/src/main/kotlin/com/nmoi/agent/ui/AppIconCatalog.kt"
 
 for f in "$MANIFEST" "$GENERATED" "$CATALOG"; do

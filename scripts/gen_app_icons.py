@@ -12,7 +12,7 @@
   res/drawable/fg_appicon_<slug>_<plate>.xml       前景层（108dp 画布，图形在 66dp 安全区里）
   res/mipmap-anydpi-v26/ic_appicon_<slug>_<plate>.xml  adaptive icon（背景色 + 前景）
   kotlin/.../ui/AppIconCatalog.kt                  设计/底色枚举 + 资源与 alias 名的唯一来源
-  docs/ui/icons/app/manifest-aliases.xml           贴进 AndroidManifest 的 alias 段（供对照）
+  notes/ui/icons/app/manifest-aliases.xml           贴进 AndroidManifest 的 alias 段（供对照）
 
 用法：python3 scripts/gen_app_icons.py
 """
@@ -22,7 +22,7 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES = os.path.join(ROOT, "android/app/src/main/res")
 KT = os.path.join(ROOT, "android/app/src/main/kotlin/com/nmoi/agent/ui")
-DOCS = os.path.join(ROOT, "docs/ui/icons/app")
+DOCS = os.path.join(ROOT, "notes/ui/icons/app")
 
 # 组件类名按 **namespace** 解析，不是 applicationId：两者故意不同（D102）——
 # 一旦按 applicationId 拼，就得到 com.NMoi.agent.icon.X，而真正装进去的类是

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 docs/ui/icons 下的 SVG 母版打成"原版图标包"：PNG × 三档密度 + manifest.json + NOTICE.txt。
+"""把 notes/ui/icons 下的 SVG 母版打成"原版图标包"：PNG × 三档密度 + manifest.json + NOTICE.txt。
 
 为什么是 PNG 而不是运行时渲染 SVG：Android 没有系统级 SVG 渲染器，为十几张小图引一个
 渲染库不划算，PNG 解码是系统自带的（D105）。
@@ -30,7 +30,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ICON_SRC = ROOT / "docs" / "ui" / "icons"
 
-# 目录 → (kind, 三档边长)。动作图标小，品牌图标大；档位与 docs/ui/icon-packs.md §2 一致。
+# 目录 → (kind, 三档边长)。动作图标小，品牌图标大；档位与 notes/ui/icon-packs.md §2 一致。
 GROUPS = {
     "actions": ("action", (24, 48, 72)),
     "providers": ("provider", (40, 80, 120)),
@@ -238,7 +238,7 @@ def _rule(kind: str, field: str, pattern: str, key: str) -> dict:
 
 
 def _default_rules(seen: set[tuple[str, str]]) -> list[dict]:
-    """首次启动的规则种子（docs/ui/icon-packs.md §3）。
+    """首次启动的规则种子（notes/ui/icon-packs.md §3）。
 
     全部是 `regex` + 优先级 500：谁更具体靠 `core::icons` 的有效字面量长度决胜，
     不靠堆优先级数字。用户加的规则默认也是 500，但来源排在预设前面，所以一加就生效。

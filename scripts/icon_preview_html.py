@@ -53,7 +53,7 @@ def fnv1a(text: str) -> int:
 
 
 def monogram(name: str) -> tuple[str, str]:
-    """与 docs/ui/icons/README.md §4 的规则一致：去 [分组]、取最后一段、首个字母数字。"""
+    """与 notes/ui/icons/README.md §4 的规则一致：去 [分组]、取最后一段、首个字母数字。"""
     tail = name.split("/")[-1]
     tail = re.sub(r"^\[[^\]]*\]", "", tail).strip()
     letter = next((ch for ch in tail if ch.isalnum()), "?")
