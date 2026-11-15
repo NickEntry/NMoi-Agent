@@ -2875,3 +2875,11 @@ core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **
 
 判据：`shrink_tests` 4 条（撤回并把原文落盘 / 已撤回过不再动 / 历史不动 / 小结果不动）；core **789**。
 
+### D336 补：流内报错也要能认出来（2026-11-15）
+
+`ChatError::overflow_hint()` 原来只看 `Http`。有的中转在 **HTTP 200 的流里**回
+`context_length_exceeded`，那条会走 `Sse`/`Stream`，信号就丢了（和 401 那条同一个形状）。
+现在 `overflow::classify_text`：没有状态码当门，所以**只认错误代码与整句**
+（`context_length_exceeded` / `prompt is too long` …），不接受"上下文 + 上限"的成对线索——
+没有门的时候成对判据会误伤。判据加 1 条，core **790**。
+

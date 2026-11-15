@@ -86,6 +86,23 @@ const SOFT: &[&str] = &["limit", "window", "max", "上限", "限制"];
 /// 它们只能是 `Maybe`：拿它们当判据会误伤所有参数错误。
 const WEAK: &[&str] = &["the param is invalid", "all models failed"];
 
+/// 流内报错（HTTP 200，错误在 body 里）没有状态码可用：只认**代码或整句**，
+/// 不接受"上下文 + 上限"这种成对线索——没有状态码当门，成对判据会误伤。
+pub fn classify_text(text: &str) -> Overflow {
+    let text: String = text.chars().take(2000).collect::<String>().to_lowercase();
+    for code in CODES {
+        if text.contains(code) {
+            return Overflow::Sure(code);
+        }
+    }
+    for phrase in PHRASES {
+        if text.contains(phrase) {
+            return Overflow::Sure(phrase);
+        }
+    }
+    Overflow::No
+}
+
 pub fn classify(
     status: u16,
     code: Option<&str>,
@@ -210,6 +227,14 @@ mod tests {
             Overflow::Maybe(_)
         ));
         assert!(matches!(at(400, "all models failed"), Overflow::Maybe(_)));
+    }
+
+    #[test]
+    fn 流内报错只认代码与整句() {
+        assert!(classify_text(r#"{"code":"context_length_exceeded"}"#).is_sure());
+        assert!(classify_text("prompt is too long").is_sure());
+        assert_eq!(classify_text("context window is 128000"), Overflow::No);
+        assert_eq!(classify_text("invalid model id"), Overflow::No);
     }
 
     #[test]

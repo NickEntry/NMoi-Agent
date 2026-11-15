@@ -386,6 +386,11 @@ impl ChatError {
             ChatError::Http(body) if matches!(body.overflow, OverflowHint::Likely(_)) => {
                 body.overflow.matched()
             }
+            // 流内报错（HTTP 200）：没有状态码可用，只认代码与整句。
+            ChatError::Sse(error) => crate::overflow::classify_text(&error.to_string()).matched(),
+            ChatError::Stream(error) => {
+                crate::overflow::classify_text(&error.to_string()).matched()
+            }
             _ => None,
         }
     }
