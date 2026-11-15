@@ -1149,6 +1149,12 @@ fn turn_json(turn: &SessionTurn, presets: &Value) -> Value {
             "finished": turn.report.finished,
             "cancelled": turn.report.cancelled,
             "truncated": turn.report.truncated,
+            // 超窗撤回（D336）：这一轮撤了一条工具结果、重发过一次。界面要能说出口。
+            "shrunk": turn.report.shrunk.as_ref().map(|entry| json!({
+                "bytes": entry.bytes,
+                "tokens": entry.tokens,
+                "path": entry.path,
+            })),
             // 断在哪儿（D327）：和 `truncated` 分开。断流也置 `truncated`（"没说完"的老判据不变），
             // 但界面上要说的是"连接断了、可以续话"，不是"上下文到了绝对线"。
             "cut": turn.report.cut,
@@ -1350,7 +1356,9 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
                     "compaction_required",
                     format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
                 ),
-                other => FfiError::new("turn", other.to_string()).with_status(other.http_status()),
+                other => FfiError::new("turn", other.to_string())
+                    .with_status(other.http_status())
+                    .with_overflow(other.overflow()),
             })
         };
         let turn = match (sink, round_hook) {
@@ -1734,7 +1742,9 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
                 "compaction_required",
                 format!("上下文已达绝对线（{used}/{usable} token），先压缩再发"),
             ),
-            other => FfiError::new("turn", other.to_string()).with_status(other.http_status()),
+            other => FfiError::new("turn", other.to_string())
+                .with_status(other.http_status())
+                .with_overflow(other.overflow()),
         })?;
 
         Ok(json!({
@@ -1751,6 +1761,11 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             "cancelled": outcome.report.cancelled,
             "truncated": outcome.report.truncated,
             "cut": outcome.report.cut,
+            "shrunk": outcome.report.shrunk.as_ref().map(|entry| json!({
+                "bytes": entry.bytes,
+                "tokens": entry.tokens,
+                "path": entry.path,
+            })),
         }))
     })
 }

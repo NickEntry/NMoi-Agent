@@ -2883,3 +2883,10 @@ core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **
 （`context_length_exceeded` / `prompt is too long` …），不接受"上下文 + 上限"的成对线索——
 没有门的时候成对判据会误伤。判据加 1 条，core **790**。
 
+### D336 补二：FFI 把 `overflow` 与 `shrunk` 带出去（2026-11-15）
+
+- 失败信封多一个 `error.overflow`（只有"确定"才有），`SessionError::overflow()` 逐层转发——
+  和 401 的 `status` 同一条规矩：类型信息不在边界上丢。
+- 成功信封（`turn_run` / `turn_regen`）多一个 `shrunk: {bytes, tokens, path}`，没有就是 `null`。
+- 界面那行提示**还没做**：它只有在真机上撞一次超窗才看得见，留给下一轮的验证面。
+

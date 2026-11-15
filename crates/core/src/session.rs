@@ -332,6 +332,14 @@ impl SessionError {
             _ => None,
         }
     }
+
+    /// 上游**确定**说超窗了（D336）。界面与日志据此说"撤回过 / 还能再撤一条"。
+    pub fn overflow(&self) -> Option<&'static str> {
+        match self {
+            SessionError::Agent(error) => error.overflow(),
+            _ => None,
+        }
+    }
 }
 
 /// 一次会话往返的完整结果。

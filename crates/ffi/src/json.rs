@@ -21,6 +21,8 @@ pub(crate) struct FfiError {
     /// 上游回的 HTTP 状态（D315）。绑定层靠它判断"是不是这把钥匙不行"，
     /// 而不是在文案里找数字——那是在猜。
     pub(crate) status: Option<u16>,
+    /// 上游**确定**说超窗时带出来的那句话（D336）。界面据此说"这一轮撤回了一条工具结果"。
+    pub(crate) overflow: Option<&'static str>,
 }
 
 impl FfiError {
@@ -29,7 +31,14 @@ impl FfiError {
             kind,
             message: message.into(),
             status: None,
+            overflow: None,
         }
+    }
+
+    /// 把"确定超窗"挂上去（没有就原样返回）。
+    pub(crate) fn with_overflow(mut self, overflow: Option<&'static str>) -> Self {
+        self.overflow = overflow;
+        self
     }
 
     /// 把上游状态挂上去（没有就原样返回）。
@@ -82,9 +91,22 @@ pub(crate) fn err_json(kind: &str, message: &str) -> *mut c_char {
 ///
 /// 不给一个假值（比如 0）——绑定层分不出"没有状态"和"状态是 0"。
 pub(crate) fn err_json_status(kind: &str, message: &str, status: Option<u16>) -> *mut c_char {
+    err_json_full(kind, message, status, None)
+}
+
+/// 再带一个"确定超窗"（D336）：界面据此把这一轮说成"撤回了一条工具结果再重发"。
+pub(crate) fn err_json_full(
+    kind: &str,
+    message: &str,
+    status: Option<u16>,
+    overflow: Option<&'static str>,
+) -> *mut c_char {
     let mut error = serde_json::json!({ "kind": kind, "message": message });
     if let Some(code) = status {
         error["status"] = serde_json::json!(code);
+    }
+    if let Some(why) = overflow {
+        error["overflow"] = serde_json::json!(why);
     }
     emit(format!(r#"{{"ok":false,"error":{}}}"#, error))
 }
@@ -95,7 +117,7 @@ pub(crate) fn err_json_status(kind: &str, message: &str, status: Option<u16>) ->
 pub(crate) fn run_json<F: FnOnce() -> FfiResult<Value>>(body: F) -> *mut c_char {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(value)) => ok_json(value),
-        Ok(Err(error)) => err_json_status(error.kind, &error.message, error.status),
+        Ok(Err(error)) => err_json_full(error.kind, &error.message, error.status, error.overflow),
         Err(payload) => err_json("panic", &panic_text(payload)),
     }
 }
