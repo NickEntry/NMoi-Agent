@@ -145,6 +145,9 @@ pub struct ToolContext<'a> {
     /// F2–F4 把大块工具结果换成一行标记时，标记里写的就是 `/archive/<hex>.txt`。
     /// 没有这一格，那条标记就是一句"东西在别处"——模型读不到，等于内容被扔了。
     pub session_archive: Option<&'a std::path::Path>,
+    /// 这个会话自己的 `/chat`（D337）：用户发来的文件落这儿，工具按 `/chat/<文件名>` 读。
+    /// 只读——写文件仍然走工作区与 `/tmp`。
+    pub session_chat: Option<&'a std::path::Path>,
     /// 上下文图片清单的上限（0 = 用默认 20）。见 [`crate::images`]。
     pub image_limit: u32,
     /// 满了之后还能临时多留几张（D272）：`0` = 关。见 [`crate::images::room_of`]。
@@ -193,6 +196,7 @@ impl<'a> ToolContext<'a> {
             sessions: None,
             session_tmp: None,
             session_archive: None,
+            session_chat: None,
             image_limit: 0,
             image_temp_limit: 0,
             voice: None,
@@ -258,6 +262,12 @@ impl<'a> ToolContext<'a> {
     /// 这个会话的归档目录（D317）：文件工具里的 `/archive/...` 落到它。
     pub fn with_session_archive(mut self, dir: Option<&'a std::path::Path>) -> Self {
         self.session_archive = dir;
+        self
+    }
+
+    /// 这个会话自己的 `/chat`（D337）：文件工具里的 `/chat/...` 落到它。
+    pub fn with_session_chat(mut self, dir: Option<&'a std::path::Path>) -> Self {
+        self.session_chat = dir;
         self
     }
 
@@ -612,6 +622,39 @@ fn target<'a>(
             read_only: true,
         });
     }
+    // 会话 `/chat`（D337）：用户发来的文件落在这儿，工具只读。
+    // 放在 `/tmp` 之前判：两条前缀不会互相命中，但顺序写死了更好读。
+    if let Some(rest) = under(trimmed, "/chat") {
+        let Some(root) = ctx.session_chat else {
+            return Err(ToolOutcome::failed(
+                "`/chat` 是会话私有的，这一轮没有会话上下文（或这个历史实现不存会话文件）；\
+                 用工作区相对路径，或先发一条消息让这一轮有会话。"
+                    .to_string(),
+            ));
+        };
+        if !rest.is_empty() && !root.join(rest).exists() {
+            return Err(ToolOutcome::failed(format!(
+                "没有这个文件：`{trimmed}`。这一轮的附件目录里只有用户发来的那些文件；\
+                 先用 `list_dir` 的 `/chat` 看一眼有什么。"
+            )));
+        }
+        let opened = Workspace::open(root).map_err(|error| {
+            ToolOutcome::failed(format!(
+                "会话文件目录建不出来（{}）：{error}",
+                root.display()
+            ))
+        })?;
+        return Ok(Target {
+            workspace: std::borrow::Cow::Owned(opened),
+            path: if rest.is_empty() {
+                ".".to_string()
+            } else {
+                rest.to_string()
+            },
+            read_only: true,
+        });
+    }
+
     let Some(rest) = under(trimmed, "/tmp") else {
         return Ok(Target {
             workspace: std::borrow::Cow::Borrowed(workspace),

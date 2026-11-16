@@ -108,6 +108,8 @@ internal object TurnRepository {
         text: String,
         /** 图片（D208）：`[{mime,data}]`，core 会把它们挂在这一轮新落的那条用户消息上。 */
         images: List<PendingImage> = emptyList(),
+        /** 文件（D337）：`[{name,mime,data}]`，core 落盘到会话 `chat/`，正文一个字不加。 */
+        files: List<PendingFile> = emptyList(),
     ): Result<TurnOutcome> = runTurn(
         context = context,
         databasePath = databasePath,
@@ -124,6 +126,18 @@ internal object TurnRepository {
                     )
                 }
                 config.put("images", array)
+            }
+            if (files.isNotEmpty()) {
+                val array = org.json.JSONArray()
+                for (file in files) {
+                    array.put(
+                        org.json.JSONObject()
+                            .put("name", file.name)
+                            .put("mime", file.mime)
+                            .put("data", file.data),
+                    )
+                }
+                config.put("files", array)
             }
         },
         invoke = { config -> NmoiFfi.turnRun(config) },

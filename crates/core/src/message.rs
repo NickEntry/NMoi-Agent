@@ -268,6 +268,30 @@ pub struct ImagePart {
     pub data: String,
 }
 
+/// 一份随用户消息发出去的文件（D337）。
+///
+/// 与 `ImagePart` 的区别：图片要编进请求体，文件只落盘；`data` 只是**传输**用的，
+/// 进了库就变成 [`FileRef`]（名字 / 大小 / 类型 / 相对路径），请求里最多出现一行清单。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePart {
+    /// 用户看到的名字（文件选择器给的那个）。
+    pub name: String,
+    pub mime: String,
+    /// 原始字节的 base64。
+    pub data: String,
+}
+
+/// 库里的一条文件附件（D337）：**不带字节**。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRef {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    /// 相对会话 `chat/` 的文件名——模型读的路径是 `/chat/<relative>`。
+    pub relative: String,
+}
+
 /// 消息里的一块（D255）。
 ///
 /// 库里存的就是这一串 parts；`Message::text()` / `reasoning()` / `tool_calls()`

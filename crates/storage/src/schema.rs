@@ -510,3 +510,15 @@ UPDATE message_versions
 pub const SCHEMA_V18: &str = r#"
 ALTER TABLE conversations ADD COLUMN workspace_id TEXT;
 "#;
+
+/// v19（D337）：附件分图片与文件，文件带原文件名。
+///
+/// `kind` 老行一律是 `image`——v18 及以前只有图片这一条路；`name` 老行为空，
+/// 读的时候按 `path` 的文件名兜底（那时落盘的名字就是附件 id）。
+/// 为什么要 `name`：文件落到 `/chat/<id>-<原文件名>` 之后，界面上那块芯片要显示
+/// 用户认得出的名字，而不是一串 uuid。
+pub const SCHEMA_V19: &str = r#"
+ALTER TABLE attachments ADD COLUMN name TEXT;
+ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';
+CREATE INDEX attachments_by_message_kind ON attachments(message_id, kind);
+"#;

@@ -93,10 +93,12 @@ internal object TurnRunner {
         text: String,
         /** 这一轮带的图片（D208）：跟着用户那条消息一起落库。 */
         images: List<PendingImage> = emptyList(),
+        /** 这一轮带的文件（D337）：落会话 `chat/`，正文一个字不加。 */
+        files: List<PendingFile> = emptyList(),
     ): Boolean {
         synchronized(jobs) {
             if (jobs.containsKey(sessionId)) return false
-            val job = scope.launch { run(context, databasePath, sessionId, text, images) }
+            val job = scope.launch { run(context, databasePath, sessionId, text, images, files) }
             jobs[sessionId] = job
             mark(sessionId, true)
         }
@@ -114,10 +116,11 @@ internal object TurnRunner {
         sessionId: String,
         text: String,
         images: List<PendingImage> = emptyList(),
+        files: List<PendingFile> = emptyList(),
     ) {
         _events.emit(TurnEvent.Started(sessionId, text, images.size))
         val result = runCatching {
-            TurnRepository.send(context, databasePath, sessionId, text, images)
+            TurnRepository.send(context, databasePath, sessionId, text, images, files)
         }
             .getOrElse { Result.failure(it) }
         val outcome = result.getOrNull()

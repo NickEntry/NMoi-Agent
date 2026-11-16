@@ -786,6 +786,50 @@ mod tests {
         assert!(storage.all_attachments().unwrap().is_empty());
     }
 
+    /// 文件附件（D337）：落会话 `chat/`、保留原文件名、不走图片那条 base64 路。
+    #[test]
+    fn file_attachments_land_in_chat_and_keep_their_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        let bytes = "# 标题\n正文".as_bytes().to_vec();
+
+        let id = storage
+            .put_file_attachment(session, &message, "../报告.md", "text/markdown", &bytes)
+            .unwrap();
+
+        // 名字里的 `..` 与目录分隔符都被换掉了，落点在 `chat/` 里。
+        let listed = storage.attachments_of(session).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, "file");
+        assert_eq!(listed[0].name, "报告.md");
+        let path: String = storage
+            .conn
+            .query_row("SELECT path FROM attachments WHERE id = ?1", [&id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(path.contains(&format!("{}/chat/", session)), "{path}");
+        assert!(!path.contains(".."), "{path}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        // 文件工具看到的相对名与元数据。
+        let files = storage.files_for(&message).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "报告.md");
+        assert_eq!(files[0].mime, "text/markdown");
+        assert_eq!(files[0].size, bytes.len() as u64);
+        assert!(path.ends_with(&files[0].relative), "{path}");
+
+        // **图片那条路不许把它当成图**：否则文件会被 base64 编进请求体。
+        assert!(storage.attachments_for(&message).unwrap().is_empty());
+
+        // 删会话：chat 目录跟着走。
+        assert!(storage.delete_conversation(session).unwrap());
+        assert!(!std::path::Path::new(&path).exists());
+    }
+
     /// 老库里的 BLOB 附件：第一次读的时候搬到盘上，之后走文件。
     #[test]
     fn legacy_blob_attachments_are_adopted_on_first_read() {

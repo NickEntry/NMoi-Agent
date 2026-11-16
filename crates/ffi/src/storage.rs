@@ -343,8 +343,10 @@ pub extern "C" fn nmoi_storage_list_attachments_json(
                     json!({
                         "id": info.id,
                         "message": info.message.to_string(),
+                        "name": info.name,
                         "mime": info.mime,
                         "size": info.size,
+                        "kind": info.kind,
                     })
                 })
                 .collect();
@@ -368,9 +370,11 @@ pub extern "C" fn nmoi_storage_list_all_attachments_json(handle: u64) -> *mut c_
                         "conversation": item.conversation,
                         "title": item.conversation_title,
                         "message": item.message,
+                        "name": item.name,
                         "mime": item.mime,
                         "size": item.size,
                         "path": item.path,
+                        "kind": item.kind,
                     })
                 })
                 .collect();
@@ -822,15 +826,26 @@ pub extern "C" fn nmoi_storage_load_units_json(
             // 字节不在这里带——80 条消息乘几 MB base64 会把首屏拖死。
             let mut images_by_message: std::collections::HashMap<String, Vec<Value>> =
                 std::collections::HashMap::new();
+            // 文件（D337）：与图片分开。两者都挂消息，但界面上是两种东西——
+            // 混进 `images` 会让一张 PDF 被画成缩略图（然后画不出来）。
+            let mut files_by_message: std::collections::HashMap<String, Vec<Value>> =
+                std::collections::HashMap::new();
             for info in storage.attachments_of(session_id).map_err(storage_error)? {
-                images_by_message
-                    .entry(info.message.to_string())
-                    .or_default()
-                    .push(json!({
+                let key = info.message.to_string();
+                if info.kind == "file" {
+                    files_by_message.entry(key).or_default().push(json!({
+                        "id": info.id,
+                        "name": info.name,
+                        "mime": info.mime,
+                        "size": info.size,
+                    }));
+                } else {
+                    images_by_message.entry(key).or_default().push(json!({
                         "id": info.id,
                         "mime": info.mime,
                         "size": info.size,
                     }));
+                }
             }
             let total = units.len();
             let take = if limit <= 0 {
@@ -928,6 +943,11 @@ pub extern "C" fn nmoi_storage_load_units_json(
                                 "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
                                 // 图片（D208）：只给元数据，字节走 `attachment` 按需取。
                                 "images": images_by_message
+                                    .get(&message.id.to_string())
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                // 文件（D337）：芯片上写名字与大小，内容不进列表。
+                                "files": files_by_message
                                     .get(&message.id.to_string())
                                     .cloned()
                                     .unwrap_or_default(),

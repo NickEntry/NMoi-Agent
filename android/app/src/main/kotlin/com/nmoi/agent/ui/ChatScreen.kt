@@ -1405,29 +1405,33 @@ internal fun ChatScreen(
                             NLog.i("Chat", "视觉覆盖：${images.size} 张图已转录成 ${transcript.length} 字")
                         }
                     }
-                    // 文件是文字：拼进正文，界面上看到的就是它。图片走另一条通道（转录或原样发）。
-                    val outgoing = if (files.isEmpty()) {
-                        bodyToSend
-                    } else {
-                        bodyToSend + "\n\n" + FileAttach.render(files)
-                    }
+                    // 文件是芯片（D337）：正文一个字不加；落盘与"给路径还是内联"由 core 决定。
+                    val outgoing = bodyToSend
                     if (TurnRunner.isRunning(sid)) {
-                        if (imagesToSend.isNotEmpty()) {
-                            // 队列里只存文字：带图的这一轮排进去，图就悄悄丢了。
+                        if (imagesToSend.isNotEmpty() || files.isNotEmpty()) {
+                            // 队列里只存文字：带附件的这一轮排进去，附件就悄悄丢了。
                             draft = text
                             pendingImages = images
                             pendingFiles = files
-                            notice = "这一轮还在跑：等它结束再发图（排队暂不支持图片）"
+                            notice = "这一轮还在跑：等它结束再发附件（排队暂不支持图片与文件）"
                             return@launch
                         }
                         val position = SendQueue.enqueue(sid, outgoing)
                         notice = "已排队（第 $position 位）：这一轮结束后自动继续"
-                    } else if (!TurnRunner.start(context, databasePath, sid, outgoing, imagesToSend)) {
-                        if (imagesToSend.isNotEmpty()) {
+                    } else if (!TurnRunner.start(
+                            context,
+                            databasePath,
+                            sid,
+                            outgoing,
+                            imagesToSend,
+                            files,
+                        )
+                    ) {
+                        if (imagesToSend.isNotEmpty() || files.isNotEmpty()) {
                             draft = text
                             pendingImages = images
                             pendingFiles = files
-                            notice = "这一轮马上结束：等它收尾再发图（排队暂不支持图片）"
+                            notice = "这一轮马上结束：等它收尾再发附件（排队暂不支持图片与文件）"
                             return@launch
                         }
                         // 抢跑（刚好在这一瞬间被别的入口起来了）：退一步排队，不丢字。
@@ -1442,6 +1446,7 @@ internal fun ChatScreen(
                             text = outgoing,
                             at = System.currentTimeMillis(),
                             imageCount = imagesToSend.size,
+                            fileCount = files.size,
                         )
                     }
                 }
@@ -2803,6 +2808,7 @@ private fun MessageArea(
                     // 失败时会退回输入框而不是留在这里（TurnEvent.Failed 那条）。
                     sending = true,
                     pendingImageCount = outbox.imageCount,
+                    pendingFileCount = outbox.fileCount,
                 )
             }
         }
@@ -3203,6 +3209,8 @@ private data class PendingSend(
     val at: Long,
     /** 随这一条一起发出去的图（还没从库里读回来，所以只能给数量）。 */
     val imageCount: Int = 0,
+    /** 随这一条一起发出去的文件（同上，只给数量）。 */
+    val fileCount: Int = 0,
 )
 
 private const val USER_NAME = "我"
@@ -3327,7 +3335,7 @@ private fun PendingFileStrip(files: List<PendingFile>, onRemove: (Int) -> Unit) 
                         maxLines = 1,
                     )
                     Text(
-                        text = file.sizeLabel + if (file.truncated) " · 只取前 64 KB" else "",
+                        text = file.sizeLabel,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -3421,7 +3429,57 @@ private fun imageBox(bitmap: android.graphics.Bitmap): Pair<Dp, Dp> {
 }
 
 @Composable
+private fun MessageFiles(files: List<ChatFile>) {
+    if (files.isEmpty()) return
+    Column(
+        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        for (file in files) {
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 240.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surfaceContainerHigh,
+                        RoundedCornerShape(10.dp),
+                    )
+                    .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = ActionIcons.Paperclip,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                Column(modifier = Modifier.padding(start = 6.dp)) {
+                    Text(
+                        text = file.name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = fileSizeLabel(file.size) +
+                            if (file.mime.isBlank()) "" else " · ${file.mime}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun fileSizeLabel(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> "${(bytes / 1024.0 / 1024.0 * 10).toInt() / 10.0} MB"
+}
+
 private fun MessageImages(images: List<ChatImage>) {
+
     if (images.isEmpty()) return
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }
@@ -3485,7 +3543,9 @@ private fun UserMessage(
     sending: Boolean = false,
     /** 随这一条一起发出去、还没从库里读回来的图。 */
     pendingImageCount: Int = 0,
- ) {
+    /** 随这一条一起发出去、还没从库里读回来的文件。 */
+    pendingFileCount: Int = 0,
+) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
     // 「发送中」的呼吸：它是"还在路上"的唯一信号，静态一行字看着像已经存好了。
@@ -3551,11 +3611,17 @@ private fun UserMessage(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
                     MessageImages(images = message.images)
-                    if (sending && pendingImageCount > 0) {
-                        // 图已经随这一轮交出去了，库里那份要等收尾才读得回来。
-                        // 这里留一句，免得发出去那一刻缩略图凭空消失、看着像被吞了。
+                    MessageFiles(files = message.files)
+                    if (sending && (pendingImageCount > 0 || pendingFileCount > 0)) {
+                        // 附件已经随这一轮交出去了，库里那份要等收尾才读得回来。
+                        // 这里留一句，免得发出去那一刻芯片凭空消失、看着像被吞了。
                         Text(
-                            text = "带 $pendingImageCount 张图（发送中）",
+                            text = buildString {
+                                if (pendingImageCount > 0) append("带 $pendingImageCount 张图")
+                                if (pendingImageCount > 0 && pendingFileCount > 0) append(" · ")
+                                if (pendingFileCount > 0) append("带 $pendingFileCount 个文件")
+                                append("（发送中）")
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                             modifier = Modifier.padding(bottom = 4.dp),

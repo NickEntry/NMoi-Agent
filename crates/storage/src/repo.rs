@@ -52,6 +52,33 @@ pub struct SessionInterrupts {
 /// 一轮请求体再大就没有意义了（上游普遍 20 MB 起，但那是整包上限）。
 pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
+/// 单个文件附件的上限（D337）。比图片松一档：文件不编 base64 再进请求体，
+/// 它只落盘；真正的限制是界面那一步读进内存的量。16 MB 够覆盖常见文档与代码包。
+pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
+
+/// 落盘用的文件名（D337）：只留可见字符，路径分隔符与控制字符一律换掉。
+///
+/// 不做这一步的话，一个叫 `../../evil` 的文件会把字节写到会话目录之外——
+/// 名字从输入法/文件选择器来，不能假设它干净。空名字兜底成 `file`。
+fn sanitize_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
+    let mut out = String::with_capacity(base.len().min(120));
+    for ch in base.chars() {
+        if out.chars().count() >= 120 {
+            break;
+        }
+        let keep =
+            !ch.is_control() && !matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
+        out.push(if keep { ch } else { '_' });
+    }
+    let trimmed = out.trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "file".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// 图片扩展名：只用于文件名，读的时候不靠它判断类型（类型看 `mime` 列）。
 fn extension_for(mime: &str) -> &'static str {
     match mime {
@@ -82,8 +109,11 @@ pub fn sha256_hex(content: &str) -> String {
 pub struct AttachmentInfo {
     pub id: String,
     pub message: MessageId,
+    pub name: String,
     pub mime: String,
     pub size: u64,
+    /// `image` / `file`（D337）。老行是 `image`。
+    pub kind: String,
 }
 
 /// 存储管理页用的一条附件（D216）：带会话标题与盘上路径。
@@ -93,9 +123,22 @@ pub struct StoredAttachment {
     pub conversation: String,
     pub conversation_title: String,
     pub message: String,
+    pub name: String,
     pub mime: String,
     pub size: u64,
     pub path: Option<String>,
+    pub kind: String,
+}
+
+/// 一条文件附件的落点（D337）：文件工具按 `/chat/<相对路径>` 读它。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileAttachment {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    /// 相对会话 `chat/` 的文件名。
+    pub relative: String,
 }
 
 /// 列表页里的一条会话（D61）。
@@ -375,8 +418,8 @@ impl Storage {
         let path = file.to_string_lossy().to_string();
 
         let inserted = self.conn.execute(
-            "INSERT INTO attachments(id, conv_id, message_id, mime, bytes, path, size, created_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+            "INSERT INTO attachments(id, conv_id, message_id, name, mime, bytes, path, size, created_at, kind)
+             VALUES (?1, ?2, ?3, '', ?4, NULL, ?5, ?6, ?7, 'image')",
             params![
                 id,
                 session.to_string(),
@@ -395,10 +438,120 @@ impl Storage {
         Ok(id)
     }
 
+    /// 存一份文件（D337）：落到会话自己的 `chat/`，库里只留文件名与路径。
+    ///
+    /// **原文件名要留**：界面上那块芯片显示的是用户认得出的名字，模型按
+    /// `/chat/<文件名>` 读的也是它。落盘的名字前面加一段附件 id 防重名，
+    /// 后面保留原名的可见部分（去掉路径分隔符与控制字符——文件名里带 `/`
+    /// 会写进别的目录，那是这一层唯一的安全边界）。
+    pub fn put_file_attachment(
+        &mut self,
+        session: SessionId,
+        message: &MessageId,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<String, StorageError> {
+        let name = sanitize_file_name(name);
+        let mime = mime.trim();
+        if bytes.is_empty() {
+            return Err(StorageError::Inconsistent("文件是空的".to_string()));
+        }
+        if bytes.len() > MAX_FILE_BYTES {
+            return Err(StorageError::Inconsistent(format!(
+                "文件 {} 字节，超过上限 {}",
+                bytes.len(),
+                MAX_FILE_BYTES
+            )));
+        }
+        if message.session() != session {
+            return Err(StorageError::Inconsistent(format!(
+                "消息 {message} 不属于会话 {session}"
+            )));
+        }
+        let owned: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM messages WHERE id = ?1 AND conv_id = ?2",
+                params![message.to_string(), session.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if owned.is_none() {
+            return Err(StorageError::Inconsistent(format!(
+                "消息 {message} 不在会话 {session} 里，文件没地方挂"
+            )));
+        }
+
+        let id = Uuid::now_v7().to_string();
+        let short = &id[id.len().saturating_sub(8)..];
+        let relative = format!("{short}-{name}");
+        let dir = self.chat_dir(session);
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join(relative);
+        std::fs::write(&file, bytes)?;
+        let path = file.to_string_lossy().to_string();
+
+        let inserted = self.conn.execute(
+            "INSERT INTO attachments(id, conv_id, message_id, name, mime, bytes, path, size, created_at, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, 'file')",
+            params![
+                id,
+                session.to_string(),
+                message.to_string(),
+                name,
+                mime,
+                path,
+                bytes.len() as i64,
+                crate::validate::now_ms(),
+            ],
+        );
+        if let Err(error) = inserted {
+            let _ = std::fs::remove_file(&file);
+            return Err(error.into());
+        }
+        Ok(id)
+    }
+
+    /// 一条消息带的文件（D337）：只给元数据，内容由文件工具按 `/chat` 读。
+    pub fn files_for(&self, message: &MessageId) -> Result<Vec<FileAttachment>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, COALESCE(name, ''), mime, size, path FROM attachments
+             WHERE message_id = ?1 AND kind = 'file'
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([message.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, name, mime, size, path) = row?;
+            let relative = path
+                .as_deref()
+                .and_then(|full| std::path::Path::new(full).file_name())
+                .map(|file| file.to_string_lossy().to_string())
+                .unwrap_or_else(|| name.clone());
+            out.push(FileAttachment {
+                id,
+                name,
+                mime,
+                size: size as u64,
+                relative,
+            });
+        }
+        Ok(out)
+    }
+
     /// 一个会话里所有附件的元数据（不带字节）：消息区画缩略图前先知道"哪条有几个"。
     pub fn attachments_of(&self, session: SessionId) -> Result<Vec<AttachmentInfo>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, message_id, mime, size FROM attachments
+            "SELECT id, message_id, COALESCE(name, ''), mime, size, kind FROM attachments
              WHERE conv_id = ?1 ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([session.to_string()], |row| {
@@ -406,17 +559,21 @@ impl Storage {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, message, mime, size) = row?;
+            let (id, message, name, mime, size, kind) = row?;
             out.push(AttachmentInfo {
                 id,
                 message: MessageId::from_str_value(&message).map_err(StorageError::Inconsistent)?,
+                name,
                 mime,
                 size: size as u64,
+                kind,
             });
         }
         Ok(out)
@@ -425,8 +582,8 @@ impl Storage {
     /// 全部附件（带会话标题）：存储管理页用（D216）。
     pub fn all_attachments(&self) -> Result<Vec<StoredAttachment>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT a.id, a.conv_id, a.message_id, a.mime, a.size, a.path,
-                    COALESCE(c.title, '')
+            "SELECT a.id, a.conv_id, a.message_id, COALESCE(a.name, ''), a.mime, a.size, a.path,
+                    COALESCE(c.title, ''), a.kind
              FROM attachments a
              LEFT JOIN conversations c ON c.id = a.conv_id
              ORDER BY a.created_at DESC, a.id DESC",
@@ -435,11 +592,13 @@ impl Storage {
             Ok(StoredAttachment {
                 id: row.get(0)?,
                 conversation: row.get(1)?,
-                conversation_title: row.get(6)?,
+                conversation_title: row.get(7)?,
                 message: row.get(2)?,
-                mime: row.get(3)?,
-                size: row.get::<_, i64>(4)? as u64,
-                path: row.get(5)?,
+                name: row.get(3)?,
+                mime: row.get(4)?,
+                size: row.get::<_, i64>(5)? as u64,
+                path: row.get(6)?,
+                kind: row.get(8)?,
             })
         })?;
         let mut out = Vec::new();
@@ -535,7 +694,7 @@ impl Storage {
         message: &MessageId,
     ) -> Result<Vec<(String, String)>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, mime FROM attachments WHERE message_id = ?1
+            "SELECT id, mime FROM attachments WHERE message_id = ?1 AND kind = 'image'
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([message.to_string()], |row| {
@@ -559,6 +718,14 @@ impl Storage {
     /// 会话删掉时整目录一起删（见 `delete_conversation`）。
     pub fn attachment_dir(&self, session: SessionId) -> std::path::PathBuf {
         self.session_dir(session).join("images")
+    }
+
+    /// 会话自己的 `/chat`（D337）：用户发来的文件落这儿，文件工具按 `/chat/<文件名>` 读。
+    ///
+    /// 与 `images` 同级，删会话时整目录一起删；工具那边是**只读**，
+    /// 写文件仍然走工作区与 `/tmp`。
+    pub fn chat_dir(&self, session: SessionId) -> std::path::PathBuf {
+        self.session_dir(session).join("chat")
     }
 
     /// 会话自己的暂存目录：`<库目录>/sessions/<会话 id>/tmp/`（D294）。
@@ -1860,6 +2027,49 @@ impl nmoi_core::session::HistoryStore for Storage {
     /// 这个会话的附件目录（D248）：`View-Image` 只认这里面的文件。
     fn attachment_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         Some(Storage::attachment_dir(self, session))
+    }
+
+    /// 一条消息带的文件（D337）：只给元数据，内容不走内存。
+    fn files(&self, message: &MessageId) -> Result<Vec<nmoi_core::message::FileRef>, String> {
+        let rows = Storage::files_for(self, message).map_err(|error| error.to_string())?;
+        Ok(rows
+            .into_iter()
+            .map(|row| nmoi_core::message::FileRef {
+                id: row.id,
+                name: row.name,
+                mime: row.mime,
+                size: row.size,
+                relative: row.relative,
+            })
+            .collect())
+    }
+
+    /// 这一轮刚发的文件（D337）：解码后逐个落盘。解不开就报错——
+    /// 悄悄少存一个，下一轮重试时模型就找不到那个文件了。
+    fn save_files(
+        &mut self,
+        message: &MessageId,
+        files: &[nmoi_core::message::FilePart],
+    ) -> Result<(), String> {
+        for file in files {
+            let bytes = nmoi_core::base64::decode(&file.data)
+                .ok_or_else(|| format!("文件 base64 解不开（{}）", file.name))?;
+            Storage::put_file_attachment(
+                self,
+                message.session(),
+                message,
+                &file.name,
+                &file.mime,
+                &bytes,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// 这个会话自己的 `/chat`（D337）：文件工具按它解析 `/chat/...`。
+    fn chat_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        Some(Storage::chat_dir(self, session))
     }
 
     /// 这个会话自己的暂存目录（D294）：文件工具的 `/tmp` 落到它。

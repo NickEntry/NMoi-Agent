@@ -39,7 +39,7 @@ use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
 use nmoi_core::provider::{ProviderConfig, ProviderKind, ThinkingEffort, ThinkingField};
 use nmoi_core::runtime::ChatRequest;
 use nmoi_core::session::{
-    regenerate_turn, run_session_turn_with_images, SessionConfig, SessionError, SessionTurn,
+    regenerate_turn, run_session_turn_with_attachments, SessionConfig, SessionError, SessionTurn,
 };
 use nmoi_core::shell::EnvirSpec;
 use nmoi_core::shellguard::GuardConfig;
@@ -874,6 +874,85 @@ fn parse_images(text: &str) -> FfiResult<Vec<nmoi_core::message::ImagePart>> {
     Ok(out)
 }
 
+/// 这一轮带的文件（D337）：`[{"name":"报告.md","mime":"text/markdown","data":"<base64>"}]`。
+///
+/// 在这一层挡掉的是"界面能拦住但 native 不能假设"的那几样：名字为空、base64 坏了、
+/// 太大、太多。mime 允许空（有些文件选择器给不出类型），那时按 `application/octet-stream` 存。
+fn parse_files(text: &str) -> FfiResult<Vec<nmoi_core::message::FilePart>> {
+    let root: Value = serde_json::from_str(text)
+        .map_err(|error| FfiError::new("bad_argument", format!("配置不是合法 JSON: {error}")))?;
+    let Some(list) = root.get("files") else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or_else(|| FfiError::new("bad_argument", "`files` 必须是数组"))?;
+    if list.len() > 4 {
+        return Err(FfiError::new(
+            "bad_argument",
+            format!("一轮最多带 4 个文件，给了 {} 个", list.len()),
+        ));
+    }
+    let mut out = Vec::with_capacity(list.len());
+    for (index, item) in list.iter().enumerate() {
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                FfiError::new(
+                    "bad_argument",
+                    format!("第 {index} 个文件缺 `name`（或它是空的）"),
+                )
+            })?;
+        if name.chars().count() > 200 {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!("第 {index} 个文件的名字太长（超过 200 字）：{name}"),
+            ));
+        }
+        let mime = item
+            .get("mime")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|mime| !mime.is_empty())
+            .unwrap_or("application/octet-stream");
+        let data = item
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FfiError::new("bad_argument", format!("第 {index} 个文件缺 `data`")))?;
+        let bytes = nmoi_core::base64::decode(data).ok_or_else(|| {
+            FfiError::new(
+                "bad_argument",
+                format!("第 {index} 个文件（{name}）的 base64 解不开"),
+            )
+        })?;
+        if bytes.is_empty() {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!("第 {index} 个文件（{name}）是空的"),
+            ));
+        }
+        if bytes.len() > nmoi_storage::repo::MAX_FILE_BYTES {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!(
+                    "第 {index} 个文件（{name}）{} 字节，超过上限 {}",
+                    bytes.len(),
+                    nmoi_storage::repo::MAX_FILE_BYTES
+                ),
+            ));
+        }
+        out.push(nmoi_core::message::FilePart {
+            name: name.to_string(),
+            mime: mime.to_string(),
+            data: data.to_string(),
+        });
+    }
+    Ok(out)
+}
+
 fn provider_config(input: &TurnInput) -> ProviderConfig {
     let mut provider =
         ProviderConfig::new(&input.provider_id, input.provider_kind, &input.base_url);
@@ -1198,6 +1277,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         // 图片（D208）：和 `stream` 一样从原始 JSON 里取——`parse_config` 被 regen 共用，
         // 为了一个可选数组改它的签名不值当。
         let images = parse_images(text)?;
+        let files = parse_files(text)?;
         let stream = serde_json::from_str::<Value>(text)
             .ok()
             .and_then(|root| root.get("stream").and_then(Value::as_bool))
@@ -1336,13 +1416,14 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         };
 
         let mut call = || {
-            run_session_turn_with_images(
+            run_session_turn_with_attachments(
                 &client,
                 &request,
                 &mut storage,
                 input.session,
                 &input.user_text,
                 &images,
+                &files,
                 &registry,
                 &policy,
                 workspace.as_ref(),
@@ -2956,6 +3037,38 @@ mod partial_tests {
                 .join(",")
         );
         assert!(parse_images(&too_many).is_err(), "一轮最多 4 张");
+    }
+
+    /// 文件参数（D337）：名字不能空、base64 要能解、大小与数量都要挡。
+    #[test]
+    fn parse_files_checks_name_base64_and_size() {
+        let ok = parse_files(
+            r#"{"files":[{"name":"报告.md","mime":"text/markdown","data":"aGVsbG8="}]}"#,
+        )
+        .expect("合法文件应当通过");
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].name, "报告.md");
+        assert_eq!(ok[0].mime, "text/markdown");
+
+        // 没写 files：空，不是错。
+        assert!(parse_files(r#"{"user_text":"hi"}"#).unwrap().is_empty());
+
+        // mime 空：按二进制存，不报错——有些文件选择器给不出类型。
+        let no_mime = parse_files(r#"{"files":[{"name":"a.bin","data":"aGVsbG8="}]}"#).unwrap();
+        assert_eq!(no_mime[0].mime, "application/octet-stream");
+
+        assert!(parse_files(r#"{"files":[{"name":"","data":"aGVsbG8="}]}"#).is_err());
+        assert!(parse_files(r#"{"files":[{"name":"a.txt","data":"aGVsbG8"}]}"#).is_err());
+        assert!(parse_files(r#"{"files":[{"name":"a.txt","data":""}]}"#).is_err());
+
+        let too_many = format!(
+            r#"{{"files":[{}]}}"#,
+            (0..5)
+                .map(|_| r#"{"name":"a.txt","data":"aGVsbG8="}"#)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_files(&too_many).is_err(), "一轮最多 4 个");
     }
 
     /// 角色自己的世界书（D313）：位置照 `apply_lorebook`，一次性补全没有"轮次"。

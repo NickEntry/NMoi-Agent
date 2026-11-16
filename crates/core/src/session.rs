@@ -96,6 +96,24 @@ pub trait HistoryStore {
         Ok(Vec::new())
     }
 
+    /// 一条消息带的文件（D337）：**只给元数据**，内容由文件工具按 `/chat` 读。
+    ///
+    /// 默认空：内存实现与测试夹具没有附件表，行为不变。
+    fn files(&self, message: &MessageId) -> Result<Vec<crate::message::FileRef>, String> {
+        let _ = message;
+        Ok(Vec::new())
+    }
+
+    /// 把这一轮用户带的文件落到那条消息上（D337）。默认什么都不存，与 `save_attachments` 同。
+    fn save_files(
+        &mut self,
+        message: &MessageId,
+        files: &[crate::message::FilePart],
+    ) -> Result<(), String> {
+        let _ = (message, files);
+        Ok(())
+    }
+
     /// 按附件 id 读一张图（D248）。`None` = 库里没有这张。
     ///
     /// 与 [`HistoryStore::attachments`] 的区别：那个按**消息**取（用户发的图跟着消息走），
@@ -107,6 +125,13 @@ pub trait HistoryStore {
 
     /// 这个会话的附件目录（`sessions/<id>/images`）。`None` = 这个实现没有盘上的附件。
     fn attachment_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
+        let _ = session;
+        None
+    }
+
+    /// 这个会话自己的 `/chat`（D337）：用户发来的文件落这儿，文件工具按 `/chat/<文件名>` 读。
+    /// 默认 `None` = 这个实现没有会话目录：那时 `/chat` 报错，不回落工作区。
+    fn chat_dir(&self, session: SessionId) -> Option<std::path::PathBuf> {
         let _ = session;
         None
     }
@@ -552,6 +577,137 @@ fn attach_images<S: HistoryStore>(
     // 上下文图片（D248）**不在这里挂**：`View-Image` 可能就在这一轮的某一轮里把图加进清单，
     // 而这里整轮只跑一次。那份改由 `run_turn` 每轮发请求之前并（D269）。
     Ok(())
+}
+
+/// 内联文件的读取上限（D337）。与旧版 `FileAttach.MAX_TEXT_BYTES` 同值：
+/// 这是"没有文件工具时唯一能看到内容"的那一份，超过它就只能说清截到哪儿。
+const INLINE_FILE_BYTES: usize = 64 * 1024;
+
+/// 这一轮带的文件（D337）：优先读库里那一份；内存实现不存附件，就用手上这份兜底。
+fn collect_files<S: HistoryStore>(
+    store: &S,
+    user: &Message,
+    incoming: &[crate::message::FilePart],
+) -> Result<Vec<crate::message::FileRef>, SessionError> {
+    let mut refs = store.files(&user.id).map_err(SessionError::Load)?;
+    if refs.is_empty() && !incoming.is_empty() {
+        refs = incoming
+            .iter()
+            .map(|file| crate::message::FileRef {
+                id: String::new(),
+                name: file.name.clone(),
+                mime: file.mime.clone(),
+                size: crate::base64::decode(&file.data)
+                    .map(|bytes| bytes.len() as u64)
+                    .unwrap_or(0),
+                relative: file.name.clone(),
+            })
+            .collect();
+    }
+    Ok(refs)
+}
+
+/// 重试/续话那条路（D337）：最后一条用户消息带的文件。
+fn last_user_files<S: HistoryStore>(
+    store: &S,
+    history: &[Message],
+) -> Result<Vec<crate::message::FileRef>, SessionError> {
+    let Some(message) = history
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+    else {
+        return Ok(Vec::new());
+    };
+    store.files(&message.id).map_err(SessionError::Load)
+}
+
+/// 这一轮能不能 `read_file`（D337）：能力位开着，而且没在面板上关掉它。///
+/// 不按"模型支不支持工具"判——那一层由调用方把工具名单冻在 `declared` 里，
+/// 这里只判"有没有读的能力"。判错两个方向的后果不对称：判成有工具而模型不调，
+/// 文件读不到；判成没工具而模型能读，则白塞一大段内容。前者更糟，所以用能力位。
+fn read_file_available(policy: &AssistantPolicy, tools_off: &[String]) -> bool {
+    policy.allows(crate::policy::Capability::WorkspaceRead)
+        && !tools_off.iter().any(|name| name == "read_file")
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        _ if bytes < 1024 * 1024 => format!("{} KB", bytes / 1024),
+        _ => format!("{:.1} MB", bytes as f64 / 1024.0 / 1024.0),
+    }
+}
+
+/// 把这一轮的文件写进**发出去的那一份**用户消息（D337）。库里那条不动。
+///
+/// 有文件工具：只给清单（名字 / 大小 / 类型 / `/chat/<文件名>`），让模型自己读。
+/// 没有：把内容内联，用 `---file:name--- … ---file---` 包住；二进制就如实说一句。
+fn attach_file_hints(
+    history: &mut [Message],
+    files: &[crate::message::FileRef],
+    can_read: bool,
+    dir: Option<&std::path::Path>,
+) {
+    let Some(message) = history.iter_mut().rev().find(|m| m.role == Role::User) else {
+        return;
+    };
+    let mut note = String::new();
+    if can_read {
+        note.push_str("\n\n【这一轮带的文件】");
+        for file in files {
+            note.push_str(&format!(
+                "\n- {} · {} · {} → /chat/{}",
+                file.name,
+                human_size(file.size),
+                if file.mime.trim().is_empty() {
+                    "类型不明"
+                } else {
+                    file.mime.as_str()
+                },
+                file.relative
+            ));
+        }
+        note.push_str(
+            "\n需要内容就调 read_file，path 写 `/chat/<文件名>`（只读）；\
+             别整份读进来再复述，先看目录与关键段。",
+        );
+    } else {
+        for file in files {
+            note.push_str(&format!("\n\n---file:{}---\n", file.name));
+            let read = dir.map(|root| root.join(&file.relative)).map(std::fs::read);
+            match read {
+                Some(Ok(bytes)) if bytes.contains(&0) => note.push_str(&format!(
+                    "（二进制文件 · {}；当前没有文件工具，内容读不了）",
+                    human_size(file.size)
+                )),
+                Some(Ok(bytes)) => {
+                    let truncated = bytes.len() > INLINE_FILE_BYTES;
+                    let body = if truncated {
+                        &bytes[..INLINE_FILE_BYTES]
+                    } else {
+                        &bytes[..]
+                    };
+                    note.push_str(&String::from_utf8_lossy(body));
+                    if truncated {
+                        note.push_str(&format!(
+                            "\n（只取了前 {} KB，原文件 {}）",
+                            INLINE_FILE_BYTES / 1024,
+                            human_size(file.size)
+                        ));
+                    }
+                }
+                _ => note.push_str(&format!(
+                    "（文件不在盘上：{}，{}）",
+                    file.name,
+                    human_size(file.size)
+                )),
+            }
+            note.push_str("\n---file---");
+        }
+    }
+    message.set_text(format!("{}{note}", message.content()));
+    message.tokens = estimate_tokens(&message.content());
 }
 
 /// 按档位把历史里的大块内容换成更小的形态（D275）。
@@ -1052,6 +1208,40 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     config: &SessionConfig<'_>,
     now: i64,
 ) -> Result<SessionTurn, SessionError> {
+    run_session_turn_with_attachments(
+        client,
+        base,
+        store,
+        session,
+        user_text,
+        images,
+        &[],
+        registry,
+        policy,
+        workspace,
+        config,
+        now,
+    )
+}
+
+/// 带图片与文件的一轮（D337）。文件只落盘，正文一个字不加：
+/// 有文件工具就把 `/chat/<文件名>` 给模型，让它自己 `read_file`；
+/// 没有工具才把内容内联进**发出去的那一份**（库里仍然只有那块芯片）。
+#[allow(clippy::too_many_arguments)]
+pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
+    client: &ChatClient<T>,
+    base: &ChatRequest,
+    store: &mut S,
+    session: SessionId,
+    user_text: &str,
+    images: &[crate::message::ImagePart],
+    files: &[crate::message::FilePart],
+    registry: &ToolRegistry,
+    policy: &AssistantPolicy,
+    workspace: Option<&Workspace>,
+    config: &SessionConfig<'_>,
+    now: i64,
+) -> Result<SessionTurn, SessionError> {
     // 1. 用户消息先落库：用户说了什么，不因为后面失败而丢
     //    读的是**窗口**不是整条历史（D149）：线上那一段已经被压成摘要，
     //    再把原文整段发出去，等于压缩没发生。
@@ -1127,6 +1317,11 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
             .save_attachments(&user.id, images)
             .map_err(SessionError::Save)?;
     }
+    if !files.is_empty() {
+        store
+            .save_files(&user.id, files)
+            .map_err(SessionError::Save)?;
+    }
 
     // 2. 把历史摊成消息序列，跑工具循环
     // 断块修复（P4.1 / D66）：不完整的工具单元在**这里**被翻译成文字块，
@@ -1178,6 +1373,19 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     {
         frozen_base.images.push((user.id.clone(), images.to_vec()));
     }
+    // 文件附件（D337）：库里只有那块芯片，正文一个字不加。
+    // 发出去的那一份按"有没有文件工具"分两条路：有工具给路径让模型自己读，
+    // 没有工具才内联——否则文件会变成"界面上看得见、模型永远读不到"。
+    let file_refs = collect_files(store, &user, files)?;
+    let read_files = read_file_available(policy, config.tools_off);
+    if !file_refs.is_empty() {
+        attach_file_hints(
+            &mut history,
+            &file_refs,
+            read_files,
+            store.chat_dir(session).as_deref(),
+        );
+    }
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     // 手动关闭（0.15ak）按 `(会话, call_id)` 登记，所以这一轮得带上自己是谁。
     let call_session = session.to_string();
@@ -1189,6 +1397,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
     let session_tmp = store.session_tmp_dir(session);
     let session_archive = store.session_archive_dir(session);
     let session_audio = store.session_audio_dir(session);
+    let session_chat = store.chat_dir(session);
     // 工具定义覆写（0.17f）：从这一册世界书里取出 `tool_call_*` 那几条。
     let tool_overrides = config
         .lorebook
@@ -1203,6 +1412,7 @@ pub fn run_session_turn_with_images<T: Transport, S: HistoryStore>(
         .with_image_room(config.turn.image_temp_limit)
         .with_session_tmp(session_tmp.as_deref())
         .with_session_archive(session_archive.as_deref())
+        .with_session_chat(session_chat.as_deref())
         .with_sessions(session_index.as_ref())
         .with_voice(config.voice)
         .with_transport(config.transport)
@@ -1447,6 +1657,16 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         }
     }
     attach_images(&mut frozen_base, store, &history, path_mode)?;
+    // 文件附件（D337）：重试也照同一套，不然"重试一次"模型就找不到刚才那个文件了。
+    let retry_files = last_user_files(store, &history)?;
+    if !retry_files.is_empty() {
+        attach_file_hints(
+            &mut history,
+            &retry_files,
+            read_file_available(policy, config.tools_off),
+            store.chat_dir(session).as_deref(),
+        );
+    }
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     let call_session = session.to_string();
     crate::kills::clear_done(&call_session);
@@ -1455,6 +1675,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
     let session_tmp = store.session_tmp_dir(session);
     let session_archive = store.session_archive_dir(session);
     let session_audio = store.session_audio_dir(session);
+    let session_chat = store.chat_dir(session);
     // 工具定义覆写（0.17f）：从这一册世界书里取出 `tool_call_*` 那几条。
     let tool_overrides = config
         .lorebook
@@ -1469,6 +1690,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_image_room(config.turn.image_temp_limit)
         .with_session_tmp(session_tmp.as_deref())
         .with_session_archive(session_archive.as_deref())
+        .with_session_chat(session_chat.as_deref())
         .with_sessions(session_index.as_ref())
         .with_voice(config.voice)
         .with_transport(config.transport)
@@ -4208,6 +4430,110 @@ mod tests {
         assert_eq!(history[2].content(), "最新那一条", "最新一条工具结果不动");
         assert_eq!(history[3].content(), big, "世界书永远全文");
         assert_eq!(history[4].content(), big, "指令注入永远全文");
+    }
+
+    /// 文件附件（D337）：有读工具时只给 `/chat/<文件名>` 清单，内容一个字不内联。
+    #[test]
+    fn file_hints_list_paths_when_the_model_can_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "# 标题\n秘密内容";
+        std::fs::write(dir.path().join("1234-报告.md"), body).unwrap();
+        let session = SessionId::new();
+        let mut history = vec![Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "看看这个",
+            4,
+            0,
+            LogicalClock::new(1),
+        )];
+        let files = vec![crate::message::FileRef {
+            id: "a".to_string(),
+            name: "报告.md".to_string(),
+            mime: "text/markdown".to_string(),
+            size: body.len() as u64,
+            relative: "1234-报告.md".to_string(),
+        }];
+
+        attach_file_hints(&mut history, &files, true, Some(dir.path()));
+
+        let text = history[0].content();
+        assert!(text.starts_with("看看这个"), "用户原话在最前：{text}");
+        assert!(text.contains("/chat/1234-报告.md"), "{text}");
+        assert!(text.contains("报告.md"), "{text}");
+        assert!(
+            !text.contains("秘密内容"),
+            "有工具时不该把内容塞进请求：{text}"
+        );
+        // 大小按人话写（拿实际字节数比，别写死一个会随正文变的常数）。
+        assert!(text.contains(&format!("{} B", body.len())), "{text}");
+    }
+
+    /// 没有读工具：内容内联，包在 `---file:name--- … ---file---` 里。
+    #[test]
+    fn file_hints_inline_content_without_a_read_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "# 标题\n秘密内容";
+        std::fs::write(dir.path().join("1234-报告.md"), body).unwrap();
+        let session = SessionId::new();
+        let mut history = vec![Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "看看这个",
+            4,
+            0,
+            LogicalClock::new(1),
+        )];
+        let files = vec![crate::message::FileRef {
+            id: "a".to_string(),
+            name: "报告.md".to_string(),
+            mime: "text/markdown".to_string(),
+            size: body.len() as u64,
+            relative: "1234-报告.md".to_string(),
+        }];
+
+        attach_file_hints(&mut history, &files, false, Some(dir.path()));
+
+        let text = history[0].content();
+        assert!(text.contains("---file:报告.md---"), "{text}");
+        assert!(text.contains("秘密内容"), "{text}");
+        assert!(text.contains("---file---"), "{text}");
+        assert!(
+            !text.contains("/chat/"),
+            "没工具时给路径等于让模型干瞪眼：{text}"
+        );
+    }
+
+    /// 二进制且没有读工具：如实说一句，不往里塞乱码。
+    #[test]
+    fn binary_file_is_named_not_inlined() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), [0u8, 1, 2, 3]).unwrap();
+        let session = SessionId::new();
+        let mut history = vec![Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "看看",
+            2,
+            0,
+            LogicalClock::new(1),
+        )];
+        let files = vec![crate::message::FileRef {
+            id: "a".to_string(),
+            name: "a.bin".to_string(),
+            mime: "application/octet-stream".to_string(),
+            size: 4,
+            relative: "a.bin".to_string(),
+        }];
+
+        attach_file_hints(&mut history, &files, false, Some(dir.path()));
+
+        let text = history[0].content();
+        assert!(text.contains("二进制"), "{text}");
+        assert!(!text.contains('\u{0}'), "不该把 0 字节塞进正文");
     }
 
     /// 世界书（D279）：按关键词激活，插在 system 之后；档位不碰它。
