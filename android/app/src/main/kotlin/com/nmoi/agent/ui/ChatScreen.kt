@@ -3478,8 +3478,8 @@ private fun fileSizeLabel(bytes: Long): String = when {
     else -> "${(bytes / 1024.0 / 1024.0 * 10).toInt() / 10.0} MB"
 }
 
+@Composable
 private fun MessageImages(images: List<ChatImage>) {
-
     if (images.isEmpty()) return
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }

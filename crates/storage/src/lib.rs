@@ -810,7 +810,10 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert!(path.contains(&format!("{}/chat/", session)), "{path}");
+        assert!(
+            std::path::Path::new(&path).starts_with(storage.chat_dir(session)),
+            "{path}"
+        );
         assert!(!path.contains(".."), "{path}");
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
