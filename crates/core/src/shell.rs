@@ -227,7 +227,7 @@ pub struct EnvirSpec {
     ///
     /// 可选：没有会话上下文（或目录建不出来）就不绑，容器照跑。
     pub chat: Option<PathBuf>,
-    /// 这个会话的附件目录（`sessions/<id>/images`），绑到 `/chat/images`。
+    /// 这个会话的附件目录（`sessions/<id>/images`），绑到 `/images`（旧路径 `/chat/images` 也留着）。
     ///
     /// 单独一条是因为附件不挪地方（D216 的路径写进了库，也写进了存储页），
     /// 而模型要能在容器里读到它——两条绑定比一次数据迁移便宜得多。
@@ -275,13 +275,22 @@ impl EnvirSpec {
             cmd.arg("-b")
                 .arg(format!("{}:/etc/resolv.conf", resolv.display()));
         }
-        // 会话自己的暂存目录（D234）：`/chat`，附件在 `/chat/images`。
+        // 会话自己的暂存目录（D234）：`/chat` 是文件，图片在 `/images`（D339）。
         // 顺序要紧：先绑 `/chat` 再绑它里面的 `images`，否则第二条的目标路径在 guest 里还不存在。
+        //
+        // `/chat/images` 那条是旧的图片路径（`with_image_paths` 以前就写它）。留着不删：
+        // 旧会话的提示词、旧记忆里都还写着这条，突然不通会变成"这张图不见了"。
         if let Some(chat) = &self.chat {
             cmd.arg("-b").arg(format!("{}:/chat", chat.display()));
             if let Some(images) = &self.chat_images {
                 cmd.arg("-b")
                     .arg(format!("{}:/chat/images", images.display()));
+            }
+        }
+        // 图片目录（D339）：`/images` 与文件工具的 `/images` 是同一份，先建好再绑。
+        if let Some(images) = &self.chat_images {
+            if std::fs::create_dir_all(images).is_ok() {
+                cmd.arg("-b").arg(format!("{}:/images", images.display()));
             }
         }
         // 会话自己的 `/tmp`（D294）：容器里写的 `/tmp` 就是这个会话的暂存目录，
@@ -354,7 +363,7 @@ impl Tool for EnvirShellTool {
             "在隔离环境（容器里的 Ubuntu）里跑一条命令，起点是工作区（容器里是 /workspace）。",
             "**没有用户明确允许时不要调用**；读写文件优先用 read_file / write_file / edit_file。\n",
             "容器里只有工作区（/workspace）和这个会话自己的 /chat 是共享的：宿主机上别的地方它碰不到，",
-            "容器里装的东西也不影响宿主。附件在 /chat/images 下，要看就自己用命令读。\n",
+            "容器里装的东西也不影响宿主。用户发的文件在 /chat、图片在 /images，要看就自己用命令读。\n",
             "容器里的 `/tmp` 就是这个会话自己的暂存目录，跟文件工具里的 `/tmp` 是同一份。\n",
             "容器里**没有内核**：uname -r 显示的是手机内核，systemd / docker / iptables / 内核模块都用不了；",
             "proot 是 ptrace 模拟，比原生慢。\n",

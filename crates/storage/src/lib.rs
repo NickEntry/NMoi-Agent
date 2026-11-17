@@ -833,6 +833,27 @@ mod tests {
         assert!(!std::path::Path::new(&path).exists());
     }
 
+    /// 认不出的 `image/*` 用子类型当扩展名（D339）：`image/avif` → `.avif`，不再一律 `.bin`。
+    #[test]
+    fn unknown_image_mime_keeps_its_subtype_as_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+        let id = storage
+            .put_attachment(session, &message, "image/avif", b"AVIF")
+            .unwrap();
+        let path: String = storage
+            .conn
+            .query_row("SELECT path FROM attachments WHERE id = ?1", [&id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(path.ends_with(".avif"), "{path}");
+        let files = nmoi_core::session::HistoryStore::attachment_files(&storage, &message).unwrap();
+        assert_eq!(files, vec![format!("{id}.avif")]);
+    }
+
     /// 老库里的 BLOB 附件：第一次读的时候搬到盘上，之后走文件。
     #[test]
     fn legacy_blob_attachments_are_adopted_on_first_read() {

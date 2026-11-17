@@ -622,6 +622,38 @@ fn target<'a>(
             read_only: true,
         });
     }
+    // 会话图片目录（D339）：`/images/<文件名>`，只读。
+    // 与 `/chat` 分开：`/chat` 是用户发来的文件，`/images` 是附件目录（View-Image 也认这里）。
+    if let Some(rest) = under(trimmed, "/images") {
+        let Some(root) = ctx.chat_images else {
+            return Err(ToolOutcome::failed(
+                "`/images` 是会话私有的，这一轮没有会话上下文（或这个历史实现不存附件）；\
+                 用工作区相对路径，或先发一条消息让这一轮有会话。"
+                    .to_string(),
+            ));
+        };
+        if !rest.is_empty() && !root.join(rest).exists() {
+            return Err(ToolOutcome::failed(format!(
+                "没有这张图：`{trimmed}`。这一轮的附件目录里只有发进来过的图；\
+                 先用 `list_dir` 的 `/images` 看一眼有什么。"
+            )));
+        }
+        let opened = Workspace::open(root).map_err(|error| {
+            ToolOutcome::failed(format!(
+                "会话附件目录建不出来（{}）：{error}",
+                root.display()
+            ))
+        })?;
+        return Ok(Target {
+            workspace: std::borrow::Cow::Owned(opened),
+            path: if rest.is_empty() {
+                ".".to_string()
+            } else {
+                rest.to_string()
+            },
+            read_only: true,
+        });
+    }
     // 会话 `/chat`（D337）：用户发来的文件落在这儿，工具只读。
     // 放在 `/tmp` 之前判：两条前缀不会互相命中，但顺序写死了更好读。
     if let Some(rest) = under(trimmed, "/chat") {
@@ -1968,6 +2000,53 @@ mod tests {
             ToolOutcome::Ok { text, .. } => {
                 assert!(text.contains("原始工具输出"), "{text}");
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `/images` 与 `/chat` 各归各位（D339）：图片在 `/images`，用户发的文件在 `/chat`。
+    #[test]
+    fn images_and_chat_are_two_separate_roots() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let root = store.path().join("sessions").join("s_1");
+        let images = root.join("images");
+        let chat = root.join("chat");
+        fs::create_dir_all(&images).unwrap();
+        fs::create_dir_all(&chat).unwrap();
+        fs::write(images.join("a.png"), b"PNG").unwrap();
+        fs::write(chat.join("b.txt"), b"hello").unwrap();
+
+        let registry = ToolRegistry::workspace_defaults();
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_images(Some(&images), 20)
+            .with_session_chat(Some(&chat));
+
+        let listed = registry.invoke("list_dir", r#"{"path":"/images"}"#, &ctx);
+        match listed {
+            ToolOutcome::Ok { text, .. } => {
+                assert!(text.contains("a.png"), "{text}");
+                assert!(
+                    !text.contains("b.txt"),
+                    "图片目录里不该出现 /chat 的文件：{text}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let listed = registry.invoke("list_dir", r#"{"path":"/chat"}"#, &ctx);
+        match listed {
+            ToolOutcome::Ok { text, .. } => {
+                assert!(text.contains("b.txt"), "{text}");
+                assert!(!text.contains("a.png"), "文件目录里不该出现图片：{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // 不存在的图要说"没有这张图"，不是"路径不存在"——后者会把模型引去翻工作区。
+        let missing = registry.invoke("read_file", r#"{"path":"/images/none.png"}"#, &ctx);
+        match missing {
+            ToolOutcome::Failed { message } => assert!(message.contains("没有这张图"), "{message}"),
             other => panic!("{other:?}"),
         }
     }

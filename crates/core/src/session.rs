@@ -1061,10 +1061,14 @@ fn image_files<S: HistoryStore>(
 fn with_image_paths(message: &mut Message, files: &[String], limit: u32) {
     let cap = crate::images::limit_of(limit);
     let shown: Vec<&String> = files.iter().take(cap).collect();
-    let mut note =
-        String::from("\n\n[图片模式] 这一轮没有把图片内联给你。附件目录里有这些图（新的在前）：");
+    // 路径写成 `/images/<文件>`（D339）：`/chat` 是会话的文件目录，图片是它的兄弟目录。
+    // 写成 `/chat/images/...` 时，文件工具（`/chat` 只映射 chat/）会去找一个不存在的子目录，
+    // 容器里能读到、工具里读不到——同一个路径两套答案。
+    let mut note = String::from(
+        "\n\n[图片模式] 这一轮没有把图片内联给你。会话附件目录里有这些图（新的在前）：",
+    );
     for file in &shown {
-        note.push_str(&format!("\n- /chat/images/{file}"));
+        note.push_str(&format!("\n- /images/{file}"));
     }
     if files.len() > shown.len() {
         note.push_str(&format!(
@@ -4014,7 +4018,7 @@ mod tests {
             sent[0]
         );
         assert!(
-            sent[0].contains("/chat/images/img0.png"),
+            sent[0].contains("/images/img0.png"),
             "要把文件名告诉它：{}",
             sent[0]
         );

@@ -41,7 +41,7 @@ impl Tool for ViewImageTool {
         concat!(
             "把一张图片加入**这一轮的上下文**：**同一条回答里的下一次请求**就会带上它——\n",
             "不用等下一句对话，你马上就能看到。\n",
-            "path 是这个会话附件目录里的文件名（`/chat/images/xxx.jpg` 或只写 `xxx.jpg`）。\n",
+            "path 是这个会话附件目录里的文件名（`/images/xxx.jpg` 或只写 `xxx.jpg`）。\n",
             "它不返回图片内容——图是给模型看的，加进来之后你就能在下一轮里看到它。\n",
             "清单有上限（默认 20 张，新的在前）；满了还能临时多留几张，那几张在下一次思考结束前有效。\n",
             "结果里会写清这次是正常放进去、临时留着，还是真挤掉了谁。",
@@ -55,7 +55,7 @@ impl Tool for ViewImageTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "附件目录里的文件名，例如 screenshot.jpg 或 /chat/images/screenshot.jpg"
+                    "description": "附件目录里的文件名，例如 screenshot.jpg 或 /images/screenshot.jpg"
                 }
             },
             "required": ["path"]
@@ -74,7 +74,7 @@ impl Tool for ViewImageTool {
         }
         let Some(dir) = ctx.chat_images else {
             return ToolOutcome::failed(
-                "这个会话没有附件目录：图得先发进来（聊天页「＋ → 图片」），或者让工具把它写到 /chat/images 下",
+                "这个会话没有附件目录：图得先发进来（聊天页「＋ → 图片」）",
             );
         };
         let Some(session) = ctx.call_session else {
@@ -96,7 +96,7 @@ impl Tool for ViewImageTool {
             Ok(meta) => meta,
             Err(error) => {
                 return ToolOutcome::failed(format!(
-                    "读不到 `{}`：{error}。先 list_dir 看一眼 /chat/images 里有什么",
+                    "读不到 `{}`：{error}。先 list_dir 看一眼 /images 里有什么",
                     path.display()
                 ))
             }
@@ -170,19 +170,21 @@ impl Tool for ViewImageTool {
     }
 }
 
-/// `/chat/images/a.jpg` 与 `a.jpg` 都收；带目录的、带 `..` 的一律拒。
+/// `/images/a.jpg`、`/chat/images/a.jpg` 与 `a.jpg` 都收；带目录的、带 `..` 的一律拒。
 fn file_name_of(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("path 是空的".into());
     }
+    // `/images/` 是现在的写法；`/chat/images/` 与 `images/` 留着兼容旧提示词与旧会话。
     let rest = trimmed
-        .strip_prefix("/chat/images/")
+        .strip_prefix("/images/")
         .or_else(|| trimmed.strip_prefix("images/"))
+        .or_else(|| trimmed.strip_prefix("/chat/images/"))
         .unwrap_or(trimmed);
     if rest.is_empty() || rest.contains('/') || rest.contains('\\') || rest.contains("..") {
         return Err(format!(
-            "path 只能是附件目录里的**文件名**（`xxx.jpg` 或 `/chat/images/xxx.jpg`），拿到的是 `{raw}`"
+            "path 只能是附件目录里的**文件名**（`xxx.jpg` 或 `/images/xxx.jpg`），拿到的是 `{raw}`"
         ));
     }
     Ok(rest.to_string())

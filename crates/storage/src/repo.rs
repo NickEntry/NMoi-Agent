@@ -80,16 +80,31 @@ fn sanitize_file_name(name: &str) -> String {
 }
 
 /// 图片扩展名：只用于文件名，读的时候不靠它判断类型（类型看 `mime` 列）。
-fn extension_for(mime: &str) -> &'static str {
+///
+/// 认不出的 `image/*` 用子类型本身（`image/avif` → `avif`），不再一律落成 `.bin`：
+/// `.bin` 在界面上像"坏文件"，模型看见也不会去调 `View-Image`。
+fn extension_for(mime: &str) -> String {
     match mime {
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/png" => "png",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "image/heic" => "heic",
-        "image/heif" => "heif",
-        "image/bmp" => "bmp",
-        _ => "bin",
+        "image/jpeg" | "image/jpg" => "jpg".to_string(),
+        "image/png" => "png".to_string(),
+        "image/webp" => "webp".to_string(),
+        "image/gif" => "gif".to_string(),
+        "image/heic" => "heic".to_string(),
+        "image/heif" => "heif".to_string(),
+        "image/bmp" => "bmp".to_string(),
+        other => {
+            let sub = other.strip_prefix("image/").unwrap_or("");
+            let clean: String = sub
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .take(8)
+                .collect();
+            if clean.is_empty() {
+                "bin".to_string()
+            } else {
+                clean
+            }
+        }
     }
 }
 

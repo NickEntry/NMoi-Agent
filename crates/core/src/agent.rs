@@ -600,7 +600,7 @@ pub fn run_turn<T: Transport>(
 /// 字节按 id 缓存：`request` 每轮从 `base` 重建，所以每轮都要重挂一次，
 /// 但同一张图在这一轮里只读一遍盘。
 ///
-/// 读盘而不是查 `attachments` 表：工具自己写进 `/chat/images` 的图在表里没有行，
+/// 读盘而不是查 `attachments` 表：工具自己写进 `/images` 的图在表里没有行，
 /// 查表会静默少一张——那正是"我明明让它看了图，它说没看到"的样子。
 fn attach_context_images(
     request: &mut ChatRequest,
