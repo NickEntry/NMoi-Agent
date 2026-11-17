@@ -2929,3 +2929,19 @@ core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **
   也不显示这一段。已经记下的旧账留着：配了摘要模型之后第一次请求会补完。
 
 判据：core 793（`apply_forms` 那条补了"不记账"断言）、clippy 干净、CI 七 job 全绿。
+
+## D339 图片走 `/images`，与 `/chat` 分开（2026-11-17）
+
+- 图片模式的提示词写的是 `/chat/images/<文件名>`。容器里两条 `-b`（`chat:/chat`、
+  `images:/chat/images`）都绑了，读得到；**文件工具的 `/chat` 只映射 `chat/`**，
+  那底下没有 `images`——模型按同一个路径在工具里就是一个空目录。
+  同一个路径两套答案，是最难查的一种。
+- 现在：`/images/<文件名>` 是图片（`ToolContext.chat_images`，只读），`/chat/<文件名>` 是
+  用户发来的文件（D337）。`target()` 加 `/images` 分支；容器加一条 `images:/images` 绑定，
+  旧的 `/chat/images` 那条**保留**（旧提示词、旧会话里还写着它）。
+  `View-Image` 三种写法都认：`/images/x.jpg`、`/chat/images/x.jpg`、`x.jpg`。
+- 认不出的 `image/*` 用子类型当扩展名（`image/avif` → `.avif`），不再一律落 `.bin`：
+  `.bin` 在界面上像坏文件，模型看见也不会去调 `View-Image`。上游不收的格式
+  （avif 那类）由 `View-Image` 的 mime 白名单拒，并说明只收哪几种。
+- 判据：core 794（`/images` 与 `/chat` 各列各的、缺图说"没有这张图"）、
+  storage 56（`image/avif` → `.avif`）、clippy 干净、CI 七 job 全绿。

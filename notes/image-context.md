@@ -15,7 +15,7 @@
 ### 2.1 `View-Image` 工具
 
 ```
-参数：path —— 会话附件目录里的文件名（`xxx.jpg` 或 `/chat/images/xxx.jpg`）
+参数：path —— 会话附件目录里的文件名（`xxx.jpg` 或 `/images/xxx.jpg`；`/chat/images/xxx.jpg` 仍认）
 返回：{"file","attachment","in_context":3,"limit":12,"count":3,"dropped":["..."],"note":"已加入上下文（第 3/12 张）…"}
 ```
 
@@ -50,7 +50,7 @@
 
 字节按 id 缓存在这一轮的内存里：`request` 每轮从 `base` 重建，所以每轮都要重挂，
 但同一张图只读一遍盘。读的是 `sessions/<会话>/images/<文件名>`，**不查 `attachments` 表**——
-工具自己写进 `/chat/images` 的图在表里没有行，查表会静默少一张。
+工具自己写进 `/images` 的图在表里没有行，查表会静默少一张。
 
 文件读不到就跳过这一张，不报错（清单里可能留着一条已经被删掉的 id）。
 
@@ -63,6 +63,15 @@
 
 生效时：一张字节都不发；`with_image_paths` 把文件名拼进**发出去的那一份**用户消息
 （库里那条不动），新的在前、去重、按 `image_limit` 截断。重试也走同一套。
+
+### 2.3.2 路径（D339）
+
+图片在 `sessions/<id>/images/`，工具与容器里都叫 **`/images/<文件名>`**；
+用户发来的文件在兄弟目录 `chat/`，叫 `/chat`。两个前缀都是**只读**。
+
+以前提示词里写的是 `/chat/images/<文件名>`——容器里两条 `-b` 都绑了，读得到；
+文件工具的 `/chat` 只映射 `chat/`，那底下没有 `images`，同一个路径两套答案。
+容器里保留 `/chat/images` 那条旧绑定，只为不让旧提示词翻车。
 
 ### 2.4 界面
 

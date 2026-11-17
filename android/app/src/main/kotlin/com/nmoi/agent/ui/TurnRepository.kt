@@ -553,7 +553,7 @@ internal object TurnRepository {
             row.put("chat", ToolingRepository.chatRoot(context, sessionId).absolutePath)
             // 附件目录**先建好再绑**：这一份配置是在用户那条消息落库之前拼的，
             // 那时 `images/` 还不存在（第一次带图就是这样），
-            // 于是"有条...件才绑"等于永远不绑——容器里 `/chat/images` 一直缺席。
+            // 于是"有条...件才绑"等于永远不绑——容器里 `/images` 一直缺席。
             val images = ToolingRepository.sessionImagesRoot(context, sessionId).apply { mkdirs() }
             row.put("chat_images", images.absolutePath)
             // 会话自己的 `/tmp`（D294）：容器里的 `/tmp` 与文件工具的 `/tmp` 是同一份。

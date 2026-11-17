@@ -39,7 +39,7 @@ internal object ToolingRepository {
      * 这个会话的附件目录（`sessions/<id>/images`，D216）。
      *
      * 路径由 Rust 侧 `attachment_dir` 决定，这里只是**同一个位置**的另一处引用：
-     * 容器里要把它绑到 `/chat/images`（D234），模型才读得到自己的附件。
+     * 容器里要把它绑到 `/images`（D234 / D339），模型才读得到自己的附件。
      */
     fun sessionImagesRoot(context: Context, sessionId: String): File =
         File(File(File(context.filesDir, "sessions"), sessionId), "images")
