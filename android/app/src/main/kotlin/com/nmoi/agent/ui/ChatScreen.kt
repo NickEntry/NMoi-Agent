@@ -629,7 +629,13 @@ internal fun ChatScreen(
             return@LaunchedEffect
         }
         if (busy) return@LaunchedEffect
-        interrupts = TurnRepository.interrupts(databasePath, sid)
+        val loaded = TurnRepository.interrupts(databasePath, sid)
+        // 没配「摘要」角色：那些归档的索引永远不会被补上，报一句"待补 N 段"就是个
+        // 不会消失的噪音——用户既没法点它、也不知道该去配什么。真配了再报。
+        val canSummarize = runCatching {
+            RoleRunner.target(context, databasePath, ModelRole.Summary)
+        }.getOrNull() != null
+        interrupts = if (canSummarize) loaded else loaded.copy(summaries = 0)
     }
     // 没说完的那一条：续话只对"列表里最后一条可重试的消息"有意义，中间那些交给重试。
     val stalled = interrupts.incomplete.lastOrNull()
@@ -1042,7 +1048,14 @@ internal fun ChatScreen(
             } else {
                 ""
             }
-            live = LiveReply(round = 0, running = true, text = before, prefix = before, regen = true)
+            live = LiveReply(
+                round = 0,
+                running = true,
+                text = before,
+                prefix = before,
+                regen = true,
+                append = append,
+            )
             settling = false
             // 和发送同一条记录：切走再切回来时"还在跑"要能显示（0.15c）。
             GeneratingTracker.mark(sid, true)
@@ -1229,6 +1242,8 @@ internal fun ChatScreen(
                         ChatRepository.append(databasePath, sid, role, text).fold(
                             onSuccess = {
                                 draft = ""
+                                // 同上：键还停在 `__new__` 上，等 effect 下一帧再存就晚了。
+                                DraftStore.save(context, draftKey, "")
                                 reloadKey += 1
                                 notice = if (role == "user") {
                                     "已存为用户消息（没发给模型）"
@@ -1368,6 +1383,9 @@ internal fun ChatScreen(
             body.isEmpty() -> notice = "先写点什么"
             else -> {
                 draft = ""
+                // 同步落一次空草稿：只靠 `draft = ""` 的话，`LaunchedEffect` 要下一帧才存，
+                // 而新建会话那条路是先建会话、再回来重新装载草稿——那一下会把刚发出去的字读回来。
+                DraftStore.save(context, draftKey, "")
                 pendingImages = emptyList()
                 pendingFiles = emptyList()
                 notice = null
@@ -1381,8 +1399,6 @@ internal fun ChatScreen(
                         notice = "建会话失败：原因在 设置 → 调试 → 日志"
                         return@launch
                     }
-                    // 空白会话的草稿挪到真 id：用户回来时那半句还应该在。
-                    DraftStore.migrateNewTo(context, sid)
                     // 视觉覆盖（D291）：这个角色指定了独立模型时，先把图转录成文字再发。
                     // 失败或没启用就照旧发图——旁路挂了不该把用户的消息卡住。
                     var bodyToSend = body
@@ -1686,7 +1702,13 @@ internal fun ChatScreen(
                     onEditTextReady = { editTextRef.value = it },
                     onSend = sendTurn,
                     interrupts = interrupts,
-                    onContinueStalled = stalled?.let { message -> { continueTurn(message) } },
+                    // 正在跑（或刚点了停止、还没收尾）时不给「续话」：那一轮还没结束，
+                    // 这时候点续话要么被 busy 顶回来，要么接在上一条上——两种都不是他想的。
+                    onContinueStalled = if (busy || stopping) {
+                        null
+                    } else {
+                        stalled?.let { message -> { continueTurn(message) } }
+                    },
                     onQueue = { queueSheet = true },
                     queued = if (sessionId == null) 0 else SendQueue.count(sessionId),
                     onStop = {
@@ -2905,6 +2927,9 @@ private fun LiveReplyRow(
         }
         val note = when {
             reply.cut -> "这一轮没写完：上面是已经收到的部分（没存进库里，点一下收掉）"
+            reply.append && reply.text.isBlank() && reply.reasoning.isBlank() ->
+                "正在接着写…（前半段还在那一版里）"
+            reply.append -> "正在接着写…（前半段还在；停止键随时可用）"
             reply.regen && reply.text.isBlank() && reply.reasoning.isBlank() ->
                 "正在重写这一版…（旧的留着，切得回去）"
             reply.regen -> "正在重写这一版…（旧的留着；停止键随时可用）"

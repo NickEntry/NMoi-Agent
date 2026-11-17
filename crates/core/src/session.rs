@@ -737,6 +737,7 @@ fn apply_forms<S: HistoryStore>(
     level: crate::message::FormLevel,
     config: &crate::router::RouterConfig,
     now: i64,
+    mark_pending: bool,
 ) -> Result<(), SessionError> {
     if level == crate::message::FormLevel::Full {
         return Ok(());
@@ -779,7 +780,9 @@ fn apply_forms<S: HistoryStore>(
             if store.archive_put(entry.clone()).is_err() {
                 continue;
             }
-            let _ = store.archive_mark_pending(&entry.rf);
+            if mark_pending {
+                let _ = store.archive_mark_pending(&entry.rf);
+            }
             message.set_part_field(&part_id, true, crate::form::render_for_form(&entry, form));
         }
 
@@ -808,7 +811,9 @@ fn apply_forms<S: HistoryStore>(
         if store.archive_put(entry.clone()).is_err() {
             continue;
         }
-        let _ = store.archive_mark_pending(&entry.rf);
+        if mark_pending {
+            let _ = store.archive_mark_pending(&entry.rf);
+        }
         message.set_text(crate::form::render_for_form(&entry, form));
         message.tokens = estimate_tokens(&message.content());
     }
@@ -1349,6 +1354,7 @@ pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
         config.form_level,
         &config.router,
         now,
+        config.summary.is_some(),
     )?;
     // 索引摘要（D322）：降级完、发出去之前补上——包括上一轮欠着的那些。
     summarize_degraded(store, client, config.summary, session, &mut history);
@@ -1644,6 +1650,7 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         config.form_level,
         &config.router,
         now,
+        config.summary.is_some(),
     )?;
     // 索引摘要（D322）：重试这条路也要补，否则"重试一次"就把欠着的索引永远欠着。
     summarize_degraded(store, client, config.summary, session, &mut history);
@@ -4319,6 +4326,7 @@ mod tests {
         #[derive(Default)]
         struct ArchiveStore {
             saved: Vec<crate::archive::ArchiveEntry>,
+            pending: Vec<crate::ids::ArchiveRef>,
         }
         impl HistoryStore for ArchiveStore {
             fn append_unit(&mut self, _: SessionId, _: &AtomicUnit) -> Result<(), String> {
@@ -4333,6 +4341,13 @@ mod tests {
             ) -> Result<crate::ids::ArchiveRef, String> {
                 self.saved.push(entry.clone());
                 Ok(entry.rf)
+            }
+            fn archive_mark_pending(
+                &mut self,
+                reference: &crate::ids::ArchiveRef,
+            ) -> Result<(), String> {
+                self.pending.push(reference.clone());
+                Ok(())
             }
         }
 
@@ -4405,10 +4420,13 @@ mod tests {
             crate::message::FormLevel::Full,
             &config,
             1_000,
+            true,
         )
         .unwrap();
         assert_eq!(history[1].content(), big);
         assert!(store.saved.is_empty());
+        // F4 会就地改 `history`：留一份原样的，后面测"不记账"那一档要重跑。
+        let original = history.clone();
 
         // F4：旧工具结果只剩一行指针。
         apply_forms(
@@ -4418,6 +4436,7 @@ mod tests {
             crate::message::FormLevel::Pointer,
             &config,
             1_000,
+            true,
         )
         .unwrap();
         assert_eq!(store.saved.len(), 1, "只有那一条旧的进了归档");
@@ -4430,6 +4449,23 @@ mod tests {
         assert_eq!(history[2].content(), "最新那一条", "最新一条工具结果不动");
         assert_eq!(history[3].content(), big, "世界书永远全文");
         assert_eq!(history[4].content(), big, "指令注入永远全文");
+
+        // 没有摘要目标那一档（`config.summary == None`）：降级照做，但**不记"索引待补"**。
+        // 记了也没人补——界面上那行"待补 N 段"就是个不会消失的噪音（D323 的补丁）。
+        let mut history = original;
+        let mut store = ArchiveStore::default();
+        apply_forms(
+            &mut store,
+            session,
+            &mut history,
+            crate::message::FormLevel::Pointer,
+            &config,
+            1_000,
+            false,
+        )
+        .unwrap();
+        assert_eq!(store.saved.len(), 1, "该归档的照样归档");
+        assert!(store.pending.is_empty(), "没人补的时候不该记这笔账");
     }
 
     /// 文件附件（D337）：有读工具时只给 `/chat/<文件名>` 清单，内容一个字不内联。

@@ -37,12 +37,4 @@ internal object DraftStore {
             val text = value as? String
             if (text.isNullOrBlank()) null else key to text
         }.toMap()
-
-    /** 会话建出来了：把"新会话位"的草稿挪到真 id 上，别让用户在半句里等着。 */
-    fun migrateNewTo(context: Context, sessionId: String) {
-        val text = load(context, NEW_DRAFT_KEY)
-        if (text.isBlank()) return
-        save(context, sessionId, text)
-        save(context, NEW_DRAFT_KEY, "")
-    }
 }
