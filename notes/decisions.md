@@ -2912,3 +2912,20 @@ core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **
 新加的 storage 测试当场抓到的真 bug：`attachments_for` 原来把**所有**附件都当图片读出来编成 base64。
 文件一旦进表，下一轮请求就会把整份文件塞进 `images`（多模态 content），既超窗又答非所问。
 现在查询带 `AND kind = 'image'`；`files_for` 单独走 `kind = 'file'`。
+
+## D338 发出去的字回输入框、续话说"重写"、索引欠账（2026-11-17）
+
+- **草稿**：`draft = ""` 只改内存，落盘靠 `LaunchedEffect` 下一帧；而新建会话那条路
+  先把 `__new__` 的草稿搬到真 id（`migrateNewTo`），切 id 时又 `load` 回来——屏幕上就是
+  "发出去的字还在框里"。改成发送与仅保存**当场** `DraftStore.save(key, "")`，并删掉
+  `migrateNewTo`：发送路径上那半句已经发出去了，搬它只会把旧字喂回输入框。
+- **续话**：与重试共用 `LiveReply.regen`，提示行写"正在重写这一版"——用户点的是"接着写"，
+  说重写他会以为前半段被换掉。加 `append` 位，提示行分开（"正在接着写…（前半段还在）"）。
+- **停止中不给「续话」**：那一轮还没收尾，点了要么被 busy 顶回来、要么接在上一条上。
+  `onContinueStalled` 在 `busy || stopping` 时为 null。
+- **索引欠账**：`apply_forms` 无条件 `archive_mark_pending`，而没配「摘要」角色时
+  `summarize_degraded` 什么都不做——库里永远躺着空 note，界面上"待补 N 段"不会消失。
+  降级不再记账（`mark_pending = config.summary.is_some()`）；界面那一侧没配摘要角色时
+  也不显示这一段。已经记下的旧账留着：配了摘要模型之后第一次请求会补完。
+
+判据：core 793（`apply_forms` 那条补了"不记账"断言）、clippy 干净、CI 七 job 全绿。
