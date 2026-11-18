@@ -17,7 +17,7 @@ import java.io.File
  */
 internal object SecurityRepository {
     private const val FILE = "security.json"
-    private const val VERSION = 1
+    private const val VERSION = 2
 
     private const val LEGACY_ASK = "tool.shell_ask"
     private const val LEGACY_BLACKLIST = "tool.shell_blacklist"
@@ -53,7 +53,8 @@ internal object SecurityRepository {
                             .put("asks", group.asks)
                             .put("hidden", group.hidden)
                             .put("count", group.count)
-                            .put("items", JSONArray(group.items)),
+                            .put("items", JSONArray(group.items))
+                            .put("base", group.base),
                     )
                 }
             })
@@ -144,6 +145,7 @@ internal object SecurityRepository {
                         hidden = row.optBoolean("hidden", false),
                         count = row.optInt("count", 0),
                         items = items,
+                        base = row.optString("base").trim(),
                     ),
                 )
             }

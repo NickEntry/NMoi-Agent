@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -67,6 +66,9 @@ internal fun SecurityScreen(
     var renaming by remember { mutableStateOf<RuleGroup?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleting by remember { mutableStateOf<RuleGroup?>(null) }
+    var editingItem by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var itemText by remember { mutableStateOf("") }
+    var picking by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
@@ -77,15 +79,44 @@ internal fun SecurityScreen(
     val builtin = remember(catalog) { builtinGroups(catalog) }
     val merged = remember(builtin, local) { mergedGroups(builtin, local.groups) }
     val rules = remember(catalog) { builtinRules(catalog) }
+    val prints = remember(builtin) { builtin.associate { it.id to it.base } }
 
     fun commit(next: List<RuleGroup>) {
-        // 内置组没改名时把名字留空：写死一份"当时的名字"，下一版改了名就跟不过来。
+        // 没动过的内置组不落盘：文件里没有那一行，就等于"整组跟着目录走"。
+        // 动过的组记下**当时**目录的指纹，下一版目录换了才知道"你的改动基于旧版"。
         val catalogName = builtin.associate { it.id to it.name }
-        val kept = next.map { group ->
-            if (group.builtin && group.name == catalogName[group.id]) group.copy(name = "") else group
+        val before = local.groups.associateBy { it.id }
+        val kept = next.mapNotNull { group ->
+            var out = group.copy(state = PresetState.Follow)
+            if (out.builtin) {
+                if (out.name == catalogName[out.id]) out = out.copy(name = "")
+                val old = before[out.id]
+                val mark = if (old == null || touched(old, out)) prints[out.id].orEmpty() else old.base
+                out = out.copy(base = mark)
+                if (!editedOf(out)) return@mapNotNull null
+            }
+            out
         }
         SecurityRepository.setGroups(context, kept)
         local = local.copy(groups = kept)
+    }
+
+    // 目录这一版变了、而这一组是被删掉的：当场把它放回来并落盘。
+    // 只让界面知道没用——请求侧读的是这份文件，两处会给出两个答案。
+    LaunchedEffect(builtin) {
+        val rows = local.groups
+        if (builtin.isEmpty() || rows.isEmpty()) return@LaunchedEffect
+        var revived = false
+        val next = rows.map { row ->
+            val catalogRow = builtin.firstOrNull { it.id == row.id } ?: return@map row
+            if (row.builtin && row.hidden && movedOn(row, catalogRow)) {
+                revived = true
+                row.copy(hidden = false)
+            } else {
+                row
+            }
+        }
+        if (revived) commit(next)
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -207,6 +238,19 @@ internal fun SecurityScreen(
                                 renameText = group.name
                             },
                             onDelete = { deleting = group },
+                            onFollowNew = {
+                                commit(
+                                    merged.map {
+                                        if (it.id == group.id) it.copy(name = "", asks = true) else it
+                                    },
+                                )
+                                notice = null
+                            },
+                            onEditItem = { name ->
+                                editingItem = group.id to name
+                                itemText = name
+                                notice = null
+                            },
                             onDeleteItem = { name ->
                                 commit(
                                     merged.map {
@@ -228,18 +272,23 @@ internal fun SecurityScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    commit(merged.map { it.copy(hidden = false) })
-                                }
+                                .clickable { picking = true }
                                 .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = "恢复删掉的组（$hiddenCount）",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f),
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "＋ 添加预设组",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Text(
+                                    text = "被删掉的内置组还有 $hiddenCount 个，逐个加回来",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
                             Text(
                                 text = "›",
                                 style = MaterialTheme.typography.titleMedium,
@@ -307,6 +356,54 @@ internal fun SecurityScreen(
         )
     }
 
+    editingItem?.let { target ->
+        val owner = merged.firstOrNull { it.id == target.first }
+        InputCard(
+            title = "改这个名字",
+            body = "只改名字，规则不动。改完还是只匹配命令名。",
+            value = itemText,
+            placeholder = "命令名",
+            confirm = "保存",
+            onValue = { itemText = it },
+            onCancel = { editingItem = null },
+            onConfirm = {
+                val next = itemText.trim().lowercase()
+                when {
+                    next.isEmpty() -> notice = "名字不能空着"
+                    next.contains(' ') -> notice = "名字里不能有空格——它只匹配命令名"
+                    next == target.second -> editingItem = null
+                    owner?.items?.contains(next) == true -> notice = "「$next」已经在这一组里了"
+                    else -> {
+                        commit(
+                            merged.map { group ->
+                                if (group.id == target.first) {
+                                    group.copy(items = group.items.map { if (it == target.second) next else it })
+                                } else {
+                                    group
+                                }
+                            },
+                        )
+                        editingItem = null
+                        notice = null
+                    }
+                }
+            },
+        )
+    }
+
+    if (picking) {
+        val gone = merged.filter { it.hidden }
+        AddPresetCard(
+            groups = gone,
+            onPick = { id ->
+                commit(merged.map { if (it.id == id) it.copy(hidden = false) else it })
+                notice = null
+                if (gone.size <= 1) picking = false
+            },
+            onDismiss = { picking = false },
+        )
+    }
+
     renaming?.let { group ->
         InputCard(
             title = "改这一组的名字",
@@ -367,9 +464,11 @@ private fun GroupBlock(
     onToggleAsk: (Boolean) -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onFollowNew: () -> Unit,
+    onEditItem: (String) -> Unit,
     onDeleteItem: (String) -> Unit,
 ) {
-    var folded by remember(group.id) { mutableStateOf(false) }
+    var folded by remember(group.id) { mutableStateOf(true) }
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -396,16 +495,31 @@ private fun GroupBlock(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
-                    Text(
-                        text = if (group.builtin) {
-                            "${group.count} 条 · 内置"
-                        } else {
-                            "${group.items.size} 条 · 自建"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Row(
                         modifier = Modifier.padding(top = 2.dp),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (group.builtin) {
+                                "${group.count} 条 · 内置"
+                            } else {
+                                "${group.items.size} 条 · 自建"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (group.state != PresetState.Follow) {
+                            Spacer(Modifier.size(6.dp))
+                            StateBadge(
+                                label = group.state.label,
+                                tone = when (group.state) {
+                                    PresetState.Stale -> BadgeTone.Warn
+                                    PresetState.Modified -> BadgeTone.Edited
+                                    PresetState.Follow -> BadgeTone.Quiet
+                                },
+                            )
+                        }
+                    }
                 }
                 Text(
                     text = if (group.asks) "问" else "不问",
@@ -448,17 +562,11 @@ private fun GroupBlock(
                 }
 
                 for (name in group.items) {
-                    SwipeDeleteRow(
-                        resetKey = group.id + name,
-                        rowColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        onClick = {},
-                        onDelete = { onDeleteItem(name) },
-                        contentPadding = PaddingValues(
-                            start = 36.dp,
-                            end = 8.dp,
-                            top = 8.dp,
-                            bottom = 8.dp,
-                        ),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 36.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = name,
@@ -466,7 +574,28 @@ private fun GroupBlock(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
                         )
+                        TinyChip("改名", onClick = { onEditItem(name) })
+                        Spacer(Modifier.size(6.dp))
+                        TinyChip("删除", danger = true, onClick = { onDeleteItem(name) })
+                    }
+                }
+
+                if (group.state == PresetState.Stale) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 36.dp, end = 8.dp, top = 4.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "内置清单已更新，你的改动还是旧那一版",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TinyChip("跟新版", onClick = onFollowNew)
                     }
                 }
 
@@ -600,6 +729,85 @@ private fun TinyChip(
     }
 }
 
+/** 「添加预设组」：被删掉的内置组逐个加回来；加完那个就从单子里消失。 */
+@Composable
+private fun AddPresetCard(
+    groups: List<RuleGroup>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f))
+                .clickable(onClick = onDismiss),
+        )
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "添加预设组",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "这些是内置组，之前从列表里删掉了。加回来之后照旧会问、也照旧能改。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(top = 8.dp),
+                    ) {
+                        groups.forEach { group ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPick(group.id) }
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = group.name,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = "${group.count} 条",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Text(
+                                    text = "＋",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TinyChip("关闭", onClick = onDismiss)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ConfirmCard(
     title: String,
@@ -701,7 +909,12 @@ private fun InputCard(
     }
 }
 
-/** 内置十组：id / 名字 / 条数。`count` 就是删除那一刻记下来的那个数。 */
+/**
+ * 内置十组：id / 名字 / 条数 / **指纹**。
+ *
+ * `count` 是目录里现在几条；`base` 是这一版目录的指纹——用户改过一组时把它记下来，
+ * 下一版目录换了，`presetStateOf` 才分得清"你的改动还是这一版"和"你改的是旧版"。
+ */
 private fun builtinGroups(catalog: JSONObject?): List<RuleGroup> {
     val array = catalog?.optJSONArray("groups") ?: return emptyList()
     val out = mutableListOf<RuleGroup>()
@@ -709,41 +922,44 @@ private fun builtinGroups(catalog: JSONObject?): List<RuleGroup> {
         val row = array.optJSONObject(index) ?: continue
         val id = row.text("id")
         if (id.isEmpty()) continue
-        val name = row.text("name").ifBlank { id }
-        val count = row.optJSONArray("rules")?.length() ?: 0
+        val rules = rulesOf(row)
         out.add(
             RuleGroup(
                 id = id,
-                name = name,
+                name = row.text("name").ifBlank { id },
                 builtin = true,
                 asks = true,
                 hidden = false,
-                count = count,
+                count = rules.size,
                 items = emptyList(),
+                base = groupPrint(rules),
             ),
         )
     }
     return out
 }
 
-/** 内置组里那些条目：`(label, 是不是总是拦)`。它们不可删，只能整组不问。 */
+/** 一组里的条目：`(label, 是不是总是拦)`。指纹与展开后的清单读的是同一份。 */
+private fun rulesOf(group: JSONObject): List<Pair<String, Boolean>> {
+    val rules = group.optJSONArray("rules") ?: return emptyList()
+    val out = mutableListOf<Pair<String, Boolean>>()
+    for (at in 0 until rules.length()) {
+        val rule = rules.optJSONObject(at) ?: continue
+        val label = rule.text("label")
+        if (label.isNotEmpty()) out.add(label to rule.optBoolean("deny", false))
+    }
+    return out
+}
+
+/** 内置组里那些条目。它们不可删、不可改名，只能整组不问。 */
 private fun builtinRules(catalog: JSONObject?): Map<String, List<Pair<String, Boolean>>> {
     val array = catalog?.optJSONArray("groups") ?: return emptyMap()
-    val out = mutableMapOf<String, MutableList<Pair<String, Boolean>>>()
+    val out = mutableMapOf<String, List<Pair<String, Boolean>>>()
     for (index in 0 until array.length()) {
         val group = array.optJSONObject(index) ?: continue
         val id = group.text("id")
         if (id.isEmpty()) continue
-        val rows = mutableListOf<Pair<String, Boolean>>()
-        val rules = group.optJSONArray("rules")
-        if (rules != null) {
-            for (at in 0 until rules.length()) {
-                val rule = rules.optJSONObject(at) ?: continue
-                val label = rule.text("label")
-                if (label.isNotEmpty()) rows.add(label to rule.optBoolean("deny", false))
-            }
-        }
-        out[id] = rows
+        out[id] = rulesOf(group)
     }
     return out
 }

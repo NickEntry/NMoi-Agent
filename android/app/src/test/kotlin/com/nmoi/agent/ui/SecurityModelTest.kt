@@ -97,4 +97,53 @@ class SecurityModelTest {
         assertEquals(listOf("delete"), guard.offGroups)
         assertEquals(listOf("mytool"), guard.extra)
     }
+
+    @Test
+    fun 目录没换版本时改过的组是已改() {
+        val local = listOf(disk.copy(name = "危险", base = "p1"))
+        val merged = mergedGroups(listOf(disk.copy(base = "p1")), local)
+        assertEquals("危险", merged[0].name)
+        assertEquals(PresetState.Modified, merged[0].state)
+    }
+
+    @Test
+    fun 目录换了版本而改动还是旧那一版就是过时() {
+        val local = listOf(disk.copy(name = "危险", base = "p1"))
+        val merged = mergedGroups(listOf(disk.copy(base = "p2")), local)
+        assertEquals("危险", merged[0].name)
+        assertEquals(PresetState.Stale, merged[0].state)
+    }
+
+    @Test
+    fun 旧文件没有指纹时按已改算不改口() {
+        val local = listOf(disk.copy(asks = false, base = ""))
+        val merged = mergedGroups(listOf(disk.copy(base = "p9")), local)
+        assertEquals(PresetState.Modified, merged[0].state)
+    }
+
+    @Test
+    fun 条数没变但内容变了也能认出是新的() {
+        val local = listOf(disk.copy(hidden = true, base = "p1", count = 10))
+        val merged = mergedGroups(listOf(disk.copy(base = "p2", count = 10)), local)
+        assertFalse(merged[0].hidden)
+        assertEquals(PresetState.Follow, merged[0].state)
+    }
+
+    @Test
+    fun 指纹把顺序与拒绝档算进去() {
+        val a = "rm -rf /" to true
+        val b = "mv" to false
+        assertEquals(groupPrint(listOf(a, b)), groupPrint(listOf(a, b)))
+        assertTrue(groupPrint(listOf(a, b)) != groupPrint(listOf(b, a)))
+        assertTrue(groupPrint(listOf(a, b)) != groupPrint(listOf("rm -rf /" to false, b)))
+    }
+
+    @Test
+    fun 没动过的内置组就是跟随并且不该落盘() {
+        assertFalse(editedOf(disk.copy(name = "")))
+        assertTrue(editedOf(disk.copy(name = "换个名")))
+        assertTrue(editedOf(disk.copy(asks = false)))
+        assertTrue(editedOf(disk.copy(hidden = true)))
+        assertTrue(editedOf(disk.copy(items = listOf("rm"))))
+    }
 }

@@ -138,35 +138,12 @@ private fun PresetRow(preset: PresetView, onClick: () -> Unit) {
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        StateBadge(state = preset.state, label = preset.label)
+        StateBadge(label = preset.label, tone = badgeToneOf(preset.state))
         Text(
             text = "›",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 6.dp),
-        )
-    }
-}
-
-/** 四态徽标。四种状态必须长得不一样——写成同一个灰底加同一个字就分不出该做什么。 */
-@Composable
-private fun StateBadge(state: String, label: String) {
-    val colors = MaterialTheme.colorScheme
-    val (text, background) = when (state) {
-        "conflict" -> colors.error to colors.error.copy(alpha = 0.12f)
-        "upstream_newer" -> colors.primary to colors.primary.copy(alpha = 0.12f)
-        "local_edited" -> colors.onSurface to colors.onSurface.copy(alpha = 0.08f)
-        else -> colors.onSurfaceVariant to colors.onSurfaceVariant.copy(alpha = 0.08f)
-    }
-    Surface(
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(999.dp),
-        color = background,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
         )
     }
 }
@@ -403,7 +380,7 @@ private fun EntryCard(
                 color = colors.onSurface,
                 modifier = Modifier.weight(1f),
             )
-            StateBadge(state = entry.state, label = entry.label)
+            StateBadge(label = entry.label, tone = badgeToneOf(entry.state))
         }
 
         // 冲突时把上游那份摆出来：不给对照，"用上游"就是闭着眼点的。
