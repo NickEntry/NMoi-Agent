@@ -21,12 +21,35 @@ internal data class PendingFile(
     val bytes: Long,
     val data: String,
 ) {
+    /** 是不是一段录音。听觉覆盖只挑这一类。 */
+    val isAudio: Boolean
+        get() = mime.startsWith("audio/", ignoreCase = true)
+
     val sizeLabel: String
         get() = when {
             bytes < 1024 -> "$bytes B"
             bytes < 1024 * 1024 -> "${bytes / 1024} KB"
             else -> "${(bytes / 1024.0 / 1024.0 * 10).toInt() / 10.0} MB"
         }
+}
+
+/** 扩展名 → mime。只认这几个：认不出的留给 `application/octet-stream`（当文档处理）。 */
+private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+    "mp3" -> "audio/mpeg"
+    "wav" -> "audio/wav"
+    "m4a" -> "audio/mp4"
+    "ogg", "opus" -> "audio/ogg"
+    "flac" -> "audio/flac"
+    "aac" -> "audio/aac"
+    "mp4" -> "video/mp4"
+    "webm" -> "video/webm"
+    "mov" -> "video/quicktime"
+    "pdf" -> "application/pdf"
+    "png" -> "image/png"
+    "jpg", "jpeg" -> "image/jpeg"
+    "webp" -> "image/webp"
+    "gif" -> "image/gif"
+    else -> ""
 }
 
 internal object FileAttach {
@@ -55,8 +78,10 @@ internal object FileAttach {
                         }
                     }
                 }
-                val mime = resolver.getType(uri).orEmpty()
                 val name = shown.ifBlank { uri.lastPathSegment?.substringAfterLast('/') ?: "文件" }
+                // 选择器常常给不出 mime（尤其从"最近使用"里点进来的）。按扩展名补一把：
+                // 听觉覆盖靠 `audio/` 这个前缀认音频，补不上就等于那个开关对这个文件是哑的。
+                val mime = resolver.getType(uri).orEmpty().trim().ifBlank { guessMime(name) }
                 if (size > MAX_BYTES) {
                     error("「$name」${size / 1024 / 1024} MB，超过 ${MAX_BYTES / 1024 / 1024} MB 上限")
                 }

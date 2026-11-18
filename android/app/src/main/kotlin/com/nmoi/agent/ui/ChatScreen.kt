@@ -1423,7 +1423,7 @@ internal fun ChatScreen(
                     }
                     // 听觉覆盖（D341）：附件里的音频先转写成文字。文件照旧发下去——
                     // 芯片与落盘都是它，主模型拿到的是"文件 + 一段转写"，不是音频字节。
-                    val audioFiles = files.filter { it.mime.startsWith("audio/") }
+                    val audioFiles = files.filter { it.isAudio }
                     if (audioFiles.isNotEmpty() &&
                         RoleRunner.target(context, databasePath, ModelRole.Audio) != null
                     ) {
