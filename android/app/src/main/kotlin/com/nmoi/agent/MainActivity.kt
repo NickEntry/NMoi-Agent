@@ -14,6 +14,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppSettings
+import com.nmoi.agent.ui.PageHost
 import com.nmoi.agent.ui.AppSettingsScreen
 import com.nmoi.agent.ui.AppIconSwitcher
 import com.nmoi.agent.ui.AssistantEditScreen
@@ -508,6 +509,12 @@ class MainActivity : ComponentActivity() {
                     onOpenSettings = { backStack = backStack + Route.Settings },
                     onClose = { drawerOpen = false },
                 ) {
+                    // 页面宿主（D346）：这一页要是连第一帧都没画出来，2.5 秒后给「重试 / 返回」。
+                    // 抓不到的东西写在 PageHost 的注释里：组合异常会崩、主线程死锁救不了。
+                    PageHost(
+                        pageKey = routeKeyOf(route),
+                        onLeave = { if (backStack.size > 1) backStack = backStack.dropLast(1) },
+                    ) {
                     when (route) {
                         is Route.Chat -> ChatScreen(
                             title = route.title,
@@ -764,6 +771,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+                    }
 
                 }
             }
@@ -774,4 +782,23 @@ class MainActivity : ComponentActivity() {
         /** 空白会话的显示名。落库时也用它；改名是后面的事（等模型跑起来自动起名）。 */
         const val NEW_CHAT_TITLE = "新会话"
     }
+}
+
+/**
+ * 换页判据（D346）：只按"哪一页 + 哪个对象"算。
+ *
+ * 不能拿 `route` 本身当 key：聊天页每自动改一次名就换一个 `Route.Chat` 实例，
+ * 拿它当 key 会把整页重建一次——输入框里的字、滚动位置全没。
+ */
+private fun routeKeyOf(route: Route): String = when (route) {
+    is Route.Chat -> "chat:${route.sessionId ?: "new"}"
+    is Route.SettingsGroupRoute -> "group:${route.group.name}"
+    is Route.AssistantEdit -> "assistant:${route.id}"
+    is Route.MessageEdit -> "edit:${route.sessionId}:${route.messageId}"
+    is Route.ProviderEdit -> "provider:${route.id ?: "new"}:${route.focusModel ?: ""}"
+    is Route.ProviderKeys -> "keys:${route.id}"
+    is Route.PresetEdit -> "preset:${route.id}"
+    is Route.LogChannel -> "log:${route.kind}"
+    is Route.LicenseDocRoute -> "license:${route.doc}"
+    else -> route.javaClass.simpleName ?: "page"
 }
