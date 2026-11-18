@@ -95,6 +95,7 @@ internal fun ProviderListScreen(
             onSuccess = { page = it },
             onFailure = { notice = "读配置失败：${it.message}" },
         )
+        PageReady.notifyReady()
     }
 
     val rows = page?.rows.orEmpty()

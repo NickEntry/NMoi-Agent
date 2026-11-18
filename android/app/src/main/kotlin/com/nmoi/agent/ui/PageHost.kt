@@ -30,7 +30,30 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
 /**
- * 页面宿主（D346 / D347 / D348）：把下一页画好再换上去；画不出来给出口。
+ * 页面自己报告"这一屏的内容决定了"（D349）。
+ *
+ * 没接的页面照旧靠"布局稳定"那条兜底（D348），行为不变；接了的页面在数据读完之后
+ * 调一次 [notifyReady]，预渲染窗口就能**等到真数据**，而不是猜那 90 ms。
+ *
+ * 为什么是一个进程级对象而不是 `CompositionLocal`：`.current` 只能在 composable 上下文中读，
+ * 而页面里能拿到"读完了"这个时机的地方是 `LaunchedEffect`（挂起上下文）。用一个对象，
+ * 页面侧只要一行、不需要在 composable 作用域里先取出回调。宿主同一时刻只有一个待渲染页，
+ * 所以"后装的覆盖前装的"在这里不是问题；换页时宿主会重新装。
+ */
+internal object PageReady {
+    private val hook = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+
+    fun install(callback: (() -> Unit)?) {
+        hook.set(callback)
+    }
+
+    fun notifyReady() {
+        hook.get()?.invoke()
+    }
+}
+
+/**
+ * 页面宿主（D346 / D347 / D348 / D349）：把下一页画好再换上去；画不出来给出口。
  *
  * # 范围（用户 2026-11-18 划定）
  *
@@ -78,6 +101,13 @@ internal fun PageHost(
     // 这一页现在多高（D348）。窗口里靠它判断"布局稳了没有"——稳定就够了，
     // 不需要知道数据是不是真到了：内容一填进来高度一定变，稳定意味着变化结束。
     var height by remember(pageKey, attempt) { mutableStateOf(0) }
+    // 页面自己说"我读完了"（D349）。比高度稳不稳定的判定准，接了就用它。
+    var ready by remember(pageKey, attempt) { mutableStateOf(false) }
+    val markReady: () -> Unit = remember(pageKey, attempt) { { ready = true } }
+    SideEffect { PageReady.install(markReady) }
+    androidx.compose.runtime.DisposableEffect(pageKey, attempt) {
+        onDispose { PageReady.install(null) }
+    }
 
     LaunchedEffect(pageKey, attempt) {
         delay(PAGE_STUCK_MS)
@@ -94,7 +124,9 @@ internal fun PageHost(
     if (!preview) {
         Box(modifier = Modifier.fillMaxSize()) {
             key(pageKey, attempt) {
-                Box(modifier = probe) { content() }
+                Box(modifier = probe) {
+                    content()
+                }
             }
             if (stuck) {
                 StuckBar(attempt = attempt, onRetry = { attempt += 1 }, onLeave = onLeave)
@@ -120,6 +152,8 @@ internal fun PageHost(
         var last = height
         var waited = 0L
         while (waited < PAGE_PREVIEW_MS) {
+            // 页面说读完了，立刻换：这是唯一"知道"而不是"猜"的信号。
+            if (ready) break
             delay(PREVIEW_STEP_MS)
             waited += PREVIEW_STEP_MS
             if (height > 0 && height == last) break
@@ -133,7 +167,9 @@ internal fun PageHost(
         // 位置 0：当前页。窗口里透明、被旧页盖住。
         Box(modifier = Modifier.fillMaxSize().alpha(if (pending) 0f else 1f)) {
             key(pageKey, attempt) {
-                Box(modifier = probe) { content() }
+                Box(modifier = probe) {
+                    content()
+                }
             }
         }
         // 位置 1：旧页，压在上面（后画的在上层）——输入归它。

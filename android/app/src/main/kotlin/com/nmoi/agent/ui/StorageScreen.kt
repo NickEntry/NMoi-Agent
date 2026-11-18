@@ -74,6 +74,7 @@ internal fun StorageScreen(onBack: () -> Unit) {
             }
         }
         loading = false
+        PageReady.notifyReady()
     }
 
     val exportLauncher = rememberLauncherForActivityResult(

@@ -74,6 +74,7 @@ internal fun SecurityScreen(
     LaunchedEffect(Unit) {
         local = SecurityRepository.state(context)
         catalog = withContext(Dispatchers.IO) { NmoiFfi.shellRules().getOrNull() }
+        PageReady.notifyReady()
     }
 
     val builtin = remember(catalog) { builtinGroups(catalog) }
