@@ -1421,6 +1421,22 @@ internal fun ChatScreen(
                             NLog.i("Chat", "视觉覆盖：${images.size} 张图已转录成 ${transcript.length} 字")
                         }
                     }
+                    // 听觉覆盖（D341）：附件里的音频先转写成文字。文件照旧发下去——
+                    // 芯片与落盘都是它，主模型拿到的是"文件 + 一段转写"，不是音频字节。
+                    val audioFiles = files.filter { it.mime.startsWith("audio/") }
+                    if (audioFiles.isNotEmpty() &&
+                        RoleRunner.target(context, databasePath, ModelRole.Audio) != null
+                    ) {
+                        notice = "听觉覆盖：正在听 ${audioFiles.size} 段音频…"
+                        val heard = runCatching {
+                            RoleRunner.transcribeAudio(context, databasePath, audioFiles)
+                        }.getOrNull()
+                        notice = null
+                        if (heard != null) {
+                            bodyToSend = if (bodyToSend.isBlank()) heard else "$bodyToSend\n\n$heard"
+                            NLog.i("Chat", "听觉覆盖：${audioFiles.size} 段音频已转成 ${heard.length} 字")
+                        }
+                    }
                     // 文件是芯片（D337）：正文一个字不加；落盘与"给路径还是内联"由 core 决定。
                     val outgoing = bodyToSend
                     if (TurnRunner.isRunning(sid)) {
@@ -1986,7 +2002,7 @@ internal fun ChatScreen(
                         scope.launch {
                             val result = NmoiFfi.clearContextImages(sid)
                             result.getOrNull()?.let { contextImages = parseContextImages(it) }
-                            notice = if (result.isSuccess) "已清空这一轮的图片上下文" else "清空失败"
+                            notice = if (result.isSuccess) "已清空这一轮的其他模态" else "清空失败"
                         }
                     }
                 },
@@ -5146,14 +5162,14 @@ private fun Composer(
                             modifier = Modifier.size(14.dp),
                         )
                         Text(
-                            text = "图片上下文 $contextImageCount/$contextImageLimit",
+                            text = "其他模态 $contextImageCount/$contextImageLimit",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f).padding(start = 6.dp),
                         )
                         Icon(
                             imageVector = ActionIcons.ChevronRight,
-                            contentDescription = "查看这一轮的图片上下文",
+                            contentDescription = "查看这一轮的其他模态上下文",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp),
                         )
@@ -6148,7 +6164,21 @@ private fun imageBytesLabel(bytes: Long): String {
 }
 
 /** 上下文里的一张图（D248）。只从 native 那份清单来，界面不自己数。 */
-internal data class ContextImageRow(val id: String, val mime: String, val bytes: Long)
+internal data class ContextImageRow(
+    val id: String,
+    val mime: String,
+    val bytes: Long,
+    val kind: String = "image",
+) {
+    /** 一个小标签：图 / 视频 / 音频 / PDF。缩略图读不出来时，就是它告诉你这是什么。 */
+    val kindLabel: String
+        get() = when (kind) {
+            "video" -> "视频"
+            "audio" -> "音频"
+            "document" -> "PDF"
+            else -> "图片"
+        }
+}
 
 /** `nmoi_images_json` 的信封 → 清单。 */
 private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
@@ -6158,16 +6188,24 @@ private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
             val row = array.optJSONObject(index) ?: continue
             val id = row.text("id")
             if (id.isEmpty()) continue
-            add(ContextImageRow(id = id, mime = row.text("mime"), bytes = row.optLong("bytes", 0)))
+            add(
+                ContextImageRow(
+                    id = id,
+                    mime = row.text("mime"),
+                    bytes = row.optLong("bytes", 0),
+                    kind = row.text("kind").ifBlank { "image" },
+                ),
+            )
         }
     }
 }
 
 /**
- * 图片上下文（D248）：这一轮会发出去的图，一张一行。
+ * 其他模态上下文（D248 / D341）：这一轮会发出去的非正文附件，一份一行。
  *
- * 为什么它不在消息里：这些图是 `View-Image` **拉进上下文**的，不属于任何一条消息——
- * 原图还在它原来那条消息里，这一层只管"这一轮要发哪几张"。
+ * 为什么它不在消息里：这些附件是 `View-Image` **拉进上下文**的，不属于任何一条消息——
+ * 原件还在它原来那条消息里，这一层只管"这一轮要发哪几个"。
+ * 四种（图 / 视频 / 音频 / PDF）共用一张清单：代价、上限、丢弃顺序是同一件事。
  *
  * 能做的三件事：看（缩略图 / 格式 / 大小 / 附件 id）、移出一张、清空。
  * 移出**不删文件**，也不改消息：下一轮不带它而已。
@@ -6491,7 +6529,7 @@ private fun ContextImagesSheet(
             images.map { image -> image to AttachmentStore.bitmap(databasePath, image.id) }
         }
     }
-    SheetFrame(title = "图片上下文", onDismiss = onDismiss) {
+    SheetFrame(title = "其他模态上下文", onDismiss = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Box(
                 modifier = Modifier
@@ -6502,14 +6540,14 @@ private fun ContextImagesSheet(
             ) {
                 Column {
                     Text(
-                        text = "这一轮发送 ${images.size} / $limit 张 · 新的在前，满了先丢最旧的",
+                        text = "这一轮发送 ${images.size} / $limit 个 · 新的在前，满了先丢最旧的",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (images.isEmpty()) {
                         Text(
-                            text = "这一轮还没有图片。让模型用「查看图像」把图加进来，" +
-                                "或者直接在聊天页发一张。",
+                            text = "这一轮还没有其他模态附件。让模型用「查看图像」把文件加进来，" +
+                                "或者直接在聊天页发一张图。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 12.dp),
@@ -6549,15 +6587,16 @@ private fun ContextImagesSheet(
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
-                                        text = "读不出",
+                                        text = image.kindLabel,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.error,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
                             Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text(
-                                    text = "${imageBytesLabel(image.bytes)} · ${image.mime.ifBlank { "格式不明" }}",
+                                    text = "${image.kindLabel} · ${imageBytesLabel(image.bytes)} · " +
+                                    image.mime.ifBlank { "格式不明" },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
@@ -6592,7 +6631,7 @@ private fun ContextImagesSheet(
             }
             if (images.isNotEmpty()) {
                 Text(
-                    text = "清空这一轮的图片上下文",
+                    text = "清空这一轮的其他模态",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier

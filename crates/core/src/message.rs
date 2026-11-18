@@ -256,16 +256,97 @@ impl OutgoingToolCall {
     }
 }
 
-/// 一张随消息发出去的图片（D208）。
+/// 一块随消息发出去的媒体（D208 / 其他模态上下文）。
 ///
 /// `data` 是 base64（**不带** `data:` 前缀）：库里存原始字节，发请求时才编码一次，
 /// 这样同一张图不会在库里躺两份（一份 bytes、一份 base64）。
+///
+/// 一个部件带 `kind`：请求体里四种形状不一样（`image_url` / `video_url` /
+/// `input_audio` / `file`），只靠 mime 现推会在四个地方各写一遍。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImagePart {
-    /// 例如 `image/jpeg`、`image/png`。上游按它拼 `data:` URL。
+    /// 例如 `image/jpeg`、`audio/mpeg`。上游按它拼 `data:` URL。
     pub mime: String,
     /// 原始字节的 base64。
     pub data: String,
+    /// 走哪种块。老库里没有这一列，读出来按 mime 推（[`kind_of_mime`]）。
+    #[serde(default = "default_media_kind")]
+    pub kind: MediaKind,
+    /// 给上游看的文件名（`file` 块要它）。空 = 没有。
+    #[serde(default)]
+    pub name: String,
+}
+
+fn default_media_kind() -> MediaKind {
+    MediaKind::Image
+}
+
+impl ImagePart {
+    /// 按 mime 判块种类的快捷构造。界面那边只给 mime 与字节，kind 由这里推一次。
+    pub fn new(mime: impl Into<String>, data: impl Into<String>) -> Self {
+        let mime = mime.into();
+        Self {
+            kind: kind_of_mime(&mime),
+            mime,
+            data: data.into(),
+            name: String::new(),
+        }
+    }
+
+    /// 带上文件名（`file` 块要它）。
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+}
+
+/// 上下文里的四种媒体。它们都是**不通过正文**传的那一类：
+/// 图片走 `image_url`、视频走 `video_url`、音频走 `input_audio`、
+/// PDF/表格走 `file`——四种形状不同，开关与上限却是同一件事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    #[default]
+    Image,
+    Video,
+    Audio,
+    Document,
+}
+
+impl MediaKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MediaKind::Image => "image",
+            MediaKind::Video => "video",
+            MediaKind::Audio => "audio",
+            MediaKind::Document => "document",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "image" => Some(MediaKind::Image),
+            "video" => Some(MediaKind::Video),
+            "audio" => Some(MediaKind::Audio),
+            "document" | "pdf" | "file" => Some(MediaKind::Document),
+            _ => None,
+        }
+    }
+}
+
+/// 按 mime 判块种类。判不出的当 `Document`：宁可让上游说"不收这个"，
+/// 也不要把它当图片编进 `image_url`（那会被网关当成坏图丢掉，什么话都不说）。
+pub fn kind_of_mime(mime: &str) -> MediaKind {
+    let lowered = mime.trim().to_ascii_lowercase();
+    if lowered.starts_with("image/") {
+        MediaKind::Image
+    } else if lowered.starts_with("video/") {
+        MediaKind::Video
+    } else if lowered.starts_with("audio/") {
+        MediaKind::Audio
+    } else {
+        MediaKind::Document
+    }
 }
 
 /// 一份随用户消息发出去的文件（D337）。

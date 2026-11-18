@@ -29,6 +29,7 @@ fn images_json(session: &str) -> Value {
                 "id": image.id,
                 "mime": image.mime,
                 "bytes": image.bytes,
+                "kind": image.kind.as_str(),
             })
         })
         .collect();
@@ -113,6 +114,7 @@ mod tests {
                 file: "a.jpg".into(),
                 mime: "image/jpeg".into(),
                 bytes: 10,
+                kind: nmoi_core::message::MediaKind::Image,
             },
             20,
             0,

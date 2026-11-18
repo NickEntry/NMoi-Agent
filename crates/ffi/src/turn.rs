@@ -819,59 +819,77 @@ fn parse_thinking_default(root: &Value) -> FfiResult<Option<ThinkingEffort>> {
 fn parse_images(text: &str) -> FfiResult<Vec<nmoi_core::message::ImagePart>> {
     let root: Value = serde_json::from_str(text)
         .map_err(|error| FfiError::new("bad_argument", format!("配置不是合法 JSON: {error}")))?;
-    let Some(list) = root.get("images") else {
-        return Ok(Vec::new());
-    };
-    let list = list
-        .as_array()
-        .ok_or_else(|| FfiError::new("bad_argument", "`images` 必须是数组"))?;
-    if list.len() > 4 {
+    // 两个键都读：`images` 是老的（发消息带图），`audio` 是听觉覆盖新加的。
+    // 落到同一条 `request.images` 上——它们本来就是"不通过正文传的附件"同一簇，
+    // 块形状由 `kind` 决定（`runtime::media_block`）。
+    let mut out = Vec::new();
+    for key in ["images", "audio"] {
+        let Some(list) = root.get(key) else {
+            continue;
+        };
+        let list = list
+            .as_array()
+            .ok_or_else(|| FfiError::new("bad_argument", format!("`{key}` 必须是数组")))?;
+        for item in list {
+            let mime = item.get("mime").and_then(Value::as_str).ok_or_else(|| {
+                FfiError::new("bad_argument", format!("`{key}` 里有附件缺 `mime`"))
+            })?;
+            if !supported_media(mime) {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!("`{key}` 里的 mime 不在支持范围（image/* / video/* / audio/* / application/pdf）：{mime}"),
+                ));
+            }
+            let data = item.get("data").and_then(Value::as_str).ok_or_else(|| {
+                FfiError::new("bad_argument", format!("`{key}` 里有附件缺 `data`"))
+            })?;
+            let bytes = nmoi_core::base64::decode(data).ok_or_else(|| {
+                FfiError::new("bad_argument", format!("`{key}` 里有一份 base64 解不开"))
+            })?;
+            if bytes.is_empty() {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!("`{key}` 里有一个空附件"),
+                ));
+            }
+            if bytes.len() > nmoi_storage::repo::MAX_ATTACHMENT_BYTES {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!(
+                        "`{key}` 里有一份 {} 字节，超过上限 {}",
+                        bytes.len(),
+                        nmoi_storage::repo::MAX_ATTACHMENT_BYTES
+                    ),
+                ));
+            }
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            out.push(nmoi_core::message::ImagePart::new(mime, data).named(name));
+        }
+    }
+    // 一轮最多 4 个：三家端点的单请求上限最弱是 Anthropic 的 100 张，
+    // 但那是图；视频/音频按"每条消息 4 个"卡住更省事，也够用。
+    if out.len() > 4 {
         return Err(FfiError::new(
             "bad_argument",
-            format!("一轮最多带 4 张图，给了 {} 张", list.len()),
+            format!("一条消息最多带 4 个附件，给了 {}", out.len()),
         ));
     }
-    let mut out = Vec::with_capacity(list.len());
-    for (index, item) in list.iter().enumerate() {
-        let mime = item
-            .get("mime")
-            .and_then(Value::as_str)
-            .ok_or_else(|| FfiError::new("bad_argument", format!("第 {index} 张图缺 `mime`")))?;
-        if !mime.starts_with("image/") {
-            return Err(FfiError::new(
-                "bad_argument",
-                format!("第 {index} 张图的 mime 不是图片：{mime}"),
-            ));
-        }
-        let data = item
-            .get("data")
-            .and_then(Value::as_str)
-            .ok_or_else(|| FfiError::new("bad_argument", format!("第 {index} 张图缺 `data`")))?;
-        let bytes = nmoi_core::base64::decode(data).ok_or_else(|| {
-            FfiError::new("bad_argument", format!("第 {index} 张图的 base64 解不开"))
-        })?;
-        if bytes.is_empty() {
-            return Err(FfiError::new(
-                "bad_argument",
-                format!("第 {index} 张图是空的"),
-            ));
-        }
-        if bytes.len() > nmoi_storage::repo::MAX_ATTACHMENT_BYTES {
-            return Err(FfiError::new(
-                "bad_argument",
-                format!(
-                    "第 {index} 张图 {} 字节，超过上限 {}",
-                    bytes.len(),
-                    nmoi_storage::repo::MAX_ATTACHMENT_BYTES
-                ),
-            ));
-        }
-        out.push(nmoi_core::message::ImagePart {
-            mime: mime.to_string(),
-            data: data.to_string(),
-        });
-    }
     Ok(out)
+}
+
+/// 能进请求体当"其他模态"的几种：图片、视频、音频、PDF。
+/// 其余（文本、压缩包、office 文档）走文件芯片那条路（D337），不进这里。
+fn supported_media(mime: &str) -> bool {
+    let lowered = mime.trim().to_ascii_lowercase();
+    lowered.starts_with("image/")
+        || lowered.starts_with("video/")
+        || lowered.starts_with("audio/")
+        || lowered == "application/pdf"
 }
 
 /// 这一轮带的文件（D337）：`[{"name":"报告.md","mime":"text/markdown","data":"<base64>"}]`。

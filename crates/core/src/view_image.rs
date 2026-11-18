@@ -22,9 +22,29 @@ use crate::images::{self, ContextImage, DEFAULT_LIMIT};
 use crate::policy::Capability;
 use crate::tools::{required_str, Lane, Tool, ToolContext, ToolOutcome};
 
-/// 单张图上限：Anthropic 的 API 是 5 MB（Gemini 单张更宽，OpenAI 20 MB）。
+/// 图片单张上限：Anthropic 的 API 是 5 MB（Gemini 单张更宽，OpenAI 20 MB）。
 /// 取最弱的那个——换端点不该因为一张图就 400。
 const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// 其余三种（视频 / 音频 / PDF）按文件附件那一档走：16 MB。
+/// 5 MB 对一段录音或一页扫描的 PDF 太小，而它们本来就要整份传过去。
+const MAX_MEDIA_BYTES: u64 = 16 * 1024 * 1024;
+
+fn max_bytes_for(kind: crate::message::MediaKind) -> u64 {
+    match kind {
+        crate::message::MediaKind::Image => MAX_IMAGE_BYTES,
+        _ => MAX_MEDIA_BYTES,
+    }
+}
+
+fn kind_label(kind: crate::message::MediaKind) -> &'static str {
+    match kind {
+        crate::message::MediaKind::Image => "图片",
+        crate::message::MediaKind::Video => "视频",
+        crate::message::MediaKind::Audio => "音频",
+        crate::message::MediaKind::Document => "PDF/文档",
+    }
+}
 
 pub struct ViewImageTool;
 
@@ -45,7 +65,8 @@ impl Tool for ViewImageTool {
             "它不返回图片内容——图是给模型看的，加进来之后你就能在下一轮里看到它。\n",
             "清单有上限（默认 20 张，新的在前）；满了还能临时多留几张，那几张在下一次思考结束前有效。\n",
             "结果里会写清这次是正常放进去、临时留着，还是真挤掉了谁。",
-            "单张最大 5 MB；只认 jpg / jpeg / png / webp / gif。"
+            "四种都收：图（jpg / jpeg / png / webp / gif，单张 5 MB）、视频（mp4 / webm / mov）、",
+            "音频（mp3 / wav / m4a / ogg / flac）、PDF——后三种单份 16 MB。"
         )
     }
 
@@ -104,17 +125,22 @@ impl Tool for ViewImageTool {
         if !meta.is_file() {
             return ToolOutcome::failed(format!("`{name}` 不是一个文件"));
         }
-        if meta.len() > MAX_IMAGE_BYTES {
-            return ToolOutcome::failed(format!(
-                "这张图 {} MB，超过单张 5 MB 的上限（换端点最严的那家就是 5 MB）",
-                meta.len() / 1024 / 1024
-            ));
-        }
         let Some(mime) = mime_of(&name) else {
             return ToolOutcome::failed(format!(
-                "`{name}` 不是认得的图片格式：只收 jpg / jpeg / png / webp / gif"
+                "`{name}` 不是认得的格式：图收 jpg / jpeg / png / webp / gif，\
+                 视频收 mp4 / webm / mov，音频收 mp3 / wav / m4a / ogg / flac，另有 pdf"
             ));
         };
+        let kind = crate::message::kind_of_mime(mime);
+        let cap = max_bytes_for(kind);
+        if meta.len() > cap {
+            return ToolOutcome::failed(format!(
+                "这份{} {} MB，超过 {} MB 的上限",
+                kind_label(kind),
+                meta.len() / 1024 / 1024,
+                cap / 1024 / 1024
+            ));
+        }
         let id = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(&name);
 
         let limit = images::limit_of(ctx.image_limit);
@@ -126,6 +152,7 @@ impl Tool for ViewImageTool {
                 file: name.clone(),
                 mime: mime.to_string(),
                 bytes: meta.len(),
+                kind,
             },
             limit,
             room,
@@ -197,17 +224,26 @@ fn mime_of(name: &str) -> Option<&'static str> {
         "png" => "image/png",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "ogg" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "pdf" => "application/pdf",
         _ => return None,
     })
 }
 
-/// 给界面用的一句话：这一轮会带几张图。
+/// 给界面用的一句话：这一轮会带几个非正文附件。
 pub fn summary(session: &str) -> String {
     let count = images::list(session).len();
     if count == 0 {
-        "这一轮没有图片".to_string()
+        "这一轮没有其他模态".to_string()
     } else {
-        format!("这一轮带 {count} 张图")
+        format!("这一轮带 {count} 个其他模态附件")
     }
 }
 

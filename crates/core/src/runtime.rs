@@ -978,11 +978,11 @@ pub fn build_body(request: &ChatRequest) -> Result<Value, ChatError> {
             "messages 是空的：至少要有一条消息，否则上游只会回一个看不出原因的 400".into(),
         ));
     }
-    // 图片（D208）：现在只有 OpenAI 兼容端口会发。其余三个端口**明确报错**——
-    // 静默把图丢掉，用户会以为模型没看懂，而其实是根本没发出去。
+    // 媒体块（D208 / 其他模态上下文）：现在只有 OpenAI 兼容端口会发。
+    // 其余三个端口**明确报错**——静默把图丢掉，用户会以为模型没看懂，其实是没发出去。
     if !request.images.is_empty() && request.provider.kind != ProviderKind::OpenAiCompatible {
         return Err(ChatError::Unsupported(format!(
-            "{} 端口的图片发送还没做：这一轮带了 {} 张图，先换 OpenAI 兼容端口",
+            "{} 端口的媒体发送还没做：这一轮带了 {} 个附件，先换 OpenAI 兼容端口",
             request.provider.kind.as_str(),
             request
                 .images
@@ -1124,6 +1124,51 @@ fn openai_body(
     Ok(body)
 }
 
+/// 一块媒体在 OpenAI 兼容请求体里的形状。
+///
+/// 四种**不一样**，而且都是"参数"，不是正文：`image_url` / `video_url` /
+/// `input_audio` / `file`。这就是"其他模态上下文"这四个字的具体所指——
+/// 它们不进 `content` 的文字，走的是各自的字段。
+fn media_block(media: &crate::message::ImagePart) -> Value {
+    use crate::message::MediaKind;
+    let url = || format!("data:{};base64,{}", media.mime, media.data);
+    match media.kind {
+        MediaKind::Image => json!({
+            "type": "image_url",
+            "image_url": {"url": url()},
+        }),
+        MediaKind::Video => json!({
+            "type": "video_url",
+            "video_url": {"url": url()},
+        }),
+        MediaKind::Audio => json!({
+            // `input_audio` 只认裸 base64 + 格式名，既不要 `data:` 前缀也不要 mime。
+            "type": "input_audio",
+            "input_audio": {"data": media.data, "format": audio_format(&media.mime)},
+        }),
+        MediaKind::Document => json!({
+            "type": "file",
+            "file": {
+                "filename": if media.name.trim().is_empty() { "file" } else { media.name.as_str() },
+                "file_data": url(),
+            },
+        }),
+    }
+}
+
+/// OpenAI 的 `input_audio.format` 是个小枚举（wav / mp3 两档最稳）。
+/// 其余格式按 mime 的常用写法给一个，认不出就写 wav——上游会自己拒，
+/// 比在这里编一个它更不认的名字强。
+fn audio_format(mime: &str) -> &'static str {
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "audio/mp3" | "audio/mpeg" => "mp3",
+        "audio/flac" | "audio/x-flac" => "flac",
+        "audio/ogg" | "audio/webm" | "audio/opus" => "ogg",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" => "m4a",
+        _ => "wav",
+    }
+}
+
 fn openai_message(
     message: &crate::wire::WireMessage,
     replay: ReasoningReplay,
@@ -1139,20 +1184,17 @@ fn openai_message(
     }
 
     let mut item = json!({"role": message.role.as_str(), "content": message.content});
-    // 图片只在用户消息上发：助手/工具消息带图是另一套协议（编辑回传），现在不做。
+    // 媒体块只在用户消息上发：助手/工具消息带图是另一套协议（编辑回传），现在不做。
     if !images.is_empty() {
         if message.role != Role::User {
             return Err(ChatError::Unsupported(format!(
-                "只有用户消息能带图片，{} 是 {}",
+                "只有用户消息能带附件，{} 是 {}",
                 message.id, message.role
             )));
         }
         let mut parts = vec![json!({"type": "text", "text": message.content})];
-        for image in images {
-            parts.push(json!({
-                "type": "image_url",
-                "image_url": {"url": format!("data:{};base64,{}", image.mime, image.data)},
-            }));
+        for media in images {
+            parts.push(media_block(media));
         }
         item["content"] = Value::Array(parts);
     }
@@ -2556,13 +2598,9 @@ mod tests {
             crate::clock::LogicalClock::new(1),
         )];
         let id = request.messages[0].id.clone();
-        request.images.push((
-            id,
-            vec![ImagePart {
-                mime: "image/png".into(),
-                data: "aGVsbG8=".into(),
-            }],
-        ));
+        request
+            .images
+            .push((id, vec![ImagePart::new("image/png", "aGVsbG8=")]));
         let body = build_body(&request).unwrap();
         let content = &body["messages"][0]["content"];
         assert!(content.is_array(), "带图的消息必须是数组: {content}");
@@ -2591,15 +2629,11 @@ mod tests {
             crate::clock::LogicalClock::new(1),
         )];
         let id = request.messages[0].id.clone();
-        request.images.push((
-            id,
-            vec![ImagePart {
-                mime: "image/png".into(),
-                data: "aGVsbG8=".into(),
-            }],
-        ));
+        request
+            .images
+            .push((id, vec![ImagePart::new("image/png", "aGVsbG8=")]));
         let error = build_body(&request).unwrap_err();
-        assert!(format!("{error}").contains("图片"), "{error}");
+        assert!(format!("{error}").contains("媒体"), "{error}");
     }
 
     #[test]

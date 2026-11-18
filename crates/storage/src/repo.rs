@@ -2022,7 +2022,7 @@ impl nmoi_core::session::HistoryStore for Storage {
         let parts = Storage::attachments_for(self, message).map_err(|error| error.to_string())?;
         Ok(parts
             .into_iter()
-            .map(|(mime, data)| nmoi_core::message::ImagePart { mime, data })
+            .map(|(mime, data)| nmoi_core::message::ImagePart::new(mime, data))
             .collect())
     }
 
@@ -2033,10 +2033,10 @@ impl nmoi_core::session::HistoryStore for Storage {
             return Ok(None);
         }
         let (mime, bytes) = Storage::attachment(self, id).map_err(|error| error.to_string())?;
-        Ok(Some(nmoi_core::message::ImagePart {
+        Ok(Some(nmoi_core::message::ImagePart::new(
             mime,
-            data: nmoi_core::base64::encode(&bytes),
-        }))
+            nmoi_core::base64::encode(&bytes),
+        )))
     }
 
     /// 这个会话的附件目录（D248）：`View-Image` 只认这里面的文件。

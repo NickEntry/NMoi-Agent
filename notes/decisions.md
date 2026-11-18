@@ -2978,3 +2978,41 @@ core **769**、ffi **70**、JNI **59**；kotlinc 只剩那 9 个 `R`。真机 **
 判据：`SecurityModelTest` 14 条（新增 6：指纹、已改、过时、旧文件兜底、条数没变内容变了、
 未改不落盘），本机 kotlinc 全量类型检查只剩 9 条 `unresolved reference 'R'`（既有），
 core 794 / ffi 71 / storage 56 未动。
+
+## D341 听觉覆盖 + 其他模态上下文（2026-11-17）
+
+用户原话两句：**「后面应该再加个听觉覆盖模型？专门处理音频文件的，依旧是加号菜单里面
+可开关那种」**、**「图片上下文管理改成"其他模态上下文"，包括图片/视频/音频/PDF 等，
+不通过常规的 message 而是通过 video-url 之类的参数传过去的都算其他模态上下文」**。
+
+- **一个种类枚举钉住四种块**：`message::MediaKind`（Image / Video / Audio / Document）
+  与 `kind_of_mime`。请求体的形状只在 `runtime::media_block` 一处决定：
+  `image_url` / `video_url` / `input_audio` / `file`。以前"图片"这三个字散在
+  ffi（只认 `image/*`）、runtime（只会拼 `image_url`）、清单（只有图的字段）三处，
+  加一种就要改三处。
+- **`ImagePart` 带 `kind` 与 `name`**（`new(mime, data)` 按 mime 推 kind、`named` 补名字）。
+  名字保留是给 `file` 块用的——PDF 那一块要 `filename`，缺了上游没法在界面上指认。
+- **听觉覆盖是一个新角色，不是视觉角色的一个分支**：`ModelRole::Audio`（Kotlin 侧
+  初始未启用、不摆重置箭头，与视觉覆盖同一条理由——初始值就是未启用，摆一颗点了
+  回到原处的箭头等于告诉用户这里能切）。关掉视觉不影响听觉，反之亦然：
+  它们管的是两类东西，一个开关关两件事就是那种"点一下不知道关了什么"的开关。
+- **音频走"转写"这条路，不把字节发给主模型**（与 D62 同一个理由）：发送前把 `files` 里的
+  `audio/*` 挑出来，`RoleRunner.transcribeAudio` 逐段转成文字（带 `[分:秒]`、谁在说话、
+  听不清写 `[听不清]`），拼在正文末尾；**文件照旧发下去**——芯片要还在、落盘要还在，
+  这是 D337 的铁律。主模型拿到的是"文件 + 一段转写"。
+- **`nmoi_complete_json` 读两个键**：`images` 与 `audio`，落到同一条 `request.images`。
+  它们本来就是同一簇（不通过正文传的附件），只是块形状不同。上限仍是"一条消息 4 个"。
+- **清单扩到四种**：`ContextImage` 加 `kind`；`View-Image` 收视频 / 音频 / PDF
+  （图 5 MB，其余 16 MB——5 MB 对一段录音太小）；`nmoi_images_json` 每行带 `kind`；
+  界面标题与行内标签改成"其他模态"，缩略图读不出来时显示类型字而不是"读不出"
+  （音频本来就没有缩略图，写"读不出"等于说它坏了）。
+- **设置项的键名不改**（`context.image_limit` / `context.image_mode`）：改名要写迁移，
+  而它只是内部键，用户看到的是文案。文案已改成"其他模态上下文最多带几个"。
+- **视觉覆盖的 `plan()` 只管 image / video**：音频与文档留在 `stays_with_main`。
+  D62 那条"开着覆盖时主模型一个媒体块都不收"限定在它管的两类——不然开着视觉覆盖
+  的人连 PDF 都发不出去，而那件事跟他开的那颗开关没关系。
+- **`input_audio.format` 是个小枚举**（wav / mp3 最稳）：认不出的 mime 按 wav 发，
+  上游会自己拒。在本地编一个它更不认的名字，只会换来一句更含糊的 400。
+
+判据：core **794**、ffi **71**、kotlinc 全量只剩 9 条 `unresolved reference 'R'`（既有）。
+真机清单 V147。

@@ -632,10 +632,7 @@ fn attach_context_images(
         };
         cache.push((
             image.id.clone(),
-            crate::message::ImagePart {
-                mime: image.mime.clone(),
-                data: crate::base64::encode(&bytes),
-            },
+            crate::message::ImagePart::new(image.mime.clone(), crate::base64::encode(&bytes)),
         ));
     }
     let parts: Vec<crate::message::ImagePart> = listed

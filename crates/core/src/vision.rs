@@ -21,8 +21,6 @@
 //! 图像是一次快照，丢的细节还能"再看一眼"补；视频丢了时间轴，"什么时候发生了什么"
 //! 就永远补不回来。拿图像的模板去描述视频，出来的是六张互不相干的图（D63）。
 
-use serde::{Deserialize, Serialize};
-
 /// 图像默认提示词：用户 2026-10-21 提供的高精度复刻版，**逐字收**。
 ///
 /// 放在 `data/vision.image.md` 而不是写成 Rust 字面量：那份提示词里有大量引号与反引号，
@@ -32,25 +30,11 @@ pub const DEFAULT_IMAGE_PROMPT: &str = include_str!("../../../data/vision.image.
 /// 视频默认提示词：另写的，核心是时间轴而不是画面细节。
 pub const DEFAULT_VIDEO_PROMPT: &str = include_str!("../../../data/vision.video.md");
 
-/// 一次视觉覆盖要处理的媒体种类。
+/// 媒体种类定义在 `message` 里（请求体按它选块形状）。
 ///
-/// 只有图像和视频：音频交给主模型（如果它支持）或者由 ASR 转文字（P5.6），
-/// 那是另一条路，不套"视觉"这个名字。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MediaKind {
-    Image,
-    Video,
-}
-
-impl MediaKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            MediaKind::Image => "image",
-            MediaKind::Video => "video",
-        }
-    }
-}
+/// 视觉覆盖只处理其中两类：图像与视频。音频归**听觉覆盖**（另一个角色），
+/// 文档交给主模型自己收——把四种塞进一个开关，关掉一个就全关了。
+pub use crate::message::MediaKind;
 
 /// 一个待处理的附件（元信息；字节在附件库里，按 `reference` 取）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,8 +71,8 @@ impl Default for VisionPrompts {
 impl VisionPrompts {
     pub fn for_kind(&self, kind: MediaKind) -> &str {
         match kind {
-            MediaKind::Image => &self.image,
             MediaKind::Video => &self.video,
+            _ => &self.image,
         }
     }
 }
@@ -202,6 +186,7 @@ impl VisionOverride {
 
         let mut tasks = Vec::new();
         let mut images = Vec::new();
+        let mut kept = Vec::new();
         for attachment in media {
             match attachment.kind {
                 MediaKind::Image => images.push(attachment.item.clone()),
@@ -211,6 +196,11 @@ impl VisionOverride {
                     items: vec![attachment.item.clone()],
                     prompt: self.prompts.video.clone(),
                 }),
+                // 不归这一层管的，原样留给主模型：视觉覆盖关的是"图怎么看"，
+                // 不是"这一轮能不能带音频"（那是听觉覆盖的开关）。
+                MediaKind::Audio | MediaKind::Document => {
+                    kept.push(attachment.item.reference.clone());
+                }
             }
         }
 
@@ -223,15 +213,19 @@ impl VisionOverride {
             });
         }
 
-        let count = media.len();
+        let count = tasks.iter().map(|task| task.items.len()).sum::<usize>();
         let task_count = tasks.len();
         VisionPlan {
             tasks,
-            stays_with_main: Vec::new(),
-            main_note: Some(format!(
-                "本轮有 {count} 个附件，已交给视觉模型转成文字描述（共 {task_count} 次调用），\
-                 描述在这条消息之后。附件本身没有发给聊天模型。"
-            )),
+            stays_with_main: kept,
+            main_note: if count == 0 {
+                None
+            } else {
+                Some(format!(
+                    "本轮有 {count} 个附件，已交给视觉模型转成文字描述（共 {task_count} 次调用），\
+                     描述在这条消息之后。附件本身没有发给聊天模型。"
+                ))
+            },
             blocked_reason: None,
         }
     }

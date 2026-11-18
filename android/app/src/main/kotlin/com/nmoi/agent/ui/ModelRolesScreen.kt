@@ -45,7 +45,8 @@ import kotlinx.coroutines.withContext
  * 每个角色是"一件事配一个模型"，不是"选一个模型"。三态：
  * `disabled`（未启用）/ `follow`（跟着当前对话模型）/ `provider|model`（指定）。
  *
- * 初始值分两类：标题总结 / 聊天建议 / 视觉覆盖 初始**未启用**；摘要 / 压缩 / 翻译 初始**跟随**
+ * 初始值分两类：标题总结 / 聊天建议 / 视觉覆盖 / 听觉覆盖 初始**未启用**；
+ * 摘要 / 压缩 / 翻译 初始**跟随**
  * ——后三样永远有活干，没有"关掉"这一说。
  *
  * 卡片右侧第一个动作跟着状态变：
@@ -70,6 +71,7 @@ internal enum class ModelRole(
     Title("title", "标题总结", false, ActionIcons.Square),
     Suggest("suggest", "聊天建议", false, ActionIcons.SearchAssistant),
     Vision("vision", "视觉覆盖", false, ActionIcons.Image, resetWhenDisabled = false),
+    Audio("audio", "听觉覆盖", false, ActionIcons.Mic, resetWhenDisabled = false),
     Summary("summary", "摘要", true, ActionIcons.Database),
     Compress("compress", "压缩", true, ActionIcons.Gauge),
     Translate("translate", "翻译", true, ActionIcons.Languages),

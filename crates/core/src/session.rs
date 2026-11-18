@@ -3990,10 +3990,7 @@ mod tests {
         let client = ChatClient::new(transport.clone());
         let mut config = SessionConfig::default();
         config.turn.image_mode = crate::agent::ImageMode::Path;
-        let images = vec![crate::message::ImagePart {
-            mime: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        }];
+        let images = vec![crate::message::ImagePart::new("image/png", "aGVsbG8=")];
 
         run_session_turn_with_images(
             &client,
@@ -4040,10 +4037,7 @@ mod tests {
         let client = ChatClient::new(transport.clone());
         let mut config = SessionConfig::default();
         config.turn.image_mode = crate::agent::ImageMode::Path;
-        let images = vec![crate::message::ImagePart {
-            mime: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        }];
+        let images = vec![crate::message::ImagePart::new("image/png", "aGVsbG8=")];
 
         run_session_turn_with_images(
             &client,
@@ -4627,10 +4621,7 @@ mod tests {
         let base = base_request();
         let registry = ToolRegistry::workspace_defaults();
         let config = SessionConfig::default();
-        let images = vec![crate::message::ImagePart {
-            mime: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        }];
+        let images = vec![crate::message::ImagePart::new("image/png", "aGVsbG8=")];
 
         run_session_turn_with_images(
             &client,

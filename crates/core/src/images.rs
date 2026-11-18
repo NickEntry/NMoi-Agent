@@ -1,11 +1,14 @@
-//! 上下文图片清单（0.15al / D248）。
+//! 其他模态上下文清单（0.15al / D248，2026-11-17 扩到四种）。
 //!
-//! 一件事：**这一轮要发出去的图是哪几张**。
+//! 一件事：**这一轮要发出去的那些非正文附件是哪些**。
 //!
-//! 为什么要有这张表：用户发的图跟着消息走（`attachments` 表按消息 id 索引，D208），
-//! 但"查看图像"这个工具把图**拉进上下文**时，那张图不属于任何一条消息——它可能来自
-//! `/chat/images` 下工具自己产出的文件，也可能是上一轮留下的。所以它需要一个
+//! 为什么要有这张表：用户发来的附件跟着消息走（`attachments` 表按消息 id 索引，D208），
+//! 但"查看图像"这个工具把文件**拉进上下文**时，那份附件不属于任何一条消息——它可能来自
+//! `/images` 下工具自己产出的文件，也可能是上一轮留下的。所以它需要一个
 //! 独立于消息的清单。
+//!
+//! 四种（图 / 视频 / 音频 / PDF）共用同一张表：它们的代价、上限、丢弃顺序是同一件事，
+//! 请求体里的块形状才是分开的（`runtime::media_block`）。
 //!
 //! 三条规矩：
 //!
@@ -40,6 +43,9 @@ pub struct ContextImage {
     pub file: String,
     pub mime: String,
     pub bytes: u64,
+    /// 走哪种块（`image_url` / `video_url` / `input_audio` / `file`）。
+    /// 清单本身对四种一视同仁：都是"这一轮要通过参数发出去的东西"。
+    pub kind: crate::message::MediaKind,
 }
 
 fn table() -> &'static Mutex<HashMap<String, Vec<ContextImage>>> {
@@ -153,6 +159,7 @@ mod tests {
             file: format!("{id}.jpg"),
             mime: "image/jpeg".into(),
             bytes: 1024,
+            kind: crate::message::MediaKind::Image,
         }
     }
 

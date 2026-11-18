@@ -12,8 +12,8 @@ import org.json.JSONObject
  * 只做一件事：把「默认模型」里这个角色的配置（供应商 + 模型）翻成 `nmoi_complete` 的入参。
  * 没有会话、不落库——这类旁路不该在历史里留下假对话（D158 的理由）。
  *
- * 现在接上的消费者只有**视觉覆盖**：发图时先让那个模型把图转录成文字，
- * 再把文字随消息发出去。主模型收不收图都不影响——它拿到的是文字。
+ * 现在接上的消费者有两个：**视觉覆盖**（发图时先转录成文字）与**听觉覆盖**
+ * （发音频时先转写成文字）。主模型收不收这些附件都不影响——它拿到的是文字。
  */
 internal object RoleRunner {
     /**
@@ -28,6 +28,20 @@ internal object RoleRunner {
             "颜色与状态（例如按钮是亮的还是灰的、哪一行被选中），以及一眼能看出含义的细节" +
             "（报错信息、进度、数字、光标位置）。\n\n" +
             "不要评论，不要给建议，不要总结成一句话。看不清的地方写「看不清」，不要猜。"
+
+    /**
+     * 听觉覆盖那段固定提示词。
+     *
+     * 与视觉那份同一个理由：要的是**转写**，不是评论。多要两样东西——
+     * 谁在说（分辨得出几个人时就分），以及时间点（几分钟处说了什么，
+     * 主模型后面要"回到 12:30 那句"时才找得到）。
+     */
+    const val AUDIO_PROMPT =
+        "把这段音频里的话完整转写成文字，写给一个听不见这段音频的人。\n\n" +
+            "要写到：谁在说话（能分清几个人就分开写，分不清就写「说话人」）、说了什么（原话，不要概括）、" +
+            "语气与状态（在笑、在犹豫、在喊、背景里有杂音）、以及大致的时间点" +
+            "（每一段前面标一个 [分:秒]，从音频开头算）。\n\n" +
+            "听不清的地方写「[听不清]」，不要猜。不要评论，不要给建议，不要总结成一句话。"
 
     /** 这个角色要用的 (供应商, 模型)；`null` = 不启用（未启用 / 跟随 / 供应商没了）。 */
     suspend fun target(
@@ -55,6 +69,7 @@ internal object RoleRunner {
         prompt: String,
         system: String? = null,
         images: List<PendingImage> = emptyList(),
+        audio: List<PendingFile> = emptyList(),
     ): String? = withContext(Dispatchers.IO) {
         val (provider, model) = target(context, databasePath, role) ?: return@withContext null
         // 三层拼在一处（D318）：内置那段（调用方给的 `system`）→ 全局 → 这个角色自己的。
@@ -99,6 +114,21 @@ internal object RoleRunner {
                     row.put("images", array)
                 }
             }
+            .also { row ->
+                // 音频与图走同一个 `request.images`，块形状由 kind 决定（`input_audio`）。
+                if (audio.isNotEmpty()) {
+                    val array = JSONArray()
+                    audio.forEach { file ->
+                        array.put(
+                            JSONObject()
+                                .put("mime", file.mime)
+                                .put("data", file.data)
+                                .put("name", file.name),
+                        )
+                    }
+                    row.put("audio", array)
+                }
+            }
         val result = NmoiFfi.complete(config)
         // 旁路失败不出声，但钥匙被拒这件事要说给池子听（D315）：下一轮换一把。
         val refused = (result.exceptionOrNull() as? NmoiFfiException)?.status
@@ -115,6 +145,34 @@ internal object RoleRunner {
      * `null` = 没启用（照旧把图发给主模型）。一张一段、各自带标号：四张图一起喂，
      * 模型常常只描述最后一张，而用户要的是"这四张分别是什么"。
      */
+    /**
+     * 听觉覆盖：把这几段音频转写成文字。
+     *
+     * `null` = 没启用（音频文件照旧当文件发下去，主模型读不读得到由它自己说）。
+     * 一个文件一段、各自带名字：三段录音一起喂，模型会把它们连成一段话。
+     */
+    suspend fun transcribeAudio(
+        context: Context,
+        databasePath: String,
+        files: List<PendingFile>,
+    ): String? {
+        if (files.isEmpty()) return null
+        if (target(context, databasePath, ModelRole.Audio) == null) return null
+        val parts = ArrayList<String>()
+        files.forEach { file ->
+            val text = complete(
+                context = context,
+                databasePath = databasePath,
+                role = ModelRole.Audio,
+                prompt = AUDIO_PROMPT,
+                audio = listOf(file),
+            ) ?: return null
+            if (text.isBlank()) return null
+            parts.add("〔${file.name} 的转写〕\n${text.trim()}")
+        }
+        return parts.joinToString("\n\n").ifBlank { null }
+    }
+
     suspend fun transcribe(
         context: Context,
         databasePath: String,

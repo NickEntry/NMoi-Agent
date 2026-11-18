@@ -335,7 +335,7 @@ internal fun AppSettingsScreen(
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(
-                            text = "上下文里最多带几张图",
+                            text = "其他模态上下文最多带几个",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -349,7 +349,7 @@ internal fun AppSettingsScreen(
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setImageLimit(context, AppSettings.DEFAULT_IMAGE_LIMIT)
                                 imageLimitText = AppSettings.DEFAULT_IMAGE_LIMIT.toString()
-                                notice = "上下文图片上限恢复成 ${AppSettings.DEFAULT_IMAGE_LIMIT} 张"
+                                notice = "其他模态上限恢复成 ${AppSettings.DEFAULT_IMAGE_LIMIT} 个"
                             }
                         }
 
@@ -362,7 +362,7 @@ internal fun AppSettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "满了还能临时多留几张",
+                                    text = "满了还能临时多留几个",
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
@@ -378,7 +378,7 @@ internal fun AppSettingsScreen(
                             SettingChip("恢复默认", selected = false) {
                                 AppSettings.setImageTempLimit(context, AppSettings.DEFAULT_IMAGE_TEMP)
                                 imageTempText = AppSettings.DEFAULT_IMAGE_TEMP.toString()
-                                notice = "临时额度恢复成 ${AppSettings.DEFAULT_IMAGE_TEMP} 张"
+                                notice = "临时额度恢复成 ${AppSettings.DEFAULT_IMAGE_TEMP} 个"
                             }
                         }
                     }
