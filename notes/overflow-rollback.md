@@ -25,10 +25,20 @@
 原文按哈希落到 `sessions/<id>/archive/<ref>.txt`，提醒里写这个路径（文件工具读得到）。
 归档写不进去就不写路径，只写"重新取一段"。
 
-剩下的（还没做）：
-- 原文档**没有**进库（`archive_put` 要 `HistoryStore`，`run_turn` 拿不到）——
-  所以 `fetch_archive` 认不出它，只能按路径用 `read_file` 读。
-- 界面上还没有"撤回了 N KB"那一行（`report.shrunk` 已经带出来，FFI 与 UI 没接）。
+2026-11-17 补完（D342）：
+
+- **先摘图，再撤工具输出**：`drop_oldest_context_images` 一次摘掉清单里最旧的一半
+  （至少一张，新的留着）。图比工具输出便宜、也可恢复——文件还在盘上，
+  模型再调一次 `View-Image` 就回来了；撤一条工具输出是不可逆的。
+- **真实超窗当最高优先信号**：`TurnReport.overflow` 带出"上游明确拒过"，
+  `budget::trigger_for` 于是不看水位线，直接给绝对档（`ratio` 取 1.0 起）。
+  水位线是估的，估低了就永远等不到线；而"已经拒了一次"是实测。
+- **界面那一行**：`TurnOutcome.shrunk`（`ShrunkRow`）接进 `describe()`，
+  提示行末尾写"已撤回一条工具输出（N KB，约 M token），原文在 …"或
+  "已把 a.jpg、b.jpg 移出这一轮（N KB）"。
+
+还没做：原文档**没有**进库（`archive_put` 要 `HistoryStore`，`run_turn` 拿不到）——
+所以 `fetch_archive` 认不出它，只能按路径用 `read_file` 读。
 
 ## 3.1 原来为什么只落第 1 步
 

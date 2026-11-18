@@ -1248,10 +1248,13 @@ fn turn_json(turn: &SessionTurn, presets: &Value) -> Value {
             "truncated": turn.report.truncated,
             // 超窗撤回（D336）：这一轮撤了一条工具结果、重发过一次。界面要能说出口。
             "shrunk": turn.report.shrunk.as_ref().map(|entry| json!({
+                "kind": entry.kind.as_str(),
                 "bytes": entry.bytes,
                 "tokens": entry.tokens,
                 "path": entry.path,
+                "name": entry.name.clone(),
             })),
+            "overflow": turn.report.overflow,
             // 断在哪儿（D327）：和 `truncated` 分开。断流也置 `truncated`（"没说完"的老判据不变），
             // 但界面上要说的是"连接断了、可以续话"，不是"上下文到了绝对线"。
             "cut": turn.report.cut,
@@ -1861,10 +1864,13 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             "truncated": outcome.report.truncated,
             "cut": outcome.report.cut,
             "shrunk": outcome.report.shrunk.as_ref().map(|entry| json!({
+                "kind": entry.kind.as_str(),
                 "bytes": entry.bytes,
                 "tokens": entry.tokens,
                 "path": entry.path,
+                "name": entry.name.clone(),
             })),
+            "overflow": outcome.report.overflow,
         }))
     })
 }

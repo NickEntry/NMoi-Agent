@@ -136,12 +136,34 @@ pub struct ToolRecord {
 /// 撤回了一条工具结果（D336）：块里留的是提醒，原文落到了会话的 `/archive`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShrunkOutput {
+    /// 撤回的是哪一类：一条工具输出，还是清单里的几张图。
+    pub kind: ShrunkKind,
     /// 被撤回那一段的字节数。
     pub bytes: u64,
     /// 它大约占多少 token（估算，给界面写"约 N token"用）。
     pub tokens: u32,
     /// 落到 `/archive` 的那一份在 guest 里的路径。`None` = 没写盘（没有归档目录）。
     pub path: Option<String>,
+    /// 给人看的名字：图片那几个文件名（`图 3 张`），或者空。
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ShrunkKind {
+    /// 一条工具结果被换成了提醒（D336）。
+    #[default]
+    ToolOutput,
+    /// 清单里最旧的几张被移出这一轮（D342）。文件还在盘上，`View-Image` 能再加回来。
+    ContextImage,
+}
+
+impl ShrunkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShrunkKind::ToolOutput => "tool_output",
+            ShrunkKind::ContextImage => "context_image",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -186,6 +208,11 @@ pub struct TurnReport {
     pub truncated: bool,
     /// 这一轮撤回并换成了提醒的那一条工具结果（D336）。`None` = 没撤过。
     pub shrunk: Option<ShrunkOutput>,
+    /// 这一轮上游**明确**说过超窗（`Overflow::Sure`，D342）。
+    ///
+    /// 它跟水位线是两回事：水位线是"我们算着快满了"，这个是"上游已经拒了"。
+    /// 两者同时成立时以这个为准——压缩判据要按绝对线走，不能再等下一轮的水位线。
+    pub overflow: bool,
     /// 连接中途断了（D327）：已经收到的正文留着，`interrupted` 里是原因。
     ///
     /// 和 `truncated` 分开记的理由跟 `cancelled` 一样——三种"没说完"要说三句话：
@@ -411,11 +438,19 @@ pub fn run_turn<T: Transport>(
         let (completion, interrupted, cut_reason) = match attempt() {
             Ok(answer) => answer,
             Err(error) => {
-                // 上游**确定**说超窗，而且这一轮还没撤回过：把最大的那条工具结果换成提醒，
-                // 重发同一次请求。仍然超窗就把错误交回上层——那时候才轮到压缩。
+                // 上游**确定**说过超窗：这一条要回给上层（D342）。它比水位线硬——
+                // 水位线是我们算着快满了，这是上游已经拒了。
+                if error.overflow().is_some() {
+                    report.overflow = true;
+                }
+                // 先摘图、再撤工具输出，然后重发同一次请求。
+                // 图的顺序是用户定的："图片不归撤回管"——图可以再加回来（文件还在盘上），
+                // 而撤掉一条工具输出等于让模型再也看不到那段原文。
                 let can_retry = error.overflow().is_some() && !shrunk;
                 let shrunk_now = if can_retry {
-                    shrink_largest_tool_output(&mut messages, turn_start, ctx.session_archive)
+                    drop_oldest_context_images(ctx).or_else(|| {
+                        shrink_largest_tool_output(&mut messages, turn_start, ctx.session_archive)
+                    })
                 } else {
                     None
                 };
@@ -1780,6 +1815,47 @@ mod tests {
     }
 }
 
+/// 超窗时先把清单里最旧的几张图移出这一轮（D342）。
+///
+/// 为什么先摘图：它们最便宜，也最容易补回来——文件还在 `sessions/<id>/images`，
+/// 模型自己再调一次 `View-Image` 就又进来了。撤回一条工具输出是不可逆的
+/// （要让模型重跑一遍命令才拿得到原文），所以排在后面。
+///
+/// 一次摘一半（至少一张）：只摘一张常常不够——超窗差的是几万 token，一张图一两千；
+/// 摘一半既能一次省下来，又不会把这一轮刚加的那张也摘掉（新的在前，反着摘）。
+fn drop_oldest_context_images(ctx: &ToolContext<'_>) -> Option<ShrunkOutput> {
+    let session = ctx.call_session?;
+    let listed = crate::images::list(session);
+    if listed.is_empty() {
+        return None;
+    }
+    let take = listed.len().div_ceil(2).max(1);
+    let mut bytes = 0u64;
+    let mut names: Vec<String> = Vec::new();
+    for image in listed.iter().rev().take(take) {
+        if crate::images::remove(session, &image.id) {
+            bytes += image.bytes;
+            names.push(image.file.clone());
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    // 一张图按 1.5k token 粗算：这一层的数只用来给界面写一句话，不参与预算。
+    let tokens = names.len() as u32 * 1500;
+    let mut shown = names.iter().take(3).cloned().collect::<Vec<_>>().join("、");
+    if names.len() > 3 {
+        shown.push_str(&format!(" 等 {} 张", names.len()));
+    }
+    Some(ShrunkOutput {
+        kind: ShrunkKind::ContextImage,
+        bytes,
+        tokens,
+        path: None,
+        name: shown,
+    })
+}
+
 const SHRINK_MARK: &str = "[已撤回";
 
 /// 把这一轮里**最大**的那条工具结果换成一行提醒（D336）。
@@ -1839,10 +1915,73 @@ fn shrink_largest_tool_output(
         return None;
     }
     Some(ShrunkOutput {
+        kind: ShrunkKind::ToolOutput,
         bytes: bytes as u64,
         tokens,
         path: kept,
+        name: String::new(),
     })
+}
+
+#[cfg(test)]
+mod image_shrink_tests {
+    use super::*;
+    use crate::images::{self, ContextImage};
+    use crate::message::MediaKind;
+    use crate::policy::AssistantPolicy;
+    use crate::tools::ToolContext;
+
+    fn add(session: &str, index: usize) {
+        images::add(
+            session,
+            ContextImage {
+                id: format!("i{index}"),
+                file: format!("{index}.jpg"),
+                mime: "image/jpeg".into(),
+                bytes: 1000,
+                kind: MediaKind::Image,
+            },
+            20,
+            0,
+        );
+    }
+
+    /// 超窗先摘图：摘一半，留新的一半（用户 2026-11-17："图片不归撤回管，应先摘最旧的"）。
+    #[test]
+    fn overflow_takes_the_older_half_of_the_images() {
+        let session = "s-shrink-images-half";
+        let _ = images::clear(session);
+        for index in 0..4 {
+            add(session, index);
+        }
+        let policy = AssistantPolicy::default();
+        let ctx = ToolContext {
+            call_session: Some(session),
+            ..ToolContext::new(&policy, None)
+        };
+        let entry = drop_oldest_context_images(&ctx).expect("四张图应当摘得动");
+        assert_eq!(entry.kind, ShrunkKind::ContextImage);
+        let left: Vec<String> = images::list(session)
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(left, vec!["i3", "i2"], "新的留着、旧的走");
+        assert!(entry.bytes > 0);
+        assert!(entry.name.contains('0'), "{}", entry.name);
+    }
+
+    /// 清单空着就不动手：返回 `None`，交给"撤工具输出"那一条。
+    #[test]
+    fn nothing_to_take_is_not_an_error() {
+        let session = "s-shrink-images-empty";
+        let _ = images::clear(session);
+        let policy = AssistantPolicy::default();
+        let ctx = ToolContext {
+            call_session: Some(session),
+            ..ToolContext::new(&policy, None)
+        };
+        assert!(drop_oldest_context_images(&ctx).is_none());
+    }
 }
 
 #[cfg(test)]

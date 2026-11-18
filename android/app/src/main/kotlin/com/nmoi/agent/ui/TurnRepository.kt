@@ -35,6 +35,8 @@ internal data class TurnOutcome(
     val failedEdits: Int,
     /** 这一轮预设注入了什么（给请求日志，不上界面）。 */
     val presetsLine: String,
+    /** 超窗时撤回的那一份（D336 / D342）：一条工具输出，或者清单里几张图。 */
+    val shrunk: ShrunkRow? = null,
 ) {
     /** 提示行那一句。用户要能一眼看出"它到底跑完了没有"。 */
     fun describe(): String {
@@ -46,7 +48,18 @@ internal data class TurnOutcome(
             else -> "，改了 $editedBlocks 处消息内容"
         }
         val failed = if (failedEdits > 0) "，$failedEdits 处没写进去（原因在日志）" else ""
-        return when {
+        // 撤回过就必须说：用户看到的是"回答变短了"，而真正发生的是"有一段被换成了提醒"。
+        val shrunkLine = shrunk?.let { row ->
+            when (row.kind) {
+                "context_image" -> "已把 ${row.name} 移出这一轮（${row.kb()} KB），要看再让模型调一次「查看图像」"
+                else -> buildString {
+                    append("已撤回一条工具输出（${row.kb()} KB，约 ${row.tokens} token）")
+                    row.path?.let { append("，原文在 $it") }
+                    if (row.path == null) append("，没有留副本")
+                }
+            }
+        }
+        val text = when {
             // 停止（D252）：正文为空时**这一版没有落库**，措辞要说清，别让人以为存了个空壳。
             cancelled && length == 0 ->
                 "已停止：这一轮没有正文，没有落版本（旧的那一版留着）"
@@ -70,7 +83,19 @@ internal data class TurnOutcome(
                 compression?.let { append("；${it.line()}") }
             }
         }
+        return if (shrunkLine == null) text else "$text；$shrunkLine"
     }
+}
+
+/** 撤回记录（D336 / D342）：`kind` 是 `tool_output` 或 `context_image`。 */
+internal data class ShrunkRow(
+    val kind: String,
+    val bytes: Long,
+    val tokens: Int,
+    val path: String?,
+    val name: String,
+) {
+    fun kb(): String = ((bytes / 1024.0 * 10).toInt() / 10.0).toString()
 }
 
 /**
@@ -614,6 +639,15 @@ internal object TurnRepository {
             truncated = envelope.optBoolean("truncated", false),
             // 断流那一版（D327）：`cut` 只在断流时非空，别的收尾原因不借这个字段。
             cut = envelope.optString("cut", "").takeIf { it.isNotEmpty() },
+            shrunk = envelope.optJSONObject("shrunk")?.let { row ->
+                ShrunkRow(
+                    kind = row.optString("kind", "tool_output"),
+                    bytes = row.optLong("bytes", 0),
+                    tokens = row.optInt("tokens", 0),
+                    path = row.optString("path", "").takeIf { it.isNotEmpty() },
+                    name = row.optString("name", ""),
+                )
+            },
             compression = null,
             editedBlocks = 0,
             failedEdits = 0,

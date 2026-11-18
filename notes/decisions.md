@@ -3016,3 +3016,26 @@ core 794 / ffi 71 / storage 56 未动。
 
 判据：core **794**、ffi **71**、kotlinc 全量只剩 9 条 `unresolved reference 'R'`（既有）。
 真机清单 V147。
+
+## D342 超窗：先摘图，真实超窗压过水位线（2026-11-17）
+
+`compress.md` §6.3 记的三处缺口，一次收完。
+
+- **超窗时先摘图**（`drop_oldest_context_images`）：清单里最旧的一半（至少一张）移出这一轮。
+  图比工具输出便宜也可恢复——文件还在 `sessions/<id>/images`，模型再调一次 `View-Image`
+  就回来了；撤回一条工具输出是不可逆的（要重跑命令才拿得回原文）。所以顺序反过来了：
+  以前只有"撤工具输出"一条路，超窗时图片一个都不动。
+  一次摘一半而不是一张：超窗差的是几万 token，一张图一两千，摘一张不解决问题。
+- **真实超窗是最高优先信号**（`TurnReport.overflow` + `budget::trigger_for`）：
+  上游明确拒过超窗时，压缩判据不再看水位线，直接给绝对档（`ratio` 取 1.0 起）。
+  水位线是**我们估的**，估低了就永远等不到线，而这一轮已经把同一条请求撞过一次了；
+  实测事实优先于估算。
+- **界面那一行**（`TurnOutcome.shrunk` / `ShrunkRow`）：`report.shrunk` 以前只到 FFI，
+  界面一个字都不说。用户看到的是"回答突然变短了"，而真正发生的是"有一段被换成了提醒"。
+  现在 `describe()` 末尾拼一句：工具输出写"已撤回一条工具输出（N KB，约 M token），
+  原文在 /archive/…"，图写"已把 a.jpg、b.jpg 移出这一轮（N KB）"。
+- `ShrunkOutput` 加 `kind`（`tool_output` / `context_image`）与 `name`：
+  两件事的后果不一样（一件不可逆、一件能加回来），界面不能共用一句话。
+
+判据：core **797**（+3：摘一半留新的、空清单不动手、真实超窗压过水位线）、
+ffi 71、kotlinc 只剩 9 条 `unresolved reference 'R'`、clippy / fmt 干净。真机 V148。

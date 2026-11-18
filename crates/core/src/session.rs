@@ -1498,7 +1498,12 @@ pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
                 budget.used / turns
             });
             // 回本周期默认 11.5 轮（附录 A：断点式缓存），没配就按这个走
-            let trigger = evaluate_trigger(&budget, avg, 11.5, config.trigger);
+            //
+            // 上游**明确**拒过超窗时（D342）不看水位线：那个数是我们估的，估低了就
+            // 永远等不到线，而这一轮已经把同一条请求撞过一次了。实测事实优先于估算，
+            // 所以直接按绝对线处理；`ratio` 取 1.0 起——"上游说满了"就是这个意思。
+            let trigger =
+                crate::budget::trigger_for(&budget, avg, 11.5, report.overflow, config.trigger);
             CompressionSignal {
                 trigger,
                 action: decide(trigger, TriggerPoint::AfterGeneration),

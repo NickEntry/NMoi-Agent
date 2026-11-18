@@ -309,6 +309,26 @@ pub fn decide(trigger: CompressionTrigger, point: TriggerPoint) -> CompressActio
     }
 }
 
+/// 这一轮该按哪一档压缩（D342）。
+///
+/// 真实超窗（上游**明确**拒了）压过水位线：水位线是我们估的，估低了就永远等不到线；
+/// 而"已经拒了一次"是实测事实。`ratio` 取 1.0 起——上游说满了，就是这个意思。
+pub fn trigger_for(
+    budget: &Budget,
+    avg_per_turn: u64,
+    payback_turns: f64,
+    overflow: bool,
+    policy: &TriggerPolicy,
+) -> CompressionTrigger {
+    if overflow {
+        CompressionTrigger::Absolute {
+            ratio: budget.ratio().max(1.0),
+        }
+    } else {
+        evaluate_trigger(budget, avg_per_turn, payback_turns, policy)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TriggerPolicy {
     /// 建议线（默认 0.45）。
@@ -756,6 +776,25 @@ mod tests {
         assert_eq!(budget.remaining(), 45_000);
         assert!((budget.ratio() - 0.5).abs() < 1e-9);
         assert!((budget.remaining_turns(4_500, 2_000) - 10.0).abs() < 1e-9);
+    }
+
+    /// 上游明确拒过超窗：不管水位线在哪，都按绝对线处理（D342）。
+    #[test]
+    fn real_overflow_outranks_the_water_line() {
+        let policy = TriggerPolicy::default();
+        let mut budget = Budget::new(100_000, 100_000, 10_000);
+        budget.used = 1_000; // 水位线远没到
+        let trigger = trigger_for(&budget, 5_000, 11.5, true, &policy);
+        assert!(
+            matches!(trigger, CompressionTrigger::Absolute { .. }),
+            "{trigger:?}"
+        );
+        assert_eq!(trigger, CompressionTrigger::Absolute { ratio: 1.0 });
+        // 没有超窗时还是老一套：这个用量什么都不会触发。
+        assert_eq!(
+            trigger_for(&budget, 5_000, 11.5, false, &policy),
+            CompressionTrigger::None
+        );
     }
 
     #[test]
