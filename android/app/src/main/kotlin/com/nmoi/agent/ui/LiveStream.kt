@@ -9,7 +9,19 @@ package com.nmoi.agent.ui
  * `round` 是模型第几次开口：工具往返之后会 +1，界面看到它变了就清掉上一轮那截——
  * 不清的话收尾落库时正文会突然缩掉一半（库里只存最后一轮）。
  */
-internal data class FinishedRound(val text: String, val reasoning: String)
+/**
+ * 一轮收口的样子：这段思考 + 这段正文 + **这一轮跑完的调用**。
+ *
+ * `calls` 必须在这里（D344）：以前历史轮次只留 text / reasoning，渲染那边拿
+ * `emptyList()` 顶上，于是所有工具块都被压到最后一轮那张卡里——屏幕上是
+ * "八个思考块堆完、最后两个工具块"，而库里存的顺序是对的。收尾一刷新就正常，
+ * 生成中那几分钟看着像乱了。
+ */
+internal data class FinishedRound(
+    val text: String,
+    val reasoning: String,
+    val calls: List<DoneCall> = emptyList(),
+)
 
 /**
  * 一条正在跑的工具调用（0.15ak）。
@@ -77,8 +89,10 @@ internal data class LiveReply(
     val sawDelta: Boolean = false,
     /** 正在跑的工具调用（0.15ak）。空 = 这一拍没有工具在跑。 */
     val calls: List<RunningCall> = emptyList(),
-    /** 这一轮已经跑完的调用（D251），按发生顺序。 */
+    /** 这一轮已经跑完的调用（D251），按发生顺序；**整轮累计**，跨 round 不清。 */
     val done: List<DoneCall> = emptyList(),
+    /** `done` 里前多少条已经收进 `finished` 了（D344）：渲染时只看剩下的这一截。 */
+    val doneCount: Int = 0,
     /**
      * 这一轮是**重试/续话**（D249）：正文画在目标消息的位置上，旧的那一版还在库里。
      *
@@ -165,10 +179,15 @@ internal fun advanceLive(reply: LiveReply, poll: LivePoll, snapshot: BusySnapsho
         // 换轮：native 那边缓冲清了、原正文会再垫一次（0.15av），
         // 所以这里也回到 prefix——不然续话的正文会从"续文"重新开始。
         snapshot.round != reply.round -> reply.copy(
-            finished = reply.finished + FinishedRound(reply.text, reply.reasoning),
+            finished = reply.finished + FinishedRound(
+                reply.text,
+                reply.reasoning,
+                reply.done.drop(reply.doneCount),
+            ),
             text = reply.prefix,
             reasoning = "",
             round = snapshot.round,
+            doneCount = reply.done.size,
         )
         // native 的缓冲有上限（50 KB，超了砍头）。这时总量比界面手里的还少，
         // 再按差值算就永远"没有新字"——屏幕上会卡住不动。从尾部重来，不假装完整。

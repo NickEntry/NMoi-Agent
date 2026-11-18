@@ -2914,6 +2914,9 @@ private fun LiveReplyRow(
             LiveProcessCard(
                 reasoning = done.reasoning,
                 calls = emptyList(),
+                // 这一轮自己的工具块（D344）：以前这里是 `emptyList()`，于是历史轮的工具
+                // 全被压到最后一轮那张卡里，屏幕上看着像"思考堆完才跑工具"。
+                done = done.calls,
                 thinkingOpen = finishedThinkingOpen(index),
                 onToggleThinking = { onToggleFinishedThinking(index) },
                 onOpenCall = {},
@@ -2929,7 +2932,8 @@ private fun LiveReplyRow(
         LiveProcessCard(
             reasoning = reply.reasoning,
             calls = reply.calls,
-            done = reply.done,
+            // 只画**还没收进 finished** 的那几条：整轮累计的 `done` 里面有一截属于前面几轮。
+            done = reply.done.drop(reply.doneCount),
             thinkingOpen = thinkingOpen,
             onToggleThinking = onToggleThinking,
             onOpenCall = onOpenCall,
@@ -6239,8 +6243,9 @@ private fun ToolSheet(
     // 逐个工具的开关（0.17e）：关掉的名字与注册表里的名字都**现读**。
     var off by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
     var toolNames by remember { mutableStateOf<List<String>>(emptyList()) }
-    // 收起的分组（0.17g）：只管这一次面板打开；关掉面板再开是全部展开。
-    var foldedGroups by remember { mutableStateOf(setOf<String>()) }
+    // 收起的分组（D344）：**存下来**。用户收起某一组通常是因为他不用那一组，
+    // 不是这一眼不想看；每次重开都展开，等于让他每次都再收一次。
+    var foldedGroups by remember { mutableStateOf(ToolingRepository.foldedGroups(context)) }
     LaunchedEffect(Unit) {
         toolNames = withContext(Dispatchers.IO) {
             NmoiFfi.toolNames().getOrNull()
@@ -6309,11 +6314,13 @@ private fun ToolSheet(
                                 .fillMaxWidth()
                                 .heightIn(min = 40.dp)
                                 .clickable {
-                                    foldedGroups = if (folded) {
+                                    val next = if (folded) {
                                         foldedGroups - group.title
                                     } else {
                                         foldedGroups + group.title
                                     }
+                                    foldedGroups = next
+                                    ToolingRepository.setFoldedGroups(context, next)
                                 },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {

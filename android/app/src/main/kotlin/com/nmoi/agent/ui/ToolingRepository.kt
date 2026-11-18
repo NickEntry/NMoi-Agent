@@ -21,6 +21,8 @@ internal object ToolingRepository {
     private const val KEY_ENVIR_SHELL = "tool.envir_shell"
     private const val KEY_CROSS_SESSION = "tool.cross_session"
     private const val KEY_SING = "tool.sing"
+    private const val KEY_FOLDED_GROUPS = "tool.panel_folded"
+
     private const val PREFIX_TOOL_OFF = "tool.off."
 
     /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
@@ -135,6 +137,19 @@ internal object ToolingRepository {
             .keys
             .map { it.removePrefix(PREFIX_TOOL_OFF) }
             .sorted()
+
+    /**
+     * 工具面板里收起来的组（D344）。用户 2026-11-18：「这个折叠/展开状态要存的」。
+     *
+     * 存在 prefs 而不是内存：面板关掉再开、应用重开，收起的那一组还在原处——
+     * 一个人收起某一组，通常是因为他不用那一组，不是这一眼不想看。
+     */
+    fun foldedGroups(context: Context): Set<String> =
+        prefs(context).getStringSet(KEY_FOLDED_GROUPS, emptySet()).orEmpty().toSet()
+
+    fun setFoldedGroups(context: Context, names: Set<String>) {
+        prefs(context).edit().putStringSet(KEY_FOLDED_GROUPS, names).apply()
+    }
 
     fun setToolOff(context: Context, name: String, off: Boolean) {
         prefs(context).edit().putBoolean(PREFIX_TOOL_OFF + name, off).apply()

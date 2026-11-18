@@ -1010,10 +1010,12 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "读工作区里的一个文本文件，带行号。默认按三级截断（行数 / 字节 / 单行长度）。\n\
-         **一次最多返回 48 KB**，force_full=true 也一样——它只是不按行数/单行上限截断，\
-         仍然一次一页。要往下读就带上 start_line=<上一页最后一行 + 1>。\n\
-         大文件别想着一次吞完：先看目录/搜索定位，再分段读。"
+        "读工作区里的一个文本文件，带行号。\n\
+         **读文档/笔记/代码这类「要整篇」的东西时，给 force_full=true**：默认会在 2000 行、\
+         256 KB、单行长度三处截断，整篇读时那三处只会让你读到一半。\n\
+         安全：一次最多 48 KB（force_full 也一样），所以整篇读是「一页一页翻」，\
+         不会撑爆上下文。下一页带上 start_line=<上一页最后一行 + 1>，别从第 1 行重来。\n\
+         只想看某一段就直接给 start_line / max_lines；找东西先 search / grep，别整篇吞。"
     }
 
     fn schema(&self) -> Value {
@@ -1025,7 +1027,7 @@ impl Tool for ReadFileTool {
                 "max_lines": { "type": "integer", "description": "最多读多少行，默认 2000" },
                 "force_full": {
                     "type": "boolean",
-                    "description": "不按行数/单行上限截断（一次仍然最多 48 KB）"
+                    "description": "整篇读时给 true：不按 2000 行/256 KB/单行上限截断（一次仍最多 48 KB）"
                 },
                 "numbered": { "type": "boolean", "description": "是否带行号，默认 true" }
             },
