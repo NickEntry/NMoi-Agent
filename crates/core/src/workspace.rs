@@ -22,6 +22,15 @@ pub const DEFAULT_MAX_LINE_BYTES: usize = 4_000;
 pub const DEFAULT_MAX_BYTES: usize = 256 * 1024;
 /// 非全量读取时的文件大小上限（64 MiB）。超过就拒绝，避免一次读爆内存。
 pub const HARD_FILE_CAP: u64 = 64 * 1024 * 1024;
+
+/// 一次调用最多吐多少字节（D343）。
+///
+/// **`force_full` 也绕不过它**：那个参数是"别按默认的行数/单行上限截断"，
+/// 不是"把整个文件塞进上下文"。4.5 MB 的 txt 一次吐 10 万字，六次就把窗口撑爆——
+/// 而撑爆之后要撤回的正是这一段，代价比一开始就分页大得多。
+///
+/// 48 KB ≈ 中文 1.6 万字、英文 4.8 万字符；一页的量级。
+pub const MAX_BURST_BYTES: usize = 48 * 1024;
 /// 递归查找的最大深度。
 pub const MAX_WALK_DEPTH: usize = 20;
 
@@ -140,11 +149,9 @@ impl Workspace {
         let text = String::from_utf8_lossy(&bytes).into_owned();
 
         let total_lines = text.lines().count();
-        let start_line = if options.force_full {
-            1
-        } else {
-            options.start_line.max(1)
-        };
+        // `force_full` 不再把起始行重置成 1：它现在的意思是"别按默认上限截断"，
+        // 而分页读到第二页时必须能接着往下（D343）。
+        let start_line = options.start_line.max(1);
         let mut out = String::new();
         let mut returned_lines = 0usize;
         let mut returned_bytes = 0usize;
@@ -187,6 +194,17 @@ impl Workspace {
             {
                 truncation = Some(Truncation {
                     reason: TruncationReason::ByteLimit,
+                    remaining_lines: total_lines.saturating_sub(returned_lines + start_line - 1),
+                    remaining_bytes: total_bytes.saturating_sub(returned_bytes as u64),
+                });
+                break;
+            }
+
+            // 硬上限，`force_full` 也绕不过（D343）：一条工具结果大到能撑爆上下文时，
+            // 撤回它的代价比一开始就分页大得多。
+            if returned_lines > 0 && returned_bytes + piece.len() > MAX_BURST_BYTES {
+                truncation = Some(Truncation {
+                    reason: TruncationReason::BurstLimit,
                     remaining_lines: total_lines.saturating_sub(returned_lines + start_line - 1),
                     remaining_bytes: total_bytes.saturating_sub(returned_bytes as u64),
                 });
@@ -525,6 +543,8 @@ pub enum TruncationReason {
     ByteLimit,
     LongLine,
     FileTooLarge,
+    /// 单次返回的硬上限（[`MAX_BURST_BYTES`]）。`force_full` 也绕不过。
+    BurstLimit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,9 +718,27 @@ fn build_hint(
     truncation: Option<&Truncation>,
 ) -> Option<String> {
     let mut parts = Vec::new();
+    // 一次最多 48 KB，`force_full` 也一样（D343）。说清"这一页是哪几行、下一页从哪开始"——
+    // 模型只有拿到这句才接得上；以前 force_full 时这里写的是"已全量读取"，它以为读完了。
+    if let Some(truncation) = truncation {
+        if truncation.reason == TruncationReason::BurstLimit {
+            let last = start_line + returned_lines.saturating_sub(1);
+            parts.push(format!(
+                "一次最多返回 {} KB：这一页是第 {start_line}–{last} 行，共 {total_lines} 行；还剩 {} 行。",
+                MAX_BURST_BYTES / 1024,
+                truncation.remaining_lines
+            ));
+            parts.push(format!(
+                "接着读：start_line={}（force_full 也可以给，它不会从第 1 行重来）；\n\
+                 只想看某一段就直接给 start_line / max_lines，别整篇吞。",
+                last + 1
+            ));
+            return Some(parts.join(" "));
+        }
+    }
     if options.force_full {
         return Some(format!(
-            "已全量读取（force_full=true）：{total_lines} 行，忽略所有截断限制"
+            "已全量读取（force_full=true）：{total_lines} 行，忽略行数与单行上限"
         ));
     }
     if let Some(truncation) = truncation {
@@ -710,7 +748,7 @@ fn build_hint(
             truncation.remaining_lines
         ));
         parts.push(format!(
-            "继续读：start_line={}；或 force_full=true 全量读取。",
+            "继续读：start_line={}；force_full=true 只是不按行数/单行上限截断，仍然一次一页。",
             last + 1
         ));
     }
@@ -957,6 +995,56 @@ mod tests {
         assert_eq!(result.long_lines[0].bytes, long.len());
         assert!(result.content.contains("单行过长"));
         assert!(result.content.len() < 500);
+    }
+
+    /// `force_full` 也绕不过单次上限（D343）：一页 48 KB，下一页用 start_line 接。
+    #[test]
+    fn force_full_still_stops_at_one_page() {
+        let (_dir, workspace) = fixture();
+        // 每行 100 字节 × 2000 行 = 200 KB，远超一页。
+        let content = (1..=2000)
+            .map(|i| format!("{i:05} {}\n", "x".repeat(94)))
+            .collect::<Vec<_>>()
+            .join("");
+        workspace.write_file("huge.txt", &content).unwrap();
+
+        let first = workspace
+            .read_file("huge.txt", &ReadOptions::full())
+            .unwrap();
+        assert!(first.truncated, "200 KB 不该一次全读出来");
+        assert_eq!(
+            first.truncation.as_ref().map(|t| t.reason),
+            Some(TruncationReason::BurstLimit)
+        );
+        assert!(
+            first.content.len() <= MAX_BURST_BYTES + 128,
+            "一页应当卡在 48 KB 附近，实际 {}",
+            first.content.len()
+        );
+        let hint = first.hint.expect("要说清怎么接着读");
+        assert!(hint.contains("48 KB"), "{hint}");
+        assert!(hint.contains("start_line="), "{hint}");
+
+        // 第二页从上一页最后一行 + 1 开始，且 force_full 不会把它重置成第 1 行。
+        let next = first.returned_lines + 1;
+        let second = workspace
+            .read_file(
+                "huge.txt",
+                &ReadOptions {
+                    start_line: next,
+                    force_full: true,
+                    numbered: true,
+                    ..ReadOptions::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            second
+                .content
+                .starts_with(&format!("{:>6}| {next:05}", next)),
+            "第二页应当从第 {next} 行开始：{}",
+            &second.content[..40.min(second.content.len())]
+        );
     }
 
     #[test]

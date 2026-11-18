@@ -29,6 +29,8 @@ fn truncation_reason(reason: TruncationReason) -> &'static str {
         TruncationReason::ByteLimit => "byte_limit",
         TruncationReason::LongLine => "long_line",
         TruncationReason::FileTooLarge => "file_too_large",
+        // 单次一页（D343）：不是"文件太大读不全"，是"这一页读到这里"。
+        TruncationReason::BurstLimit => "burst_limit",
     }
 }
 
