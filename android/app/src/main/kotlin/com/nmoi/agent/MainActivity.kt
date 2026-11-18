@@ -513,6 +513,7 @@ class MainActivity : ComponentActivity() {
                     // 抓不到的东西写在 PageHost 的注释里：组合异常会崩、主线程死锁救不了。
                     PageHost(
                         pageKey = routeKeyOf(route),
+                        preview = previewable(route),
                         onLeave = { if (backStack.size > 1) backStack = backStack.dropLast(1) },
                     ) {
                     when (route) {
@@ -790,6 +791,17 @@ class MainActivity : ComponentActivity() {
  * 不能拿 `route` 本身当 key：聊天页每自动改一次名就换一个 `Route.Chat` 实例，
  * 拿它当 key 会把整页重建一次——输入框里的字、滚动位置全没。
  */
+/**
+ * 哪些页面走预渲染（D348）。
+ *
+ * 用户 2026-11-18 划的范围：「聊天以外的界面，比如各种设置编辑页面，而不是聊天页内的
+ * 那些消息相关」。所以只有聊天页排除在外——它第一帧最要紧的是输入框、键盘、滚动位置，
+ * 为了"不闪一下"让它晚几十毫秒才响应点击，是拿最常用的页面换最少的收益。
+ *
+ * 新增整页时默认**会**预渲染；只有"第一帧就要能打字/滚到底"的页面才需要加进排除。
+ */
+private fun previewable(route: Route): Boolean = route !is Route.Chat
+
 private fun routeKeyOf(route: Route): String = when (route) {
     is Route.Chat -> "chat:${route.sessionId ?: "new"}"
     is Route.SettingsGroupRoute -> "group:${route.group.name}"

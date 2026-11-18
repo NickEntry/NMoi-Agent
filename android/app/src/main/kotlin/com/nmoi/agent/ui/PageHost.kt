@@ -30,26 +30,36 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
 /**
- * 页面宿主（D346 / D347）：**先在后台把下一页渲染好，再换上去**。
+ * 页面宿主（D346 / D347 / D348）：把下一页画好再换上去；画不出来给出口。
  *
- * 用户 2026-11-18：「我想的就是能在切换瞬间看到渲染好的页面，而不是切换过去了才进行渲染」。
+ * # 范围（用户 2026-11-18 划定）
  *
- * 做法是两层叠着，位置固定：
+ * 只对**聊天以外的整页**做预渲染——设置、供应商、模型、存储、日志、安全这些。
+ * 聊天页不预渲染（`preview = false`）：它第一帧的响应性最要紧，输入框、键盘、
+ * 滚动位置都在那一帧里；为了"不闪一下"让它晚 90 ms 才响应点击，是拿最常用的页面
+ * 去换最少用的那点收益。
+ *
+ * # 预渲染怎么做的
+ *
+ * 两层叠着、位置固定：
  *
  * - 位置 0 永远是"当前页"（`pageKey` 那一份）。换页时它先以 `alpha(0f)` 组合、布局、
- *   跑完 `LaunchedEffect` 里那一轮读取，只是被上面的旧页完全盖住、也拿不到输入。
- * - 位置 1 是旧页（`shownContent`）：预渲染窗口里它压在上面，用户看到的、点到的是它——
- *   所以"点了导航但还没换过去"这一小段里，界面不会僵。
+ *   跑完 `LaunchedEffect` 里那一轮本地读，只是被上面的旧页完全盖住、也拿不到输入。
+ * - 位置 1 是旧页（`shownContent`）。窗口里它压在上面，用户看到的、点到的是它，
+ *   所以"点了导航还没换过去"这一小段里界面不僵。
  * - 窗口结束：`shownKey = pageKey`，同一帧里旧页消失、新页 `alpha` 变 1。
- *   因为位置 0 的 `key` 没变，**页面不会被重建**（重建会再闪一次，等于白做）。
  *
- * 位置固定这一点是全部要点：把"当前页"和"旧页"分在两个 `if` 分支里各画一次，
- * Compose 会认为换页是一次跨位置的移动，`remember` 与 `LaunchedEffect` 全部重来。
+ * 位置固定是全部要点：把两页分在两个 `if` 分支里各画一次，Compose 会认为换页是
+ * 一次跨位置的移动，`remember` 与 `LaunchedEffect` 整棵重来——等于切过去又重建一遍。
  *
- * 窗口多长：两帧（组合 + 布局）+ [PAGE_PREVIEW_MS]（给 `LaunchedEffect` 里那一轮本地读）。
- * 读完还没布局的页面（重页面首帧要解码）就再多等一会儿，但不超过窗口上限。
+ * # 窗口多长（D348）
  *
- * 抓不到的东西写在下面，不假装能救：
+ * 两帧（组合 + 布局）之后**不再死等**：每 8 ms 采一次新页的高度，连续两次一样就认为
+ * 布局稳了（数据填进来高度一定会变，稳定就等于变化结束），立刻切；最多等到
+ * [PAGE_PREVIEW_MS]。轻页面四十毫秒上下换完，还在长的重页面才用满窗口。
+ *
+ * # 抓不到的，不假装能救
+ *
  * - **组合抛异常**不会走到这里。Compose 没有 error boundary，异常冒到 `AndroidComposeView`
  *   的结果是整页崩，不是"空白"。
  * - **主线程死锁**也救不了：看门狗那条计时器本身在主线程上排队。
@@ -57,49 +67,73 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun PageHost(
     pageKey: Any,
+    preview: Boolean,
     onLeave: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    var shownKey by remember { mutableStateOf(pageKey) }
-    // 旧页那一份渲染函数：只在预渲染窗口里用。每帧同步，窗口一开就不再更新——
-    // 不然窗口里画的会变成"新页的旧帧"，看着像闪了一下。
-    var shownContent by remember { mutableStateOf(content) }
     // 重试 = 整棵子树重建（D346）。
     var attempt by remember(pageKey) { mutableStateOf(0) }
     var laidOut by remember(pageKey, attempt) { mutableStateOf(false) }
     var stuck by remember(pageKey, attempt) { mutableStateOf(false) }
-
-    val pending = shownKey != pageKey
-    if (!pending) {
-        // 引用比较：同一个 lambda 不重复写。写了虽然没人订阅（`pending` 分支才读它），
-        // 但每一帧都写一次状态，迟早有一天会有人在别的层级读它，那时就是无限重组。
-        SideEffect { if (shownContent !== content) shownContent = content }
-    }
+    // 这一页现在多高（D348）。窗口里靠它判断"布局稳了没有"——稳定就够了，
+    // 不需要知道数据是不是真到了：内容一填进来高度一定变，稳定意味着变化结束。
+    var height by remember(pageKey, attempt) { mutableStateOf(0) }
 
     LaunchedEffect(pageKey, attempt) {
-        // 两帧：组合完成 + 布局完成。少了这两帧，新页还没量出尺寸就切，等于没预渲染。
-        withFrameNanos { }
-        withFrameNanos { }
-        // 还没布局的重页面多给一点时间；已经布局好的（多半数据也到了）立刻换。
-        if (!laidOut) delay(PAGE_PREVIEW_MS)
-        shownKey = pageKey
-        shownContent = content
-        // 换过去之后仍然没画出来 → 判定卡住，把出口给用户。
         delay(PAGE_STUCK_MS)
         if (!laidOut) stuck = true
     }
 
+    val probe = Modifier
+        .fillMaxSize()
+        .onGloballyPositioned { coords ->
+            laidOut = true
+            height = coords.size.height
+        }
+
+    if (!preview) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            key(pageKey, attempt) {
+                Box(modifier = probe) { content() }
+            }
+            if (stuck) {
+                StuckBar(attempt = attempt, onRetry = { attempt += 1 }, onLeave = onLeave)
+            }
+        }
+        return
+    }
+
+    var shownKey by remember { mutableStateOf(pageKey) }
+    // 旧页那一份渲染函数：只在窗口里用。每帧同步，窗口一开就停——不然窗口里画的会变成
+    // "新页的旧帧"，看着像闪了一下。引用比较：同一个 lambda 不重复写状态。
+    var shownContent by remember { mutableStateOf(content) }
+    val pending = shownKey != pageKey
+    if (!pending) {
+        SideEffect { if (shownContent !== content) shownContent = content }
+    }
+
+    LaunchedEffect(pageKey, attempt) {
+        withFrameNanos { }
+        withFrameNanos { }
+        // 每 8 ms 采一次高度，**两次采样一样**就认为布局稳了（数据填完、该撑开也撑开了），
+        // 立刻换。轻页面四十毫秒上下就换完；还在长的重页面才用满窗口。
+        var last = height
+        var waited = 0L
+        while (waited < PAGE_PREVIEW_MS) {
+            delay(PREVIEW_STEP_MS)
+            waited += PREVIEW_STEP_MS
+            if (height > 0 && height == last) break
+            last = height
+        }
+        shownKey = pageKey
+        shownContent = content
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
-        // 位置 0：当前页。预渲染期间透明、被旧页盖住。
+        // 位置 0：当前页。窗口里透明、被旧页盖住。
         Box(modifier = Modifier.fillMaxSize().alpha(if (pending) 0f else 1f)) {
             key(pageKey, attempt) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .onGloballyPositioned { laidOut = true },
-                ) {
-                    content()
-                }
+                Box(modifier = probe) { content() }
             }
         }
         // 位置 1：旧页，压在上面（后画的在上层）——输入归它。
@@ -114,8 +148,11 @@ internal fun PageHost(
     }
 }
 
-/** 预渲染窗口：两帧之后的这一小段，用来等 `LaunchedEffect` 里那一轮本地读。 */
+/** 预渲染窗口上限：两帧之后的这一小段，最多等这么久。 */
 private const val PAGE_PREVIEW_MS = 90L
+
+/** 窗口里多久看一次"数据到了没有"。8 ms 约半帧，够快又不会空转。 */
+private const val PREVIEW_STEP_MS = 8L
 
 /** 多久还没画出来算"卡住"。 */
 private const val PAGE_STUCK_MS = 2_500L
