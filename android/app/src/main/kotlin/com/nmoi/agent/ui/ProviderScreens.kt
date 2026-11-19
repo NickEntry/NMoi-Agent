@@ -420,6 +420,8 @@ internal fun ProviderEditScreen(
             keyHint = withContext(Dispatchers.IO) {
                 ProviderRepository.keyHint(context, providerId)
             }
+            // 读完了说一声（D349）：列表、编辑两页都要报，不然"正在读库…"还是会被看见。
+            PageReady.notifyReady()
         }
     }
 

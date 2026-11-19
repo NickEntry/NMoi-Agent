@@ -76,6 +76,8 @@ internal fun AssistantScreen(
                 noticeIsError = true
             },
         )
+        // 读完了说一声（D349）：列表页的"正在读…"不该在切换瞬间被看见。
+        PageReady.notifyReady()
     }
 
     fun refresh() {

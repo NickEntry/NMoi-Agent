@@ -39,6 +39,7 @@ internal fun ShellRulesScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         catalog = withContext(Dispatchers.IO) { NmoiFfi.shellRules().getOrNull() }
+        PageReady.notifyReady()
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

@@ -63,6 +63,7 @@ internal fun PresetScreen(
                 failure = it.message ?: "读不出预设"
             },
         )
+        PageReady.notifyReady()
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
