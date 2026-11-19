@@ -523,6 +523,7 @@ class MainActivity : ComponentActivity() {
                     PageHost(
                         pageKey = routeKeyOf(route),
                         preview = previewable(route),
+                        waitsForData = waitsForData(route),
                         onLeave = { if (backStack.size > 1) backStack = backStack.dropLast(1) },
                     ) {
                     when (route) {
@@ -810,6 +811,27 @@ class MainActivity : ComponentActivity() {
  * 新增整页时默认**会**预渲染；只有"第一帧就要能打字/滚到底"的页面才需要加进排除。
  */
 private fun previewable(route: Route): Boolean = route !is Route.Chat
+
+/**
+ * 这一页会不会在读完数据后报 `PageReady`（D352）。
+ *
+ * 报了就得等它——用户要的是「先加载数据再渲染」，别切过去才填。
+ * 没报的页面（设置索引、外观、许可、日志、世界书、消息编辑器……）首帧就是最终内容，
+ * 两帧就走；把它们也算成"要等"，等于让每次点击都空等 600 ms。
+ *
+ * 名单要和页面里的 `PageReady.notifyReady()` 对齐：加了新页面又接了这一行，就把路由补进来；
+ * 忘了补也只是退回"两帧就走"，不会坏。
+ */
+private fun waitsForData(route: Route): Boolean = when (route) {
+    Route.Provider, Route.Assistant, Route.Security, Route.ShellRules, Route.Preset -> true
+
+    is Route.ProviderEdit, is Route.AssistantEdit -> true
+
+    // 存储页挂在设置分组下，不是独立路由。
+    is Route.SettingsGroupRoute -> route.group == SettingsGroup.Storage
+
+    else -> false
+}
 
 private fun routeKeyOf(route: Route): String = when (route) {
     is Route.Chat -> "chat:${route.sessionId ?: "new"}"

@@ -91,6 +91,8 @@ internal object PageReady {
 internal fun PageHost(
     pageKey: Any,
     preview: Boolean,
+    /** 这一页会不会报 `ready`（D352）。**不报的页面两帧就走**，否则每次都要空等 600 ms。 */
+    waitsForData: Boolean,
     onLeave: () -> Unit,
     content: @Composable () -> Unit,
 ) {
@@ -98,9 +100,6 @@ internal fun PageHost(
     var attempt by remember(pageKey) { mutableStateOf(0) }
     var laidOut by remember(pageKey, attempt) { mutableStateOf(false) }
     var stuck by remember(pageKey, attempt) { mutableStateOf(false) }
-    // 这一页现在多高（D348）。窗口里靠它判断"布局稳了没有"——稳定就够了，
-    // 不需要知道数据是不是真到了：内容一填进来高度一定变，稳定意味着变化结束。
-    var height by remember(pageKey, attempt) { mutableStateOf(0) }
     // 页面自己说"我读完了"（D349）。比高度稳不稳定的判定准，接了就用它。
     var ready by remember(pageKey, attempt) { mutableStateOf(false) }
     val markReady: () -> Unit = remember(pageKey, attempt) { { ready = true } }
@@ -116,10 +115,7 @@ internal fun PageHost(
 
     val probe = Modifier
         .fillMaxSize()
-        .onGloballyPositioned { coords ->
-            laidOut = true
-            height = coords.size.height
-        }
+        .onGloballyPositioned { laidOut = true }
 
     if (!preview) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -147,18 +143,15 @@ internal fun PageHost(
     LaunchedEffect(pageKey, attempt) {
         withFrameNanos { }
         withFrameNanos { }
-        // 每 8 ms 采一次高度，**两次采样一样**就认为布局稳了（数据填完、该撑开也撑开了），
-        // 立刻换。轻页面四十毫秒上下就换完；还在长的重页面才用满窗口。
-        var last = height
-        var waited = 0L
-        while (waited < PAGE_PREVIEW_MS) {
-            // 页面说读完了，立刻换：这是唯一"知道"而不是"猜"的信号。
-            if (ready) break
-            delay(PREVIEW_STEP_MS)
-            waited += PREVIEW_STEP_MS
-            // 兜底判据要让路：前 300 ms 只认 ready，不然"布局稳定"会比数据先到。
-            if (waited >= PAGE_SETTLE_AFTER_MS && height > 0 && height == last) break
-            last = height
+        // 会报 ready 的页面：等它，或等满窗口。**不看"布局稳不稳"**——那个判据会在
+        // "正在读…"那一行上判稳（那一行本来就不动），提前切过去正好把它露出来（D352）。
+        // 不报 ready 的页面：它们的首帧就是最终内容，两帧足够。
+        if (waitsForData) {
+            var waited = 0L
+            while (waited < PAGE_PREVIEW_MS && !ready) {
+                delay(PREVIEW_STEP_MS)
+                waited += PREVIEW_STEP_MS
+            }
         }
         shownKey = pageKey
         shownContent = content
@@ -195,14 +188,7 @@ internal fun PageHost(
  */
 private const val PAGE_PREVIEW_MS = 600L
 
-/**
- * 「高度稳定」这条判据从多久之后才允许生效（D350）。
- *
- * 它是个**兜底**，只服务没接 `ready` 的页面；对接了 `ready` 的页面必须让位——
- * 轻页面在四十毫秒就"布局稳定"了，而那时数据还没回来，提前切就是把「正在读…」
- * 露出来。所以前 300 ms 只认 `ready`。
- */
-private const val PAGE_SETTLE_AFTER_MS = 300L
+
 
 /** 窗口里多久看一次"数据到了没有"。8 ms 约半帧，够快又不会空转。 */
 private const val PREVIEW_STEP_MS = 8L
