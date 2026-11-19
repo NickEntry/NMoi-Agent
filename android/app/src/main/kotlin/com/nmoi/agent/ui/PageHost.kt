@@ -156,7 +156,8 @@ internal fun PageHost(
             if (ready) break
             delay(PREVIEW_STEP_MS)
             waited += PREVIEW_STEP_MS
-            if (height > 0 && height == last) break
+            // 兜底判据要让路：前 300 ms 只认 ready，不然"布局稳定"会比数据先到。
+            if (waited >= PAGE_SETTLE_AFTER_MS && height > 0 && height == last) break
             last = height
         }
         shownKey = pageKey
@@ -184,8 +185,24 @@ internal fun PageHost(
     }
 }
 
-/** 预渲染窗口上限：两帧之后的这一小段，最多等这么久。 */
-private const val PAGE_PREVIEW_MS = 90L
+/**
+ * 预渲染窗口上限（D350）：两帧之后最多等这么久。
+ *
+ * 从 90 ms 提到 600 ms：用户要的是「加载完再渲染」，不是「等一会儿就切」。
+ * 慢页面（模型快照那一页解析 1.2 MB JSON 要几百毫秒）在 90 ms 里根本读不完，
+ * 切过去还是「正在读…」——那正是他不想要的东西。窗口期间旧页还撑着、还能点，
+ * 所以等久一点不会出现空白。
+ */
+private const val PAGE_PREVIEW_MS = 600L
+
+/**
+ * 「高度稳定」这条判据从多久之后才允许生效（D350）。
+ *
+ * 它是个**兜底**，只服务没接 `ready` 的页面；对接了 `ready` 的页面必须让位——
+ * 轻页面在四十毫秒就"布局稳定"了，而那时数据还没回来，提前切就是把「正在读…」
+ * 露出来。所以前 300 ms 只认 `ready`。
+ */
+private const val PAGE_SETTLE_AFTER_MS = 300L
 
 /** 窗口里多久看一次"数据到了没有"。8 ms 约半帧，够快又不会空转。 */
 private const val PREVIEW_STEP_MS = 8L
