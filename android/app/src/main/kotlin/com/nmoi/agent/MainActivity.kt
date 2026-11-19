@@ -176,6 +176,15 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val context = LocalContext.current
+            // 后台预热（D351）：首屏先跑起来，两秒之后再让**一条**后台线程去解析那几个
+            // 大而不可变的资源（现在只有模型快照：1.2 MB JSON，几百毫秒）。
+            // 一次一种、单条线程：启动那一帧最缺的是 CPU，预热跟它抢就会变成"启动卡一下"。
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(2_000)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.nmoi.agent.ui.ModelSnapshot.warm(context)
+                }
+            }
             // 主题必须在第一帧之前定：跟随系统时要读当下的系统配置（用户切系统主题会触发重组）。
             var themeMode by remember { mutableStateOf(ThemeStore.load(context)) }
             val dark = ThemeStore.isDark(themeMode)

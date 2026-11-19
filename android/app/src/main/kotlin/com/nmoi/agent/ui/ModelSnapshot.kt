@@ -197,13 +197,44 @@ internal class SnapshotIndex(
 internal object ModelSnapshot {
     const val ASSET = "model-data/models.snapshot.json"
 
-    /** 读不到就返回 null（assets 没同步进来 / 解析失败都算）。界面据此说"这一版没带数据"。 */
-    fun load(context: Context): SnapshotIndex? = runCatching {
-        val text = context.assets.open(ASSET).bufferedReader().use { it.readText() }
-        parse(text)
-    }.getOrElse { error ->
-        NLog.w("Model", "读不到模型快照：${error.message}")
-        null
+    /**
+     * 进程内那一份（D351）。这份数据随版本走、不受用户改动影响，所以**不用失效**——
+     * 它跟"列表要所见即所得"那类东西不是一回事。
+     */
+    @Volatile
+    private var cached: SnapshotIndex? = null
+
+    /** 解析过没有（成功或失败都算）。失败也记住：别每次进页面都重新解一遍 1.2 MB。 */
+    @Volatile
+    private var attempted = false
+
+    /**
+     * 读不到就返回 null（assets 没同步进来 / 解析失败都算）。界面据此说"这一版没带数据"。
+     *
+     * 第二次起直接给缓存：这一页进来两次就解析两遍 1.2 MB，是纯浪费。
+     */
+    @Synchronized
+    fun load(context: Context): SnapshotIndex? {
+        cached?.let { return it }
+        if (attempted) return null
+        attempted = true
+        return runCatching {
+            val text = context.assets.open(ASSET).bufferedReader().use { it.readText() }
+            parse(text)
+        }.getOrElse { error ->
+            NLog.w("Model", "读不到模型快照：${error.message}")
+            null
+        }.also { cached = it }
+    }
+
+    /**
+     * 预热（D351）：启动后由一条后台线程调一次。
+     *
+     * 为什么要它：这页的"正在读快照…"不是因为读得慢，是因为**解析**要几百毫秒，
+     * 而它又只在真正进这一页时才发生。提前解一次，用户第一次进来就是列表。
+     */
+    fun warm(context: Context) {
+        load(context)
     }
 
     fun parse(text: String): SnapshotIndex {
