@@ -423,15 +423,18 @@ class MainActivity : ComponentActivity() {
                     },
                     onDeleteMany = { chosen ->
                         scope.launch {
+                            // 一次开库、一次事务（D354）：挨个调 delete 会让每个会话
+                            // 各付一次 open 的代价（quick_check + L3 全表扫）。
+                            val ids = chosen.map { it.id }
                             var deleted = 0
-                            for (row in chosen) {
-                                withContext(Dispatchers.IO) {
-                                    ConversationRepository.delete(databasePath, row.id, this@MainActivity)
-                                }.onSuccess { deleted += 1 }
-                                    .onFailure { NLog.w("Storage", "删 ${row.id} 失败：${it.message}") }
-                            }
+                            withContext(Dispatchers.IO) {
+                                ConversationRepository.deleteMany(databasePath, ids, this@MainActivity)
+                            }.fold(
+                                onSuccess = { deleted = it },
+                                onFailure = { NLog.w("Storage", "批量删会话失败：${it.message}") },
+                            )
                             // 置顶数组里一次摘干净，别留下界面上已经不存在的 id。
-                            val gone = chosen.map { it.id }.toSet()
+                            val gone = ids.toSet()
                             val stillPinned = pinnedIds.filterNot { it in gone }
                             if (stillPinned != pinnedIds) {
                                 withContext(Dispatchers.IO) {

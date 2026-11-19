@@ -91,6 +91,9 @@ internal object NativeBridge {
     /** 删会话（0.15d）。回 `{"deleted":bool}`；`false` = 本来就没有（不算错）。 */
     external fun deleteConversationJson(handle: Long, session: String): String
 
+    /** 删一批会话（D354）：`sessions` 是 id 数组的 JSON 文本。回 `{"deleted":N,"results":[bool…]}`。 */
+    external fun deleteConversationsJson(handle: Long, sessions: String): String
+
     /** 复制会话（0.15d）：消息整份拷到新会话。回 `{"session","copied","source"}`；title 空串用默认名。 */
     external fun copyConversationJson(handle: Long, session: String, title: String): String
 

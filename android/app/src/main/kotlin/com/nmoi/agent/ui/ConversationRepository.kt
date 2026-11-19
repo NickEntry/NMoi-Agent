@@ -162,6 +162,41 @@ internal object ConversationRepository {
         }
 
     /**
+     * 删一批会话（D354）：**一次开库、一次事务**。
+     *
+     * 为什么不用循环调 [delete]：每个会话各付一次 `open`（`quick_check` + L3 全表扫），
+     * 15.8 MB 的库上约 500 ms/个——多选删十个就是五秒，而真正删数据只占几十毫秒。
+     *
+     * 返回删掉的条数；`deleted=false` 的那些只是"本来就没有"，不算失败。
+     */
+    suspend fun deleteMany(
+        databasePath: String,
+        sessionIds: List<String>,
+        /** 给了就顺手把这些会话自己的目录也删掉（D231）。 */
+        context: android.content.Context? = null,
+    ): Result<Int> {
+        if (sessionIds.isEmpty()) return Result.success(0)
+        return withStorageHandle(databasePath) { handle ->
+            NmoiFfi.deleteConversations(handle, sessionIds).mapCatching { envelope ->
+                val results = envelope.optJSONArray("results")
+                val gone = buildList {
+                    if (results != null) {
+                        for (index in 0 until results.length()) {
+                            if (results.optBoolean(index, false)) add(sessionIds[index])
+                        }
+                    }
+                }
+                if (context != null) {
+                    // **先删库、再删文件**（与单条删除同一条规矩）：反过来的话中途失败会
+                    // 留下"消息还在、图没了"。
+                    for (id in gone) ToolingRepository.removeSessionDir(context, id)
+                }
+                gone.size
+            }
+        }
+    }
+
+    /**
      * 复制会话（0.15d / D207）：新建一条，消息整份拷过去，原件不动。
      *
      * 返回新会话 id；`copied` 是拷过去的消息条数，界面拿它说"复制了 N 条"——

@@ -222,4 +222,64 @@ class ProcessRowsTest {
         val after = buildRows(listOf(thinking("a"), tool("b"), tool("c"))).single() as ChatRow.Process
         assertEquals(before.key, after.key)
     }
+
+    /**
+     * 动作行原来是**每一行现扫一遍后面**（`rows.drop(index+1)…`）：长会话里可见的
+     * 八行每帧各扫半张表，是 O(n²) 的分配（D354）。现在整张表一次算完。
+     *
+     * 判据一个字没改，所以这里拿老写法逐格对一遍——不然"优化"和"改坏"看起来一样。
+     */
+    private fun legacyShowActions(rows: List<ChatRow>, index: Int): Boolean =
+        rows.drop(index + 1).takeWhile { !it.alignsRight() }
+            .none { it is ChatRow.Single && it.slice != UnitSlice.ToolsOnly }
+
+    @Test
+    fun `预计算的动作行与逐行扫描完全一致`() {
+        val shapes = listOf(
+            listOf(text("a")),
+            listOf(text("a"), text("b")),
+            listOf(unit("u", source = "user"), text("a")),
+            listOf(text("a"), unit("u", source = "user"), text("b")),
+            listOf(tool("t"), text("a")),
+            listOf(toolWithBody("t", "正文"), text("a")),
+            listOf(tool("x"), tool("y"), text("a"), unit("u", source = "user"), text("b"), tool("z")),
+            listOf(unit("u1", source = "user"), text("a"), tool("t"), unit("u2", source = "user")),
+        )
+        for ((shape, units) in shapes.withIndex()) {
+            val rows = buildRows(units)
+            val flags = showActionsByRow(rows)
+            assertEquals("形状 $shape 的行数", rows.size, flags.size)
+            for (index in rows.indices) {
+                assertEquals("形状 $shape 第 $index 行", legacyShowActions(rows, index), flags[index])
+            }
+        }
+    }
+
+    /** 空列表不该炸（真机上"这个会话还空着"那一屏就是它）。 */
+    @Test
+    fun `没有行时动作行表是空的`() {
+        assertEquals(0, showActionsByRow(emptyList()).size)
+    }
+
+    /**
+     * 稳定 key：同一条单元的行，key 不跟着位置走；不同 slice / 过程块要分得开。
+     *
+     * 不给 key 的时候行身份是"第几个"，前面插进一行后面全体错位——Markdown 要重新
+     * 解析、展开状态要重新挂（D354）。
+     */
+    @Test
+    fun `行 key 跟着单元走-不跟着位置走`() {
+        val alone = buildRows(listOf(text("a"))).single()
+        val shifted = buildRows(listOf(unit("u", source = "user"), text("a"))).last()
+        assertEquals(rowKey(alone), rowKey(shifted))
+        // 同一个单元的两半（整条 / 只有正文）不能撞 key。
+        val textOnly = ChatRow.Single(unit("a"), hideReasoning = true, slice = UnitSlice.TextOnly)
+        assertTrue(rowKey(textOnly) != rowKey(alone))
+        // 过程块用 `g:` 前缀，与单元行不会撞。
+        val group = buildRows(listOf(thinking("t1"), tool("t2"))).single()
+        assertTrue(rowKey(group).startsWith("g:"))
+        assertEquals("process", rowContentType(group))
+        assertEquals("user", rowContentType(buildRows(listOf(unit("u", source = "user"))).single()))
+        assertEquals("assistant", rowContentType(alone))
+    }
 }

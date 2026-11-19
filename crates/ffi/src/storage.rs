@@ -243,6 +243,41 @@ pub extern "C" fn nmoi_storage_delete_conversation_json(
     })
 }
 
+/// 删一批会话（D354）：`sessions` 是 JSON 数组的会话 id。
+///
+/// 出参：`{deleted: <删掉的个数>, results: [bool…]}`——`results` 与入参一一对应，
+/// `false` = 那一条本来就不在（两个入口同时点到同一条是真会发生的，不算失败）。
+///
+/// **一次开库、一次事务**：多选删十个会话，开库那一步（quick_check + L3 全表扫）
+/// 只付一次，而不是十次。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_delete_conversations_json(
+    handle: u64,
+    sessions: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let raw = read_str(sessions, "sessions")?;
+        let parsed: Value = serde_json::from_str(raw).map_err(|error| {
+            FfiError::new("bad_argument", format!("sessions 不是 JSON 数组：{error}"))
+        })?;
+        let items = parsed.as_array().ok_or_else(|| {
+            FfiError::new("bad_argument", "sessions 必须是会话 id 数组".to_string())
+        })?;
+        let mut ids = Vec::with_capacity(items.len());
+        for item in items {
+            let text = item.as_str().ok_or_else(|| {
+                FfiError::new("bad_argument", "sessions 里每一项都要是字符串".to_string())
+            })?;
+            ids.push(parse_session(text)?);
+        }
+        let results = with_storage(handle, |storage| {
+            storage.delete_conversations(&ids).map_err(storage_error)
+        })?;
+        let deleted = results.iter().filter(|removed| **removed).count();
+        Ok(json!({ "deleted": deleted, "results": results }))
+    })
+}
+
 /// 复制一个会话（0.15d / D207）：新建一条，把消息整份拷过去。
 ///
 /// `title` 空串 = 用默认的「原标题 副本」；给出非空串就用它。

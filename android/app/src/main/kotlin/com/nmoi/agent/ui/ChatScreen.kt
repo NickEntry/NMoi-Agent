@@ -73,6 +73,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -2674,6 +2676,9 @@ private fun MessageArea(
     val units = page?.units.orEmpty()
     // 连续的思考/工具合成一行（D229）。分组只影响渲染，数据一个字都不动。
     val rows = remember(units) { buildRows(units) }
+    // 「这一轮最后一段正文才带动作行」原来是每个可见行现算 `rows.drop(index + 1)…`：
+    // 长会话里那是 O(n²) 的分配，而且每次重组都重来一遍（D354）。这里一次算完。
+    val showActions = remember(rows) { showActionsByRow(rows) }
     // 重试/续话期间（D251）：**这一轮的过程块不画**。
     //
     // 用户 2026-11-04：「UI 上在生成的时候不显示旧的」。那些块属于上一版的那一轮，
@@ -2695,10 +2700,22 @@ private fun MessageArea(
     // 打开会话应当看到最新的一条，而不是最早的一条。
     // 发出去那一刻 `pending` 会插在末尾，所以它也要进 key——否则新气泡在屏幕外面。
     // 重试那一轮的目标行被藏起来了，所以 live 一律画在底部——那个位置就是它要去的地方。
-    val liveItem = if (live != null) 1 else 0
-    LaunchedEffect(rows.size, truncated, pending, live != null, regenTarget) {
+    // 逐帧在变的是 `live`（正文在长）。它要是被每个可见行读到，长会话里每一帧都得把
+    // 整屏重画一遍（D354）。放进快照状态：只有真在画它的那两行去读，其余行读 `hasLive`
+    // （只在"开始写 / 写完"时变一次）。
+    val liveState = remember { mutableStateOf<LiveReply?>(null) }
+    SideEffect { liveState.value = live }
+    val hasLive = live != null
+    val liveItem = if (hasLive) 1 else 0
+    LaunchedEffect(rows.size, truncated, pending, hasLive, regenTarget) {
         val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
+    }
+
+    // 手指在滑 / 惯性还在跑：给"滑动中间才开始的读图"一个闸门（D354）。
+    // 用 snapshotFlow 订阅，而不是在组合里读它——读它会让整张列表跟着滚动状态重组。
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { ScrollBusy.busy.value = it }
     }
 
     // 边写边跟（0.15ah）：只在**已经在底部**时跟。用户往上翻看旧消息时不抢他的位置——
@@ -2738,7 +2755,11 @@ private fun MessageArea(
                 )
             }
         }
-        itemsIndexed(rows) { index, row ->
+        itemsIndexed(
+            rows,
+            key = { _, row -> rowKey(row) },
+            contentType = { _, row -> rowContentType(row) },
+        ) { index, row ->
             // 重试/续话期间（D263）：这一轮**整轮**都不画。
             // 折行之后一轮回答是好几条消息，只藏「过程块」会把工具那半行留下——
             // 屏幕上就是"新正文 + 上一轮的工具块"（2026-11-06 真机报的）。
@@ -2746,19 +2767,22 @@ private fun MessageArea(
                 return@itemsIndexed
             }
             // 只换这一条（D284）：目标那一条让位给正在长的那份，其余照常画。
-            val streamingHere = inPlaceRegen && live != null &&
+            val streamingHere = inPlaceRegen && hasLive &&
                 (row as? ChatRow.Single)?.unit?.messages?.any { it.id == regenTarget } == true
             if (streamingHere) {
-                LiveReplyRow(
-                    reply = live,
-                    onDismissCut = onDismissCut,
-                    thinkingOpen = liveThinkingOpen,
-                    onToggleThinking = onToggleLiveThinking,
-                    onOpenCall = onOpenRunningCall,
-                    onOpenDoneCall = onOpenDoneCall,
-                    finishedThinkingOpen = finishedThinkingOpen,
-                    onToggleFinishedThinking = onToggleFinishedThinking,
-                )
+                val current = liveState.value
+                if (current != null) {
+                    LiveReplyRow(
+                        reply = current,
+                        onDismissCut = onDismissCut,
+                        thinkingOpen = liveThinkingOpen,
+                        onToggleThinking = onToggleLiveThinking,
+                        onOpenCall = onOpenRunningCall,
+                        onOpenDoneCall = onOpenDoneCall,
+                        finishedThinkingOpen = finishedThinkingOpen,
+                        onToggleFinishedThinking = onToggleFinishedThinking,
+                    )
+                }
                 return@itemsIndexed
             }
             val previous = rows.getOrNull(index - 1)
@@ -2784,9 +2808,7 @@ private fun MessageArea(
             val unit = (row as ChatRow.Single).unit
             // 这一轮助手的话后面还有没有别的正文段：有就说明现在这段不是最后一段，
             // 动作行留给最后那段（同一轮只出现一排）。
-            val lastTextOfTurn = rows.drop(index + 1)
-                .takeWhile { !it.alignsRight() }
-                .none { it is ChatRow.Single && it.slice != UnitSlice.ToolsOnly }
+            val lastTextOfTurn = showActions.getOrElse(index) { true }
             UnitBlock(
                 unit = unit,
                 showHeader = showHeader,
@@ -2850,25 +2872,44 @@ private fun MessageArea(
                 )
             }
         }
-        val streaming = if (inPlaceRegen) null else live
+        val streamingHere = !inPlaceRegen && hasLive
         // 重试与发送同一个画法：这一轮画在**底部**。目标那一条属于旧的那一轮，
         // 它已经整轮藏掉了（D263），再往它身上画就等于把旧的又放出来一半。
         // 「只换这一条」（D284）是例外：那份已经画在目标自己的位置上了，底部不再重复。
-        if (streaming != null) {
+        if (streamingHere) {
             item(key = "live-assistant") {
-                LiveReplyRow(
-                    reply = streaming,
-                    onDismissCut = onDismissCut,
-                    thinkingOpen = liveThinkingOpen,
-                    onToggleThinking = onToggleLiveThinking,
-                    onOpenCall = onOpenRunningCall,
-                    onOpenDoneCall = onOpenDoneCall,
-                    finishedThinkingOpen = finishedThinkingOpen,
-                    onToggleFinishedThinking = onToggleFinishedThinking,
-                )
+                // 读快照状态放在 item 里：每帧变的是这一项，整张列表不动。
+                val current = liveState.value
+                if (current != null) {
+                    LiveReplyRow(
+                        reply = current,
+                        onDismissCut = onDismissCut,
+                        thinkingOpen = liveThinkingOpen,
+                        onToggleThinking = onToggleLiveThinking,
+                        onOpenCall = onOpenRunningCall,
+                        onOpenDoneCall = onOpenDoneCall,
+                        finishedThinkingOpen = finishedThinkingOpen,
+                        onToggleFinishedThinking = onToggleFinishedThinking,
+                    )
+                }
             }
         }
     }
+}
+
+/**
+ * 手指还在滑、或者惯性还在跑（D354）。
+ *
+ * 给它一个闸门的位置：**滑动中间才开始的读库 / 解码**可以先不做——一屏能来好几份，
+ * 而停下来之后补是一样的。已经画好的东西不受影响：这里丢的是"这一帧要不要开新活"，
+ * 不是把帧丢掉。
+ *
+ * 为什么是进程内对象而不是 `CompositionLocal`：要读它的是气泡里的图片，
+ * 而气泡在 `LazyColumn` 的 item 里；为了传一个 Boolean 把整张列表包一层
+ * `CompositionLocalProvider`，等于让列表结构跟着滚动状态变一次。
+ */
+private object ScrollBusy {
+    val busy = mutableStateOf(false)
 }
 
 /**
@@ -2982,15 +3023,6 @@ private fun ChatUnit.headerAt(): Long =
         ?: createdAt
 
 /** 这个单元整体靠哪边——只用来算"换人"的间距，不参与别的判断。 */
-private fun ChatUnit.alignsRight(): Boolean =
-    !isToolPair && messages.isNotEmpty() && messages.all { it.isUser }
-
-/** 这一行整体靠哪边——只用来算"换人"的间距，不参与别的判断。 */
-private fun ChatRow.alignsRight(): Boolean = when (this) {
-    is ChatRow.Single -> unit.alignsRight()
-    // 过程块永远是助手那边的东西。
-    is ChatRow.Process -> false
-}
 
 /**
  * 一次回合里连续的过程项（D229）：思考与工具合成一个大块，左侧一条竖线串起来。
@@ -3528,9 +3560,23 @@ private fun MessageImages(images: List<ChatImage>) {
     if (images.isEmpty()) return
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }
-    val loaded by produceState(initialValue = null as List<Pair<ChatImage, android.graphics.Bitmap?>>?, images) {
+    // 已经在内存里的当场画；没解过的等**手停下来**再读（D354）。
+    // 一张图原来就是一次开库（quick_check + L3 全表扫），一条消息带四张图就是两秒；
+    // 滑动中间做这件事，帧就掉在这里。
+    val busy = ScrollBusy.busy.value
+    val cached = remember(images) {
+        images.map { image -> image to AttachmentStore.cached(image.id) }
+    }
+    val loaded by produceState(
+        initialValue = cached.takeIf { rows -> rows.any { it.second != null } },
+        images,
+        busy,
+    ) {
+        if (busy) return@produceState
         value = withContext(Dispatchers.IO) {
-            images.map { image -> image to AttachmentStore.bitmap(databasePath, image.id) }
+            // 一个句柄读完整条消息的图（不是每张各开一次库）。
+            val bitmaps = AttachmentStore.bitmaps(databasePath, images.map { it.id })
+            images.map { image -> image to bitmaps[image.id] }
         }
     }
     val rows = loaded
@@ -6533,7 +6579,9 @@ private fun ContextImagesSheet(
     val maxHeight = (screen * 0.5f).dp
     val loaded by produceState(initialValue = null as List<Pair<ContextImageRow, android.graphics.Bitmap?>>?, images) {
         value = withContext(Dispatchers.IO) {
-            images.map { image -> image to AttachmentStore.bitmap(databasePath, image.id) }
+            // 一次开库读完这张清单（D354），不是每张各开一次。
+            val bitmaps = AttachmentStore.bitmaps(databasePath, images.map { it.id })
+            images.map { image -> image to bitmaps[image.id] }
         }
     }
     SheetFrame(title = "其他模态上下文", onDismiss = onDismiss) {

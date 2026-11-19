@@ -257,8 +257,23 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
     val linkColor = MaterialTheme.colorScheme.primary
     val inlineColor = MaterialTheme.colorScheme.onSurface
 
+    // 行内样式（粗 / 斜 / 行内代码 / 链接）要跑一遍正则。以前是**每次重组现算**：
+    // 一条长消息在流式生成里每秒被重建几十次，滚动时每进一屏也算一次（D354）。
+    // 现在跟 `text` 和两个颜色一起缓存；块结构变了自然换键，颜色跟主题走。
+    val rendered = remember(text, inlineCodeBackground, linkColor) {
+        blocks.map { block ->
+            block to if (block.kind == MdKind.Code || block.kind == MdKind.Rule) {
+                null
+            } else {
+                inlineMarkdown(block.text, inlineCodeBackground, linkColor)
+            }
+        }
+    }
+
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        blocks.forEach { block ->
+        rendered.forEach { (block, inline) ->
+            // 代码块 / 分隔线不走行内样式，其余取缓存好的那一份。
+            val styled = inline ?: AnnotatedString(block.text)
             when (block.kind) {
                 MdKind.Rule -> HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant,
@@ -292,7 +307,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                 }
 
                 MdKind.Heading -> Text(
-                    text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
+                    text = styled,
                     style = MaterialTheme.typography.bodyMedium,
                     fontSize = when (block.level) {
                         1 -> 20.sp
@@ -314,7 +329,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.width(14.dp),
                     )
                     Text(
-                        text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
+                        text = styled,
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 15.sp,
                         lineHeight = 22.sp,
@@ -331,7 +346,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.width(22.dp),
                     )
                     Text(
-                        text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
+                        text = styled,
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 15.sp,
                         lineHeight = 22.sp,
@@ -350,7 +365,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                             .background(MaterialTheme.colorScheme.outlineVariant),
                     )
                     Text(
-                        text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
+                        text = styled,
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 15.sp,
                         lineHeight = 22.sp,
@@ -360,7 +375,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                 }
 
                 MdKind.Paragraph -> Text(
-                    text = inlineMarkdown(block.text, inlineCodeBackground, linkColor),
+                    text = styled,
                     style = MaterialTheme.typography.bodyMedium,
                     fontSize = 15.sp,
                     lineHeight = 22.sp,

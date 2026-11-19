@@ -277,27 +277,41 @@ impl Storage {
     ///
     /// 返回 `false` = 本来就没有这个会话（不算错：两个入口同时点的情况真实存在）。
     pub fn delete_conversation(&mut self, session: SessionId) -> Result<bool, StorageError> {
-        let tx = self.conn.transaction()?;
-        let id = session.to_string();
-        // 归档按 ref 全局唯一（内容寻址），副本会继续指着原会话写下的那一行。
-        // 所以只删"没有别人还在引用"的：否则删掉原件，副本里的 `archived_ref` 就悬空了。
-        tx.execute(
-            "DELETE FROM archive WHERE conv_id = ?1
-               AND ref NOT IN (
-                   SELECT archived_ref FROM messages
-                   WHERE conv_id <> ?1 AND archived_ref IS NOT NULL
-               )",
-            params![id],
-        )?;
-        tx.execute("DELETE FROM events WHERE conv_id = ?1", params![id])?;
-        let changed = tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
-        tx.commit()?;
-        if changed > 0 {
-            // 附件目录与暂存目录跟着会话走（D216 / D294）：库里删干净了，盘上也不该留孤儿。
-            let dir = self.session_dir(session);
-            let _ = std::fs::remove_dir_all(dir);
+        Ok(self
+            .delete_conversations(&[session])?
+            .pop()
+            .unwrap_or(false))
+    }
+
+    /// 一批会话一起删（D354）：**一次事务**，库里要么全改、要么一条没动。
+    ///
+    /// 为什么要有它：界面上一次多选删十个，挨个调 `delete_conversation` 会让每个会话
+    /// 各付一次 `open` 的代价（`quick_check` + L3 全表扫）。15.8 MB 的库上那是
+    /// 每个约 500 ms，十个五秒；真正删数据的部分一个只要几十毫秒。
+    ///
+    /// 目录（`sessions/<会话 id>/`）在**提交之后**才删：事务里删盘上文件的话，
+    /// 回滚了库里还在、图没了——那正是"消息还在、图没了"的老账。
+    pub fn delete_conversations(
+        &mut self,
+        sessions: &[SessionId],
+    ) -> Result<Vec<bool>, StorageError> {
+        if sessions.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(changed > 0)
+        let tx = self.conn.unchecked_transaction()?;
+        let mut deleted = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            deleted.push(delete_conversation_rows(&tx, *session)?);
+        }
+        tx.commit()?;
+        for (session, removed) in sessions.iter().zip(deleted.iter()) {
+            if *removed {
+                // 附件 / 文件 / 暂存 / 归档目录跟着会话走（D216 / D294 / D317）：
+                // 库里删干净了，盘上也不该留孤儿。
+                let _ = std::fs::remove_dir_all(self.session_dir(*session));
+            }
+        }
+        Ok(deleted)
     }
 
     /// 复制一个会话（0.15d / D207）：新建一个会话，把消息按原顺序整份拷过去。
@@ -2274,6 +2288,31 @@ impl nmoi_core::session::HistoryStore for Storage {
     }
 }
 
+/// 删一个会话的**行**（不含盘上目录）。调用方负责事务与目录（D354）。
+///
+/// 抽出来是为了让 `delete_conversations` 能在一个事务里连着删多个：
+/// `Connection::transaction()` 不能嵌套，而"每个会话开一个事务"会让批量删除
+/// 变成 N 次 fsync。
+fn delete_conversation_rows(
+    tx: &rusqlite::Transaction<'_>,
+    session: SessionId,
+) -> Result<bool, StorageError> {
+    let id = session.to_string();
+    // 归档按 ref 全局唯一（内容寻址），副本会继续指着原会话写下的那一行。
+    // 所以只删"没有别人还在引用"的：否则删掉原件，副本里的 `archived_ref` 就悬空了。
+    tx.execute(
+        "DELETE FROM archive WHERE conv_id = ?1
+           AND ref NOT IN (
+               SELECT archived_ref FROM messages
+               WHERE conv_id <> ?1 AND archived_ref IS NOT NULL
+           )",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM events WHERE conv_id = ?1", params![id])?;
+    let changed = tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+    Ok(changed > 0)
+}
+
 #[cfg(test)]
 mod conversation_admin_tests {
     use super::*;
@@ -2298,5 +2337,33 @@ mod conversation_admin_tests {
         assert!(!storage.conversation_exists(session).expect("查"));
         // 再删一次：返回 false，不报错（两个入口同时点到是真会发生的）。
         assert!(!storage.delete_conversation(session).expect("再删"));
+    }
+
+    /// 批量删（D354）：一个事务里删好几条，结果与逐条删一致；
+    /// 不存在的那些给 `false`，不能把别人的行带走。
+    #[test]
+    fn delete_many_is_one_transaction_and_reports_each() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let first = storage
+            .create_conversation("一", "dev", "default")
+            .expect("建会话");
+        let second = storage
+            .create_conversation("二", "dev", "default")
+            .expect("建会话");
+        let kept = storage
+            .create_conversation("留下", "dev", "default")
+            .expect("建会话");
+
+        let flags = storage
+            .delete_conversations(&[first, second, first])
+            .expect("批量删");
+        // 第三次是同一个 id：事务里第二次执行就是"本来没有"，给 false。
+        assert_eq!(flags, vec![true, true, false]);
+        assert!(!storage.conversation_exists(first).expect("查一"));
+        assert!(!storage.conversation_exists(second).expect("查二"));
+        assert!(storage.conversation_exists(kept).expect("查留下的"));
+
+        // 空列表：什么都不做，也不报错。
+        assert!(storage.delete_conversations(&[]).expect("空批").is_empty());
     }
 }

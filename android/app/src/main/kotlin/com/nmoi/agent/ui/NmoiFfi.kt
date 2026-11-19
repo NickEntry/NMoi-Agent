@@ -2,6 +2,7 @@ package com.nmoi.agent.ui
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -99,6 +100,12 @@ internal object NmoiFfi {
     /** 删会话（0.15d）。`deleted=false` 不算失败。 */
     suspend fun deleteConversation(handle: Long, session: String): Result<JSONObject> =
         call("delete_conversation") { NativeBridge.deleteConversationJson(handle, session) }
+
+    /** 删一批会话（D354）：一次开库、一次事务。`results` 与入参一一对应。 */
+    suspend fun deleteConversations(handle: Long, sessions: List<String>): Result<JSONObject> =
+        call("delete_conversations") {
+            NativeBridge.deleteConversationsJson(handle, JSONArray(sessions).toString())
+        }
 
     /** 复制会话（0.15d）：消息整份拷到新会话，原件一个字节不动。 */
     suspend fun copyConversation(handle: Long, session: String, title: String = ""): Result<JSONObject> =

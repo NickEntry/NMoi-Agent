@@ -3315,3 +3315,55 @@ ffi 71、kotlinc 只剩 9 条 `unresolved reference 'R'`、clippy / fmt 干净�
 
 判据：kotlinc 全量只剩 9 条既有 `R`。真机：点供应商/助手/安全，看是否还有文字，
 再去日志页看那一行 `Page`。
+
+## D354 大批量会话下的三条慢路径：删除、长会话首屏、逐帧渲染（2026-11-20）
+
+用户报了三个现象：会话多且上下文长时**删会话很慢**；**单会话很长时界面会不会卡**；
+**滑太快时能不能丢帧**。三个都先量，再改；量出来的东西跟直觉不一样。
+
+### 量出来的（`/tmp` 外的一个临时 bench，16.1 MB 的库：41 会话 / 5120 消息 / 15360 part）
+
+```text
+open（L0+L1+L3）         ≈ 530 ms      quick_check ≈ 310 ms ＋ validate::scan ≈ 210 ms
+删 10 个会话（现状）      5111 ms       每个各开一次库：462–578 ms
+删 10 个会话（一次 open）   668 ms       open 415 ms ＋ 真正删 252 ms
+800 条消息的单个会话 load_units  219 ms   读的是**全量**，首屏只要 80 个单元
+800 条消息的会话删本体      194 ms       级联 + 事务
+```
+
+**结论一：慢的不是删除，是 `open`。** 每次 `withStorageHandle` 都要跑 `quick_check`
+与 L3 全表扫；多选删十个 = 十次校验，五秒里 95% 花在重复校验同一份库上。
+
+**结论二：长会话的首屏是"读全量再裁"。** `nmoi_storage_load_units_json` 里
+`storage.load_units(session)` 把整条历史读进内存，再 `take` 最后 80 个单元。
+
+**结论三：逐帧的成本不在 Compose 本身**，在三处现算：每个可见行都 `rows.drop(index+1)…`
+（O(n²)）、每块 Markdown 每次重组都重跑行内正则、`live`（流式正文）被每个可见行读到。
+
+### 改了什么
+
+- 存储：`Storage::delete_conversations(&[SessionId])` —— **一个事务删一批**，
+  行删除抽成 `delete_conversation_rows`；目录在提交之后才删（回滚不留"消息还在、图没了"）。
+  `delete_conversation` 变成它的单条包装。
+- FFI：`nmoi_storage_delete_conversations_json`（入参 id 数组，出参 `{deleted,results}`）。
+  JNI 60 个符号。
+- 界面：多选删除走 `ConversationRepository.deleteMany`（一次开库），单条删除不变。
+- 消息区：`showActionsByRow` 一次算完动作行（原逐行扫）；`itemsIndexed` 加
+  `key` / `contentType`；`live` 收进快照状态，只有"正在长的那一行"读它。
+- Markdown：行内样式跟着 `text` 与颜色缓存（`remember`），不再每帧跑正则。
+- 图片：`AttachmentStore.bitmaps` 一条消息**一次开库**读多张；解码按 720 px 取样
+  （只缩不放）；`ScrollBusy` 闸门——手指/惯性还在跑时先不读图，停下来再补。
+
+### 没做，为什么
+
+- **`open` 本身没削**：`quick_check` 310 ms 是 L1 的地基，跳过它得先有一套
+  "上次是干净关闭"的证据链（`meta` 标记 + WAL 检查），这一轮没做。
+- **首屏没改成 tail 查询**：`effective_divider(&units, &lines)` 按 `after_seq` 在
+  **整条会话**的单元里找位置；只读尾部会让压缩线（D324）的"已移走 N 条"静默消失。
+  要做得先把 divider 的定位换成"按 seq 数一遍"，是独立一块。
+- **不是"丢帧"**：Compose 里没有让应用跳过一帧的接口。能做的是把"这一帧要不要开新活"
+  关掉（读图/解码），已经画好的东西不动——屏幕上看到的是"滑的时候图晚一点出现"。
+
+判据：`cargo clippy -D warnings` 干净；core 798 / ffi 71 / storage 全绿；
+`ProcessRowsTest` 16 条（新增 4 条：动作行预计算与逐行扫描逐格比对、空表、key 稳定性）；
+kotlinc 全量只剩 9 条既有 `R`。真机未测（本机没有设备）——删除耗时与滑动手感要真机确认。

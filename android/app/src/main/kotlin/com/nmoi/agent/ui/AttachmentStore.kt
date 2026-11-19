@@ -91,27 +91,66 @@ internal object AttachmentStore {
         }
 
 
-    private const val MAX_CACHED = 24
+    private const val MAX_CACHED = 48
     private val cache = object : LinkedHashMap<String, Bitmap>(MAX_CACHED, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>): Boolean =
             size > MAX_CACHED
     }
 
-    /** 读一张图。`null` = 读不到（附件被删、base64 坏了、原生层没加载）。 */
-    suspend fun bitmap(databasePath: String, id: String): Bitmap? {
-        synchronized(cache) { cache[id]?.let { return it } }
-        val loaded = withContext(Dispatchers.IO) {
-            withStorageHandle(databasePath) { handle ->
-                NmoiFfi.attachment(handle, id).mapCatching { envelope ->
-                    val data = envelope.optString("data", "")
-                    if (data.isEmpty()) error("附件 $id 没有字节")
-                    val raw = Base64.decode(data, Base64.NO_WRAP)
-                    BitmapFactory.decodeByteArray(raw, 0, raw.size)
-                        ?: error("附件 $id 解不成图片")
-                }
-            }.getOrNull()
-        } ?: return null
-        synchronized(cache) { cache[id] = loaded }
-        return loaded
+    /**
+     * 缩着解码（D354）：界面上最大也就 240×200 dp（3 倍屏约 720×600 px），
+     * 按原图整张解出来再画，只多占内存与解码时间——一条竖屏截图能吃掉几十 MB，
+     * 滚过去几屏就开始 GC 抖。
+     *
+     * 只缩不放：小图原样解。**只用于显示**；导出走 [bytes]，那份是原字节。
+     */
+    private fun decodeForDisplay(raw: ByteArray, maxSide: Int = 720): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        var sample = 1
+        while (longest / sample > maxSide * 2) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return BitmapFactory.decodeByteArray(raw, 0, raw.size, options)
     }
+
+    /** 已经解过的就现拿（同步、不读库）：滑动中能立刻画出来的那一部分。 */
+    fun cached(id: String): Bitmap? = synchronized(cache) { cache[id] }
+
+    /** 读一张图。`null` = 读不到（附件被删、base64 坏了、原生层没加载）。 */
+    suspend fun bitmap(databasePath: String, id: String): Bitmap? =
+        bitmaps(databasePath, listOf(id))[id]
+
+    /**
+     * 一次取多张（D354）：**一个句柄**读多张图。
+     *
+     * 以前每张图各走一次 `withStorageHandle`，也就是每张各付一次 `open`
+     * （`quick_check` + L3 全表扫，15.8 MB 的库上约 500 ms）——一条消息带四张图
+     * 就是两秒，滚动时每进一屏再来一遍。
+     */
+    suspend fun bitmaps(databasePath: String, ids: List<String>): Map<String, Bitmap?> =
+        withContext(Dispatchers.IO) {
+            val wanted = ids.distinct()
+            val missing = wanted.filter { cached(it) == null }
+            if (missing.isNotEmpty()) {
+                val loaded: Map<String, Bitmap?> = withStorageHandle(databasePath) { handle ->
+                    val out = LinkedHashMap<String, Bitmap?>()
+                    for (id in missing) {
+                        out[id] = NmoiFfi.attachment(handle, id).mapCatching { envelope ->
+                            val data = envelope.optString("data", "")
+                            if (data.isEmpty()) error("附件 $id 没有字节")
+                            val raw = Base64.decode(data, Base64.NO_WRAP)
+                            decodeForDisplay(raw) ?: error("附件 $id 解不成图片")
+                        }.getOrNull()
+                    }
+                    Result.success(out as Map<String, Bitmap?>)
+                }.getOrDefault(emptyMap())
+                synchronized(cache) {
+                    for ((id, bitmap) in loaded) {
+                        if (bitmap != null) cache[id] = bitmap
+                    }
+                }
+            }
+            wanted.associateWith { cached(it) }
+        }
 }

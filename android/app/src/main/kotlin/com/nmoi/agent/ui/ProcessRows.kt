@@ -180,6 +180,63 @@ internal fun visibleItems(items: List<ProcessItem>, expanded: Boolean): List<Pro
 /** 这一组够不够折叠的门槛（≥ 3 步）。 */
 internal fun foldable(items: List<ProcessItem>): Boolean = items.size >= 3
 
+internal fun ChatUnit.alignsRight(): Boolean =
+    !isToolPair && messages.isNotEmpty() && messages.all { it.isUser }
+
+/** 这一行整体靠哪边——只用来算"换人"的间距，不参与别的判断。 */
+internal fun ChatRow.alignsRight(): Boolean = when (this) {
+    is ChatRow.Single -> unit.alignsRight()
+    // 过程块永远是助手那边的东西。
+    is ChatRow.Process -> false
+}
+
 /** 折叠时被收起来的步数（给"展开更多 N 步"那句用）。 */
 internal fun hiddenCount(items: List<ProcessItem>, expanded: Boolean): Int =
     (items.size - visibleItems(items, expanded).size).coerceAtLeast(0)
+
+/**
+ * 每一行有没有动作行（重试 / 复制 / 分享 / 更多）。
+ *
+ * 判据（与以前逐行现算的一样）：**这一轮助手的话里，只有在最后一段正文上**——
+ * 后面还有别的正文段就不画，一律留给最后那段。分界线是下一条用户消息：
+ * 扫描到它就停（它自己不属于"这一轮助手的话"）。
+ *
+ * 为什么改成从后往前扫一遍：原来在每一行的组合里写
+ * `rows.drop(index + 1).takeWhile { … }`——可见的八行每帧各扫半张表，
+ * 长会话里是 O(n²) 的分配，而且每来一个字就重来一次（D354）。
+ * 这里 O(n)，只在 `rows` 变了的时候算一次。
+ */
+internal fun showActionsByRow(rows: List<ChatRow>): BooleanArray {
+    val flags = BooleanArray(rows.size) { true }
+    // 从下往上：`textAhead` = 这一行之后（到下一个用户消息之前）还有没有别的正文段。
+    var textAhead = false
+    for (index in rows.indices.reversed()) {
+        flags[index] = !textAhead
+        when (val row = rows[index]) {
+            // 用户消息是分界线，但它自己不算"后面的正文段"。
+            is ChatRow.Process -> Unit
+            is ChatRow.Single -> textAhead = if (row.alignsRight()) false else {
+                textAhead || row.slice != UnitSlice.ToolsOnly
+            }
+        }
+    }
+    return flags
+}
+
+/**
+ * 列表项的稳定 key（D354）。
+ *
+ * 不给 key 的时候行身份是"第几个"，中间多出一行（分组从 1 项涨到 2 项、
+ * 或者流式过程块挤进来一条）后面所有行的 `remember` 状态都跟着挪一个位置：
+ * Markdown 要重新解析、展开状态要重新挂。key 跟着行自己的 id 走就没这回事。
+ */
+internal fun rowKey(row: ChatRow): String = when (row) {
+    is ChatRow.Process -> "g:${row.key}"
+    is ChatRow.Single -> "u:${row.unit.id}:${row.slice}:${row.hideReasoning}"
+}
+
+/** 列表项的复用类型：形状一样的行才能互相复用（Compose 的 contentType）。 */
+internal fun rowContentType(row: ChatRow): String = when (row) {
+    is ChatRow.Process -> "process"
+    is ChatRow.Single -> if (row.alignsRight()) "user" else "assistant"
+}
