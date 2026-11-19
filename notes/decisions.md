@@ -3367,3 +3367,55 @@ open（L0+L1+L3）         ≈ 530 ms      quick_check ≈ 310 ms ＋ validate::
 判据：`cargo clippy -D warnings` 干净；core 798 / ffi 71 / storage 全绿；
 `ProcessRowsTest` 16 条（新增 4 条：动作行预计算与逐行扫描逐格比对、空表、key 稳定性）；
 kotlinc 全量只剩 9 条既有 `R`。真机未测（本机没有设备）——删除耗时与滑动手感要真机确认。
+
+## D355 分页读 + 无限上翻 + 惯性放大（2026-11-20）
+
+用户把给朋友的几条要求转了过来：**分页存储 / 跳帧优化 / 滑动加速度 / 无限滚动的触发 /
+纯文本上下文 1B 下无限滚动保持满帧 / 负载不能太高**，并说这些最好在我们这边也落实。
+逐条对着现状看，缺的是「分页」和「上翻」，其余几条是上一轮（D354）那条线的延续。
+
+### 量出来的（同一个临时库，800 条消息的会话）
+
+```text
+load_units（整条读，再裁到 80）      216 ms
+load_units_page（首屏 40）            41 ms      → 5.3×
+往回翻 19 页 = 800 个单元              不重不漏（实测，见 bench）
+```
+
+### 改了什么
+
+- 存储：`Storage::load_units_page(session, before, limit) -> UnitPage`。按 `MIN(seq)` 分组取
+  最后 N 个 `unit_id`（一个 CTE 同时供消息与 parts 两次查询用），页内升序，直接能拼在
+  已加载那段前面。`UnitPage` 带 `has_more` / `next_before` / `total_units` / `start_index`。
+- 存储：`divider_state(session)` —— 分页之后界面手里只有一页，`effective_divider(&units, …)`
+  找不到上面那条线；这里用**计数**把它算在库这一层（`covered` = 首条 seq ≤ `after_seq`
+  的单元个数），「已移走 N 条」不会因为翻页而消失。
+- FFI：`nmoi_storage_load_units_page_json(handle, session, before, limit)`（JNI 61）。
+  `items` 的序列化抽成 `units_envelope(...)`，整段读与分页读共用一份——两处各写一份
+  迟早有一处漏字段。压缩线 JSON 也抽成 `divider_json(...)`。
+- 界面：`ChatRepository.loadPage(before) -> ChatSnapshot`；`ChatPage` 加 `hasMore` / `nextBefore`。
+  消息区首屏读一页（40 个单元），滑到离顶两行就要下一页。
+- 接缝：`mergeUnits(older, newest)` 按 id 去重、按首条 seq 排序，**同 id 以新的那份为准**
+  （编辑过的内容在后来那份里）；`hasGap(...)` 判连续性——一轮新消息把窗口顶走几条时
+  中间会缺一段，缺了就补一页（`before = 新一页第一条的 seq`），绝不把两段拼成假连续
+  （铁律②）。
+- 落点：新一页插在上面会让行号整体后移，所以锚点记的是**当前第一行的 key + 偏移 + 当时行数**，
+  新页到了按 key 找回来再 `scrollToItem`。第三个字段是必需的：只记 key 的话，
+  设锚点这一下自己就会触发还原，把锚点清掉。
+- 惯性：`BoostedFlingBehavior` 把初速度乘 1.35（只在聊天列表上）。衰减仍交给系统那套。
+- 「跳帧 / 满帧 / 负载」：Compose 没有"跳过一帧"的接口，能做的是把**这一帧要不要开新活**
+  关掉。上一轮已经有 `ScrollBusy`（滑动中不读图不解码），这一轮把每页数量钉在 40、
+  每页只解析这一段（不再整条会话进内存），加上 D354 那些"变了才算"的缓存，
+  长会话的每帧成本与总长度脱钩——正文长度只影响进入视野那一两条。
+
+### 没做
+
+- **窗口上限**：加载过的页一直留在内存里（一页 40 个单元，模型很小）。真要"翻几千页也不涨内存"，
+  得做 LRU 丢远端页 + 滚回去重取；那会带来"往上翻突然少了一段"的观感问题，先不做。
+- **1B token 的实测**：没有这个量级的库，也没有真机。能说的是成本结构（每页固定 40、
+  可见行与总长无关），不能说的是"满帧"这三个字——那要真机 + 帧统计。
+- **`quick_check` 仍每次跑**（同 D354）：那 300 ms 才是现在打开会话的主要成本。
+
+判据：clippy 干净；storage 60 条（新增 3 条分页：游标走到底不重不漏、空会话 / limit=0、
+压缩线计数）、ffi 71 条绿；`ChatPagingTest` 7 条（去重取新、按 seq 排序、空档判定）；
+kotlinc 全量只剩 9 条既有 `R`。bench：首屏 41 ms / 全量 216 ms。

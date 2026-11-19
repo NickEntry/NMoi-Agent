@@ -840,10 +840,185 @@ pub extern "C" fn nmoi_storage_delete_message_json(
     })
 }
 
+/// 一条压缩线在界面上要的字段（D324 / D355）。
+///
+/// 两条路（整段读 / 分页读）共用它：`covered` 一处由 `split_index` 算、一处由库里点数，
+/// 字段名与含义必须一模一样，否则界面上那两个数字会打架。
+fn divider_json(
+    divider: &nmoi_core::divider::Divider,
+    covered: usize,
+    summary_tokens: u32,
+) -> Value {
+    json!({
+        "id": divider.id.as_str(),
+        "after_seq": divider.after_seq,
+        "kind": divider.kind.as_str(),
+        // 线上有几个单元：界面那一行写"已移走 N 条"就用它，不自己数。
+        "covered": covered,
+        // 摘要本身也占上下文（每轮都要发），界面算占用率时要加进去。
+        "summary_tokens": summary_tokens,
+        "created_at": divider.created_at,
+    })
+}
+
+/// 把一段单元序列化成界面那一份 JSON（正文 / 思考 / 工具 / 版本 / 附件都在这里）。
+///
+/// `start_abs` 是这段在整条会话里的起点（第几个单元），`window_start` 是压缩线位置：
+/// 两个都是**绝对**下标，分页拿到的任意一页都能正确标出"线上那几条"。
+#[allow(clippy::too_many_arguments)]
+fn units_envelope(
+    storage: &Storage,
+    session: SessionId,
+    units: &[AtomicUnit],
+    start_abs: usize,
+    total: usize,
+    window_start: usize,
+    summary: Option<String>,
+    divider: Option<Value>,
+    has_more: bool,
+    next_before: Option<i64>,
+) -> FfiResult<Value> {
+    // 版本概要一次查完（不是每条消息一次：那是 N+1，滚动会顿）。
+    let versions = storage.version_index(session).map_err(storage_error)?;
+    // 图片元数据一次查完（D208）：每条约一次是 N+1，滚动会顿；
+    // 字节不在这里带——80 条消息乘几 MB base64 会把首屏拖死。
+    let mut images_by_message: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
+    // 文件（D337）：与图片分开。两者都挂消息，但界面上是两种东西——
+    // 混进 `images` 会让一张 PDF 被画成缩略图（然后画不出来）。
+    let mut files_by_message: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
+    for info in storage.attachments_of(session).map_err(storage_error)? {
+        let key = info.message.to_string();
+        if info.kind == "file" {
+            files_by_message.entry(key).or_default().push(json!({
+                "id": info.id,
+                "name": info.name,
+                "mime": info.mime,
+                "size": info.size,
+            }));
+        } else {
+            images_by_message.entry(key).or_default().push(json!({
+                "id": info.id,
+                "mime": info.mime,
+                "size": info.size,
+            }));
+        }
+    }
+    let items: Vec<Value> = units
+        .iter()
+        .enumerate()
+        .map(|(offset, unit)| {
+            let compacted = start_abs + offset < window_start;
+            let messages: Vec<Value> = unit
+                .messages
+                .iter()
+                .map(|message| {
+                    let brief = versions.get(&message.id.to_string());
+                    json!({
+                        "id": message.id.to_string(),
+                        "seq": message.id.seq(),
+                        "role": message.role.as_str(),
+                        "source": message.source.as_str(),
+                        "content": message.content(),
+                        // 思考块（D158）：以前只存不发，界面上根本看不到它——
+                        // "存了但看不见"正是用户最反感的那种。这里带出去。
+                        "reasoning": message.reasoning(),
+                        // 块清单（D257）：编辑按 `part:p3` 定位，删一个调用不会
+                        // 让后面的块错位。只给 id 与种类，内容还在上面那几个字段里。
+                        "parts": message
+                            .parts()
+                            .iter()
+                            .map(|part| json!({
+                                "id": part.id(),
+                                "kind": part.kind(),
+                            }))
+                            .collect::<Vec<_>>(),
+                        // 工具调用的参数原文：增强编辑要能在界面上指出"改的是哪一块"，
+                        // 只给个数是不够的。
+                        "tool_call_args": message
+                            .tool_calls()
+                            .iter()
+                            .map(|call| json!({
+                                "call_id": call.call_id,
+                                "part": call.part,
+                                "name": call.name,
+                                "arguments": call.arguments,
+                                // 结果长在调用块上（D258）：界面那一行就是读这两个字段。
+                                "output": call.output,
+                                "status": call.status.as_str(),
+                            }))
+                            .collect::<Vec<_>>(),
+                        "tokens": message.tokens,
+                        "created_at": message.created_at,
+                        "incomplete": message.incomplete,
+                        "locked": message.locked,
+                        "pinned": message.pinned,
+                        "protected": message.protected,
+                        "revision": message.revision,
+                        "tool_calls": message.tool_calls().len(),
+                        // 版本（D137）：`version_count <= 1` 时 UI 不显示切换控件。
+                        // `version_edited` 决定那个数字的颜色：白 / 蓝 / 红。
+                        "version_count": brief.map(|b| b.count).unwrap_or(0),
+                        "version_active": brief.map(|b| b.active).unwrap_or(0),
+                        "version_view": brief.map(|b| b.view.as_str()).unwrap_or("raw"),
+                        "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
+                        // 图片（D208）：只给元数据，字节走 `attachment` 按需取。
+                        "images": images_by_message
+                            .get(&message.id.to_string())
+                            .cloned()
+                            .unwrap_or_default(),
+                        // 文件（D337）：芯片上写名字与大小，内容不进列表。
+                        "files": files_by_message
+                            .get(&message.id.to_string())
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect();
+            json!({
+                "id": unit.id.to_string(),
+                "kind": unit.kind.as_str(),
+                "closed": unit.is_closed(),
+                "created_at": unit.created_at,
+                // 线上那几条：仍在库里、仍能编辑，只是不再进请求（D324）。
+                "compacted": compacted,
+                "messages": messages,
+                // 断块（P4.1 / D67）：UI 的折叠卡标题就用这个声明行，
+                // 不用自己去拼"ID+块类+原因"——那种拼法迟早某个平台少个字段。
+                "broken": nmoi_core::repair::diagnose(unit).map(|block| json!({
+                    "id": block.id,
+                    "kind": block.kind.label(),
+                    "reason": block.reason.label(),
+                    "declaration": block.declaration(),
+                })),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "session": session.to_string(),
+        "units_total": total,
+        "returned": items.len(),
+        "truncated": has_more || start_abs > 0,
+        "items": items,
+        // 压缩线（D324）：`compacted` 是"这条会话压过没有"，`window_start` 是线下从第几条开始，
+        // `summary` 是线上那段的摘要原文（取不到就是 null，不假装还在）。
+        "compacted": window_start > 0,
+        "window_start": window_start,
+        "summary": summary,
+        "divider": divider,
+        // 分页（D355）：往上还有没有、下一次的游标。老的接口给 false/null。
+        "has_more": has_more,
+        "next_before": next_before,
+    }))
+}
+
 /// 读一个会话的原子单元。
 ///
 /// `limit`：> 0 时只取最后 N 个单元（UI 首屏），`<= 0` 全给。`truncated` 告诉调用方
 /// "库里有更多"，别自己数。
+///
+/// **一次读整条会话**——长会话在新接口 `load_units_page_json` 上（D355）。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_load_units_json(
     handle: u64,
@@ -855,33 +1030,6 @@ pub extern "C" fn nmoi_storage_load_units_json(
         let session_id = parse_session(session_text)?;
         with_storage(handle, |storage| {
             let units = storage.load_units(session_id).map_err(storage_error)?;
-            // 版本概要一次查完（不是每条消息一次：那是 N+1，滚动会顿）。
-            let versions = storage.version_index(session_id).map_err(storage_error)?;
-            // 图片元数据一次查完（D208）：每条约一次是 N+1，滚动会顿；
-            // 字节不在这里带——80 条消息乘几 MB base64 会把首屏拖死。
-            let mut images_by_message: std::collections::HashMap<String, Vec<Value>> =
-                std::collections::HashMap::new();
-            // 文件（D337）：与图片分开。两者都挂消息，但界面上是两种东西——
-            // 混进 `images` 会让一张 PDF 被画成缩略图（然后画不出来）。
-            let mut files_by_message: std::collections::HashMap<String, Vec<Value>> =
-                std::collections::HashMap::new();
-            for info in storage.attachments_of(session_id).map_err(storage_error)? {
-                let key = info.message.to_string();
-                if info.kind == "file" {
-                    files_by_message.entry(key).or_default().push(json!({
-                        "id": info.id,
-                        "name": info.name,
-                        "mime": info.mime,
-                        "size": info.size,
-                    }));
-                } else {
-                    images_by_message.entry(key).or_default().push(json!({
-                        "id": info.id,
-                        "mime": info.mime,
-                        "size": info.size,
-                    }));
-                }
-            }
             let total = units.len();
             let take = if limit <= 0 {
                 total
@@ -890,8 +1038,6 @@ pub extern "C" fn nmoi_storage_load_units_json(
             };
             let start = total - take;
             // 压缩线（D324）：界面要能指出"线上那几条去哪了、摘要是什么"。
-            // 只读一次 `dividers`（一条轻查询），不重跑 `load_window`——那会把整条历史再读一遍，
-            // 而这个函数在滚动与轮询里被反复调。
             let lines = storage.load_dividers(session_id).map_err(storage_error)?;
             let line = nmoi_core::divider::effective_divider(&units, &lines);
             let window_start = line.as_ref().map(|(_, at)| *at).unwrap_or(0);
@@ -902,125 +1048,83 @@ pub extern "C" fn nmoi_storage_load_units_json(
                     .ok()
                     .map(|entry| entry.content)
             });
-            let divider = line.as_ref().map(|(divider, at)| {
+            let tokens = summary
+                .as_deref()
+                .map(nmoi_core::estimate_tokens)
+                .unwrap_or(0);
+            let divider = line
+                .as_ref()
+                .map(|(divider, at)| divider_json(divider, *at, tokens));
+            units_envelope(
+                storage,
+                session_id,
+                &units[start..],
+                start,
+                total,
+                window_start,
+                summary,
+                divider,
+                start > 0,
+                None,
+            )
+        })
+    })
+}
+
+/// 读**一页**单元（D355）：`before` 是上一次拿到的 `next_before`（`<= 0` = 最新一页）。
+///
+/// 首屏只读一页，往上翻再要上一页——库这一层不再"整条会话读进内存再裁"。
+/// `has_more` / `next_before` 由库算，界面不自己数。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_load_units_page_json(
+    handle: u64,
+    session: *const c_char,
+    before: i64,
+    limit: i64,
+) -> *mut c_char {
+    run_json(|| {
+        let session_text = read_str(session, "session")?;
+        let session_id = parse_session(session_text)?;
+        with_storage(handle, |storage| {
+            let cursor = if before <= 0 { None } else { Some(before) };
+            let size = if limit <= 0 {
+                40
+            } else {
+                (limit as usize).min(200)
+            };
+            let page = storage
+                .load_units_page(session_id, cursor, size)
+                .map_err(storage_error)?;
+            // 压缩线用**库里数出来的**位置：这一页里可能根本没有线上那几条。
+            let mut window_start = 0usize;
+            let mut summary = None;
+            let mut divider = None;
+            if let Some((line, covered)) =
+                storage.divider_state(session_id).map_err(storage_error)?
+            {
+                window_start = covered;
+                summary = line
+                    .summary_ref()
+                    .and_then(|reference| storage.fetch_archive(&reference).ok())
+                    .map(|entry| entry.content);
                 let tokens = summary
                     .as_deref()
                     .map(nmoi_core::estimate_tokens)
                     .unwrap_or(0);
-                json!({
-                    "id": divider.id.as_str(),
-                    "after_seq": divider.after_seq,
-                    "kind": divider.kind.as_str(),
-                    // 线上有几个单元：界面那一行写"已移走 N 条"就用它，不自己数。
-                    "covered": at,
-                    // 摘要本身也占上下文（每轮都要发），界面算占用率时要加进去。
-                    "summary_tokens": tokens,
-                    "created_at": divider.created_at,
-                })
-            });
-            let items: Vec<Value> = units[start..]
-                .iter()
-                .enumerate()
-                .map(|(offset, unit)| {
-                    let compacted = start + offset < window_start;
-                    let messages: Vec<Value> = unit
-                        .messages
-                        .iter()
-                        .map(|message| {
-                            let brief = versions.get(&message.id.to_string());
-                            json!({
-                                "id": message.id.to_string(),
-                                "seq": message.id.seq(),
-                                "role": message.role.as_str(),
-                                "source": message.source.as_str(),
-                                "content": message.content(),
-                                // 思考块（D158）：以前只存不发，界面上根本看不到它——
-                                // "存了但看不见"正是用户最反感的那种。这里带出去。
-                                "reasoning": message.reasoning(),
-                                // 块清单（D257）：编辑按 `part:p3` 定位，删一个调用不会
-                                // 让后面的块错位。只给 id 与种类，内容还在上面那几个字段里。
-                                "parts": message
-                                    .parts()
-                                    .iter()
-                                    .map(|part| json!({
-                                        "id": part.id(),
-                                        "kind": part.kind(),
-                                    }))
-                                    .collect::<Vec<_>>(),
-                                // 工具调用的参数原文：增强编辑要能在界面上指出"改的是哪一块"，
-                                // 只给个数是不够的。
-                                "tool_call_args": message
-                                    .tool_calls()
-                                    .iter()
-                                    .map(|call| json!({
-                                        "call_id": call.call_id,
-                                        "part": call.part,
-                                        "name": call.name,
-                                        "arguments": call.arguments,
-                                        // 结果长在调用块上（D258）：界面那一行就是读这两个字段。
-                                        "output": call.output,
-                                        "status": call.status.as_str(),
-                                    }))
-                                    .collect::<Vec<_>>(),
-                                "tokens": message.tokens,
-                                "created_at": message.created_at,
-                                "incomplete": message.incomplete,
-                                "locked": message.locked,
-                                "pinned": message.pinned,
-                                "protected": message.protected,
-                                "revision": message.revision,
-                                "tool_calls": message.tool_calls().len(),
-                                // 版本（D137）：`version_count <= 1` 时 UI 不显示切换控件。
-                                // `version_edited` 决定那个数字的颜色：白 / 蓝 / 红。
-                                "version_count": brief.map(|b| b.count).unwrap_or(0),
-                                "version_active": brief.map(|b| b.active).unwrap_or(0),
-                                "version_view": brief.map(|b| b.view.as_str()).unwrap_or("raw"),
-                                "version_edited": brief.map(|b| b.edited_by_tool).unwrap_or(false),
-                                // 图片（D208）：只给元数据，字节走 `attachment` 按需取。
-                                "images": images_by_message
-                                    .get(&message.id.to_string())
-                                    .cloned()
-                                    .unwrap_or_default(),
-                                // 文件（D337）：芯片上写名字与大小，内容不进列表。
-                                "files": files_by_message
-                                    .get(&message.id.to_string())
-                                    .cloned()
-                                    .unwrap_or_default(),
-                            })
-                        })
-                        .collect();
-                    json!({
-                        "id": unit.id.to_string(),
-                        "kind": unit.kind.as_str(),
-                        "closed": unit.is_closed(),
-                        "created_at": unit.created_at,
-                        // 线上那几条：仍在库里、仍能编辑，只是不再进请求（D324）。
-                        "compacted": compacted,
-                        "messages": messages,
-                        // 断块（P4.1 / D67）：UI 的折叠卡标题就用这个声明行，
-                        // 不用自己去拼"ID+块类+原因"——那种拼法迟早某个平台少个字段。
-                        "broken": nmoi_core::repair::diagnose(unit).map(|block| json!({
-                            "id": block.id,
-                            "kind": block.kind.label(),
-                            "reason": block.reason.label(),
-                            "declaration": block.declaration(),
-                        })),
-                    })
-                })
-                .collect();
-            Ok(json!({
-                "session": session_id.to_string(),
-                "units_total": total,
-                "returned": items.len(),
-                "truncated": start > 0,
-                "items": items,
-                // 压缩线（D324）：`compacted` 是"这条会话压过没有"，`window_start` 是线下从第几条开始，
-                // `summary` 是线上那段的摘要原文（取不到就是 null，不假装还在）。
-                "compacted": window_start > 0,
-                "window_start": window_start,
-                "summary": summary,
-                "divider": divider,
-            }))
+                divider = Some(divider_json(&line, covered, tokens));
+            }
+            units_envelope(
+                storage,
+                session_id,
+                &page.units,
+                page.start_index,
+                page.total_units,
+                window_start,
+                summary,
+                divider,
+                page.has_more,
+                page.next_before,
+            )
         })
     })
 }

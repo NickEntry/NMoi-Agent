@@ -94,6 +94,12 @@ internal object NativeBridge {
     /** 删一批会话（D354）：`sessions` 是 id 数组的 JSON 文本。回 `{"deleted":N,"results":[bool…]}`。 */
     external fun deleteConversationsJson(handle: Long, sessions: String): String
 
+    /**
+     * 读一页单元（D355）：`before` <= 0 = 最新一页。回
+     * `{"items":[…],"has_more":bool,"next_before":N,"units_total":N}`。
+     */
+    external fun loadUnitsPageJson(handle: Long, session: String, before: Long, limit: Long): String
+
     /** 复制会话（0.15d）：消息整份拷到新会话。回 `{"session","copied","source"}`；title 空串用默认名。 */
     external fun copyConversationJson(handle: Long, session: String, title: String): String
 

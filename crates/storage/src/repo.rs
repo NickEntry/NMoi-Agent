@@ -1183,6 +1183,199 @@ impl Storage {
         load_unit_in(&self.conn, unit_id)
     }
 
+    /// 一页单元（D355）：`before` 之前（不含）**最后** `limit` 个单元，按 seq 升序给出。
+    ///
+    /// `before = None` 就是"最新一页"（首屏）。`next_before` 交给下一次调用，往上翻。
+    ///
+    /// 为什么要有它：`load_units` 一次把整条历史读进内存，界面再 `take` 最后 80 个——
+    /// 800 条消息的会话在桌面量到 219 ms，手机上更慢，而首屏真正要画的只有一屏。
+    ///
+    /// 单元是**连续**的（`append_unit` 按 seq 依次写），所以"最后 N 个单元"等同于
+    /// 一个 seq 区间：按 `MIN(seq)` 分组取 N 个 unit_id，再取这些单元的全部行。
+    pub fn load_units_page(
+        &self,
+        session: SessionId,
+        before: Option<i64>,
+        limit: usize,
+    ) -> Result<UnitPage, StorageError> {
+        let session_text = session.to_string();
+        let take = limit.max(1) as i64;
+        let total_units: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT unit_id) FROM messages WHERE conv_id = ?1",
+            [&session_text],
+            |row| row.get(0),
+        )?;
+        let oldest: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MIN(first_seq) FROM (
+                     SELECT MIN(seq) AS first_seq FROM messages
+                      WHERE conv_id = ?1 AND (?2 IS NULL OR seq < ?2)
+                      GROUP BY unit_id
+                      ORDER BY first_seq DESC
+                      LIMIT ?3
+                 )",
+                params![session_text, before, take],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(oldest) = oldest else {
+            return Ok(UnitPage {
+                units: Vec::new(),
+                has_more: false,
+                next_before: None,
+                total_units: total_units.max(0) as usize,
+                start_index: total_units.max(0) as usize,
+            });
+        };
+
+        const PAGE: &str = "WITH page AS (
+                SELECT unit_id FROM (
+                    SELECT unit_id, MIN(seq) AS first_seq
+                      FROM messages
+                     WHERE conv_id = ?1 AND (?2 IS NULL OR seq < ?2)
+                     GROUP BY unit_id
+                     ORDER BY first_seq DESC
+                     LIMIT ?3
+                ) ORDER BY first_seq ASC
+            )";
+
+        let mut stmt = self.conn.prepare(&format!(
+            "{PAGE}
+             SELECT m.id, m.unit_id, m.unit_kind, m.unit_closed, m.seq, m.role, m.source,
+                    m.form, m.tokens, m.created_at, m.logical_clock, m.archived_ref,
+                    m.protected, m.pinned, m.locked, m.revision, m.tool_call_id, m.incomplete
+               FROM messages m JOIN page p ON p.unit_id = m.unit_id
+              WHERE m.conv_id = ?1 ORDER BY m.seq ASC"
+        ))?;
+        let rows = stmt.query_map(params![session_text, before, take], |row| {
+            // 第 3 列（下标 2）是 `unit_kind`：`row_to_message` 不读它（消息本身不带类型），
+            // 这里顺手取出来，省掉"每个单元一条 `unit_kind_for`"的 N+1。
+            let message = row_to_message(row)?;
+            let kind: String = row.get(2)?;
+            Ok((message, kind))
+        })?;
+        let mut messages: Vec<Message> = Vec::new();
+        let mut kinds: std::collections::HashMap<String, UnitKind> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (message, kind) = row?;
+            kinds
+                .entry(message.unit_id.to_string())
+                .or_insert(UnitKind::parse(&kind).map_err(StorageError::Unit)?);
+            messages.push(message);
+        }
+        drop(stmt);
+
+        let mut parts_stmt = self.conn.prepare(&format!(
+            "{PAGE}
+             SELECT p.message_id, p.part_id, p.kind, p.body
+               FROM message_parts p
+               JOIN messages m ON m.id = p.message_id
+               JOIN page g ON g.unit_id = m.unit_id
+              WHERE m.conv_id = ?1 ORDER BY p.message_id, p.ord"
+        ))?;
+        let part_rows = parts_stmt.query_map(params![session_text, before, take], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut parts: std::collections::HashMap<String, Vec<nmoi_core::message::Part>> =
+            std::collections::HashMap::new();
+        for row in part_rows {
+            let (message, part_id, kind, body) = row?;
+            let part = nmoi_core::message::Part::from_body(part_id, &kind, &body)
+                .map_err(StorageError::Inconsistent)?;
+            parts.entry(message).or_default().push(part);
+        }
+        drop(parts_stmt);
+
+        for message in &mut messages {
+            if let Some(list) = parts.get(&message.id.to_string()) {
+                message.set_parts(list.clone());
+            }
+        }
+
+        let mut units: Vec<AtomicUnit> = Vec::new();
+        for message in messages {
+            match units.last_mut() {
+                Some(unit) if unit.id == message.unit_id => unit.messages.push(message),
+                _ => {
+                    let kind = kinds
+                        .get(&message.unit_id.to_string())
+                        .copied()
+                        .ok_or_else(|| {
+                            StorageError::Inconsistent(format!("单元 {} 没有类型", message.unit_id))
+                        })?;
+                    let unit = AtomicUnit {
+                        id: message.unit_id.clone(),
+                        kind,
+                        created_at: message.created_at,
+                        logical_clock: message.logical_clock,
+                        messages: vec![message],
+                    };
+                    units.push(unit);
+                }
+            }
+        }
+        for unit in &units {
+            unit.validate()?;
+        }
+
+        let has_more: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conv_id = ?1 AND seq < ?2)",
+            params![session_text, oldest],
+            |row| row.get(0),
+        )?;
+        let older: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT unit_id) FROM messages WHERE conv_id = ?1 AND seq < ?2",
+            params![session_text, oldest],
+            |row| row.get(0),
+        )?;
+        Ok(UnitPage {
+            units,
+            has_more,
+            next_before: Some(oldest),
+            total_units: total_units.max(0) as usize,
+            start_index: older.max(0) as usize,
+        })
+    }
+
+    /// 生效的压缩线**和它盖住几个单元**（D355）。
+    ///
+    /// 分页之后界面手里只有一页，`effective_divider(&units, …)` 找不到上面那条线，
+    /// 「已移走 N 条」就会静默消失。这里用一次计数把它算在库这一层：
+    /// `covered` = 首条 seq ≤ `after_seq` 的单元个数，跟 `split_index` 的定义一致。
+    pub fn divider_state(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<(Divider, usize)>, StorageError> {
+        let lines = self.load_dividers(session)?;
+        let Some(best) = lines.iter().max_by_key(|line| line.after_seq) else {
+            return Ok(None);
+        };
+        let covered: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT unit_id) FROM messages WHERE conv_id = ?1 AND seq <= ?2",
+            params![session.to_string(), best.after_seq as i64],
+            |row| row.get(0),
+        )?;
+        Ok(Some((best.clone(), covered.max(0) as usize)))
+    }
+
+    /// 库里一共有多少个单元（分页时给"上面还有更早的"用）。
+    pub fn unit_count(&self, session: SessionId) -> Result<usize, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT unit_id) FROM messages WHERE conv_id = ?1",
+            [session.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
     pub fn message_count(&self, session: SessionId) -> Result<usize, StorageError> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE conv_id = ?1",
@@ -2288,6 +2481,21 @@ impl nmoi_core::session::HistoryStore for Storage {
     }
 }
 
+/// 一页单元（D355）：界面一次只拿这几页，不再"读全量再裁"。
+#[derive(Debug, Clone)]
+pub struct UnitPage {
+    /// 按 seq 升序（老的在前），正好可以直接拼在已加载的那一段前面。
+    pub units: Vec<AtomicUnit>,
+    /// 还有更早的没有读。
+    pub has_more: bool,
+    /// 下一次往上的游标（这一页最老那个单元的 `MIN(seq)`）；`None` = 已经到头。
+    pub next_before: Option<i64>,
+    /// 这条会话一共有多少单元（界面上写"上面还有 N 个"用它，不自己数）。
+    pub total_units: usize,
+    /// 这一页第一个单元在整条会话里的下标（第几个）。压缩线的"线上几条"靠它判断。
+    pub start_index: usize,
+}
+
 /// 删一个会话的**行**（不含盘上目录）。调用方负责事务与目录（D354）。
 ///
 /// 抽出来是为了让 `delete_conversations` 能在一个事务里连着删多个：
@@ -2365,5 +2573,115 @@ mod conversation_admin_tests {
 
         // 空列表：什么都不做，也不报错。
         assert!(storage.delete_conversations(&[]).expect("空批").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+    use nmoi_core::clock::LogicalClock;
+    use nmoi_core::source::SourceTag;
+
+    fn seed(storage: &mut Storage, count: u64) -> SessionId {
+        let session = storage
+            .create_conversation("分页", "dev", "default")
+            .expect("建会话");
+        for seq in 1..=count {
+            let message = Message::text(
+                MessageId::new(session, seq),
+                Role::User,
+                SourceTag::History,
+                format!("第 {seq} 条"),
+                3,
+                1_700_000_000_000 + seq as i64,
+                LogicalClock::new(seq),
+            );
+            storage
+                .append_unit(session, &AtomicUnit::turn(message).unwrap())
+                .expect("写单元");
+        }
+        session
+    }
+
+    fn seqs(page: &UnitPage) -> Vec<u64> {
+        page.units
+            .iter()
+            .map(|unit| unit.messages[0].id.seq())
+            .collect()
+    }
+
+    /// 第一页是最新的那几个，游标往回走能一路走到第 1 条，不重不漏。
+    #[test]
+    fn page_walks_back_to_the_beginning_without_gaps() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = seed(&mut storage, 12);
+
+        let mut page = storage.load_units_page(session, None, 5).expect("第一页");
+        assert_eq!(seqs(&page), vec![8, 9, 10, 11, 12]);
+        assert!(page.has_more);
+        assert_eq!(page.total_units, 12);
+
+        let mut seen = seqs(&page);
+        while page.has_more {
+            let before = page.next_before.expect("还有更早的就得给游标");
+            page = storage
+                .load_units_page(session, Some(before), 5)
+                .expect("上一页");
+            // 每一页都是升序，且整段接在前一页前面。
+            let mut here = seqs(&page);
+            assert!(here.windows(2).all(|pair| pair[0] < pair[1]), "页内要升序");
+            here.extend(seen);
+            seen = here;
+        }
+        assert_eq!(seen, (1..=12).collect::<Vec<_>>());
+        assert!(page.next_before.is_some());
+
+        // 再往上：空页 + 没有更多。
+        let rest = storage
+            .load_units_page(session, page.next_before, 5)
+            .expect("到头");
+        assert!(rest.units.is_empty());
+        assert!(!rest.has_more);
+    }
+
+    /// 空会话 / limit 为 0：不炸，也不编出一页空单元。
+    #[test]
+    fn empty_session_and_zero_limit() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = storage
+            .create_conversation("空", "dev", "default")
+            .expect("建会话");
+        let page = storage.load_units_page(session, None, 5).expect("空会话");
+        assert!(page.units.is_empty());
+        assert!(!page.has_more);
+        assert_eq!(page.total_units, 0);
+
+        let other = seed(&mut storage, 3);
+        // limit=0 按 1 处理：宁可多给一页，也不要返回一页空的让界面以为到头了。
+        let page = storage.load_units_page(other, None, 0).expect("limit 0");
+        assert_eq!(seqs(&page), vec![3]);
+    }
+
+    /// 压缩线：分页之后界面手里只有一页，`covered` 由库这边数出来（D355）。
+    #[test]
+    fn divider_state_counts_units_above_the_line() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = seed(&mut storage, 6);
+        let line = Divider {
+            id: DividerId::new(),
+            session,
+            after_seq: 4,
+            kind: DividerKind::Compression,
+            note: Some("摘要".to_string()),
+            created_at: 1_700_000_000_000,
+        };
+        storage.insert_divider(&line).expect("加线");
+        let (found, covered) = storage
+            .divider_state(session)
+            .expect("读线")
+            .expect("有生效的线");
+        assert_eq!(found.id.as_str(), line.id.as_str());
+        assert_eq!(found.after_seq, 4);
+        assert_eq!(covered, 4);
     }
 }

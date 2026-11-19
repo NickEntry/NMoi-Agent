@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -73,6 +74,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -615,8 +617,41 @@ internal fun ChatScreen(
             null
         } else {
             withContext(Dispatchers.IO) {
-                ChatRepository.load(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
+                // 只读一页（D355）：长会话不再"整条读进来再裁"。
+                ChatRepository.loadPage(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
             }
+        }
+    }
+
+    // 往上翻的那一段（D355）：`snapshot` 始终是最新一页，这里只放更早读进来的。
+    var olderUnits by remember(sessionId) { mutableStateOf<List<ChatUnit>>(emptyList()) }
+    var olderCursor by remember(sessionId) { mutableStateOf<Long?>(null) }
+    var olderBusy by remember(sessionId) { mutableStateOf(false) }
+    var olderDone by remember(sessionId) { mutableStateOf(false) }
+    val pageScope = rememberCoroutineScope()
+
+    // 最新一页到了：游标跟着它走；接缝断了就补一页。
+    //
+    // 断的原因只有一种：这一轮新消息把窗口整体顶走了几条，原来在窗口头部的那几条
+    // 既不在新的一页里、也没在 `older` 里。补的时候 `before` 取**新一页第一条的 seq**
+    // （不含），补完再按 id 接一次。
+    LaunchedEffect(snapshot) {
+        val page = snapshot?.page ?: return@LaunchedEffect
+        olderCursor = page.nextBefore
+        olderDone = !page.hasMore
+        val sid = sessionId ?: return@LaunchedEffect
+        if (!hasGap(olderUnits, page.units)) return@LaunchedEffect
+        val bridge = withContext(Dispatchers.IO) {
+            ChatRepository.loadPage(
+                File(context.filesDir, "nmoi.db").absolutePath,
+                sid,
+                before = firstSeqOf(page.units.first()),
+                limit = ChatRepository.PAGE_SIZE,
+            )
+        }
+        bridge.page?.let { filled ->
+            olderUnits = mergeUnits(olderUnits, filled.units)
+            if (!filled.hasMore) olderDone = true
         }
     }
 
@@ -1592,6 +1627,35 @@ internal fun ChatScreen(
                 } else {
                     MessageArea(
                         snapshot = snapshot,
+                        olderUnits = olderUnits,
+                        canLoadOlder = !olderDone && olderCursor != null,
+                        loadingOlder = olderBusy,
+                        onLoadOlder = {
+                            // 一次只读一页；读的时候再滑只会被这个 busy 挡住。
+                            val cursor = olderCursor
+                            if (!olderBusy && !olderDone && cursor != null) {
+                                val sid = sessionId
+                                if (sid != null) {
+                                    olderBusy = true
+                                    pageScope.launch {
+                                        val older = withContext(Dispatchers.IO) {
+                                            ChatRepository.loadPage(
+                                                File(context.filesDir, "nmoi.db").absolutePath,
+                                                sid,
+                                                before = cursor,
+                                                limit = ChatRepository.PAGE_SIZE,
+                                            )
+                                        }
+                                        older.page?.let { loaded ->
+                                            olderUnits = mergeUnits(olderUnits, loaded.units)
+                                            olderCursor = loaded.nextBefore
+                                            if (!loaded.hasMore) olderDone = true
+                                        }
+                                        olderBusy = false
+                                    }
+                                }
+                            }
+                        },
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
                         live = live,
@@ -2597,6 +2661,14 @@ private fun BlankConversationHint() {
 @Composable
 private fun MessageArea(
     snapshot: ChatSnapshot?,
+    /** 往上翻出来的更早单元（D355）。`units` 是它与最新一页接起来的结果。 */
+    olderUnits: List<ChatUnit> = emptyList(),
+    /** 手上还有更早的游标（`null` = 到头了）。 */
+    canLoadOlder: Boolean = false,
+    /** 正在读上一页。 */
+    loadingOlder: Boolean = false,
+    /** 往上翻到顶了：让上一层去要一页。 */
+    onLoadOlder: () -> Unit = {},
     /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
     pending: PendingSend?,
     /** 这一轮正在长的回复（0.15ah）。`null` = 没有在跑，也没留残文。 */
@@ -2673,7 +2745,9 @@ private fun MessageArea(
         return
     }
 
-    val units = page?.units.orEmpty()
+    // 最新一页 + 往上翻出来的那一段（D355）：按单元 id 接起来，同 id 以新的那份为准。
+    val newest = page?.units.orEmpty()
+    val units = remember(olderUnits, newest) { mergeUnits(olderUnits, newest) }
     // 连续的思考/工具合成一行（D229）。分组只影响渲染，数据一个字都不动。
     val rows = remember(units) { buildRows(units) }
     // 「这一轮最后一段正文才带动作行」原来是每个可见行现算 `rows.drop(index + 1)…`：
@@ -2694,7 +2768,7 @@ private fun MessageArea(
     // **线上那几条仍然画在列表里**（原文一条都没删）——不标出来，用户会以为模型还看得见它们。
     val compacted = page?.compacted == true
     val listState = rememberLazyListState()
-    val headerCount = (if (truncated) 1 else 0) + (if (compacted) 1 else 0)
+    val headerCount = (if (canLoadOlder || loadingOlder) 1 else 0) + (if (compacted) 1 else 0)
     val maxBubble = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
@@ -2707,7 +2781,10 @@ private fun MessageArea(
     SideEffect { liveState.value = live }
     val hasLive = live != null
     val liveItem = if (hasLive) 1 else 0
-    LaunchedEffect(rows.size, truncated, pending, hasLive, regenTarget) {
+    // 这一个只跟"底下长大了"走：往上翻出来的老一页也会让 `rows.size` 变，
+    // 用行数当键的话，翻上去会被拽回底部（D355）。最后一行变了才滚到底。
+    val lastRowKey = rows.lastOrNull()?.let(::rowKey)
+    LaunchedEffect(lastRowKey, truncated, pending, hasLive, regenTarget) {
         val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
@@ -2727,19 +2804,67 @@ private fun MessageArea(
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
+    // 往上翻的触发（D355）：离顶两行就要下一页，等真滑到顶再读会白一下。
+    //
+    // 落点用**当前第一行的 key + 偏移**记着：新一页插在上面，行号会整体后移，
+    // 按 key 找回来才不会让屏幕上正在看的那一句跳走。
+    // 记的是"那一行的 key + 偏移 + 当时一共几行"。第三个数是关键：光有 key 的话，
+    // 设锚点这一下本身就会触发下面的还原（`rows.size` 没变也算变化），把锚点清掉，
+    // 等新的一页真到了反而没得还原。
+    var anchor by remember { mutableStateOf<Triple<String, Int, Int>?>(null) }
+    LaunchedEffect(listState, canLoadOlder) {
+        if (!canLoadOlder) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { index ->
+                if (index > 2 || loadingOlder) return@collect
+                val row = rows.getOrNull(index)
+                if (row != null) {
+                    anchor = Triple(
+                        rowKey(row),
+                        listState.firstVisibleItemScrollOffset,
+                        rows.size,
+                    )
+                }
+                onLoadOlder()
+            }
+    }
+    // 新的一页到了：把刚才那一行放回原处（按 key 找，不按行号）。
+    LaunchedEffect(rows.size) {
+        val pending = anchor ?: return@LaunchedEffect
+        if (rows.size == pending.third) return@LaunchedEffect
+        val index = rows.indexOfFirst { rowKey(it) == pending.first }
+        if (index >= 0) listState.scrollToItem(index, pending.second)
+        anchor = null
+    }
+
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
+        // 手速一样、走得更远一点（用户转述的"滑动加速度"）。只放大初速度，
+        // 衰减仍交给系统那套——自己画曲线会跟应用里其它列表手感不一致。
+        flingBehavior = remember(listState) {
+            BoostedFlingBehavior(
+                androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior(),
+                1.35f,
+            )
+        },
         // 左右边距一致 18dp（2026-10-24 第二轮：8dp 太贴边，按 2.2 倍放大）。
         // 助手正文**整行铺开**、左边缘和头像左边缘同一条线（D142）。
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
         // 同角色 4dp、异角色 12dp（D126）：4 是基准间距，换人时再加 8。
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (truncated) {
-            item {
+        if (canLoadOlder || loadingOlder) {
+            item(key = "older-banner") {
+                // 自动往上翻（D355）：到头之前这一行就是"上面还有"，翻到头就消失。
+                // 不摆一个要点一下的按钮——用户滑到顶本来就该看见更早的。
                 Text(
-                    text = "上面还有更早的消息：共 ${page?.total} 个单元，这里只读了最后 ${units.size} 个",
+                    text = if (loadingOlder) {
+                        "正在读更早的消息…"
+                    } else {
+                        "上面还有更早的消息：已读 ${units.size} / 共 ${page?.total} 个单元"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -2894,6 +3019,25 @@ private fun MessageArea(
                 }
             }
         }
+    }
+}
+
+/**
+ * 惯性放大（D355）：同样的手速走得更远一点。
+ *
+ * 用户 2026-11-20 转述的要求里有一条"滑动加速度"——长会话里一下一下地拖太累。
+ * 只放大**初速度**，衰减仍交给系统那套：自己写曲线会跟应用里其它列表手感不一致，
+ * 而且那种不一致用户说不清，只会觉得"这个列表怪"。
+ */
+private class BoostedFlingBehavior(
+    private val base: androidx.compose.foundation.gestures.FlingBehavior,
+    private val boost: Float,
+) : androidx.compose.foundation.gestures.FlingBehavior {
+    override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(
+        initialVelocity: Float,
+    ): Float {
+        val scope = this
+        return with(base) { scope.performFling(initialVelocity * boost) }
     }
 }
 

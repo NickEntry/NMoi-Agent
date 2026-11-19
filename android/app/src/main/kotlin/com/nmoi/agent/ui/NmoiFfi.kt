@@ -101,6 +101,17 @@ internal object NmoiFfi {
     suspend fun deleteConversation(handle: Long, session: String): Result<JSONObject> =
         call("delete_conversation") { NativeBridge.deleteConversationJson(handle, session) }
 
+    /** 读一页单元（D355）：`before` <= 0 = 最新一页（首屏）。 */
+    suspend fun loadUnitsPage(
+        handle: Long,
+        session: String,
+        before: Long,
+        limit: Long = 40L,
+    ): Result<JSONObject> =
+        call("load_units_page") {
+            NativeBridge.loadUnitsPageJson(handle, session, before, limit)
+        }
+
     /** 删一批会话（D354）：一次开库、一次事务。`results` 与入参一一对应。 */
     suspend fun deleteConversations(handle: Long, sessions: List<String>): Result<JSONObject> =
         call("delete_conversations") {

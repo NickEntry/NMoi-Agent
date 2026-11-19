@@ -27,6 +27,85 @@ internal object ChatRepository {
         empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
     }
 
+    /** 一页多少单元（D355）。40 个单元大约两到三屏，够首屏与一次上翻。 */
+    const val PAGE_SIZE = 40L
+
+    /**
+     * 读**一页**单元（D355）：`before = null` 是最新一页，否则是 `nextBefore` 那个游标。
+     *
+     * 与 [load] 的区别只有一处：库那边不再"整条会话读进来再裁"，只取这一段。
+     * 800 条消息的会话原来一次 219 ms（桌面），手机上更慢，而首屏要画的只有一屏。
+     */
+    suspend fun loadPage(
+        databasePath: String,
+        sessionId: String,
+        before: Long? = null,
+        limit: Long = PAGE_SIZE,
+    ): ChatSnapshot = try {
+        loadPageInner(databasePath, sessionId, before, limit)
+    } catch (failure: Throwable) {
+        empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
+    }
+
+    private fun loadPageInner(
+        databasePath: String,
+        sessionId: String,
+        before: Long?,
+        limit: Long,
+    ): ChatSnapshot {
+        if (!NativeBridge.loaded) return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")
+        val handle = openOrExplain(databasePath) ?: return empty(lastOpenIssue)
+        return try {
+            val envelope = JSONObject(
+                NativeBridge.loadUnitsPageJson(handle, sessionId, before ?: 0L, limit),
+            )
+            if (!envelope.ok()) return empty("读消息失败：${envelope.errorText()}")
+            val page = parseUnits(envelope)
+            NLog.i(
+                "Chat",
+                "会话 $sessionId 读到 ${page.units.size}/${page.total} 个单元" +
+                    (if (before == null) "（首屏）" else "（往上翻，游标 $before）"),
+            )
+            ChatSnapshot(
+                page = page,
+                source = RowSource.Native,
+                note = if (page.isEmpty) "这个会话还一条消息都没有" else null,
+            )
+        } catch (failure: UnsatisfiedLinkError) {
+            empty("原生层已加载，但 JNI 符号对不上（logcat 搜 No implementation found）")
+        } catch (failure: Throwable) {
+            empty("读消息时原生层报错：${failure.message}")
+        } finally {
+            runCatching { NativeBridge.closeStorageJson(handle) }
+        }
+    }
+
+    /** 开库；开不了就把原因写进 `lastOpenIssue` 并返回 null（三条失败路各说各的）。 */
+    private var lastOpenIssue: String = ""
+
+    private fun openOrExplain(databasePath: String): Long? {
+        val opened = try {
+            JSONObject(NativeBridge.openStorageJson(databasePath))
+        } catch (failure: UnsatisfiedLinkError) {
+            lastOpenIssue = "原生层已加载，但 JNI 符号对不上（logcat 搜 No implementation found）"
+            return null
+        } catch (failure: Throwable) {
+            lastOpenIssue = "打开库时原生层报错：${failure.message}"
+            return null
+        }
+        if (!opened.ok()) {
+            lastOpenIssue = "打开库失败：${opened.errorText()}"
+            return null
+        }
+        val state = opened.optString("state", "")
+        if (state != "ready") {
+            lastOpenIssue =
+                "库没通过校验（state=$state，issues=${opened.optInt("issues", 0)}），没有句柄可用"
+            return null
+        }
+        return opened.optLong("handle", 0L)
+    }
+
     /**
      * 存一条消息（不发模型）。**这是接入 `turn_run` 之前唯一的写入口**——
      * 没有它，消息区在真机上永远造不出内容来验。
