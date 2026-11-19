@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -102,6 +104,9 @@ internal fun PageHost(
     var stuck by remember(pageKey, attempt) { mutableStateOf(false) }
     // 页面自己说"我读完了"（D349）。比高度稳不稳定的判定准，接了就用它。
     var ready by remember(pageKey, attempt) { mutableStateOf(false) }
+    // 等不起了（D353）：切上去之后又等了一整段还没 ready，就把遮罩撤掉。
+    // 没有这一格，一个永远不报 ready 的页面会被一块板永久盖住。
+    var gaveUp by remember(pageKey, attempt) { mutableStateOf(false) }
     val markReady: () -> Unit = remember(pageKey, attempt) { { ready = true } }
     SideEffect { PageReady.install(markReady) }
     androidx.compose.runtime.DisposableEffect(pageKey, attempt) {
@@ -146,15 +151,27 @@ internal fun PageHost(
         // 会报 ready 的页面：等它，或等满窗口。**不看"布局稳不稳"**——那个判据会在
         // "正在读…"那一行上判稳（那一行本来就不动），提前切过去正好把它露出来（D352）。
         // 不报 ready 的页面：它们的首帧就是最终内容，两帧足够。
+        var waited = 0L
         if (waitsForData) {
-            var waited = 0L
             while (waited < PAGE_PREVIEW_MS && !ready) {
                 delay(PREVIEW_STEP_MS)
                 waited += PREVIEW_STEP_MS
             }
         }
+        // 一行日志：真机上"还会不会看到正在读"要靠它判断（ready 到没到、等了多少）。
+        NLog.i("Page", "$pageKey ready=$ready waited=${waited}ms")
         shownKey = pageKey
         shownContent = content
+        // 已经切上去了，数据还没到（或者这一页根本不报 ready）：再遮一小段就撤。
+        // 用户 2026-11-18 的原话：「设计一个 0.3 秒的加载动画先叠加着」。
+        if (waitsForData) {
+            var covered = 0L
+            while (covered < PAGE_SCREEN_MS && !ready) {
+                delay(PREVIEW_STEP_MS)
+                covered += PREVIEW_STEP_MS
+            }
+        }
+        gaveUp = true
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -170,6 +187,22 @@ internal fun PageHost(
         if (pending) {
             key(shownKey) {
                 Box(modifier = Modifier.fillMaxSize()) { shownContent() }
+            }
+        }
+        // 切换已经发生、数据还没到：一块与背景同色的板 + 一个小圈，盖住页面的
+        // 「正在读库…」。**板的下面是这一页本身**（它自己在读），盖住只是不让人看见那行字。
+        if (!pending && waitsForData && !ready && !gaveUp) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         if (stuck) {
@@ -195,6 +228,14 @@ private const val PREVIEW_STEP_MS = 8L
 
 /** 多久还没画出来算"卡住"。 */
 private const val PAGE_STUCK_MS = 2_500L
+
+/**
+ * 切换之后还要遮多久（D353）。
+ *
+ * 窗口那边等 600 ms 是为了"切过去时数据已经在"；这一条是**兜底**：万一没等到
+ * （页面没报 ready、或者报晚了），切上去之后再遮这一段，别让「正在读库…」露出来。
+ */
+private const val PAGE_SCREEN_MS = 300L
 
 /**
  * 卡住时那条横幅：贴在底部，不盖整页——上面可能已经画出了一半，用户还想看看。
