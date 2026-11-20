@@ -413,6 +413,37 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_loadUnitsJson<'local>
     to_jstring(&mut env, text)
 }
 
+/// 读一页单元（D355）：`before` <= 0 = 最新一页。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_loadUnitsPageJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    before: jlong,
+    limit: jlong,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => {
+            let Ok(c_session) = CString::new(session) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `session` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_load_units_page_json(
+                handle as u64,
+                c_session.as_ptr(),
+                before,
+                limit,
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.appendTextJson(handle, session, role, text, nowMs)`：把一句话存成一条消息（不发模型）。
 ///
 /// 这是 UI 唯一的**写入口**：在接入 `turn_run` 之前，没有它就造不出内容，
@@ -638,6 +669,33 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteConversationJso
         take_json(crate::storage::nmoi_storage_delete_conversation_json(
             handle as u64,
             c_session.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// 删一批会话（D354）：一次开库、一次事务。`sessions` 是 id 数组的 JSON 文本。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_deleteConversationsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    sessions: JString<'local>,
+) -> jstring {
+    let sessions = read_string(&mut env, &sessions);
+    let text = guarded(move || {
+        let Some(sessions) = sessions else {
+            return bad_string();
+        };
+        let Ok(c_sessions) = CString::new(sessions) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数里有 NUL 字节（sessions）",
+            ));
+        };
+        take_json(crate::storage::nmoi_storage_delete_conversations_json(
+            handle as u64,
+            c_sessions.as_ptr(),
         ))
     });
     to_jstring(&mut env, text)
