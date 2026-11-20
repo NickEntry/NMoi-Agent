@@ -40,7 +40,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -74,9 +73,6 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.gestures.scrollBy
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -1597,17 +1593,6 @@ internal fun ChatScreen(
                 } else {
                     MessageArea(
                         snapshot = snapshot,
-                        // 取一页交给消息区：窗口（读进来多少、丢哪一页）在那边自己管。
-                        fetchPage = { before ->
-                            withContext(Dispatchers.IO) {
-                                ChatRepository.loadPage(
-                                    File(context.filesDir, "nmoi.db").absolutePath,
-                                    sessionId,
-                                    before = before,
-                                    limit = ChatRepository.PAGE_SIZE,
-                                ).page
-                            }
-                        },
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
                         live = live,
@@ -2604,31 +2589,11 @@ private fun BlankConversationHint() {
 }
 
 /**
- * 窗口上限（D356）：窗口里最多留几个单元。
+ * 惯性起始速度的上限（px/s）。
  *
- * 800 MB 的会话不可能整条进内存。一页 40 个，五页就是一个屏幕来回滑得动的量级；
- * 从底滑到顶靠的是"进来一页、丢掉最前面那一页"，内存跟会话总长无关。
+ * 用户 2026-11-20：「对滑动速度做个限制就行」。甩得再猛也按这个速度起步，
+ * 衰减仍交给系统那套——不自己画曲线，别让这一屏的手感和应用里其它列表不一样。
  */
-private const val MAX_WINDOW_UNITS = 200
-
-/** 一行按"一个单元高"折成多少像素的代理值：只用来判方向与速度，不参与布局。 */
-private const val UNIT_PROXY = 1000L
-
-/** 一次滑动算"快"的上限时长与最小净位移（约半屏多一点）。 */
-private const val QUICK_GESTURE_MS = 280L
-private const val QUICK_GESTURE_PX = 800L
-
-/** 三次快滑之间的间隔上限：慢下来就不算口令。 */
-private const val QUICK_STREAK_MS = 1_500L
-
-/** 自动巡游：每帧走多少像素（60fps 下约 6000 px/s，比手甩慢、比读的快）。 */
-private const val AUTO_SPEED_PX_PER_FRAME = 100f
-private const val AUTO_FRAME_MS = 16L
-
-/** 巡游到边之后等下一页的时长：库这边一页 40 个，本机量到 41 ms。 */
-private const val AUTO_PAGE_WAIT_MS = 120L
-
-/** 惯性起始速度的上限（px/s）。手甩到 12000 以上时会连着甩掉好几页。 */
 private const val MAX_FLING_PX_PER_SECOND = 6_000f
 
 /**
@@ -2641,13 +2606,6 @@ private const val MAX_FLING_PX_PER_SECOND = 6_000f
 @Composable
 private fun MessageArea(
     snapshot: ChatSnapshot?,
-    /**
-     * 取一页（D356）：`before = null` 是最新一页，否则是更早的游标。
-     *
-     * 窗口（读进来多少、丢哪一页）由消息区自己管——800 MB 的会话不能整条进内存，
-     * 而这件事跟"滑到哪儿"是同一件事，拆到外面只会多一份状态要对齐。
-     */
-    fetchPage: suspend (Long?) -> ChatPage? = { null },
     /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
     pending: PendingSend?,
     /** 这一轮正在长的回复（0.15ah）。`null` = 没有在跑，也没留残文。 */
@@ -2724,30 +2682,10 @@ private fun MessageArea(
         return
     }
 
-    val newest = page?.units.orEmpty()
-    val sessionKey = page?.sessionId
-
-    // 窗口（D356）：只留一段**连续**的历史；满了一页就丢最前面那一页。
-    // 从底一路滑到顶、或者从顶一路滑到底，内存都是这个量级——跟会话总长无关。
-    var window by remember(sessionKey) { mutableStateOf<List<ChatUnit>>(emptyList()) }
-    var seeded by remember(sessionKey) { mutableStateOf(false) }
-    var hasOlder by remember(sessionKey) { mutableStateOf(false) }
-    var olderCursor by remember(sessionKey) { mutableStateOf<Long?>(null) }
-    var loadingOlder by remember(sessionKey) { mutableStateOf(false) }
-
-    // 最新一页到了：接上去。库里此刻的样子为准，同一段范围内删掉的不会留在窗口里。
-    LaunchedEffect(page) {
-        if (page == null) return@LaunchedEffect
-        window = if (seeded) mergeTail(window, page.units) else page.units
-        if (!seeded) {
-            // 第一次进来：游标来自这一页（"上面还有没有"）。
-            seeded = true
-            olderCursor = page.nextBefore
-            hasOlder = page.hasMore
-        }
-    }
-
-    val units = window
+    // **滑动中不读任何东西**（D357）：列表就是库里读出来的这一页。
+    // 上一版在这里做"窗口 + 翻页 + 丢页"，滑起来一页一读库、还要重新布局，
+    // 用户看到的是"画面变形"——其实是掉帧。原生列表本身够快，不要在它下面加活。
+    val units = page?.units.orEmpty()
     // 连续的思考/工具合成一行（D229）。分组只影响渲染，数据一个字都不动。
     val rows = remember(units) { buildRows(units) }
     // 「这一轮最后一段正文才带动作行」原来是每个可见行现算 `rows.drop(index + 1)…`：
@@ -2768,7 +2706,7 @@ private fun MessageArea(
     // **线上那几条仍然画在列表里**（原文一条都没删）——不标出来，用户会以为模型还看得见它们。
     val compacted = page?.compacted == true
     val listState = rememberLazyListState()
-    val headerCount = (if (hasOlder || loadingOlder) 1 else 0) + (if (compacted) 1 else 0)
+    val headerCount = (if (truncated) 1 else 0) + (if (compacted) 1 else 0)
     val maxBubble = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
 
     // 打开会话应当看到最新的一条，而不是最早的一条。
@@ -2781,10 +2719,7 @@ private fun MessageArea(
     SideEffect { liveState.value = live }
     val hasLive = live != null
     val liveItem = if (hasLive) 1 else 0
-    // 这一个只跟"底下长大了"走：往上翻出来的老一页也会让 `rows.size` 变，
-    // 用行数当键的话，翻上去会被拽回底部（D355）。最后一行变了才滚到底。
-    val lastRowKey = rows.lastOrNull()?.let(::rowKey)
-    LaunchedEffect(lastRowKey, truncated, pending, hasLive, regenTarget) {
+    LaunchedEffect(rows.size, truncated, pending, hasLive, regenTarget) {
         val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
@@ -2796,141 +2731,6 @@ private fun MessageArea(
         if (listState.canScrollForward) return@LaunchedEffect
         val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
-    }
-
-    // 锚点：内容会从**两头**变（上面进一页、前面丢一页），所以落点一律按
-    // "那一行的 key + 偏移 + 当时一共几行"记，等行数真的变了再找回来（D355 / D356）。
-    var anchor by remember { mutableStateOf<Triple<String, Int, Int>?>(null) }
-    fun rememberAnchor() {
-        val row = rows.getOrNull(listState.firstVisibleItemIndex) ?: return
-        anchor = Triple(rowKey(row), listState.firstVisibleItemScrollOffset, rows.size)
-    }
-    LaunchedEffect(rows.size) {
-        val pending = anchor ?: return@LaunchedEffect
-        if (rows.size == pending.third) return@LaunchedEffect
-        val index = rows.indexOfFirst { rowKey(it) == pending.first }
-        if (index >= 0) listState.scrollToItem(index, pending.second)
-        anchor = null
-    }
-
-    val scope = rememberCoroutineScope()
-    fun loadOlder() {
-        val cursor = olderCursor ?: return
-        if (loadingOlder || !hasOlder) return
-        loadingOlder = true
-        // 丢最旧那一页之前先把正在看的那一行记下来。
-        rememberAnchor()
-        // 正在看的那一行落在哪个单元上：过程块取它第一项（那是它自己的单元）。
-        val keepUnitId = rows.getOrNull(listState.firstVisibleItemIndex)?.let { row ->
-            when (row) {
-                is ChatRow.Single -> row.unit.id
-                is ChatRow.Process -> row.items.first().unit.id
-            }
-        }
-        // 找不到（换了窗口、行被折叠状态改了）就退一半：保守，但总得让窗口停下来。
-        val keep = units.indexOfFirst { it.id == keepUnitId }.takeIf { it >= 0 } ?: (units.size / 2)
-        scope.launch {
-            val loaded = fetchPage(cursor)
-            if (loaded != null) {
-                val merged = mergeUnits(window, loaded.units)
-                val trimmed = trimFrontKeeping(merged, MAX_WINDOW_UNITS, keep)
-                window = trimmed
-                if (trimmed.size < merged.size) {
-                    // 丢过页：游标回到**新窗口的最前面**，往上翻时把丢掉的那段重新读回来。
-                    // 退回 `loaded.nextBefore` 的话，下次要的是更早的一页——中间这段
-                    // 就永远从窗口里消失了（翻回去看是个洞）。
-                    olderCursor = trimmed.firstOrNull()?.let(::firstSeqOf)
-                    hasOlder = true
-                } else {
-                    olderCursor = loaded.nextBefore
-                    hasOlder = loaded.hasMore
-                }
-            }
-            loadingOlder = false
-        }
-    }
-
-    // 离顶两行就要下一页（手动滑也不会滑到白发一下）。
-    LaunchedEffect(listState, hasOlder, loadingOlder) {
-        if (!hasOlder) return@LaunchedEffect
-        snapshotFlow { listState.firstVisibleItemIndex }
-            .distinctUntilChanged()
-            .collect { index ->
-                if (index <= 2 && !loadingOlder) loadOlder()
-            }
-    }
-
-    // 连续三次**又快又同向**的滑动 → 一路滚到那一端（D356）。用户手指一碰就停。
-    //
-    // 判据用"每次滑动自己的净位移 / 时长"，不用加速度：三次快滑是用户的口令，
-    // 拖到一半再快也是拖，不该被当成口令。
-    var autoRun by remember { mutableStateOf(0) }
-    LaunchedEffect(listState) {
-        var lastPos = listState.firstVisibleItemIndex.toLong() * UNIT_PROXY + listState.firstVisibleItemScrollOffset
-        var gestureStart = 0L
-        var gestureMoved = 0L
-        var gestureActive = false
-        var streak = 0
-        var streakDir = 0
-        var lastEnd = 0L
-        snapshotFlow {
-            Triple(
-                listState.firstVisibleItemIndex,
-                listState.firstVisibleItemScrollOffset,
-                listState.isScrollInProgress,
-            )
-        }.collect { (index, offset, scrolling) ->
-            val position = index.toLong() * UNIT_PROXY + offset
-            val now = System.currentTimeMillis()
-            if (scrolling && !gestureActive) {
-                gestureActive = true
-                gestureStart = now
-                gestureMoved = 0
-            } else if (scrolling) {
-                gestureMoved += position - lastPos
-            } else if (gestureActive) {
-                gestureActive = false
-                val elapsed = (now - gestureStart).coerceAtLeast(1)
-                val fast = elapsed <= QUICK_GESTURE_MS && kotlin.math.abs(gestureMoved) >= QUICK_GESTURE_PX
-                val dir = if (gestureMoved < 0) -1 else 1
-                if (fast && dir == streakDir && now - lastEnd <= QUICK_STREAK_MS) {
-                    streak += 1
-                } else {
-                    streak = if (fast) 1 else 0
-                }
-                streakDir = if (fast) dir else 0
-                lastEnd = now
-                if (streak >= 3) {
-                    streak = 0
-                    autoRun = dir
-                }
-            }
-            lastPos = position
-        }
-    }
-
-    // 自动巡游：每帧滚一点点（速度封顶），到边就去要下一页；用户一碰立刻停。
-    LaunchedEffect(autoRun) {
-        val dir = autoRun
-        if (dir == 0) return@LaunchedEffect
-        try {
-            while (isActive) {
-                val moved = listState.scrollBy(dir * AUTO_SPEED_PX_PER_FRAME)
-                // 手势一起就交还给用户：这里不抢他的手指。
-                if (listState.isScrollInProgress) break
-                if (kotlin.math.abs(moved) < 0.5f) {
-                    if (dir < 0 && hasOlder) {
-                        loadOlder()
-                        delay(AUTO_PAGE_WAIT_MS)
-                        continue
-                    }
-                    break
-                }
-                delay(AUTO_FRAME_MS)
-            }
-        } finally {
-            if (autoRun == dir) autoRun = 0
-        }
     }
 
     LazyColumn(
@@ -2950,16 +2750,10 @@ private fun MessageArea(
         // 同角色 4dp、异角色 12dp（D126）：4 是基准间距，换人时再加 8。
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (hasOlder || loadingOlder) {
+        if (truncated) {
             item(key = "older-banner") {
-                // 自动往上翻（D355）：到头之前这一行就是"上面还有"，翻到头就消失。
-                // 不摆一个要点一下的按钮——用户滑到顶本来就该看见更早的。
                 Text(
-                    text = if (loadingOlder) {
-                        "正在读更早的消息…"
-                    } else {
-                        "上面还有更早的消息：已读 ${units.size} / 共 ${page?.total} 个单元"
-                    },
+                    text = "上面还有更早的消息：共 ${page?.total} 个单元，这里只读了最后 ${units.size} 个",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),

@@ -1366,16 +1366,6 @@ impl Storage {
         Ok(Some((best.clone(), covered.max(0) as usize)))
     }
 
-    /// 库里一共有多少个单元（分页时给"上面还有更早的"用）。
-    pub fn unit_count(&self, session: SessionId) -> Result<usize, StorageError> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(DISTINCT unit_id) FROM messages WHERE conv_id = ?1",
-            [session.to_string()],
-            |row| row.get(0),
-        )?;
-        Ok(count.max(0) as usize)
-    }
-
     pub fn message_count(&self, session: SessionId) -> Result<usize, StorageError> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE conv_id = ?1",

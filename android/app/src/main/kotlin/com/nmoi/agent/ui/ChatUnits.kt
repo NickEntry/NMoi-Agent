@@ -200,10 +200,6 @@ internal data class ChatPage(
     val covered: Int = 0,
     /** 摘要本身占多少 token：它每轮都发，算占用率时必须加进去（否则压完还显示满格）。 */
     val summaryTokens: Int = 0,
-    /** 往上还有更早的没读（D355）。分页游标在 [nextBefore]。 */
-    val hasMore: Boolean = false,
-    /** 下一次往上的游标：上一页最老那个单元的首条 `seq`。`null` = 到头了。 */
-    val nextBefore: Long? = null,
 ) {
     val isEmpty: Boolean get() = units.isEmpty()
 
@@ -251,57 +247,7 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
         dividerId = divider?.text("id"),
         covered = divider?.optInt("covered", 0) ?: 0,
         summaryTokens = divider?.optInt("summary_tokens", 0) ?: 0,
-        // `has_more` 是库算的；老接口没有这个键时退回 `truncated`（"上面还有"）。
-        hasMore = if (envelope.has("has_more")) {
-            envelope.optBoolean("has_more", false)
-        } else {
-            envelope.optBoolean("truncated", false)
-        },
-        nextBefore = if (envelope.has("next_before") && !envelope.isNull("next_before")) {
-            envelope.optLong("next_before", 0L).takeIf { it > 0L }
-        } else {
-            null
-        },
     )
-}
-
-/** 这个单元的第一条 `seq`（分页排序、找空档都用它）。 */
-internal fun firstSeqOf(unit: ChatUnit): Long = unit.messages.firstOrNull()?.seq ?: 0L
-
-/**
- * 把"往上翻出来的老一段"和"最新那一页"接起来（D355）。
- *
- * 同 id 的单元以**新的那一份**为准：编辑过的那条内容在后来的那一份里，
- * 拿旧的会把用户刚改的字又变回去。顺序按首条 `seq` 升序——两段各自都是升序，
- * 但接缝处不一定谁先谁后（中间来过新消息的话，最新一页可能整体后移了）。
- *
- * **这里不负责填空档**：中间真漏了一段（最新的那一页整体挪走了几条），
- * 由调用方看 [gapBefore] 再补一次，补不上就留着顶部那行提示——宁可说"还有没读的"，
- * 也不要把两段拼在一起假装连续。
- */
-internal fun mergeUnits(older: List<ChatUnit>, newest: List<ChatUnit>): List<ChatUnit> {
-    if (older.isEmpty()) return newest
-    val byId = LinkedHashMap<String, ChatUnit>(older.size + newest.size)
-    for (unit in older) byId[unit.id] = unit
-    for (unit in newest) byId[unit.id] = unit
-    return byId.values.sortedBy(::firstSeqOf)
-}
-
-/**
- * 接缝处有没有空档（D355）：`older` 的末尾与 `newest` 的开头之间缺了 seq。
- *
- * 什么时候会有：一轮新消息落库后，最新那一页整体往后挪了几条，原来在窗口头部的
- * 那几条被挤出去了——它们既不在新的一页里，也没进 `older`。
- * 判据是**连续性**，不是"两边数量对不对"：数量对上也可能中间断了。
- *
- * 真断了就补一页（`before = newest 第一条的 seq`），补不上就留顶部那行提示。
- * 绝不允许两段拼在一起假装连续——那等于把库里的消息藏起来（铁律②）。
- */
-internal fun hasGap(older: List<ChatUnit>, newest: List<ChatUnit>): Boolean {
-    if (older.isEmpty() || newest.isEmpty()) return false
-    val olderLast = older.maxOf(::firstSeqOf)
-    val newestFirst = firstSeqOf(newest.first())
-    return newestFirst > olderLast + 1
 }
 
 private fun parseMessages(array: JSONArray?): List<ChatMessage> {
@@ -333,31 +279,4 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
             )
         }
     }
-}
-
-/**
- * 把**最新那一页**接进窗口（D356）。
- *
- * 与 [mergeUnits] 的区别：这一份是"库里此刻的样子"，所以同一段范围内的单元
- * 以它为准（删掉的那条不能在窗口里留着），范围之外（更早的）保持不动。
- */
-internal fun mergeTail(window: List<ChatUnit>, newest: List<ChatUnit>): List<ChatUnit> {
-    if (newest.isEmpty()) return window
-    val cut = firstSeqOf(newest.first())
-    return window.filter { firstSeqOf(it) < cut } + newest
-}
-
-/**
- * 只留最后 `cap` 个单元（D356）：800 MB 的会话不可能整条进内存。
- *
- * `keepIndex` 是"正在看的那一行所在的单元下标"——从前往后丢的时候不许越过它，
- * 否则屏幕上正在看的内容会自己消失。丢不动就这一轮先不丢，下次再丢。
- */
-internal fun trimFrontKeeping(window: List<ChatUnit>, cap: Int, keepIndex: Int): List<ChatUnit> {
-    if (window.size <= cap) return window
-    val want = window.size - cap
-    val allowed = keepIndex.coerceAtLeast(0)
-    val drop = minOf(want, allowed)
-    if (drop <= 0) return window
-    return window.drop(drop)
 }
