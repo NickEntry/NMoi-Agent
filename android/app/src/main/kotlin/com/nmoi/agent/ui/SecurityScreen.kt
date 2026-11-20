@@ -182,13 +182,9 @@ internal fun SecurityScreen(
 
                 SectionLabel(if (builtin.isEmpty()) "规则组" else "规则组 · ${merged.size} 组")
                 if (builtin.isEmpty()) {
+                    // 不写"读规则表…"（D358）：那句话会被当成一条内容看，占位只占位。
                     GroupCard {
-                        Text(
-                            text = "读规则表…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-                        )
+                        Box(modifier = Modifier.fillMaxWidth().height(44.dp))
                     }
                 } else {
                     merged.forEach { group ->

@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -84,13 +85,9 @@ internal fun ShellRulesScreen(onBack: () -> Unit) {
 
                 if (data == null) {
                     SectionLabel(" ")
+                    // 不写"读规则表…"（D358）：占位就只是占位，别让它像一条内容。
                     GroupCard {
-                        Text(
-                            text = "读规则表…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-                        )
+                        Box(modifier = Modifier.fillMaxWidth().height(44.dp))
                     }
                     return@Column
                 }

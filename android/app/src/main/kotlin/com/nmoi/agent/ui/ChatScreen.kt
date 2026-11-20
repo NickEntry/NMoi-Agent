@@ -87,6 +87,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -614,10 +615,13 @@ internal fun ChatScreen(
         value = if (sessionId == null) {
             null
         } else {
-            withContext(Dispatchers.IO) {
+            val from = Start.now()
+            val page = withContext(Bg.io) {
                 // 只读一页（D355）：长会话不再"整条读进来再裁"。
                 ChatRepository.loadPage(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
             }
+            Start.mark("消息首页", from)
+            page
         }
     }
 
@@ -2589,12 +2593,14 @@ private fun BlankConversationHint() {
 }
 
 /**
- * 惯性起始速度的上限（px/s）。
+ * 惯性起始速度的上限，按**屏高**算（屏/秒）。
  *
- * 用户 2026-11-20：「对滑动速度做个限制就行」。甩得再猛也按这个速度起步，
- * 衰减仍交给系统那套——不自己画曲线，别让这一屏的手感和应用里其它列表不一样。
+ * 用户 2026-11-20：「对滑动速度做个限制就行」，随后 2026-11-21：「滑动限制太严格了」。
+ * 写死 px/s 的问题就在这儿：同一个数在不同分辨率上手感差一倍。改成屏高倍数之后，
+ * 一台 2400 px 的机器上是 12000 px/s（原来写死 6000，等于 2.5 屏/秒）。
+ * 每次甩动写一行 `Perf 甩`，下一轮按真机那行数字再调这个倍数。
  */
-private const val MAX_FLING_PX_PER_SECOND = 6_000f
+private const val MAX_FLING_SCREENS_PER_SECOND = 5f
 
 /**
  * 消息区。
@@ -2784,14 +2790,18 @@ private fun MessageArea(
     }
 
     val baseFling = androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
+    // 封顶按屏高算（D359）：写死 px/s 在不同分辨率上手感差一倍，用户说的"太严格"就是这个。
+    val flingCap = with(LocalDensity.current) {
+        (LocalConfiguration.current.screenHeightDp * MAX_FLING_SCREENS_PER_SECOND).dp.toPx()
+    }
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        // 惯性封顶（D356）：甩得再猛，起始速度也不超过 MAX_FLING_PX_PER_SECOND。
+        // 惯性封顶（D356 / D359）：甩得再猛，起始速度也不超过一屏高的 5 倍/秒。
         // 衰减仍交给系统那套——自己画曲线会跟应用里其它列表手感不一致。
-        flingBehavior = remember(listState) {
+        flingBehavior = remember(listState, flingCap) {
             // `flingBehavior()` 本身是 @Composable，只能在组合里取；取出来再包一层封顶。
-            CappedFlingBehavior(baseFling, MAX_FLING_PX_PER_SECOND)
+            CappedFlingBehavior(baseFling, flingCap)
         },
         // 左右边距一致 18dp（2026-10-24 第二轮：8dp 太贴边，按 2.2 倍放大）。
         // 助手正文**整行铺开**、左边缘和头像左边缘同一条线（D142）。
@@ -2976,6 +2986,10 @@ private class CappedFlingBehavior(
     ): Float {
         val scope = this
         val capped = initialVelocity.coerceIn(-maxVelocity, maxVelocity)
+        NLog.i(
+            "Perf",
+            "甩 v=${initialVelocity.toInt()} cap=${maxVelocity.toInt()} 用=${capped.toInt()}",
+        )
         return with(base) { scope.performFling(capped) }
     }
 }
