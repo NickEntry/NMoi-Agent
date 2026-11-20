@@ -3604,3 +3604,6 @@ Start 助手列表 / 会话列表 / 消息首页 / 环境状态 / 代理接线 /
 
 判据：`助手列表` 那一行应当只剩**一次** open 的成本；日志里不再有成排的
 `Settings settings_list 通了：…`。
+
+顺带把助手页那三处 open 收成两处：`ensureDefault` + `list` 换成 `ensureDefaultThenList`
+（供应商列表照旧单独一次，它读的是另一个 scope，本来就得各开一次）。

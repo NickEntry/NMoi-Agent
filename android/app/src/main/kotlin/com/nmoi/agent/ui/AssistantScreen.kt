@@ -63,13 +63,16 @@ internal fun AssistantScreen(
     LaunchedEffect(reload) {
         // 每次进这一页先保证默认助手在库里：它是"第一次启动就自带的那一个"，
         // 少了它，迁移到 default 的老会话在界面上就没有家（铁律 ②）。
-        withContext(Dispatchers.IO) { AssistantRepository.ensureDefault(databasePath) }
+        // 补默认助手与列表**一次开库**（D359）：两次就是两次 open，各 500 ms 上下。
+        val assistants = withContext(Dispatchers.IO) {
+            AssistantRepository.ensureDefaultThenList(databasePath)
+        }
         withContext(Dispatchers.IO) {
             ProviderRepository.list(databasePath).onSuccess { page ->
                 providerNames = page.rows.associate { it.id to it.name.ifBlank { it.id } }
             }
         }
-        withContext(Dispatchers.IO) { AssistantRepository.list(databasePath) }.fold(
+        assistants.fold(
             onSuccess = { list = it },
             onFailure = {
                 notice = "读助手失败：${it.message}"
