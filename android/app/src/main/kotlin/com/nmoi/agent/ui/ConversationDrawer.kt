@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -46,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -184,18 +187,36 @@ internal fun ConversationDrawer(
     // 各有各的列表状态（真机上就是"拉出途中选中项高了两行"，2026-11-06 录屏量出来的）。
     // 现在只有一份：内容按最终宽度排一次，开合只移动它。
     val settle = remember { Animatable(if (open) widthPx else 0f) }
+    // 开合动画正在跑（D360）：滑动期间要告诉系统"这一屏要 120 帧"。
+    var settling by remember { mutableStateOf(false) }
     LaunchedEffect(open, manual) {
         if (manual) return@LaunchedEffect
-        settle.animateTo(
-            targetValue = if (open) widthPx else 0f,
-            animationSpec = tween(durationMillis = 200, easing = LinearOutSlowInEasing),
-        )
+        settling = true
+        try {
+            settle.animateTo(
+                targetValue = if (open) widthPx else 0f,
+                animationSpec = tween(durationMillis = 200, easing = LinearOutSlowInEasing),
+            )
+        } finally {
+            settling = false
+        }
     }
-    val shownPx = when {
-        animating -> inertia.value
-        dragging -> dragPx
-        else -> settle.value
+    // 拖出来、惯性、开合动画：三种都算"在动"（D360）。
+    RequestFrameRate(dragging || animating || settling)
+    // 位置只在**布局/绘制**里读（D360）：`shownPx` 每帧都在变，在组合里读一次就等于
+    // 每帧重组整个抽屉外壳——120 帧下 8.3 ms 的预算里，这是最贵的一项。
+    // 用 `derivedStateOf` 包一层：谁在 lambda 里读它，谁才被通知（重组不会发生）。
+    val shown = remember {
+        derivedStateOf {
+            when {
+                animating -> inertia.value
+                dragging -> dragPx
+                else -> settle.value
+            }
+        }
     }
+    // 遮板开不开只关心"过了没"（阈值 0.5 px）：用一个布尔 state 把每帧的变化挡在外面。
+    val scrimOn by remember { derivedStateOf { shown.value > 0.5f } }
 
     // 助手面板盖在抽屉上面，返回键要先把这一层收掉，而不是把抽屉一起关掉（2026-10-26 报的同类问题）。
     // 这里后于 MainActivity 的 drawerOpen 处理器注册，所以内层先轮到。
@@ -314,12 +335,12 @@ internal fun ConversationDrawer(
         }
 
         // 抽屉（D266）：**只有一份**，按最终宽度排好，开合只移动它。
-        if (shownPx > 0.5f) {
-            val progress = (shownPx / widthPx).coerceIn(0f, 1f)
+        if (scrimOn) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.60f * progress))
+                    .background(Color.Black)
+                    .graphicsLayer { alpha = 0.60f * (shown.value / widthPx).coerceIn(0f, 1f) }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -332,7 +353,7 @@ internal fun ConversationDrawer(
             modifier = Modifier
                 .width(width)
                 .fillMaxHeight()
-                .offset { IntOffset((shownPx - widthPx).roundToInt(), 0) },
+                .offset { IntOffset((shown.value - widthPx).roundToInt(), 0) },
         ) {
             DrawerPanel(
                 databasePath = databasePath,
@@ -535,7 +556,10 @@ private fun DrawerPanel(
         }
 
         // —— 会话列表（新对话在最上面）——
-        LazyColumn(modifier = Modifier.weight(1f)) {
+        // 自己持一份 state：抽屉里滚列表的时候也要 120 帧（D360），不然滑起来只有一半帧。
+        val listState = rememberLazyListState()
+        RequestFrameRate(listState.isScrollInProgress)
+        LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
             if (rows.isEmpty()) {
                 item {
                     Text(

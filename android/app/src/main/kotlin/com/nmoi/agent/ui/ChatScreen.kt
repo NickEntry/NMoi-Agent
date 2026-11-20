@@ -2593,14 +2593,24 @@ private fun BlankConversationHint() {
 }
 
 /**
- * 惯性起始速度的上限，按**屏高**算（屏/秒）。
+ * 甩动的**加速度**（起始速度的倍数，D360）。
+ *
+ * 用户 2026-11-21：「滑动加速度好像还是不够快啊，可以弄个4倍加速度看看」。
+ * 系统那套衰减不变，只在入口把起始速度乘上去——衰减曲线自己画会跟应用里其它列表
+ * 手感不一致（D356 的结论），乘倍数不会。
+ */
+private const val FLING_GAIN = 4f
+
+/**
+ * 乘完之后的上限，按**屏高**算（屏/秒）。
  *
  * 用户 2026-11-20：「对滑动速度做个限制就行」，随后 2026-11-21：「滑动限制太严格了」。
  * 写死 px/s 的问题就在这儿：同一个数在不同分辨率上手感差一倍。改成屏高倍数之后，
- * 一台 2400 px 的机器上是 12000 px/s（原来写死 6000，等于 2.5 屏/秒）。
- * 每次甩动写一行 `Perf 甩`，下一轮按真机那行数字再调这个倍数。
+ * 一台 2400 px 的机器上是 19200 px/s。上一版是 5 屏/秒，那一档把 4 倍加速度全吃掉了
+ * （普通一甩就已经撞上限），所以跟着抬到 8。
+ * 每次甩动写一行 `Perf 甩 v / ×4 / cap / 用`，下一轮按真机那四个数再调。
  */
-private const val MAX_FLING_SCREENS_PER_SECOND = 5f
+private const val MAX_FLING_SCREENS_PER_SECOND = 8f
 
 /**
  * 消息区。
@@ -2720,44 +2730,55 @@ private fun MessageArea(
     val compacted = page?.compacted == true
     val listState = rememberLazyListState()
 
-    // 滑动帧统计（D358）：只在滑动期间采样，一次滑动结束写一行。
+    // 滑动时告诉系统"这一屏要 120 帧"（D360）：不写这一句的时候系统按自己的判断给，
+    // 同一个列表在不同会话里跑出两个帧率（短会话 50 多，长会话 100 多）。
+    RequestFrameRate(listState.isScrollInProgress)
+
+    // 滑动帧统计（D358 / D360）：只在滑动期间采样，一次滑动结束写一行。
     //
     // 用户问"能不能做性能测试"——没有 adb 的时候，这一行就是证据：
-    // `frames` 这次滑了多少帧、`max`/`p95` 最慢的一帧、`>16ms`/`>33ms` 掉了多少。
-    // 成本是每帧一次 `withFrameNanos` 和三次比较，可以忽略。
+    // `frames` 这次滑了多少帧、`fps` 实际帧率（首末帧之间算）、`max`/`p95` 最慢的一帧、
+    // `>16ms`/`>33ms` 掉了多少。成本是每帧一次 `withFrameNanos` 和几次比较，可以忽略。
     LaunchedEffect(listState) {
         var frames = 0
         var maxMs = 0L
         var over16 = 0
         var over33 = 0
+        var firstAt = 0L
+        var lastAt = 0L
         val samples = ArrayList<Long>(512)
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
             if (scrolling) {
-                var last = 0L
                 while (listState.isScrollInProgress) {
                     val now = androidx.compose.runtime.withFrameNanos { it }
-                    if (last != 0L) {
-                        val ms = (now - last) / 1_000_000
+                    if (lastAt != 0L) {
+                        val ms = (now - lastAt) / 1_000_000
                         frames += 1
                         if (samples.size < 512) samples.add(ms)
                         if (ms > maxMs) maxMs = ms
                         if (ms > 16) over16 += 1
                         if (ms > 33) over33 += 1
+                    } else {
+                        firstAt = now
                     }
-                    last = now
+                    lastAt = now
                 }
             }
             if (frames > 0) {
                 samples.sort()
                 val p95 = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)]
+                val span = lastAt - firstAt
+                val fps = if (span > 0) frames * 1_000_000_000L / span else 0L
                 NLog.i(
                     "Perf",
-                    "滑动 frames=$frames max=${maxMs}ms p95=${p95}ms >16ms=$over16 >33ms=$over33",
+                    "滑动 frames=$frames fps=$fps max=${maxMs}ms p95=${p95}ms >16ms=$over16 >33ms=$over33",
                 )
                 frames = 0
                 maxMs = 0
                 over16 = 0
                 over33 = 0
+                firstAt = 0L
+                lastAt = 0L
                 samples.clear()
             }
         }
@@ -2800,8 +2821,8 @@ private fun MessageArea(
         // 惯性封顶（D356 / D359）：甩得再猛，起始速度也不超过一屏高的 5 倍/秒。
         // 衰减仍交给系统那套——自己画曲线会跟应用里其它列表手感不一致。
         flingBehavior = remember(listState, flingCap) {
-            // `flingBehavior()` 本身是 @Composable，只能在组合里取；取出来再包一层封顶。
-            CappedFlingBehavior(baseFling, flingCap)
+            // `flingBehavior()` 本身是 @Composable，只能在组合里取；取出来再包一层倍数与封顶。
+            CappedFlingBehavior(baseFling, flingCap, FLING_GAIN)
         },
         // 左右边距一致 18dp（2026-10-24 第二轮：8dp 太贴边，按 2.2 倍放大）。
         // 助手正文**整行铺开**、左边缘和头像左边缘同一条线（D142）。
@@ -2971,24 +2992,26 @@ private fun MessageArea(
 }
 
 /**
- * 惯性**封顶**（D356）：手甩得再猛，起始速度也不超过这个数。
+ * 惯性：**先乘倍数，再封顶**（D360）。
  *
- * 上一版是放大（D355 的"滑动加速度"），用户改了口径：要的是上限，不是加速——
- * 800 MB 的会话里一次过猛的甩动会连着把好几页甩出去，落点根本不受控。
- * 衰减仍交给系统那套，只在入口处夹一下。
+ * 顺序不能反。先封顶再乘，一个轻甩（2000 px/s）乘完 8000 又会绕过上限；
+ * 先乘再封顶，上限才真的算是上限。衰减仍交给系统那套，只在入口处动一次。
  */
 private class CappedFlingBehavior(
     private val base: androidx.compose.foundation.gestures.FlingBehavior,
     private val maxVelocity: Float,
+    private val gain: Float = 1f,
 ) : androidx.compose.foundation.gestures.FlingBehavior {
     override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(
         initialVelocity: Float,
     ): Float {
         val scope = this
-        val capped = initialVelocity.coerceIn(-maxVelocity, maxVelocity)
+        val gained = initialVelocity * gain
+        val capped = gained.coerceIn(-maxVelocity, maxVelocity)
         NLog.i(
             "Perf",
-            "甩 v=${initialVelocity.toInt()} cap=${maxVelocity.toInt()} 用=${capped.toInt()}",
+            "甩 v=${initialVelocity.toInt()} ×${gain.toInt()} → ${gained.toInt()} " +
+                "cap=${maxVelocity.toInt()} 用=${capped.toInt()}",
         )
         return with(base) { scope.performFling(capped) }
     }
