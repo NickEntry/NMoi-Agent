@@ -68,3 +68,27 @@ bash scripts/target_usage.sh --force     # 不管多大都清
   `compress_smoke` / `tool_smoke` 都编出来，冒烟脚本用的就是它们；`cargo clean` 一起清。
 - `target/debug/deps/` 里同一个 crate 会有**多个 hash 的副本**（换了 feature 或工具链留下的），
   cargo 不会回收它们。这类也是 `cargo clean` 一并解决，不要按名字挑。
+## 6. 当前这份 APK 是哪来的（每次拉了新的就更新这一段）
+
+```text
+路径      /workspace/NMoi-Agent-debug.apk
+字节      19,153,461
+sha256   0862d229226f95c7291a3f335a402b29（前 32）
+commit   1764322
+CI run   44782264324（七 job 全绿）
+来源     gh run download <run> -n nmoi-debug-apk  → app-debug.apk
+四样核对 classes.dex / assets/notices/LICENSE / assets/notices/LICENSES/Apache-2.0.txt / lib/arm64-v8a/libnmoi_ffi.so
+```
+
+**上一份（19,125,921 / a6e46245… / `56c4d1b`）在 D354 之后一直是旧的**，因为 android job
+从 D354 起连续红了三次，红在两个地方：
+
+1. `JNI 符号对账`：Kotlin 加了 `external fun`，`.so` 里没有对应的 `Java_*` 包装
+   （`jni` feature 本机编不出来——rustc 1.75 不够，只能靠 CI 发现）。
+2. `Kotlin 单测`（其实是编译）：`ScrollableDefaults.flingBehavior()` 是 `@Composable`，
+   不能在 `remember { }` 里取。本机 kotlinc 没有 Compose 插件，查不到这一类错；
+   仓库里那份 `compose-compiler.jar` 是给旧版编译器用的，也用不上。
+
+**教训**：提交之后要点一次 `gh run list` 看结论。本机全绿 ≠ CI 绿：JNI 与 Compose 上下文
+这两类检查只有 CI 有。拿包之前先确认「这一份对应的 run 是绿的」，否则装上去的是旧代码，
+所有性能观察都白做。
