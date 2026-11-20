@@ -2783,16 +2783,15 @@ private fun MessageArea(
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
 
+    val baseFling = androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
         // 惯性封顶（D356）：甩得再猛，起始速度也不超过 MAX_FLING_PX_PER_SECOND。
         // 衰减仍交给系统那套——自己画曲线会跟应用里其它列表手感不一致。
         flingBehavior = remember(listState) {
-            CappedFlingBehavior(
-                androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior(),
-                MAX_FLING_PX_PER_SECOND,
-            )
+            // `flingBehavior()` 本身是 @Composable，只能在组合里取；取出来再包一层封顶。
+            CappedFlingBehavior(baseFling, MAX_FLING_PX_PER_SECOND)
         },
         // 左右边距一致 18dp（2026-10-24 第二轮：8dp 太贴边，按 2.2 倍放大）。
         // 助手正文**整行铺开**、左边缘和头像左边缘同一条线（D142）。
