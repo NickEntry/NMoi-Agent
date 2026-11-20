@@ -106,10 +106,6 @@ internal object ConversationRepository {
         }
 
         val handle = opened.optLong("handle", 0L)
-        // 临时探针（layer 1 的验收标志）：设置面四个 scope 通没通。
-        // 结果进 NLog，也就是同时进 logcat 与应用内「设置 → 调试 → 日志」——
-        // 后者是不依赖 adb 的那条路（ROM 会吞 I 级）。`SettingsRepository` 接手后删掉这一行。
-        NmoiFfi.probeSettings(handle)
         return try {
             val page = JSONObject(NativeBridge.listConversationsJson(handle, limit, 0, assistantId))
             if (!page.ok()) return placeholder("列会话失败：${page.errorText()}")

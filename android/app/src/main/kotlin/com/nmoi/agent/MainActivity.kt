@@ -257,8 +257,8 @@ class MainActivity : ComponentActivity() {
                     val from = Start.now()
                     value = withContext(Bg.io) {
                         // 默认助手是"第一次启动自带的那一个"：少了它，归在 default 的会话就没有家。
-                        AssistantRepository.ensureDefault(databasePath)
-                        AssistantRepository.list(databasePath).getOrNull()
+                        // 补写与列表**一次开库**（D359）：两次就是两次 open，各 500 ms 上下。
+                        AssistantRepository.ensureDefaultThenList(databasePath).getOrNull()
                     }
                     Start.mark("助手列表", from)
                 }

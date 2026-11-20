@@ -3591,3 +3591,16 @@ Start 助手列表 / 会话列表 / 消息首页 / 环境状态 / 代理接线 /
 - UI 线程不动：Android 上抬高 UI 需要 `CAP_SYS_NICE`，应用没有；能做的只有把后台压低。
 
 判据：kotlinc 全量只剩 9 条既有 `R`；`ProcessRowsTest` 16 条绿。真机未测（V156）。
+
+### 五、启动路径上两处白工（同一批删掉）
+
+1. **`probeSettings` 那条临时探针**（`ConversationRepository.loadInner`）：每次列会话都对四个
+   设置 scope 各调一次 `settings_list` 并写 N 行 `Settings` 日志。它自己的注释写着
+   "`SettingsRepository` 接手后删掉这段"，而设置读早就四处都在用了（置顶、安全、世界书、角色）。
+   删掉函数本体与那一行调用。
+2. **补默认助手与列助手各开一次库**：`ensureDefault` + `list` 是两次 `open`（各 500 ms 上下），
+   而两步之间没有任何"关一下再看"的必要。合成 `ensureDefaultThenList(databasePath)`
+   （一次开库、先后两次调用），原来的两个入口照旧保留给别的调用方。
+
+判据：`助手列表` 那一行应当只剩**一次** open 的成本；日志里不再有成排的
+`Settings settings_list 通了：…`。

@@ -451,41 +451,6 @@ internal object NmoiFfi {
         call("divider_delete") { NativeBridge.deleteDividerJson(handle, divider) }
 
     /**
-     * 临时探针：四个 scope 各列一次，把结果打到 logcat。
-     *
-     * 为什么现在需要它——layer 1 只做到"能调通"，界面上一个设置项都还没接，
-     * 于是"符号对不对、信封是不是 `ok:true`、条目数跟库里一样吗"这三件事
-     * 在真机上**没有任何别的途径能看到**。`SettingsRepository` 接手后删掉这段。
-     *
-     * 只读：`list` 不写库、不记修复记录（C ABI 里就是这么定的）。
-     */
-    fun probeSettings(handle: Long) {
-        for (scope in SettingsScope.entries) {
-            val text = try {
-                NativeBridge.listSettingsJson(handle, scope.wire, DEFAULT_LIST_LIMIT.toLong())
-            } catch (failure: UnsatisfiedLinkError) {
-                NLog.w("Settings", "settings_list 探针：${scope.wire} 符号对不上（logcat 搜 No implementation found）")
-                return
-            } catch (failure: Throwable) {
-                NLog.w("Settings", "settings_list 探针：${scope.wire} 调用抛错 ${failure.javaClass.simpleName}: ${failure.message}")
-                continue
-            }
-            val envelope = runCatching { JSONObject(text) }.getOrNull()
-            when {
-                envelope == null ->
-                    NLog.w("Settings", "settings_list 探针：${scope.wire} 返回的不是 JSON——${text.take(80)}")
-                !envelope.ok() ->
-                    NLog.w("Settings", "settings_list 探针：${scope.wire} 返回错误 ${envelope.errorText()}")
-                else -> NLog.i(
-                    "Settings",
-                    "settings_list 通了：${scope.wire} 返回 ${envelope.optInt("returned", -1)} 条" +
-                        "（truncated=${envelope.optBoolean("truncated", false)}）",
-                )
-            }
-        }
-    }
-
-    /**
      * 一次调用的外壳：三态检查 + `ok:false` 落成 `failure`。
      *
      * 不重试、不兜底、不缓存：这层只搬东西。哪一步失败都有 `kind` 说清楚是哪一类，

@@ -108,27 +108,44 @@ internal object AssistantRepository {
      */
     suspend fun ensureDefault(databasePath: String): Unit =
         withStorageHandle(databasePath) { handle ->
-            val state = NmoiFfi.settingsGet(handle, SettingsScope.Assistant, DEFAULT_ID)
-                .getOrNull()
-                ?.optString("state", "")
-            if (state == "ready") {
-                Result.success(Unit)
-            } else {
-                val doc = JSONObject()
-                    .put("name", "默认助手")
-                    .put("provider_id", "")
-                    .put("model_id", "")
-                    .put("thinking", "auto")
-                NmoiFfi.settingsPut(handle, SettingsScope.Assistant, DEFAULT_ID, doc)
-                    .onSuccess { NLog.i("Assistant", "首次启动：写入默认助手") }
-                    .onFailure { NLog.w("Assistant", "写默认助手失败：${it.message}") }
-                    .map { }
-            }
+            ensureDefaultOn(handle)
+            Result.success(Unit)
         }.let { }
+
+    /**
+     * 启动那一次读（D359）：补默认助手 + 列助手**一次开库**做完。
+     *
+     * 两次各开一次库就是两次 `open`（本机量到一次 530 ms 上下），而这四次调用之间
+     * 没有任何东西需要"关一下再看"——同一条连接上先后两次调用就是同一件事。
+     */
+    suspend fun ensureDefaultThenList(databasePath: String): Result<AssistantList> =
+        withStorageHandle(databasePath) { handle ->
+            ensureDefaultOn(handle)
+            listOn(handle)
+        }
+
+    /** 已经有文档就不动（用户改了名字/模型不能被这次补写冲掉）。 */
+    private suspend fun ensureDefaultOn(handle: Long) {
+        val state = NmoiFfi.settingsGet(handle, SettingsScope.Assistant, DEFAULT_ID)
+            .getOrNull()
+            ?.optString("state", "")
+        if (state == "ready") return
+        val doc = JSONObject()
+            .put("name", "默认助手")
+            .put("provider_id", "")
+            .put("model_id", "")
+            .put("thinking", "auto")
+        NmoiFfi.settingsPut(handle, SettingsScope.Assistant, DEFAULT_ID, doc)
+            .onSuccess { NLog.i("Assistant", "首次启动：写入默认助手") }
+            .onFailure { NLog.w("Assistant", "写默认助手失败：${it.message}") }
+    }
 
     /** 全部助手 + 当前那个（D174）。列表为空时给一份默认助手（老版本没有文档）。 */
     suspend fun list(databasePath: String): Result<AssistantList> =
-        withStorageHandle(databasePath) { handle ->
+        withStorageHandle(databasePath) { handle -> listOn(handle) }
+
+    private suspend fun listOn(handle: Long): Result<AssistantList> =
+        run {
             NmoiFfi.settingsList(handle, SettingsScope.Assistant)
                 .onFailure { NLog.w("Assistant", "列助手失败：${it.message}") }
                 .map { envelope ->
