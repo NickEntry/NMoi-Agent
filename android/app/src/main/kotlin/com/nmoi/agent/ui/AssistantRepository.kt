@@ -98,25 +98,14 @@ internal object AssistantRepository {
     fun newId(): String = "a" + System.currentTimeMillis().toString(36)
 
     /**
-     * 保证 `default` 那份配置**在库里**（D176）。
+     * 保证 `default` 那份配置在库里（D176），顺带列一遍助手——**一次开库**做完（D359）。
      *
-     * 用户口径：默认助手是"第一次启动时自带的那一个"，之后启动看当前切到哪个。
-     * 所以它不能只是"列表为空时临时合成的一条"——v9 迁移把老会话都归到 `default`，
+     * 为什么要有默认助手：用户口径是"第一次启动时自带的那一个"，之后启动看当前切到哪个。
+     * 它不能只是"列表为空时临时合成的一条"——v9 迁移把老会话都归到 `default`，
      * 如果 `default` 没有文档、列表里就不出现它，那些会话在界面上就没有家（铁律 ②）。
      *
-     * **写一次就够**：已经有文档就不动（用户改了名字/模型不能被这次补写冲掉）。
-     */
-    suspend fun ensureDefault(databasePath: String): Unit =
-        withStorageHandle(databasePath) { handle ->
-            ensureDefaultOn(handle)
-            Result.success(Unit)
-        }.let { }
-
-    /**
-     * 启动那一次读（D359）：补默认助手 + 列助手**一次开库**做完。
-     *
-     * 两次各开一次库就是两次 `open`（本机量到一次 530 ms 上下），而这四次调用之间
-     * 没有任何东西需要"关一下再看"——同一条连接上先后两次调用就是同一件事。
+     * 为什么合成一次：两步各开一次库就是两次 `open`（本机量到一次 530 ms 上下），
+     * 而它们之间没有任何"关一下再看"的必要——同一条连接上先后两次调用就是同一件事。
      */
     suspend fun ensureDefaultThenList(databasePath: String): Result<AssistantList> =
         withStorageHandle(databasePath) { handle ->
