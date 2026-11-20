@@ -14,6 +14,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppSettings
+import com.nmoi.agent.ui.Bg
 import com.nmoi.agent.ui.PageHost
 import com.nmoi.agent.ui.AppSettingsScreen
 import com.nmoi.agent.ui.AppIconSwitcher
@@ -45,6 +46,8 @@ import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
 import com.nmoi.agent.ui.PresetEditScreen
 import com.nmoi.agent.ui.PresetScreen
+import com.nmoi.agent.ui.Start
+import com.nmoi.agent.ui.sinceProcessStartMs
 import com.nmoi.agent.ui.KeyPoolScreen
 import com.nmoi.agent.ui.ProviderEditScreen
 import com.nmoi.agent.ui.ProviderListScreen
@@ -173,16 +176,24 @@ class MainActivity : ComponentActivity() {
         // alias 启动时 componentName 是那个 alias，不是 MainActivity。
         // 这条日志同时回答两件事：入口是不是别名、现在生效的是哪一个图标。
         NLog.i("App", "启动入口：$componentName")
+        NLog.i("Start", "onCreate 进程起 +${sinceProcessStartMs()}ms")
 
         setContent {
             val context = LocalContext.current
+            // 首帧的判据（D359）：不是"组合跑完了"，是"这一帧真的画了"。
+            LaunchedEffect(Unit) {
+                androidx.compose.runtime.withFrameNanos { }
+                NLog.i("Start", "首帧 进程起 +${sinceProcessStartMs()}ms")
+            }
             // 后台预热（D351）：首屏先跑起来，两秒之后再让**一条**后台线程去解析那几个
             // 大而不可变的资源（现在只有模型快照：1.2 MB JSON，几百毫秒）。
             // 一次一种、单条线程：启动那一帧最缺的是 CPU，预热跟它抢就会变成"启动卡一下"。
             LaunchedEffect(Unit) {
                 kotlinx.coroutines.delay(2_000)
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.withContext(Bg.low) {
+                    val from = Start.now()
                     com.nmoi.agent.ui.ModelSnapshot.warm(context)
+                    Start.mark("预热模型快照", from)
                 }
             }
             // 主题必须在第一帧之前定：跟随系统时要读当下的系统配置（用户切系统主题会触发重组）。
@@ -191,6 +202,7 @@ class MainActivity : ComponentActivity() {
             // 主题运行中切换时，系统栏图标要跟着改（浅底配深图标）。
             // 代理配置要在第一次发请求之前推给原生层：重启后不推，请求就是直连的。
             LaunchedEffect(Unit) {
+                val proxyFrom = Start.now()
                 ProxyRepository.apply(context).onFailure {
                     NLog.w("Proxy", "启动时应用代理失败：${it.message}")
                 }
@@ -198,6 +210,7 @@ class MainActivity : ComponentActivity() {
                 ProxyContainer.sync(context).onFailure {
                     NLog.w("Proxy", "启动时容器接线失败：${it.message}")
                 }
+                Start.mark("代理接线", proxyFrom)
             }
             SystemBarsForTheme(dark)
             NMoiTheme(dark = dark) {
@@ -213,18 +226,26 @@ class MainActivity : ComponentActivity() {
                 val logSummary = "3 通道 · 调试" + if (NLog.isEnabled(LogKind.Debug)) "开" else "关"
                 // 隔离环境装没装：设置索引页那一行要写实话，所以每次换页现读一次 state.json。
                 val envirStatus by produceState(initialValue = "", route) {
-                    value = withContext(Dispatchers.IO) {
+                    val from = Start.now()
+                    value = withContext(Bg.low) {
                         when (EnvirRepository.installed(context)?.health) {
                             null -> ""
                             EnvirRepository.Health.NeedsRepair -> "环境需修复"
                             else -> "环境已装"
                         }
                     }
+                    Start.mark("环境状态", from)
                 }
                 // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
                 var drawerOpen by remember { mutableStateOf(false) }
 
-                val nativeStatus = remember { NativeBridge.status() }
+                val nativeStatus = remember {
+                    // 第一次碰 NativeBridge 就是 `System.loadLibrary`：算在启动账上（D359）。
+                    val from = Start.now()
+                    val status = NativeBridge.status()
+                    Start.mark("原生层状态", from)
+                    status
+                }
                 val databasePath = remember { File(filesDir, "nmoi.db").absolutePath }
                 // 建了会话之后要让抽屉重读：produceState 只有 key 变了才会重跑。
                 var listReload by remember { mutableStateOf(0) }
@@ -233,11 +254,13 @@ class MainActivity : ComponentActivity() {
                 // 当前助手（D174）：抽屉里的列表和"新建会话归谁"都看它。
                 // 它跟着 `listReload` 重读——切了助手就是一次列表刷新。
                 val assistantList by produceState<AssistantList?>(initialValue = null, listReload) {
-                    value = withContext(Dispatchers.IO) {
+                    val from = Start.now()
+                    value = withContext(Bg.io) {
                         // 默认助手是"第一次启动自带的那一个"：少了它，归在 default 的会话就没有家。
                         AssistantRepository.ensureDefault(databasePath)
                         AssistantRepository.list(databasePath).getOrNull()
                     }
+                    Start.mark("助手列表", from)
                 }
                 val activeAssistantId = assistantList?.activeId ?: AssistantRepository.DEFAULT_ID
                 // 开库和列表读盘都碰磁盘，不许在主线程上做。
@@ -246,9 +269,11 @@ class MainActivity : ComponentActivity() {
                     listReload,
                     activeAssistantId,
                 ) {
-                    value = withContext(Dispatchers.IO) {
+                    val from = Start.now()
+                    value = withContext(Bg.io) {
                         ConversationRepository.load(databasePath, activeAssistantId)
                     }
+                    Start.mark("会话列表", from)
                 }
 
                 // 草稿标记（0.15b）与置顶顺序（0.15d）。
@@ -261,7 +286,7 @@ class MainActivity : ComponentActivity() {
                     initialValue = emptyList<String>(),
                     drawerOpen, listReload,
                 ) {
-                    value = withContext(Dispatchers.IO) {
+                    value = withContext(Bg.low) {
                         ConversationRepository.pinned(databasePath).getOrDefault(emptyList())
                     }
                 }
@@ -270,7 +295,7 @@ class MainActivity : ComponentActivity() {
                     initialValue = emptyMap<String, String>(),
                     drawerOpen, listReload,
                 ) {
-                    value = withContext(Dispatchers.IO) { DraftStore.all(context) }
+                    value = withContext(Bg.low) { DraftStore.all(context) }
                 }
 
                 // 返回键优先级（0.15j / D184）：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出。
