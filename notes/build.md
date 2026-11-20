@@ -72,14 +72,15 @@ bash scripts/target_usage.sh --force     # 不管多大都清
 
 ```text
 路径      /workspace/NMoi-Agent-debug.apk
-字节      19,156,997
-sha256   86d56d8edc4b9b081d4c4a7a92ffc3a0（前 32）
-commit   1ee4bbc（D359）
-CI run   44792601156（七 job 全绿）
+字节      19,156,813
+sha256   8439fa791669b6267f1ca8094e10669a（前 32）
+commit   5c8230c（D359 全批）
+CI run   44807615247（七 job 全绿）
 来源     gh run download <run> -n nmoi-debug-apk  → app-debug.apk
 四样核对 classes.dex / assets/notices/LICENSE / assets/notices/LICENSES/Apache-2.0.txt / lib/arm64-v8a/libnmoi_ffi.so
 
-上一份      19,153,461 / 0862d229226f95c7291a3f335a402b29 / 1764322（run 44782264324）
+上一份      19,156,997 / 86d56d8edc4b9b081d4c4a7a92ffc3a0 / 1ee4bbc（run 44792601156）
+再上一份    19,153,461 / 0862d229226f95c7291a3f335a402b29 / 1764322（run 44782264324）
 ```
 
 **上一份（19,125,921 / a6e46245… / `56c4d1b`）在 D354 之后一直是旧的**，因为 android job
