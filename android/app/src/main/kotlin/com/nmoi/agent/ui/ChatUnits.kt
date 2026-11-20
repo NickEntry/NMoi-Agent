@@ -334,3 +334,30 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
         }
     }
 }
+
+/**
+ * 把**最新那一页**接进窗口（D356）。
+ *
+ * 与 [mergeUnits] 的区别：这一份是"库里此刻的样子"，所以同一段范围内的单元
+ * 以它为准（删掉的那条不能在窗口里留着），范围之外（更早的）保持不动。
+ */
+internal fun mergeTail(window: List<ChatUnit>, newest: List<ChatUnit>): List<ChatUnit> {
+    if (newest.isEmpty()) return window
+    val cut = firstSeqOf(newest.first())
+    return window.filter { firstSeqOf(it) < cut } + newest
+}
+
+/**
+ * 只留最后 `cap` 个单元（D356）：800 MB 的会话不可能整条进内存。
+ *
+ * `keepIndex` 是"正在看的那一行所在的单元下标"——从前往后丢的时候不许越过它，
+ * 否则屏幕上正在看的内容会自己消失。丢不动就这一轮先不丢，下次再丢。
+ */
+internal fun trimFrontKeeping(window: List<ChatUnit>, cap: Int, keepIndex: Int): List<ChatUnit> {
+    if (window.size <= cap) return window
+    val want = window.size - cap
+    val allowed = keepIndex.coerceAtLeast(0)
+    val drop = minOf(want, allowed)
+    if (drop <= 0) return window
+    return window.drop(drop)
+}

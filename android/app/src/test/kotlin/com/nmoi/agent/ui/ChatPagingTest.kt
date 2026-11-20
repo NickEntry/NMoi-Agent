@@ -80,6 +80,30 @@ class ChatPagingTest {
     }
 
     @Test
+    fun `最新那一页到了-同一段范围内以它为准`() {
+        // 窗口里原来有 1、2、3；最新一页给的是 3（改过）、4。
+        val window = listOf(unit(1), unit(2), unit(3, "旧"))
+        val newest = listOf(unit(3, "新"), unit(4))
+        val merged = mergeTail(window, newest)
+        assertEquals(listOf("u:1", "u:2", "u:3", "u:4"), merged.map { it.id })
+        assertEquals("新", merged[2].messages.single().content)
+        // 窗口里那一段之外（更早）的不动：这一页管不到它们的死活。
+        assertEquals(listOf("u:1", "u:2"), merged.take(2).map { it.id })
+    }
+
+    @Test
+    fun `窗口上限只从最前面丢-并且不许丢到正在看的那一条`() {
+        val window = (1L..10L).map { unit(it) }
+        // 正常情况下：留最后 6 个。
+        assertEquals((5L..10L).toList(), trimFrontKeeping(window, 6, keepIndex = 9).map { firstSeqOf(it) })
+        // 正在看第 2 条：最多只丢它前面那一格，宁可这一轮少丢，也不能让屏幕上的内容自己消失。
+        assertEquals((2L..10L).toList(), trimFrontKeeping(window, 6, keepIndex = 1).map { firstSeqOf(it) })
+        assertEquals(window, trimFrontKeeping(window, 6, keepIndex = 0))
+        // 装得下就原样返回。
+        assertEquals(window, trimFrontKeeping(window, 20, keepIndex = 0))
+    }
+
+    @Test
     fun `分页字段与旧的 truncated 是两件事`() {
         // `truncated` 只说"上面还有没读的"；能不能继续要由 `hasMore` + 游标决定。
         // 老接口没有 `has_more` 时这两个值由 `parseUnits` 兜底，这里钉的是默认值本身：
