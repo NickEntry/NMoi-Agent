@@ -144,7 +144,7 @@ internal fun AssistantEditScreen(
             notice = "读不到这个助手（${assistantId}）"
             noticeIsError = true
             // 读不到也是一屏内容（有话说、有返回），别让窗口一直等到超时。
-            PageReady.notifyReady()
+            PageReady.notifyReadyAfterFrame()
             return@LaunchedEffect
         }
         entry = loaded
@@ -166,7 +166,7 @@ internal fun AssistantEditScreen(
         maxOutput = loaded.maxTokens?.toString().orEmpty()
         loadedOnce = true
         // 读完了说一声（D349）：编辑页的"正在读…"不该在切换瞬间被看见。
-        PageReady.notifyReady()
+        PageReady.notifyReadyAfterFrame()
     }
 
     /** 把表单拼成一份配置（不落库）。**只在这里拼**：两处各拼一次就会长出两套规矩。 */
@@ -327,7 +327,7 @@ internal fun AssistantEditScreen(
                                     } else {
                                         "还没选模型（在聊天页顶部换）"
                                     }
-                                } ?: "正在读…",
+                                } ?: "",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )

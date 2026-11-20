@@ -75,7 +75,7 @@ internal fun ModelResourceScreen(
         failure = if (loaded == null) "这一版没带上模型快照（assets 里没有 ${ModelSnapshot.ASSET}）" else null
         loading = false
         // 1.2 MB 的 JSON 解析一次几百毫秒——这一页最需要预渲染等它（D349）。
-        PageReady.notifyReady()
+        PageReady.notifyReadyAfterFrame()
     }
 
     BackHandler(enabled = true) {
@@ -161,7 +161,7 @@ internal fun ModelResourceScreen(
                 }
 
                 when {
-                    loading -> item { Note("正在读快照…", null) }
+                    loading -> Unit
                     failure != null -> item { Note("读不到快照", failure) }
                     models.isEmpty() -> item {
                         Note("这个供应商还没有模型", "先回上一页加一个模型，再来这里对齐。")

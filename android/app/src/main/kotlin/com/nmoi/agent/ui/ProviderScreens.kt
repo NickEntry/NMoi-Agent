@@ -95,7 +95,7 @@ internal fun ProviderListScreen(
             onSuccess = { page = it },
             onFailure = { notice = "读配置失败：${it.message}" },
         )
-        PageReady.notifyReady()
+        PageReady.notifyReadyAfterFrame()
     }
 
     val rows = page?.rows.orEmpty()
@@ -150,7 +150,8 @@ internal fun ProviderListScreen(
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 when {
-                    page == null && notice == null -> Hint("正在读库…")
+                    // 空着（D358）：宿主有遮板，这一行字只会闪一下。
+                    page == null && notice == null -> Unit
                     rows.isEmpty() -> EmptyProviders(onCreate = onCreate)
                     shown.isEmpty() -> Hint("没有匹配「${query.trim()}」的供应商")
                     query.isNotBlank() -> GroupCard {
@@ -421,7 +422,7 @@ internal fun ProviderEditScreen(
                 ProviderRepository.keyHint(context, providerId)
             }
             // 读完了说一声（D349）：列表、编辑两页都要报，不然"正在读库…"还是会被看见。
-            PageReady.notifyReady()
+            PageReady.notifyReadyAfterFrame()
         }
     }
 

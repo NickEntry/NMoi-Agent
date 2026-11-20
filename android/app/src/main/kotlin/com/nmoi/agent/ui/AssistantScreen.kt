@@ -77,7 +77,7 @@ internal fun AssistantScreen(
             },
         )
         // 读完了说一声（D349）：列表页的"正在读…"不该在切换瞬间被看见。
-        PageReady.notifyReady()
+        PageReady.notifyReadyAfterFrame()
     }
 
     fun refresh() {
@@ -143,12 +143,8 @@ internal fun AssistantScreen(
 
                 val page = list
                 when {
-                    page == null && notice == null -> Text(
-                        text = "正在读…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
+                    // 空着（D358）。
+                    page == null && notice == null -> Unit
 
                     else -> {
                         Surface(

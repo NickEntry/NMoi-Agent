@@ -2651,9 +2651,9 @@ private fun MessageArea(
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                text = "正在读…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // 不写"正在读…"（D358）：这一屏的字会被当成内容的一部分读进去。
+                // 空着只是空着，写上就是一句会闪的假消息。
+                text = "",
             )
         }
         return
@@ -2687,7 +2687,14 @@ private fun MessageArea(
     // 用户看到的是"画面变形"——其实是掉帧。原生列表本身够快，不要在它下面加活。
     val units = page?.units.orEmpty()
     // 连续的思考/工具合成一行（D229）。分组只影响渲染，数据一个字都不动。
-    val rows = remember(units) { buildRows(units) }
+    // 建行耗时（D358）：只在超过 4 ms 时写一行——"滑起来卡不卡"要能落到数字上。
+    val rows = remember(units) {
+        val started = System.nanoTime()
+        val built = buildRows(units)
+        val cost = (System.nanoTime() - started) / 1_000_000
+        if (cost >= 4) NLog.i("Perf", "建行：${units.size} 个单元 → ${built.size} 行，${cost}ms")
+        built
+    }
     // 「这一轮最后一段正文才带动作行」原来是每个可见行现算 `rows.drop(index + 1)…`：
     // 长会话里那是 O(n²) 的分配，而且每次重组都重来一遍（D354）。这里一次算完。
     val showActions = remember(rows) { showActionsByRow(rows) }
@@ -2706,6 +2713,49 @@ private fun MessageArea(
     // **线上那几条仍然画在列表里**（原文一条都没删）——不标出来，用户会以为模型还看得见它们。
     val compacted = page?.compacted == true
     val listState = rememberLazyListState()
+
+    // 滑动帧统计（D358）：只在滑动期间采样，一次滑动结束写一行。
+    //
+    // 用户问"能不能做性能测试"——没有 adb 的时候，这一行就是证据：
+    // `frames` 这次滑了多少帧、`max`/`p95` 最慢的一帧、`>16ms`/`>33ms` 掉了多少。
+    // 成本是每帧一次 `withFrameNanos` 和三次比较，可以忽略。
+    LaunchedEffect(listState) {
+        var frames = 0
+        var maxMs = 0L
+        var over16 = 0
+        var over33 = 0
+        val samples = ArrayList<Long>(512)
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (scrolling) {
+                var last = 0L
+                while (listState.isScrollInProgress) {
+                    val now = androidx.compose.runtime.withFrameNanos { it }
+                    if (last != 0L) {
+                        val ms = (now - last) / 1_000_000
+                        frames += 1
+                        if (samples.size < 512) samples.add(ms)
+                        if (ms > maxMs) maxMs = ms
+                        if (ms > 16) over16 += 1
+                        if (ms > 33) over33 += 1
+                    }
+                    last = now
+                }
+            }
+            if (frames > 0) {
+                samples.sort()
+                val p95 = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)]
+                NLog.i(
+                    "Perf",
+                    "滑动 frames=$frames max=${maxMs}ms p95=${p95}ms >16ms=$over16 >33ms=$over33",
+                )
+                frames = 0
+                maxMs = 0
+                over16 = 0
+                over33 = 0
+                samples.clear()
+            }
+        }
+    }
     val headerCount = (if (truncated) 1 else 0) + (if (compacted) 1 else 0)
     val maxBubble = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
 

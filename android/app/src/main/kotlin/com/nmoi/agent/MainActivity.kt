@@ -822,7 +822,7 @@ private fun previewable(route: Route): Boolean = route !is Route.Chat
  * 没报的页面（设置索引、外观、许可、日志、世界书、消息编辑器……）首帧就是最终内容，
  * 两帧就走；把它们也算成"要等"，等于让每次点击都空等 600 ms。
  *
- * 名单要和页面里的 `PageReady.notifyReady()` 对齐：加了新页面又接了这一行，就把路由补进来；
+ * 名单要和页面里的 `PageReady.notifyReadyAfterFrame()` 对齐：加了新页面又接了这一行，就把路由补进来；
  * 忘了补也只是退回"两帧就走"，不会坏。
  */
 private fun waitsForData(route: Route): Boolean = when (route) {

@@ -52,6 +52,18 @@ internal object PageReady {
     fun notifyReady() {
         hook.get()?.invoke()
     }
+
+    /**
+     * 「这一页已经画出来了」——**等到那一帧真的画过之后**再举手（D358）。
+     *
+     * 页面里的写法是 `page = it; PageReady.notifyReadyAfterFrame()`：状态改了，但那一帧还没画。
+     * 宿主收到 ready 就切页，切上去的头一帧画的还是旧状态——屏幕上就是一闪而过的
+     * 「正在读…」。等一帧再举手，切页那一刻内容已经在屏上，这一闪就没了。
+     */
+    suspend fun notifyReadyAfterFrame() {
+        androidx.compose.runtime.withFrameNanos { }
+        notifyReady()
+    }
 }
 
 /**
