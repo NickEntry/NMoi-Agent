@@ -224,6 +224,26 @@ internal fun showActionsByRow(rows: List<ChatRow>): BooleanArray {
 }
 
 /**
+ * 每条**消息**在行列表里的起点（D363）。
+ *
+ * 一轮助手的回答会被拆成好几行（过程卡 / 正文 / 再一张思考卡 / 再一段正文），
+ * 头像只在**第一行**上画一次。位置键按"消息"跳，所以只能认这些第一行——
+ * 按行走的话同一条消息会出现好几个停留点（用户 2026-11-21 的截图里就是三个，
+ * 而且只有第一个在头像上方）。
+ *
+ * 判据与渲染那条一致：用户消息自己就是一条；助手侧的行只有"上一行不是助手侧"时才算开头。
+ */
+internal fun messageStarts(rows: List<ChatRow>): List<Int> {
+    val starts = ArrayList<Int>()
+    rows.forEachIndexed { index, row ->
+        val previous = rows.getOrNull(index - 1)
+        val startsTurn = previous == null || previous.alignsRight()
+        if (row.alignsRight() || startsTurn) starts.add(index)
+    }
+    return starts
+}
+
+/**
  * 列表项的稳定 key（D354）。
  *
  * 不给 key 的时候行身份是"第几个"，中间多出一行（分组从 1 项涨到 2 项、

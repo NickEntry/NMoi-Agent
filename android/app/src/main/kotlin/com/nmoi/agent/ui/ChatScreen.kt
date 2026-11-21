@@ -1567,12 +1567,23 @@ internal fun ChatScreen(
     // 位置键（D362）：点一下 / 滑一下、然后停手，右侧滑出四个键，驻留一秒自己退回。
     // 状态放在这一层：`listState` 要同时给消息区和这四个键用。
     val listState = rememberLazyListState()
+    // 每条消息的行起点（D363）：由消息区算好递上来（那里才知道行是怎么分的）。
+    val messageStarts = remember { mutableStateOf<List<Int>>(emptyList()) }
     var railTick by remember { mutableStateOf(0L) }
+    var railHoldMs by remember { mutableStateOf(RAIL_HOLD_MS) }
     val railVisible = railTick != 0L
-    val pokeRail = { railTick = SystemClock.elapsedRealtime() }
+    // 自己出来：停 1 秒。按了键：停 1.5 秒——连点「下一条」逐条走的时候它不该走一半消失。
+    val pokeRail = {
+        railHoldMs = RAIL_HOLD_MS
+        railTick = SystemClock.elapsedRealtime()
+    }
+    val holdRail = {
+        railHoldMs = RAIL_KEY_HOLD_MS
+        railTick = SystemClock.elapsedRealtime()
+    }
     LaunchedEffect(railTick) {
         if (railTick == 0L) return@LaunchedEffect
-        delay(1_000)
+        delay(railHoldMs)
         railTick = 0L
     }
     LaunchedEffect(listState) {
@@ -1630,6 +1641,7 @@ internal fun ChatScreen(
                 } else {
                     MessageArea(
                         listState = listState,
+                        onMessageStarts = { messageStarts.value = it },
                         snapshot = snapshot,
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
@@ -1744,8 +1756,9 @@ internal fun ChatScreen(
                 if (sessionId != null && !selecting) {
                     JumpRail(
                         listState = listState,
+                        starts = messageStarts.value,
                         visible = railVisible,
-                        onPoke = { pokeRail() },
+                        onHold = { holdRail() },
                         modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
                     )
                 }
@@ -2655,17 +2668,28 @@ private const val FLING_GAIN = 2f
  */
 private const val MAX_FLING_SCREENS_PER_SECOND = 8f
 
+/** 位置键自己弹出时停多久（D362）。 */
+private const val RAIL_HOLD_MS = 1_000L
+
+/** 按了键之后停多久（D363）：连点的时候它得一直在。 */
+private const val RAIL_KEY_HOLD_MS = 1_500L
+
 /** 到底用的那个"很大"的偏移：`animateScrollToItem(last, 到这里)` 会被夹在滚动范围上 = 滚到底。 */
 private const val RAIL_BOTTOM_OFFSET_PX = 100_000
 
 /**
- * 右侧那排位置键（D362）。
+ * 右侧那排位置键（D362 / D363）。
  *
  * 用户 2026-11-21：「不如后面弄成侧边的位置移动键吧」。从上到下四个：
  * 最上方 / 上一条消息（或这一条的开头）/ 下一条消息（最后一条时到结尾）/ 最下方。
  *
- * 「当前位置」= 消息区最上面那一条。它的开头正好贴住视口顶（`firstVisibleItemScrollOffset == 0`）
- * 时，第二个键去的是**前一条**；否则去的是**这一条**的开头。
+ * **按消息跳，不按行走**（D363）：一轮助手的回答会被拆成过程卡、正文、又一张思考卡……
+ * 按行走的话同一条消息会有好几个停留点（用户截图里是三个），而且只有第一个在头像上方。
+ * `starts` 是每条消息的行起点，由消息区算好递上来（`messageStarts`）。
+ *
+ * 「当前位置」= 视口顶落在哪条消息里：`starts` 里最后一个 ≤ 它的那个。
+ * 它的开头正好贴住视口顶（`firstVisibleItemScrollOffset == 0`）时，第二个键去的是**前一条**；
+ * 否则去的是**这一条**的开头。
  *
  * 第三、四个键在最后一条时改成"到结尾"，参考点也跟着换成**下边缘**：按上边缘算会指到一个
  * 不存在的位置，屏幕上就是一片空白（用户原话：「就会切换到一个不存在的位置，然后显示空白」）。
@@ -2673,11 +2697,30 @@ private const val RAIL_BOTTOM_OFFSET_PX = 100_000
 @Composable
 private fun JumpRail(
     listState: androidx.compose.foundation.lazy.LazyListState,
+    starts: List<Int>,
     visible: Boolean,
-    onPoke: () -> Unit,
+    onHold: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
+
+    fun jumpTo(row: Int) {
+        scope.launch { listState.animateScrollToItem(row) }
+    }
+
+    /** 当前位置落在第几条消息上（`-1` = 还停在它上面，比如顶上那几行提示）。 */
+    fun anchorAt(): Int {
+        val top = listState.firstVisibleItemIndex
+        return starts.indexOfLast { it <= top }
+    }
+
+    /** 到底 = 最后一条消息的结尾（下边缘作参考）。已经在底就什么都不做。 */
+    fun jumpToEnd() {
+        if (!listState.canScrollForward) return
+        val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+        scope.launch { listState.animateScrollToItem(last, RAIL_BOTTOM_OFFSET_PX) }
+    }
+
     AnimatedVisibility(
         visible = visible,
         // 从侧面弹出、往右划走：位移看得见，结果不产生（它不改任何数据）。
@@ -2687,52 +2730,52 @@ private fun JumpRail(
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             RailKey(double = true, up = true, name = "滑到最上方", enabled = visible) {
-                onPoke()
-                NLog.i("Perf", "位置键 最上方 → 0（当前 ${topIndex(listState)}）")
-                scope.launch { listState.animateScrollToItem(0) }
+                onHold()
+                NLog.i("Perf", "位置键 最上方 → 0（当前第 ${anchorAt()} 条）")
+                jumpTo(0)
             }
             RailKey(double = false, up = true, name = "滑到上一条消息", enabled = visible) {
-                onPoke()
-                val index = listState.firstVisibleItemIndex
-                val atStart = listState.firstVisibleItemScrollOffset == 0
-                val target = if (atStart) index - 1 else index
-                NLog.i("Perf", "位置键 上一条 → $target（当前 $index 偏移 ${listState.firstVisibleItemScrollOffset}）")
-                if (target >= 0) scope.launch { listState.animateScrollToItem(target) }
+                onHold()
+                if (starts.isEmpty()) return@RailKey
+                val at = anchorAt()
+                val exact = at >= 0 && starts[at] == listState.firstVisibleItemIndex &&
+                    listState.firstVisibleItemScrollOffset == 0
+                val target = if (exact) at - 1 else at.coerceAtLeast(0)
+                NLog.i(
+                    "Perf",
+                    "位置键 上一条 → 第 $target 条（行 ${starts.getOrNull(target)}，当前第 $at 条，" +
+                        "偏移 ${listState.firstVisibleItemScrollOffset}）",
+                )
+                if (target >= 0) jumpTo(starts[target])
             }
             RailKey(double = false, up = false, name = "滑到下一条消息", enabled = visible) {
-                onPoke()
-                val last = listState.layoutInfo.totalItemsCount - 1
-                if (last < 0) return@RailKey
+                onHold()
+                if (starts.isEmpty()) return@RailKey
+                val at = anchorAt()
                 when {
-                    listState.firstVisibleItemIndex < last -> {
-                        val next = listState.firstVisibleItemIndex + 1
-                        NLog.i("Perf", "位置键 下一条 → $next（共 ${last + 1}）")
-                        scope.launch { listState.animateScrollToItem(next) }
+                    at < 0 -> {
+                        NLog.i("Perf", "位置键 下一条 → 第 0 条（行 ${starts[0]}，还在提示行上）")
+                        jumpTo(starts[0])
+                    }
+                    at + 1 < starts.size -> {
+                        NLog.i("Perf", "位置键 下一条 → 第 ${at + 1} 条（行 ${starts[at + 1]}）")
+                        jumpTo(starts[at + 1])
                     }
                     // 已经是最新那一条：到底 = 这一条的结尾（下边缘作参考）。
-                    listState.canScrollForward -> {
-                        NLog.i("Perf", "位置键 下一条 → 到底（共 ${last + 1}，已是最后一条）")
-                        scope.launch { listState.animateScrollToItem(last, RAIL_BOTTOM_OFFSET_PX) }
+                    else -> {
+                        NLog.i("Perf", "位置键 下一条 → 到底（共 ${starts.size} 条，已是最后一条）")
+                        jumpToEnd()
                     }
                 }
             }
             RailKey(double = true, up = false, name = "滑到最下方", enabled = visible) {
-                onPoke()
-                val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-                NLog.i("Perf", "位置键 最下方 → 到底（共 ${last + 1}）")
-                scope.launch {
-                    if (listState.canScrollForward) {
-                        listState.animateScrollToItem(last, RAIL_BOTTOM_OFFSET_PX)
-                    }
-                }
+                onHold()
+                NLog.i("Perf", "位置键 最下方 → 到底（共 ${starts.size} 条）")
+                jumpToEnd()
             }
         }
     }
 }
-
-/** 当前位置：消息区最上面那一行（`-1` = 列表空着）。 */
-private fun topIndex(state: androidx.compose.foundation.lazy.LazyListState): Int =
-    state.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: -1
 
 /** 一颗位置键：视觉 36、热区 44（看得见的大小与点得到的大小不是一件事）。 */
 @Composable
@@ -2747,7 +2790,7 @@ private fun RailKey(
     Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
         Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f),
             tonalElevation = 1.dp,
             shadowElevation = 1.dp,
             modifier = Modifier.size(36.dp),
@@ -2843,6 +2886,8 @@ private fun MessageArea(
     onRetryMessage: (String) -> Unit = {},
     /** 点顶上那行"已移走 N 条"（D324）：摘要正文与还原在上一层，这里只管举手。 */
     onOpenCompacted: () -> Unit = {},
+    /** 每条**消息**的行起点（D363）：位置键按消息跳，不按行走。 */
+    onMessageStarts: (List<Int>) -> Unit = {},
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2960,6 +3005,11 @@ private fun MessageArea(
         }
     }
     val headerCount = (if (truncated) 1 else 0) + (if (compacted) 1 else 0)
+    // 每条消息的起点（D363）：一轮助手拆成几行也只算一个，位置键按这份索引跳。
+    val messageStartRows = remember(rows, headerCount) {
+        messageStarts(rows).map { it + headerCount }
+    }
+    SideEffect { onMessageStarts(messageStartRows) }
     val maxBubble = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
 
     // 打开会话应当看到最新的一条，而不是最早的一条。

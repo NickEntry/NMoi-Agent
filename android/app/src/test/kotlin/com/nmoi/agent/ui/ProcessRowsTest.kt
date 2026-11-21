@@ -282,4 +282,39 @@ class ProcessRowsTest {
         assertEquals("user", rowContentType(buildRows(listOf(unit("u", source = "user"))).single()))
         assertEquals("assistant", rowContentType(alone))
     }
+    /**
+     * 消息起点（D363）：位置键按**消息**跳，一轮助手拆成几行只算一个停留点。
+     *
+     * 用户 2026-11-21 的截图里，同一条回答有三个停留点，而且只有第一个在头像上方。
+     */
+    @Test
+    fun `一轮助手拆成两行时只有一个消息起点`() {
+        val rows = buildRows(listOf(toolWithBody("t", "我先看看", reasoning = "想一想")))
+        assertEquals(2, rows.size)
+        assertEquals(listOf(0), messageStarts(rows))
+    }
+
+    @Test
+    fun `用户消息与后面的助手各算一个起点`() {
+        val rows = buildRows(
+            listOf(
+                unit("u", source = "user"),
+                toolWithBody("t", "我先看看", reasoning = "想一想"),
+            ),
+        )
+        assertEquals(listOf(0, 1), messageStarts(rows))
+    }
+
+    @Test
+    fun `连续两个助手单元只算第一个`() {
+        val rows = buildRows(listOf(textWithReasoning("a"), text("b")))
+        assertEquals(2, rows.size)
+        assertEquals(listOf(0), messageStarts(rows))
+    }
+
+    @Test
+    fun `空列表没有起点`() {
+        assertEquals(emptyList<Int>(), messageStarts(emptyList()))
+    }
+
 }
