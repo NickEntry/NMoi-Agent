@@ -616,7 +616,7 @@ internal fun ChatScreen(
             null
         } else {
             val from = Start.now()
-            val page = withContext(Bg.io) {
+            val page = withContext(Dispatchers.IO) {
                 // 只读一页（D355）：长会话不再"整条读进来再裁"。
                 ChatRepository.loadPage(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
             }
@@ -2729,10 +2729,6 @@ private fun MessageArea(
     // **线上那几条仍然画在列表里**（原文一条都没删）——不标出来，用户会以为模型还看得见它们。
     val compacted = page?.compacted == true
     val listState = rememberLazyListState()
-
-    // 滑动时告诉系统"这一屏要 120 帧"（D360）：不写这一句的时候系统按自己的判断给，
-    // 同一个列表在不同会话里跑出两个帧率（短会话 50 多，长会话 100 多）。
-    RequestFrameRate(listState.isScrollInProgress)
 
     // 滑动帧统计（D358 / D360）：只在滑动期间采样，一次滑动结束写一行。
     //

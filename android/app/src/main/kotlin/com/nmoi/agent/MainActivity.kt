@@ -14,7 +14,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.nmoi.agent.ui.AppSettings
-import com.nmoi.agent.ui.Bg
 import com.nmoi.agent.ui.PageHost
 import com.nmoi.agent.ui.AppSettingsScreen
 import com.nmoi.agent.ui.AppIconSwitcher
@@ -46,6 +45,7 @@ import com.nmoi.agent.ui.NLog
 import com.nmoi.agent.ui.NativeBridge
 import com.nmoi.agent.ui.PresetEditScreen
 import com.nmoi.agent.ui.PresetScreen
+import com.nmoi.agent.ui.PinHighRefreshRate
 import com.nmoi.agent.ui.Start
 import com.nmoi.agent.ui.sinceProcessStartMs
 import com.nmoi.agent.ui.KeyPoolScreen
@@ -180,6 +180,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val context = LocalContext.current
+            // 把窗口钉在屏幕的最高刷新率上（D360）：不申请的时候系统只给 60，
+            // 于是"同一个列表两个帧率"。设一次，不跟着手势开关。
+            PinHighRefreshRate()
             // 首帧的判据（D359）：不是"组合跑完了"，是"这一帧真的画了"。
             LaunchedEffect(Unit) {
                 androidx.compose.runtime.withFrameNanos { }
@@ -190,7 +193,7 @@ class MainActivity : ComponentActivity() {
             // 一次一种、单条线程：启动那一帧最缺的是 CPU，预热跟它抢就会变成"启动卡一下"。
             LaunchedEffect(Unit) {
                 kotlinx.coroutines.delay(2_000)
-                kotlinx.coroutines.withContext(Bg.low) {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
                     val from = Start.now()
                     com.nmoi.agent.ui.ModelSnapshot.warm(context)
                     Start.mark("预热模型快照", from)
@@ -227,7 +230,7 @@ class MainActivity : ComponentActivity() {
                 // 隔离环境装没装：设置索引页那一行要写实话，所以每次换页现读一次 state.json。
                 val envirStatus by produceState(initialValue = "", route) {
                     val from = Start.now()
-                    value = withContext(Bg.low) {
+                    value = withContext(Dispatchers.IO) {
                         when (EnvirRepository.installed(context)?.health) {
                             null -> ""
                             EnvirRepository.Health.NeedsRepair -> "环境需修复"
@@ -255,7 +258,7 @@ class MainActivity : ComponentActivity() {
                 // 它跟着 `listReload` 重读——切了助手就是一次列表刷新。
                 val assistantList by produceState<AssistantList?>(initialValue = null, listReload) {
                     val from = Start.now()
-                    value = withContext(Bg.io) {
+                    value = withContext(Dispatchers.IO) {
                         // 默认助手是"第一次启动自带的那一个"：少了它，归在 default 的会话就没有家。
                         // 补写与列表**一次开库**（D359）：两次就是两次 open，各 500 ms 上下。
                         AssistantRepository.ensureDefaultThenList(databasePath).getOrNull()
@@ -270,7 +273,7 @@ class MainActivity : ComponentActivity() {
                     activeAssistantId,
                 ) {
                     val from = Start.now()
-                    value = withContext(Bg.io) {
+                    value = withContext(Dispatchers.IO) {
                         ConversationRepository.load(databasePath, activeAssistantId)
                     }
                     Start.mark("会话列表", from)
@@ -286,7 +289,7 @@ class MainActivity : ComponentActivity() {
                     initialValue = emptyList<String>(),
                     drawerOpen, listReload,
                 ) {
-                    value = withContext(Bg.low) {
+                    value = withContext(Dispatchers.IO) {
                         ConversationRepository.pinned(databasePath).getOrDefault(emptyList())
                     }
                 }
@@ -295,7 +298,7 @@ class MainActivity : ComponentActivity() {
                     initialValue = emptyMap<String, String>(),
                     drawerOpen, listReload,
                 ) {
-                    value = withContext(Bg.low) { DraftStore.all(context) }
+                    value = withContext(Dispatchers.IO) { DraftStore.all(context) }
                 }
 
                 // 返回键优先级（0.15j / D184）：浮层 → 选择模式 → 页面栈 → 抽屉 → 退出。

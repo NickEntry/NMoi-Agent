@@ -3592,6 +3592,12 @@ Start 助手列表 / 会话列表 / 消息首页 / 环境状态 / 代理接线 /
 
 判据：kotlinc 全量只剩 9 条既有 `R`；`ProcessRowsTest` 16 条绿。真机未测（V156）。
 
+**2026-11-21 当天撤销**：用户报"主线程综合负载只有常规设备的 20%左右，是不是做了什么负载
+限制，有的话撤销掉"。主线程本来就没被动过（能动的只有后台），但那两条车道是我们自己加的
+唯一一处"限制并发"，按要求回退成 `Dispatchers.IO`（预热 / 代理接线 / 置顶 / 草稿 / 环境状态
+平移回去）。**`Start` 那七行计时全留着**——那是测量，不是限制。
+`ui/Background.kt` 随之删掉，只留 `ui/Start.kt`。
+
 ### 五、启动路径上两处白工（同一批删掉）
 
 1. **`probeSettings` 那条临时探针**（`ConversationRepository.loadInner`）：每次列会话都对四个
@@ -3622,16 +3628,19 @@ Start 助手列表 / 会话列表 / 消息首页 / 环境状态 / 代理接线 /
 于是同一个列表在两个场景里跑出两个帧率——**短会话与侧边栏 50 多帧，长会话 100 多帧**，
 而且 CPU 一直是闲的。这跟"渲染一开始就受限"是一回事：受限的是刷新率申请，不是性能。
 
-落法：`ui/FrameRate.kt` 的 `RequestFrameRate(active)`，滑动/拖动/开合动画期间抬到 120，
-结束还回 0（交回系统）。
+落法：`ui/FrameRate.kt` 的 `PinHighRefreshRate()`，**启动时设一次**——把窗口的
+`preferredRefreshRate` 钉到 `display.supportedModes` 里最高的那一档，两帧之后把
+`display.refreshRate` 读回来写进日志（`帧率：屏幕最高 120Hz，请求前 60Hz，现在 120Hz`）。
 
-**踩到的坑**：第一版写的是 `Window#setFrameRate`——它在 AOSP 里是 `@hide`，公开的
-`android.jar` 里根本没有这个方法，本机 kotlinc 当场报 `unresolved reference`。
-公开可用的是 `View#setRequestedFrameRate`（API 31）：`View.setRequestedFrameRate(0f)`
-就是交回系统。API 30 及以下没有这条，那几档保持原样。
+不跟着手势开关：切显示模式要走一次窗口 relayout，在"手指刚按下那一帧"切，用户看到的就是
+一次卡顿——那正是我们要修的东西。代价是静止时也停在最高档（面板不自己降），这一档由用户拍板。
 
-计数的是"**还有几处在动**"：抽屉滑出与消息区滚动会同时发生，一处结束就写 0 的话，
-另一处滑到一半帧率会掉下去。所以 0→1 抬上去、1→0 还回来。
+**踩到两次 API 的坑（都记进 `pitfalls.md`）**：
+
+1. `Window#setFrameRate` 是 `@hide`，公开 `android.jar` 里没有，本机 kotlinc 当场报错。
+2. `View#setRequestedFrameRate` **API 35 才进公开 jar**，而项目的 `compileSdk` 是 34——
+   本机类型检查用的却是 `/opt/android-sdk/platforms/android-36/android.jar`，于是它放过去了，
+   CI 的 `compileDebugKotlin` 才红。后来者：本机检查要拿 `android-34-ext12` 的 jar 对齐 compileSdk。
 
 ### 二、抽屉：每帧重组整个外壳
 
@@ -3656,3 +3665,7 @@ lambda 里读（布局/绘制阶段），遮板开不开用一个**布尔** `der
 日志：`Perf 甩 v=… ×4 → … cap=… 用=…`，四个数都留着，下一轮按真机那行再调。
 
 判据：kotlinc 全量只剩 9 条既有 `R`。真机未测（V157）。
+
+**如果日志里那行写着「请求前 60Hz，现在 60Hz」**：说明这个 ROM 不认窗口属性（有的厂商只认
+自家白名单）。下一档手段是 `preferredDisplayModeId`——按分辨率与刷新率挑出那个 mode id 直接指定；
+先等真机那行数字，别盲改。

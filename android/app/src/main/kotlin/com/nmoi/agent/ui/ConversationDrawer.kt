@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -187,22 +186,13 @@ internal fun ConversationDrawer(
     // 各有各的列表状态（真机上就是"拉出途中选中项高了两行"，2026-11-06 录屏量出来的）。
     // 现在只有一份：内容按最终宽度排一次，开合只移动它。
     val settle = remember { Animatable(if (open) widthPx else 0f) }
-    // 开合动画正在跑（D360）：滑动期间要告诉系统"这一屏要 120 帧"。
-    var settling by remember { mutableStateOf(false) }
     LaunchedEffect(open, manual) {
         if (manual) return@LaunchedEffect
-        settling = true
-        try {
-            settle.animateTo(
-                targetValue = if (open) widthPx else 0f,
-                animationSpec = tween(durationMillis = 200, easing = LinearOutSlowInEasing),
-            )
-        } finally {
-            settling = false
-        }
+        settle.animateTo(
+            targetValue = if (open) widthPx else 0f,
+            animationSpec = tween(durationMillis = 200, easing = LinearOutSlowInEasing),
+        )
     }
-    // 拖出来、惯性、开合动画：三种都算"在动"（D360）。
-    RequestFrameRate(dragging || animating || settling)
     // 位置只在**布局/绘制**里读（D360）：`shownPx` 每帧都在变，在组合里读一次就等于
     // 每帧重组整个抽屉外壳——120 帧下 8.3 ms 的预算里，这是最贵的一项。
     // 用 `derivedStateOf` 包一层：谁在 lambda 里读它，谁才被通知（重组不会发生）。
@@ -556,10 +546,7 @@ private fun DrawerPanel(
         }
 
         // —— 会话列表（新对话在最上面）——
-        // 自己持一份 state：抽屉里滚列表的时候也要 120 帧（D360），不然滑起来只有一半帧。
-        val listState = rememberLazyListState()
-        RequestFrameRate(listState.isScrollInProgress)
-        LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+        LazyColumn(modifier = Modifier.weight(1f)) {
             if (rows.isEmpty()) {
                 item {
                     Text(
