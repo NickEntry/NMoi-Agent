@@ -3669,3 +3669,74 @@ lambda 里读（布局/绘制阶段），遮板开不开用一个**布尔** `der
 **如果日志里那行写着「请求前 60Hz，现在 60Hz」**：说明这个 ROM 不认窗口属性（有的厂商只认
 自家白名单）。下一档手段是 `preferredDisplayModeId`——按分辨率与刷新率挑出那个 mode id 直接指定；
 先等真机那行数字，别盲改。
+
+## D361 遮罩的 modifier 顺序、甩动加速度调回 50%、三次快滑的判据（2026-11-21）
+
+### 一、抽屉一开，聊天看不见了（真机截图）
+
+现象：抽屉拉出来之后右侧那一块是**纯黑**，不是"压暗的聊天"。原因是我上一轮把遮罩从
+`background(Color.Black.copy(alpha = 0.60f * progress))` 改成了
+
+```kotlin
+.background(Color.Black)
+.graphicsLayer { alpha = 0.60f * progress }   // 顺序反了
+```
+
+`background` 是**画在它后面那些 modifier 外面**的：黑底以全不透明画完，再把"后面的内容"
+（那层 alpha 里什么都没有）叠上去——变暗的是空白。改成
+
+```kotlin
+.drawBehind {
+    drawRect(color = Color.Black, alpha = 0.60f * (shown.value / widthPx).coerceIn(0f, 1f))
+}
+```
+
+`drawBehind` 在**绘制阶段**读 `shown`，既不会每帧重组，也不吃 modifier 顺序。
+（`graphicsLayer` 那条路也能修——把层写在 `background` 前面——但那要记住一条顺序规则；
+`drawBehind` 没有这个问题。）
+
+### 二、加速度调回 50%
+
+用户：「现在这个版本加速度有点快，调到50%看看」。`FLING_GAIN` 4 → **2**。
+
+### 三、别人家是怎么做滑动的（用户问"有没有相关设计"）
+
+查到的公开事实：
+
+| 平台 | 机制 | 数字 |
+|---|---|---|
+| iOS `UIScrollView` | 每毫秒指数衰减 `v(t) = v0 · rate^t` | `rate` 0.998（normal）/ 0.99（fast）；总位移 ≈ **499 · v0**（v0 按 px/ms 计），也就是"松手速度的一秒路程"；fast 只有 normal 的 **1/5** |
+| Android `OverScroller` | friction spline（对数式减速 + 三次贝塞尔缓出） | `ViewConfiguration.getScrollFriction()` = **0.015**；位移随 friction^-0.736 变，密度折进系数里 |
+| Compose `ScrollableDefaults.flingBehavior()` | `splineBasedDecay(density)` | 就是 Android 那套 spline，**平台默认 = 1 倍** |
+
+结论两条：
+- **"更快"不是靠改减速曲线**。iOS 改 `decelerationRate` 是**变短**（fast 只有 normal 的 1/5），
+  不是变长；Android 那一侧 friction 调小才会滑得更远。两条路都会让手感偏离"平台标准"。
+- 所以我们保留平台的衰减曲线（`splineBasedDecay`），只在**入口乘起始速度**：`FLING_GAIN`
+  就是"几倍于平台默认"。2 倍 ≈ 松手速度的 1.5–2 秒路程（iOS normal 是 0.5 秒）。
+  再往上就该换手段了（改衰减或改上限），而不是继续乘。
+
+上限仍是 `MAX_FLING_SCREENS_PER_SECOND = 8f`（8 屏/秒），先乘再封顶。
+
+### 四、三次快滑 → 巡游（用户给的判据，照抄）
+
+> 「反正是从滑动开始计时，半秒内滑动距离超过屏幕的八分之一，就算一次成功快滑；
+> 三秒内有三次这样的快滑就触发。」
+
+`ui/FastSwipes.kt` 就是这条规则的实现，时钟是注入的，所以有 **8 条 JVM 单测**
+（`FastSwipesTest`，CI 的 `testDebugUnitTest` 会跑）：
+
+- 判据看的是**滑动过程**，不是松手速度。`VelocityTracker` 只在松手那一刻有值，
+  而用户描述的是"半秒里挪了 1/8 屏"——所以喂进去的是手指位移。
+- 一次手势最多记一次（`counted`）；三次手势要在三秒的滑动窗口里凑齐。
+- 换方向、停顿 > 250 ms、松手，都从零重新算距离。
+
+接线：`LazyColumn` 上挂 `nestedScroll`，`onPreScroll`（`source == Drag`）喂 `available.y`，
+`onPreFling` 与"滑动停止"两个信号都算手势结束。触发后 `animateScrollToItem` 滚到那一端：
+手指朝下（往更早去）→ 顶，手指朝上 → 底。**手指一动就顶掉**——它走的是同一条 scroll 互斥，
+新的拖动当场接管（D356 的"手指最大"在这个框架里是免费的）。
+
+**它只能滚到这一页的尽头**（D357 的代价：滑动中不读库、不加页）。顶部那一行
+「上面还有更早的消息」就是边界。要越过去得先点一下读更早（D357 留下的待办）。
+
+判据：kotlinc 全量只剩 9 条既有 `R`；`FastSwipesTest` 8 条绿。真机未测（V158）。

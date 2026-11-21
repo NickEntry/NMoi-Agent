@@ -79,6 +79,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
@@ -93,12 +96,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -2595,11 +2600,12 @@ private fun BlankConversationHint() {
 /**
  * 甩动的**加速度**（起始速度的倍数，D360）。
  *
- * 用户 2026-11-21：「滑动加速度好像还是不够快啊，可以弄个4倍加速度看看」。
+ * 用户 2026-11-21：「滑动加速度好像还是不够快啊，可以弄个4倍加速度看看」，试过 4 倍之后
+ * 同一天改成「加速度有点快，调到50%看看」——所以现在是 2 倍（平台默认是 1 倍）。
  * 系统那套衰减不变，只在入口把起始速度乘上去——衰减曲线自己画会跟应用里其它列表
  * 手感不一致（D356 的结论），乘倍数不会。
  */
-private const val FLING_GAIN = 4f
+private const val FLING_GAIN = 2f
 
 /**
  * 乘完之后的上限，按**屏高**算（屏/秒）。
@@ -2730,6 +2736,42 @@ private fun MessageArea(
     val compacted = page?.compacted == true
     val listState = rememberLazyListState()
 
+    // 三次快滑 → 巡游（D361）。判据在 FastSwipes 里（半秒内挪过 1/8 屏算一次，三秒内三次算触发），
+    // 这里只负责把手指位移喂进去、把触发接成"滚到那一端"。
+    val swipeReach = with(LocalDensity.current) {
+        (LocalConfiguration.current.screenHeightDp / 8f).dp.toPx()
+    }
+    val swings = remember { Channel<Int>(Channel.CONFLATED) }
+    val fastSwipes = remember(swipeReach) {
+        FastSwipes(reachPx = swipeReach) { direction -> swings.trySend(direction) }
+    }
+    val swipeWatch = remember(listState, fastSwipes) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.Drag) fastSwipes.feed(available.y)
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                fastSwipes.end()
+                return Velocity.Zero
+            }
+        }
+    }
+    LaunchedEffect(listState, fastSwipes) {
+        snapshotFlow { listState.isScrollInProgress }.collect { if (!it) fastSwipes.end() }
+    }
+    LaunchedEffect(listState, swings) {
+        for (direction in swings) {
+            val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+            val target = if (direction > 0) 0 else last
+            NLog.i("Perf", "巡游 ${if (direction > 0) "向上" else "向下"} → $target")
+            // 手指一动就把它顶掉：`animateScrollToItem` 走的是同一条 scroll 互斥，
+            // 新的拖动会当场接管（D356 的"手指最大"在这个框架里是免费的）。
+            listState.animateScrollToItem(target)
+        }
+    }
+
     // 滑动帧统计（D358 / D360）：只在滑动期间采样，一次滑动结束写一行。
     //
     // 用户问"能不能做性能测试"——没有 adb 的时候，这一行就是证据：
@@ -2813,7 +2855,7 @@ private fun MessageArea(
     }
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().nestedScroll(swipeWatch),
         // 惯性封顶（D356 / D359）：甩得再猛，起始速度也不超过一屏高的 5 倍/秒。
         // 衰减仍交给系统那套——自己画曲线会跟应用里其它列表手感不一致。
         flingBehavior = remember(listState, flingCap) {

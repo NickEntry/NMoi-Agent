@@ -46,8 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -329,8 +329,16 @@ internal fun ConversationDrawer(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black)
-                    .graphicsLayer { alpha = 0.60f * (shown.value / widthPx).coerceIn(0f, 1f) }
+                    // 用 `drawBehind` 画那一块黑（D361）：`background(Color.Black)` +
+                    // `graphicsLayer { alpha }` 的顺序一旦写反，alpha 就作用在"空白"上，
+                    // 黑底本身全不透明——真机上就是"抽屉一开，聊天看不见了"。
+                    // `drawBehind` 在绘制阶段读 `shown`，既不重组也不吃 modifier 顺序。
+                    .drawBehind {
+                        drawRect(
+                            color = Color.Black,
+                            alpha = 0.60f * (shown.value / widthPx).coerceIn(0f, 1f),
+                        )
+                    }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
