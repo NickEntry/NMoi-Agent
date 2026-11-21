@@ -23,6 +23,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -75,13 +76,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.ui.Alignment
+import android.os.SystemClock
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
@@ -96,14 +99,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -1563,6 +1564,28 @@ internal fun ChatScreen(
         }
     }
 
+    // 位置键（D362）：点一下 / 滑一下、然后停手，右侧滑出四个键，驻留一秒自己退回。
+    // 状态放在这一层：`listState` 要同时给消息区和这四个键用。
+    val listState = rememberLazyListState()
+    var railTick by remember { mutableStateOf(0L) }
+    val railVisible = railTick != 0L
+    val pokeRail = { railTick = SystemClock.elapsedRealtime() }
+    LaunchedEffect(railTick) {
+        if (railTick == 0L) return@LaunchedEffect
+        delay(1_000)
+        railTick = 0L
+    }
+    LaunchedEffect(listState) {
+        // 只在"滑过又停下"的那一刻叫出来：一进页面 `isScrollInProgress` 就是 false，
+        // 直接用它的值会让键在打开会话的瞬间自己弹一次。
+        // 滑动**开始**时不去掐它：位置键自己按下的跳转也算一次滑动，掐了就会"按下就消失"。
+        var was = false
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (was && !scrolling) pokeRail()
+            was = scrolling
+        }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (selecting) {
@@ -1596,11 +1619,17 @@ internal fun ChatScreen(
                 ModelBar(label = modelLabel, percent = contextPercent, onClick = { modelSheet = true })
             }
 
-            Box(modifier = Modifier.weight(1f)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    // 点空白处（非按钮区）也叫一次：按钮自己会消费掉点击，这里收不到。
+                    .pointerInput(Unit) { detectTapGestures(onTap = { pokeRail() }) },
+            ) {
                 if (sessionId == null) {
                     BlankConversationHint()
                 } else {
                     MessageArea(
+                        listState = listState,
                         snapshot = snapshot,
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
@@ -1711,6 +1740,14 @@ internal fun ChatScreen(
                             onDismiss = { showCompacted = false },
                         )
                     }
+                }
+                if (sessionId != null && !selecting) {
+                    JumpRail(
+                        listState = listState,
+                        visible = railVisible,
+                        onPoke = { pokeRail() },
+                        modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
+                    )
                 }
             }
 
@@ -2618,6 +2655,141 @@ private const val FLING_GAIN = 2f
  */
 private const val MAX_FLING_SCREENS_PER_SECOND = 8f
 
+/** 到底用的那个"很大"的偏移：`animateScrollToItem(last, 到这里)` 会被夹在滚动范围上 = 滚到底。 */
+private const val RAIL_BOTTOM_OFFSET_PX = 100_000
+
+/**
+ * 右侧那排位置键（D362）。
+ *
+ * 用户 2026-11-21：「不如后面弄成侧边的位置移动键吧」。从上到下四个：
+ * 最上方 / 上一条消息（或这一条的开头）/ 下一条消息（最后一条时到结尾）/ 最下方。
+ *
+ * 「当前位置」= 消息区最上面那一条。它的开头正好贴住视口顶（`firstVisibleItemScrollOffset == 0`）
+ * 时，第二个键去的是**前一条**；否则去的是**这一条**的开头。
+ *
+ * 第三、四个键在最后一条时改成"到结尾"，参考点也跟着换成**下边缘**：按上边缘算会指到一个
+ * 不存在的位置，屏幕上就是一片空白（用户原话：「就会切换到一个不存在的位置，然后显示空白」）。
+ */
+@Composable
+private fun JumpRail(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    visible: Boolean,
+    onPoke: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    AnimatedVisibility(
+        visible = visible,
+        // 从侧面弹出、往右划走：位移看得见，结果不产生（它不改任何数据）。
+        enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+        exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+        modifier = modifier,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            RailKey(double = true, up = true, name = "滑到最上方", enabled = visible) {
+                onPoke()
+                NLog.i("Perf", "位置键 最上方 → 0（当前 ${topIndex(listState)}）")
+                scope.launch { listState.animateScrollToItem(0) }
+            }
+            RailKey(double = false, up = true, name = "滑到上一条消息", enabled = visible) {
+                onPoke()
+                val index = listState.firstVisibleItemIndex
+                val atStart = listState.firstVisibleItemScrollOffset == 0
+                val target = if (atStart) index - 1 else index
+                NLog.i("Perf", "位置键 上一条 → $target（当前 $index 偏移 ${listState.firstVisibleItemScrollOffset}）")
+                if (target >= 0) scope.launch { listState.animateScrollToItem(target) }
+            }
+            RailKey(double = false, up = false, name = "滑到下一条消息", enabled = visible) {
+                onPoke()
+                val last = listState.layoutInfo.totalItemsCount - 1
+                if (last < 0) return@RailKey
+                when {
+                    listState.firstVisibleItemIndex < last -> {
+                        val next = listState.firstVisibleItemIndex + 1
+                        NLog.i("Perf", "位置键 下一条 → $next（共 ${last + 1}）")
+                        scope.launch { listState.animateScrollToItem(next) }
+                    }
+                    // 已经是最新那一条：到底 = 这一条的结尾（下边缘作参考）。
+                    listState.canScrollForward -> {
+                        NLog.i("Perf", "位置键 下一条 → 到底（共 ${last + 1}，已是最后一条）")
+                        scope.launch { listState.animateScrollToItem(last, RAIL_BOTTOM_OFFSET_PX) }
+                    }
+                }
+            }
+            RailKey(double = true, up = false, name = "滑到最下方", enabled = visible) {
+                onPoke()
+                val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                NLog.i("Perf", "位置键 最下方 → 到底（共 ${last + 1}）")
+                scope.launch {
+                    if (listState.canScrollForward) {
+                        listState.animateScrollToItem(last, RAIL_BOTTOM_OFFSET_PX)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 当前位置：消息区最上面那一行（`-1` = 列表空着）。 */
+private fun topIndex(state: androidx.compose.foundation.lazy.LazyListState): Int =
+    state.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: -1
+
+/** 一颗位置键：视觉 36、热区 44（看得见的大小与点得到的大小不是一件事）。 */
+@Composable
+private fun RailKey(
+    double: Boolean,
+    up: Boolean,
+    name: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            tonalElevation = 1.dp,
+            shadowElevation = 1.dp,
+            modifier = Modifier.size(36.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(enabled = enabled, onClick = onClick),
+                contentAlignment = Alignment.Center,
+            ) {
+                val icon = if (up) ActionIcons.ChevronUp else ActionIcons.ChevronDown
+                if (double) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy((-6).dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = name,
+                            tint = tint,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = tint,
+                            modifier = Modifier.size(15.dp),
+                        )
+                    }
+                } else {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = name,
+                        tint = tint,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
 /**
  * 消息区。
  *
@@ -2627,6 +2799,8 @@ private const val MAX_FLING_SCREENS_PER_SECOND = 8f
  */
 @Composable
 private fun MessageArea(
+    /** 消息区的滚动状态（D362）：位置键与消息区共用同一个，滚到哪、键就指到哪。 */
+    listState: androidx.compose.foundation.lazy.LazyListState,
     snapshot: ChatSnapshot?,
     /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
     pending: PendingSend?,
@@ -2734,43 +2908,7 @@ private fun MessageArea(
     // 压缩线（D324）：压过就在列表顶上摆一行，写明"移走了几条、摘要多少字"，点开能看摘要、能还原。
     // **线上那几条仍然画在列表里**（原文一条都没删）——不标出来，用户会以为模型还看得见它们。
     val compacted = page?.compacted == true
-    val listState = rememberLazyListState()
-
-    // 三次快滑 → 巡游（D361）。判据在 FastSwipes 里（半秒内挪过 1/8 屏算一次，三秒内三次算触发），
-    // 这里只负责把手指位移喂进去、把触发接成"滚到那一端"。
-    val swipeReach = with(LocalDensity.current) {
-        (LocalConfiguration.current.screenHeightDp / 8f).dp.toPx()
-    }
-    val swings = remember { Channel<Int>(Channel.CONFLATED) }
-    val fastSwipes = remember(swipeReach) {
-        FastSwipes(reachPx = swipeReach) { direction -> swings.trySend(direction) }
-    }
-    val swipeWatch = remember(listState, fastSwipes) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.Drag) fastSwipes.feed(available.y)
-                return Offset.Zero
-            }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                fastSwipes.end()
-                return Velocity.Zero
-            }
-        }
-    }
-    LaunchedEffect(listState, fastSwipes) {
-        snapshotFlow { listState.isScrollInProgress }.collect { if (!it) fastSwipes.end() }
-    }
-    LaunchedEffect(listState, swings) {
-        for (direction in swings) {
-            val last = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-            val target = if (direction > 0) 0 else last
-            NLog.i("Perf", "巡游 ${if (direction > 0) "向上" else "向下"} → $target")
-            // 手指一动就把它顶掉：`animateScrollToItem` 走的是同一条 scroll 互斥，
-            // 新的拖动会当场接管（D356 的"手指最大"在这个框架里是免费的）。
-            listState.animateScrollToItem(target)
-        }
-    }
+    // 消息区的滚动状态由上一层持有（D362）：右侧那排位置键要跟它用同一个 state。
 
     // 滑动帧统计（D358 / D360）：只在滑动期间采样，一次滑动结束写一行。
     //
@@ -2855,7 +2993,7 @@ private fun MessageArea(
     }
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize().nestedScroll(swipeWatch),
+        modifier = Modifier.fillMaxSize(),
         // 惯性封顶（D356 / D359）：甩得再猛，起始速度也不超过一屏高的 5 倍/秒。
         // 衰减仍交给系统那套——自己画曲线会跟应用里其它列表手感不一致。
         flingBehavior = remember(listState, flingCap) {
