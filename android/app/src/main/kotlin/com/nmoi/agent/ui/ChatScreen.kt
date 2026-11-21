@@ -2709,10 +2709,7 @@ private fun JumpRail(
     }
 
     /** 当前位置落在第几条消息上（`-1` = 还停在它上面，比如顶上那几行提示）。 */
-    fun anchorAt(): Int {
-        val top = listState.firstVisibleItemIndex
-        return starts.indexOfLast { it <= top }
-    }
+    fun anchorAt(): Int = RailJump.rowOf(listState.firstVisibleItemIndex, starts)
 
     /** 到底 = 最后一条消息的结尾（下边缘作参考）。已经在底就什么都不做。 */
     fun jumpToEnd() {
@@ -2736,36 +2733,38 @@ private fun JumpRail(
             }
             RailKey(double = false, up = true, name = "滑到上一条消息", enabled = visible) {
                 onHold()
-                if (starts.isEmpty()) return@RailKey
-                val at = anchorAt()
-                val exact = at >= 0 && starts[at] == listState.firstVisibleItemIndex &&
-                    listState.firstVisibleItemScrollOffset == 0
-                val target = if (exact) at - 1 else at.coerceAtLeast(0)
+                val target = RailJump.up(
+                    topIndex = listState.firstVisibleItemIndex,
+                    topOffset = listState.firstVisibleItemScrollOffset,
+                    starts = starts,
+                )
                 NLog.i(
                     "Perf",
-                    "位置键 上一条 → 第 $target 条（行 ${starts.getOrNull(target)}，当前第 $at 条，" +
-                        "偏移 ${listState.firstVisibleItemScrollOffset}）",
+                    "位置键 上一条 → 行 ${target ?: "不动"}（当前第 ${anchorAt()} 条，" +
+                        "行 ${listState.firstVisibleItemIndex}，偏移 ${listState.firstVisibleItemScrollOffset}）",
                 )
-                if (target >= 0) jumpTo(starts[target])
+                if (target != null) jumpTo(target)
             }
             RailKey(double = false, up = false, name = "滑到下一条消息", enabled = visible) {
                 onHold()
-                if (starts.isEmpty()) return@RailKey
-                val at = anchorAt()
-                when {
-                    at < 0 -> {
-                        NLog.i("Perf", "位置键 下一条 → 第 0 条（行 ${starts[0]}，还在提示行上）")
-                        jumpTo(starts[0])
-                    }
-                    at + 1 < starts.size -> {
-                        NLog.i("Perf", "位置键 下一条 → 第 ${at + 1} 条（行 ${starts[at + 1]}）")
-                        jumpTo(starts[at + 1])
-                    }
+                val target = RailJump.down(
+                    topIndex = listState.firstVisibleItemIndex,
+                    starts = starts,
+                    canScrollForward = listState.canScrollForward,
+                )
+                NLog.i(
+                    "Perf",
+                    "位置键 下一条 → " + when (target) {
+                        null -> "不动（共 ${starts.size} 条，已在最后一条的结尾）"
+                        RailJump.END -> "到底（共 ${starts.size} 条，已是最后一条）"
+                        else -> "行 $target（当前第 ${anchorAt()} 条）"
+                    },
+                )
+                when (target) {
+                    null -> Unit
                     // 已经是最新那一条：到底 = 这一条的结尾（下边缘作参考）。
-                    else -> {
-                        NLog.i("Perf", "位置键 下一条 → 到底（共 ${starts.size} 条，已是最后一条）")
-                        jumpToEnd()
-                    }
+                    RailJump.END -> jumpToEnd()
+                    else -> jumpTo(target)
                 }
             }
             RailKey(double = true, up = false, name = "滑到最下方", enabled = visible) {
