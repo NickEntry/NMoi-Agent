@@ -77,7 +77,24 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
             PresetRepository.list(context, databasePath).getOrNull()?.items.orEmpty()
         }
     }
-    var presetSheet by remember { mutableStateOf<PresetEntryView?>(null) }
+    // 内置条目的编辑（D364）：预设条目写回 `preset` scope，工具定义写回 `builtin` 册。
+    var presetEdit by remember { mutableStateOf<PresetEdit?>(null) }
+    var toolEdit by remember { mutableStateOf<String?>(null) }
+    // 工具定义覆写（`tool_call_*`）按工具表生成：名字从原生层现读，别在 Kotlin 里抄一份。
+    var tools by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(databasePath) {
+        tools = withContext(Dispatchers.IO) {
+            val names = NmoiFfi.toolNames().getOrNull()?.optJSONArray("names")
+            buildList {
+                if (names != null) {
+                    for (index in 0 until names.length()) {
+                        val name = names.optString(index, "").trim()
+                        if (name.isNotEmpty()) add(name)
+                    }
+                }
+            }
+        }
+    }
     var bookPicked by remember { mutableStateOf<Set<String>?>(null) }
     var entryPicked by remember { mutableStateOf<EntryPick?>(null) }
     var bulkDelete by remember { mutableStateOf<BulkDelete?>(null) }
@@ -318,7 +335,9 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
                         expanded + LorebookStore.BUILTIN_ID
                     }
                 },
-                onOpenPreset = { presetSheet = it },
+                tools = tools,
+                onOpenPreset = { presetId, entry -> presetEdit = PresetEdit(presetId, entry) },
+                onEditTool = { tool -> toolEdit = tool },
                 onAddManual = {
                     commit { LorebookStore.addManualEntry(it) }
                     expanded = expanded + LorebookStore.BUILTIN_ID
@@ -494,8 +513,61 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
             }
         }
 
-        presetSheet?.let { entry ->
-            PresetEntrySheet(entry = entry, onDismiss = { presetSheet = null })
+        presetEdit?.let { edit ->
+            val entry = edit.entry
+            BodySheet(
+                title = entry.title.ifBlank { "内置条目" },
+                hint = "这一条来自预设包。改过之后状态会变成「已改」；恢复默认就回到包里那一份。",
+                initial = entry.content,
+                canReset = entry.state != "follow",
+                onSave = { text ->
+                    scope.launch {
+                        PresetRepository.saveEntry(
+                            databasePath = databasePath,
+                            presetId = edit.presetId,
+                            entry = entry,
+                            content = text,
+                            disabled = entry.disabled,
+                        ).onSuccess {
+                            presetReload += 1
+                            notice = "已保存：${entry.title.ifBlank { entry.id }}"
+                        }.onFailure { notice = "保存失败：${it.message}" }
+                    }
+                    presetEdit = null
+                },
+                onReset = {
+                    scope.launch {
+                        PresetRepository.follow(databasePath, edit.presetId, entry.id).onSuccess {
+                            presetReload += 1
+                            notice = "已恢复默认：${entry.title.ifBlank { entry.id }}"
+                        }.onFailure { notice = "恢复默认失败：${it.message}" }
+                    }
+                    presetEdit = null
+                },
+                onDismiss = { presetEdit = null },
+            )
+        }
+
+        toolEdit?.let { tool ->
+            val current = LorebookStore.toolContent(root, tool).orEmpty()
+            BodySheet(
+                title = "工具定义 · $tool",
+                hint = "正文覆写请求体里这一条工具的说明：纯文本换 description，JSON 可以带 parameters。" +
+                    "空着 = 用应用默认。",
+                initial = current,
+                canReset = current.isNotEmpty(),
+                onSave = { text ->
+                    commit { LorebookStore.setToolEntry(it, tool, text) }
+                    notice = if (text.isBlank()) "已清空：$tool 回到应用默认" else "已保存：$tool 的定义"
+                    toolEdit = null
+                },
+                onReset = {
+                    commit { LorebookStore.removeToolEntry(it, tool) }
+                    notice = "已恢复默认：$tool"
+                    toolEdit = null
+                },
+                onDismiss = { toolEdit = null },
+            )
         }
 
         if (creating) {
@@ -687,6 +759,9 @@ internal fun LorebookScreen(context: Context, databasePath: String, onBack: () -
 
 private data class EditTarget(val bookId: String, val entryId: String)
 
+/** 正在编辑的那一条内置词条（D364）：正文写回 `preset` scope，键是 `预设 id / 词条 id`。 */
+private data class PresetEdit(val presetId: String, val entry: PresetEntryView)
+
 private data class DeleteTarget(val bookId: String, val entryId: String?)
 
 private data class EntryPick(val bookId: String, val ids: Set<String>)
@@ -724,9 +799,12 @@ private fun existingIds(root: JSONObject): Set<String> {
 private fun BuiltinCard(
     presets: List<PresetView>,
     manual: JSONArray,
+    /** 工具表（0.17f）：每一项生成一条 `tool_call_<name>` 覆写行。 */
+    tools: List<String> = emptyList(),
     expanded: Boolean,
     onToggleExpand: () -> Unit,
-    onOpenPreset: (PresetEntryView) -> Unit,
+    onOpenPreset: (String, PresetEntryView) -> Unit,
+    onEditTool: (String) -> Unit = {},
     onAddManual: () -> Unit,
     onEditManual: (String) -> Unit,
     onToggleManual: (String, Boolean) -> Unit,
@@ -735,6 +813,20 @@ private fun BuiltinCard(
     onReset: () -> Unit,
 ) {
     val builtinCount = presets.sumOf { it.entries.size }
+    // 哪些工具有覆写：按 id 认（`tool_call_<name>`），正文空也算"写过"——那与"没写过"是两件事。
+    val toolBodies = buildMap {
+        for (index in 0 until manual.length()) {
+            val entry = manual.optJSONObject(index) ?: continue
+            val id = entry.optString("id")
+            if (id.startsWith(LorebookStore.TOOL_PREFIX)) put(id, entry.optString("content"))
+        }
+    }
+    val manualCount = buildList {
+        for (index in 0 until manual.length()) {
+            val id = manual.optJSONObject(index)?.optString("id").orEmpty()
+            if (id.isNotEmpty() && !LorebookStore.isToolEntry(id, tools)) add(id)
+        }
+    }.size
     SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
         Row(
             modifier = Modifier
@@ -763,7 +855,11 @@ private fun BuiltinCard(
                     Badge("内置")
                 }
                 Text(
-                    text = "$builtinCount 条内置 · ${manual.length()} 条自制",
+                    text = buildString {
+                        append("$builtinCount 条内置")
+                        if (tools.isNotEmpty()) append(" · ${tools.size} 条工具定义")
+                        append(" · $manualCount 条自制")
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
@@ -775,12 +871,36 @@ private fun BuiltinCard(
             RowDivider(leading = 36.dp)
             presets.forEach { preset ->
                 preset.entries.forEach { entry ->
-                    PresetEntryRow(entry = entry, onClick = { onOpenPreset(entry) })
+                    PresetEntryRow(entry = entry, onClick = { onOpenPreset(preset.id, entry) })
                 }
+            }
+            if (tools.isNotEmpty()) {
+                Text(
+                    text = "工具定义 · 空着就用应用默认",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 36.dp, top = 10.dp, bottom = 2.dp),
+                )
+                tools.forEach { tool ->
+                    ToolDefRow(
+                        tool = tool,
+                        overridden = toolBodies.containsKey(LorebookStore.toolEntryId(tool)),
+                        onClick = { onEditTool(tool) },
+                    )
+                }
+            }
+            if (manualCount > 0) {
+                Text(
+                    text = "自制条目",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 36.dp, top = 10.dp, bottom = 2.dp),
+                )
             }
             for (index in 0 until manual.length()) {
                 val entry = manual.optJSONObject(index) ?: continue
                 val entryId = entry.optString("id")
+                if (LorebookStore.isToolEntry(entryId, tools)) continue
                 EntryRow(
                     entry = entry,
                     onClick = { onEditManual(entryId) },
@@ -1298,27 +1418,95 @@ private fun ImportPreviewSheet(
 }
 
 /** 内置条目：只读。要改内容去「预设」页——一个动作一个入口。 */
+/**
+ * 一条工具定义（0.17f / D364）：名字就是 `tool_call_<工具名>`，正文覆写请求体里那一份说明。
+ *
+ * **自带项**：没有删除，只有「恢复默认」——那一条本来就是工具表长出来的，不是用户写的。
+ */
 @Composable
-private fun PresetEntrySheet(entry: PresetEntryView, onDismiss: () -> Unit) {
-    SheetFrame(title = entry.title.ifBlank { "内置条目" }, onDismiss = onDismiss) {
+private fun ToolDefRow(tool: String, overridden: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 36.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = tool,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            Row(
+                modifier = Modifier.padding(top = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Badge("工具")
+                if (overridden) {
+                    Spacer(Modifier.width(6.dp))
+                    Badge("已改")
+                }
+            }
+        }
+        Icon(
+            imageVector = ActionIcons.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+/**
+ * 一段正文的编辑层（D364）：内置条目与工具定义共用。
+ *
+ * 「恢复默认」只在真改过的时候出现——没改过的时候给一颗点了没反应的按钮，等于说这里有东西可改。
+ */
+@Composable
+private fun BodySheet(
+    title: String,
+    hint: String,
+    initial: String,
+    canReset: Boolean,
+    onSave: (String) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    SheetFrame(title = title, onDismiss = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 460.dp)
+                .heightIn(max = 520.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
         ) {
             Text(
-                text = entry.content.ifBlank { "（这一条是空的）" },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                text = hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            LoreField(
+                value = text,
+                onChange = { text = it },
+                placeholder = "正文",
+                singleLine = false,
+                minHeight = 120.dp,
             )
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (canReset) {
+                    ChipButton("恢复默认", primary = false, onClick = onReset)
+                }
                 Spacer(Modifier.weight(1f))
-                ChipButton("关闭", primary = true, onClick = onDismiss)
+                ChipButton("关闭", primary = false, onClick = onDismiss)
+                Spacer(Modifier.width(8.dp))
+                ChipButton("保存", primary = true, onClick = { onSave(text) })
             }
         }
     }

@@ -375,6 +375,58 @@ internal object LorebookStore {
         return root
     }
 
+    /**
+     * 工具定义覆写（0.17f / D364）：条目名 `tool_call_<工具名>`，正文覆写请求体里那一份工具定义。
+     *
+     * 这些条目**由工具表生成**，不是用户手写的：界面上按工具名逐条列出来，正文空着 = 用应用默认。
+     * 它们与"自制条目"共用 `builtin` 册的存储（所以能跟着导出走），但**不算自制**：
+     * 列表里不重复画，也不给删除——"退回默认"就是把这一条去掉。
+     */
+    const val TOOL_PREFIX = "tool_call_"
+
+    fun toolEntryId(tool: String): String = TOOL_PREFIX + tool
+
+    /** 这一条是不是某个工具的覆写（工具有没有列出来由调用方给，别在这里猜）。 */
+    fun isToolEntry(entryId: String, tools: Collection<String>): Boolean =
+        entryId.startsWith(TOOL_PREFIX) && tools.any { entryId == toolEntryId(it) }
+
+    /** 这条工具现在的覆写正文；没有覆写返回 null（= 跟应用默认）。 */
+    fun toolContent(root: JSONObject, tool: String): String? =
+        book(root, BUILTIN_ID)?.let { entry(it, toolEntryId(tool)) }?.optString("content")
+
+    /** 写（或建）一条工具覆写。正文空串也要建：那是"我写过、现在是空的"，与"没有覆写"是两件事。 */
+    fun setToolEntry(root: JSONObject, tool: String, content: String): JSONObject {
+        val out = ensureBuiltinBook(root)
+        val target = book(out, BUILTIN_ID) ?: return out
+        val existing = entry(target, toolEntryId(tool))
+        if (existing != null) {
+            existing.put("content", content)
+            return out
+        }
+        val entries = entries(target)
+        entries.put(
+            JSONObject()
+                .put("id", toolEntryId(tool))
+                .put("name", tool)
+                .put("enabled", true)
+                .put("priority", entries.length())
+                .put("position", "AFTER_SYSTEM_PROMPT")
+                .put("role", "USER")
+                .put("content", content)
+                .put("injectDepth", 4)
+                .put("scanDepth", 4)
+                .put("keywords", JSONArray())
+                .put("useRegex", false)
+                .put("caseSensitive", false)
+                .put("constantActive", false),
+        )
+        return out
+    }
+
+    /** 退回应用默认：把那一条覆写去掉（不是把正文清空——空正文与"没写过"在库外看着一样，在库里不一样）。 */
+    fun removeToolEntry(root: JSONObject, tool: String): JSONObject =
+        deleteEntry(root, BUILTIN_ID, toolEntryId(tool))
+
     /** 册行副标题：`6 条 · 3 常驻 · 3 关键词`（停用的另起一句）。 */
     fun summary(book: JSONObject): String {
         val entries = entries(book)
