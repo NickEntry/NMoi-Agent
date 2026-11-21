@@ -1,5 +1,6 @@
 package com.nmoi.agent.ui
 
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,6 +21,34 @@ internal data class ChatSnapshot(
  * 局限（写清，免得被当成已完成）：一次只取最后 `limit` 个单元，往上翻页还没做。
  * `truncated=true` 只用来在顶部提示"还有更早的"，不是分页游标。
  */
+/**
+ * "从头一页"的缓存（D366）。
+ *
+ * 只缓存这一页：**历史不会变**，读一次就能一直用（最新一页会变，缓存它等于给用户看旧数据）。
+ * 位置键的 ⇈ 因此可以做到"按下就到"——省掉那一次查询。
+ *
+ * 会话切走、或者库里动过（新消息 / 改版本）就整份丢掉：铁律①要求动作的源是库里此刻那一份。
+ */
+private object HeadPages {
+    private val entries = LinkedHashMap<String, ChatSnapshot>()
+    private const val MAX = 2
+
+    fun get(session: String): ChatSnapshot? = entries[session]
+
+    fun put(session: String, page: ChatSnapshot) {
+        entries.remove(session)
+        entries[session] = page
+        while (entries.size > MAX) {
+            val oldest = entries.keys.firstOrNull() ?: break
+            entries.remove(oldest)
+        }
+    }
+
+    fun forget(session: String? = null) {
+        if (session == null) entries.clear() else entries.remove(session)
+    }
+}
+
 internal object ChatRepository {
     suspend fun load(databasePath: String, sessionId: String, limit: Long = 80L): ChatSnapshot = try {
         loadInner(databasePath, sessionId, limit)
@@ -27,8 +56,17 @@ internal object ChatRepository {
         empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
     }
 
-    /** 一页多少单元（D355）。40 个单元大约两到三屏，够首屏与一次上翻。 */
-    const val PAGE_SIZE = 40L
+    /**
+     * 一页多少单元（D355 → D366 放大到 200）。
+     *
+     * 40 是"一屏多一点"的下限，用户 2026-11-21 的反馈是对的：别的客户端窗口大得多，滑起来
+     * 不该那么快撞到边。放大到 200（= FFI 那边的硬上限）之后，一页能翻十几屏。
+     *
+     * 成本是量的出来的：本机合成库（16 MB / 5120 消息）读 800 个单元 216 ms，线性算 200 个
+     * 是 50 ms 上下；手机慢一些，但**这条读在 IO 线程上**，挡不住帧，只影响"内容出现的早晚"。
+     * 真机上以 `Start 消息首页` 那一行为准。
+     */
+    const val PAGE_SIZE = 200L
 
     /**
      * 读**一页**单元（D355）：`before = null` 是最新一页，否则是 `nextBefore` 那个游标。
@@ -62,6 +100,7 @@ internal object ChatRepository {
         return try {
         if (!NativeBridge.loaded) return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")
         val handle = openOrExplain(databasePath) ?: return empty(lastOpenIssue)
+        if (after == null) HeadPages.get(sessionId)?.let { return it }
         try {
             val envelope = JSONObject(
                 NativeBridge.loadUnitsAfterJson(handle, sessionId, after ?: 0L, limit),
@@ -75,11 +114,13 @@ internal object ChatRepository {
                     "会话 $sessionId 读到 ${page.units.size}/${page.total} 个单元" +
                         (if (after == null) "（从头一页）" else "（往下翻，游标 $after）"),
                 )
-                ChatSnapshot(
+                val snapshot = ChatSnapshot(
                     page = page,
                     source = RowSource.Native,
                     note = if (page.isEmpty) "这个会话还一条消息都没有" else null,
                 )
+                if (after == null && !page.isEmpty) HeadPages.put(sessionId, snapshot)
+                snapshot
             }
         } finally {
             runCatching { NativeBridge.closeStorageJson(handle) }
@@ -87,6 +128,31 @@ internal object ChatRepository {
     } catch (failure: Throwable) {
         empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
     }
+    }
+
+    /**
+     * 慢速预载"从头一页"（D366）。
+     *
+     * 为什么慢：它跟首屏抢的是同一块磁盘。第一次读完之后用户还在看最新的消息，
+     * 过上大半秒再把这一页读进来，⇈ 就是"按下就到"。
+     * 失败不当错误：预载只是个提前量，真按了 ⇈ 会再读一次。
+     */
+    suspend fun prefetchHead(databasePath: String, sessionId: String) {
+        if (HeadPages.get(sessionId) != null) return
+        delay(600)
+        val started = System.nanoTime()
+        val page = loadAfter(databasePath, sessionId, after = null)
+        val cost = (System.nanoTime() - started) / 1_000_000
+        val ok = HeadPages.get(sessionId) != null
+        NLog.i(
+            "Chat",
+            "预载 从头一页 " + (if (ok) "好了（${page.page?.units?.size ?: 0} 个单元，${cost}ms）" else "没成（${cost}ms）"),
+        )
+    }
+
+    /** 库里动过（新消息 / 改版本）或者换会话：缓存整份丢掉（铁律①）。 */
+    fun forgetHead(sessionId: String? = null) {
+        HeadPages.forget(sessionId)
     }
 
     /** 迷你地图的一行（D365）：`preview` 是写入时算好的那 24 个字，不带正文。 */

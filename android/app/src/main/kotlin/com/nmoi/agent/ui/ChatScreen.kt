@@ -643,6 +643,19 @@ internal fun ChatScreen(
         }
     }
 
+    // 库里动过（新消息 / 改版本）就把预载的"从头一页"丢掉（铁律①：动作的源是库里此刻那份）。
+    LaunchedEffect(sessionId, reloadKey) {
+        ChatRepository.forgetHead(sessionId)
+    }
+    // 慢速预载"从头一页"（D366）：首屏落定之后再读，⇈ 就是按下就到。
+    // 只在这一页上面还有更早的时候做——整条会话都在手上时它没有意义。
+    LaunchedEffect(sessionId, reloadKey, snapshot?.page?.truncated, anchor) {
+        val sid = sessionId ?: return@LaunchedEffect
+        if (anchor !is PageAnchor.Tail) return@LaunchedEffect
+        if (snapshot?.page?.truncated != true) return@LaunchedEffect
+        ChatRepository.prefetchHead(File(context.filesDir, "nmoi.db").absolutePath, sid)
+    }
+
     val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()
     // 两种中断（D323）：从库里现读，界面只画标记。`busy` 翻回 false 就是"这一轮收尾了"，
     // 顺手读一次——续话 / 发消息都会走到这里，所以"做完就消"不用另加动作。
