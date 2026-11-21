@@ -7,7 +7,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::schema;
 
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// 迁移前先跑的一段 Rust（比如"列不存在才加"）。
 pub type Prepare = fn(&Connection) -> Result<(), rusqlite::Error>;
@@ -115,6 +115,11 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 19,
         sql: schema::SCHEMA_V19,
+        prepare: None,
+    },
+    Migration {
+        version: 20,
+        sql: schema::SCHEMA_V20,
         prepare: None,
     },
 ];

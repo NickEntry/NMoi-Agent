@@ -192,6 +192,10 @@ internal data class ChatPage(
     /** 库里的总数：`units.size < total` 时就还有更早的没读（首屏只取最后 N 个）。 */
     val total: Int,
     val truncated: Boolean,
+    /** 这一页下面还有更新的（D365）：位置键往下翻、迷你地图判断"到没到底"看它。 */
+    val hasNewer: Boolean = false,
+    /** 往下翻的游标（这一页最新那个单元的 seq）；`null` = 没有下一页。 */
+    val nextAfter: Long? = null,
     /** 线上那段的摘要正文（D324）。没压过、或取不回来时是 null——不假装还在。 */
     val summary: String? = null,
     /** 生效的那条线的 id。删它 = 还原（原文一条都没删）。 */
@@ -238,6 +242,8 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
         units = units,
         total = envelope.optInt("units_total", units.size),
         truncated = envelope.optBoolean("truncated", false),
+        hasNewer = envelope.optBoolean("has_newer", false),
+        nextAfter = envelope.optLong("next_after", 0L).takeIf { it > 0L },
         // `has("summary")` 才算问过：原生那边给 null 是"取不到"，不是"空摘要"。
         summary = if (envelope.has("summary") && !envelope.isNull("summary")) {
             envelope.optString("summary", "")

@@ -1192,11 +1192,74 @@ impl Storage {
     ///
     /// 单元是**连续**的（`append_unit` 按 seq 依次写），所以"最后 N 个单元"等同于
     /// 一个 seq 区间：按 `MIN(seq)` 分组取 N 个 unit_id，再取这些单元的全部行。
+    /// 整条会话的迷你地图（D365）：一条单元一行，不带正文。
+    ///
+    /// 读的是 `messages.preview`（写入时算好的那一列），所以几千条也只有几十 KB；
+    /// 正文一百多 KB 的那种消息不会在这里被碰。
+    pub fn unit_previews(&self, session: SessionId) -> Result<Vec<UnitPreview>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT unit_id, role, created_at, preview FROM messages
+              WHERE conv_id = ?1 ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map([session.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out: Vec<UnitPreview> = Vec::new();
+        for row in rows {
+            let (unit, role, at, preview) = row?;
+            match out.last_mut() {
+                Some(last) if last.unit == unit => {
+                    // 工具单元的第一条往往没有正文：谁先有正文，就用谁的开头。
+                    if last.preview.is_empty() {
+                        last.preview = preview;
+                    }
+                }
+                _ => out.push(UnitPreview {
+                    unit,
+                    role,
+                    at,
+                    preview,
+                }),
+            }
+        }
+        Ok(out)
+    }
+
+    /// 一页单元：`before` 是"比这个 seq 更早"，返回**最后 `limit` 个**（新的在后）。
     pub fn load_units_page(
         &self,
         session: SessionId,
         before: Option<i64>,
         limit: usize,
+    ) -> Result<UnitPage, StorageError> {
+        self.load_units_window(session, before, limit, false)
+    }
+
+    /// 一页单元：`after` 是"比这个 seq 更晚"，返回**最先 `limit` 个**（D365）。
+    ///
+    /// `after = None` 就是"从头读一页"——位置键的"真正最上方"用它，**一次查询**，
+    /// 不逐页往上翻（那是 N 次 open，长会话里要好几秒）。
+    pub fn load_units_after(
+        &self,
+        session: SessionId,
+        after: Option<i64>,
+        limit: usize,
+    ) -> Result<UnitPage, StorageError> {
+        self.load_units_window(session, after, limit, true)
+    }
+
+    /// 两种翻页的唯一实现：`forward` 只决定"选哪一头、按哪个方向排"。
+    fn load_units_window(
+        &self,
+        session: SessionId,
+        cursor: Option<i64>,
+        limit: usize,
+        forward: bool,
     ) -> Result<UnitPage, StorageError> {
         let session_text = session.to_string();
         let take = limit.max(1) as i64;
@@ -1205,32 +1268,56 @@ impl Storage {
             [&session_text],
             |row| row.get(0),
         )?;
-        let oldest: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT MIN(first_seq) FROM (
-                     SELECT MIN(seq) AS first_seq FROM messages
-                      WHERE conv_id = ?1 AND (?2 IS NULL OR seq < ?2)
-                      GROUP BY unit_id
-                      ORDER BY first_seq DESC
-                      LIMIT ?3
-                 )",
-                params![session_text, before, take],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        let Some(oldest) = oldest else {
+
+        // 这一页的头尾（都是 seq）：往上翻取"游标之前最后 N 个"，往下翻取"游标之后最先 N 个"。
+        let bounds = if forward {
+            "SELECT MIN(first_seq), MAX(first_seq) FROM (
+                 SELECT MIN(seq) AS first_seq FROM messages
+                  WHERE conv_id = ?1 AND (?2 IS NULL OR seq > ?2)
+                  GROUP BY unit_id
+                  ORDER BY first_seq ASC
+                  LIMIT ?3
+             )"
+        } else {
+            "SELECT MIN(first_seq), MAX(first_seq) FROM (
+                 SELECT MIN(seq) AS first_seq FROM messages
+                  WHERE conv_id = ?1 AND (?2 IS NULL OR seq < ?2)
+                  GROUP BY unit_id
+                  ORDER BY first_seq DESC
+                  LIMIT ?3
+             )"
+        };
+        let (first, last): (Option<i64>, Option<i64>) =
+            self.conn
+                .query_row(bounds, params![session_text, cursor, take], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
+        let Some(first) = first else {
             return Ok(UnitPage {
                 units: Vec::new(),
                 has_more: false,
                 next_before: None,
+                has_newer: false,
+                next_after: None,
                 total_units: total_units.max(0) as usize,
                 start_index: total_units.max(0) as usize,
             });
         };
+        let last = last.unwrap_or(first);
 
-        const PAGE: &str = "WITH page AS (
+        let page = if forward {
+            "WITH page AS (
+                SELECT unit_id FROM (
+                    SELECT unit_id, MIN(seq) AS first_seq
+                      FROM messages
+                     WHERE conv_id = ?1 AND (?2 IS NULL OR seq > ?2)
+                     GROUP BY unit_id
+                     ORDER BY first_seq ASC
+                     LIMIT ?3
+                ) ORDER BY first_seq ASC
+            )"
+        } else {
+            "WITH page AS (
                 SELECT unit_id FROM (
                     SELECT unit_id, MIN(seq) AS first_seq
                       FROM messages
@@ -1239,17 +1326,18 @@ impl Storage {
                      ORDER BY first_seq DESC
                      LIMIT ?3
                 ) ORDER BY first_seq ASC
-            )";
+            )"
+        };
 
         let mut stmt = self.conn.prepare(&format!(
-            "{PAGE}
+            "{page}
              SELECT m.id, m.unit_id, m.unit_kind, m.unit_closed, m.seq, m.role, m.source,
                     m.form, m.tokens, m.created_at, m.logical_clock, m.archived_ref,
                     m.protected, m.pinned, m.locked, m.revision, m.tool_call_id, m.incomplete
                FROM messages m JOIN page p ON p.unit_id = m.unit_id
               WHERE m.conv_id = ?1 ORDER BY m.seq ASC"
         ))?;
-        let rows = stmt.query_map(params![session_text, before, take], |row| {
+        let rows = stmt.query_map(params![session_text, cursor, take], |row| {
             // 第 3 列（下标 2）是 `unit_kind`：`row_to_message` 不读它（消息本身不带类型），
             // 这里顺手取出来，省掉"每个单元一条 `unit_kind_for`"的 N+1。
             let message = row_to_message(row)?;
@@ -1269,14 +1357,14 @@ impl Storage {
         drop(stmt);
 
         let mut parts_stmt = self.conn.prepare(&format!(
-            "{PAGE}
+            "{page}
              SELECT p.message_id, p.part_id, p.kind, p.body
                FROM message_parts p
                JOIN messages m ON m.id = p.message_id
                JOIN page g ON g.unit_id = m.unit_id
               WHERE m.conv_id = ?1 ORDER BY p.message_id, p.ord"
         ))?;
-        let part_rows = parts_stmt.query_map(params![session_text, before, take], |row| {
+        let part_rows = parts_stmt.query_map(params![session_text, cursor, take], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1326,20 +1414,28 @@ impl Storage {
             unit.validate()?;
         }
 
+        // 两侧都要报（D365）：一页既可能上面还有更早的，也可能下面还有更新的。
         let has_more: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM messages WHERE conv_id = ?1 AND seq < ?2)",
-            params![session_text, oldest],
+            params![session_text, first],
+            |row| row.get(0),
+        )?;
+        let has_newer: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conv_id = ?1 AND seq > ?2)",
+            params![session_text, last],
             |row| row.get(0),
         )?;
         let older: i64 = self.conn.query_row(
             "SELECT COUNT(DISTINCT unit_id) FROM messages WHERE conv_id = ?1 AND seq < ?2",
-            params![session_text, oldest],
+            params![session_text, first],
             |row| row.get(0),
         )?;
         Ok(UnitPage {
             units,
             has_more,
-            next_before: Some(oldest),
+            next_before: Some(first),
+            has_newer,
+            next_after: Some(last),
             total_units: total_units.max(0) as usize,
             start_index: older.max(0) as usize,
         })
@@ -2480,10 +2576,25 @@ pub struct UnitPage {
     pub has_more: bool,
     /// 下一次往上的游标（这一页最老那个单元的 `MIN(seq)`）；`None` = 已经到头。
     pub next_before: Option<i64>,
+    /// 还有更新的没有读（D365）：位置键往下翻、以及"已经在最新一页了"都看它。
+    pub has_newer: bool,
+    /// 下一次往下的游标（这一页最新那个单元的 `MAX(seq)`）；`None` = 没有下一页。
+    pub next_after: Option<i64>,
     /// 这条会话一共有多少单元（界面上写"上面还有 N 个"用它，不自己数）。
     pub total_units: usize,
     /// 这一页第一个单元在整条会话里的下标（第几个）。压缩线的"线上几条"靠它判断。
     pub start_index: usize,
+}
+
+/// 迷你地图的一行（D365）：一条单元一行，**只有前面那 24 个字**，不带正文。
+#[derive(Debug, Clone)]
+pub struct UnitPreview {
+    pub unit: String,
+    /// 这一单元第一条消息的角色（`user` / `assistant` / `tool`）——气泡靠左还是靠右看它。
+    pub role: String,
+    pub at: i64,
+    /// 单元里第一条有正文的消息的开头；工具单元可能整条都是空的。
+    pub preview: String,
 }
 
 /// 删一个会话的**行**（不含盘上目录）。调用方负责事务与目录（D354）。
@@ -2634,6 +2745,45 @@ mod paging_tests {
         assert!(!rest.has_more);
     }
 
+    /// 往下翻（D365）：`after = None` 就是**从头读一页**——位置键的"真正最上方"靠它。
+    /// 一路往前走要能不重不漏地走到最后一条。
+    #[test]
+    fn forward_page_starts_at_the_head_and_walks_to_the_tail() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = seed(&mut storage, 12);
+
+        let mut page = storage
+            .load_units_after(session, None, 5)
+            .expect("从头一页");
+        assert_eq!(seqs(&page), vec![1, 2, 3, 4, 5]);
+        assert!(page.has_newer);
+        assert!(!page.has_more, "第一个单元上面不该还有东西");
+        assert_eq!(page.start_index, 0);
+        assert_eq!(page.next_after, Some(5));
+
+        let mut seen = seqs(&page);
+        while page.has_newer {
+            let after = page.next_after.expect("还有更新的就得给游标");
+            page = storage
+                .load_units_after(session, Some(after), 5)
+                .expect("下一页");
+            let here = seqs(&page);
+            assert!(here.windows(2).all(|pair| pair[0] < pair[1]), "页内要升序");
+            // 往下翻：新的一页接在后面。
+            seen.extend(here);
+        }
+        assert_eq!(seen, (1..=12).collect::<Vec<_>>());
+        assert!(!page.has_newer);
+        assert!(page.has_more);
+
+        // 再往下：空页。
+        let rest = storage
+            .load_units_after(session, page.next_after, 5)
+            .expect("到底");
+        assert!(rest.units.is_empty());
+        assert!(!rest.has_newer);
+    }
+
     /// 空会话 / limit 为 0：不炸，也不编出一页空单元。
     #[test]
     fn empty_session_and_zero_limit() {
@@ -2673,5 +2823,57 @@ mod paging_tests {
         assert_eq!(found.id.as_str(), line.id.as_str());
         assert_eq!(found.after_seq, 4);
         assert_eq!(covered, 4);
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use nmoi_core::clock::LogicalClock;
+    use nmoi_core::source::SourceTag;
+
+    fn push(storage: &mut Storage, session: SessionId, seq: u64, role: Role, text: &str) {
+        let message = Message::text(
+            MessageId::new(session, seq),
+            role,
+            SourceTag::History,
+            text,
+            3,
+            1_700_000_000_000 + seq as i64,
+            LogicalClock::new(seq),
+        );
+        storage
+            .append_unit(session, &AtomicUnit::turn(message).unwrap())
+            .expect("写单元");
+    }
+
+    /// 迷你地图那一列（D365）：写入时算好，查询时只读这一列。
+    #[test]
+    fn previews_are_written_with_the_body() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = storage
+            .create_conversation("预览", "dev", "default")
+            .expect("建会话");
+        push(&mut storage, session, 1, Role::User, "第一句话");
+        push(
+            &mut storage,
+            session,
+            2,
+            Role::Assistant,
+            "这是很长的一段正文\n换行也算空白  连着好几个空格\n再多写一点让它超过二十四个字",
+        );
+
+        let rows = storage.unit_previews(session).expect("迷你地图");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].role, "user");
+        assert_eq!(rows[0].preview, "第一句话");
+        assert_eq!(rows[1].role, "assistant");
+        // 换行与连续空格都折成一个空格，长度按**字符**算，不超过 24。
+        assert_eq!(rows[1].preview.chars().count(), 24);
+        assert!(!rows[1].preview.contains('\n'));
+        assert!(!rows[1].preview.contains("  "));
+        assert!(rows[1]
+            .preview
+            .starts_with("这是很长的一段正文 换行也算空白"));
     }
 }

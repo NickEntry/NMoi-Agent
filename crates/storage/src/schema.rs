@@ -522,3 +522,21 @@ ALTER TABLE attachments ADD COLUMN name TEXT;
 ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';
 CREATE INDEX attachments_by_message_kind ON attachments(message_id, kind);
 "#;
+
+/// v20（D365）：迷你地图用的正文开头一份。
+///
+/// 为什么不查询时 `substr` 正文：正文可能是一百多 KB 的一段，`substr(body,1,24)` 仍然要
+/// 把那个值读出来；而迷你地图要的是**整条会话每一条**的开头，一次查询几千行。
+/// 存一小列，代价只在写入那一刻。
+///
+/// 回填用 SQL 做（一次性）：`substr` 在 SQLite 里按**字符**截，换行换成空格，
+/// 跟 Rust 侧写入时的口径一致。
+pub const SCHEMA_V20: &str = r#"
+ALTER TABLE messages ADD COLUMN preview TEXT NOT NULL DEFAULT '';
+UPDATE messages SET preview = COALESCE((
+    SELECT replace(replace(substr(json_extract(body, '$.text'), 1, 24), char(10), ' '), char(13), ' ')
+      FROM message_parts p
+     WHERE p.message_id = messages.id AND p.kind = 'text'
+     ORDER BY p.ord
+     LIMIT 1), '');
+"#;

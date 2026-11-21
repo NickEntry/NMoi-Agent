@@ -611,20 +611,32 @@ internal fun ChatScreen(
         selected = emptySet()
     }
 
+    // 这一页是从哪一头读的（D365）：默认最新一页；⇈ 换成"从头一页"，⇊ 换回最新。
+    // 换页只换这一段（一页 40 个单元），不"把整条会话读进来"——那是 800 MB 会话做不到的事。
+    var anchor by remember(sessionId) { mutableStateOf<PageAnchor>(PageAnchor.Tail) }
+    // 换到从头一页之后要滚到最上面（页码换了但列表还没滚，会停在下半截）。
+    var wantTop by remember(sessionId) { mutableStateOf(false) }
+
     // 空白会话（还没落库）不发读请求：没有 id 可读，界面直接给"还没有消息"的静态提示。
     val snapshot by produceState<ChatSnapshot?>(
         initialValue = null,
         sessionId,
         reloadKey,
         externalReload,
+        anchor,
     ) {
         value = if (sessionId == null) {
             null
         } else {
             val from = Start.now()
+            val path = File(context.filesDir, "nmoi.db").absolutePath
             val page = withContext(Dispatchers.IO) {
-                // 只读一页（D355）：长会话不再"整条读进来再裁"。
-                ChatRepository.loadPage(File(context.filesDir, "nmoi.db").absolutePath, sessionId)
+                when (val where = anchor) {
+                    // 只读一页（D355）：长会话不再"整条读进来再裁"。
+                    PageAnchor.Tail -> ChatRepository.loadPage(path, sessionId)
+                    PageAnchor.Head -> ChatRepository.loadAfter(path, sessionId, null)
+                    is PageAnchor.After -> ChatRepository.loadAfter(path, sessionId, where.seq)
+                }
             }
             Start.mark("消息首页", from)
             page
@@ -1642,6 +1654,10 @@ internal fun ChatScreen(
                     MessageArea(
                         listState = listState,
                         onMessageStarts = { messageStarts.value = it },
+                        // 换到"从头一页"之后滚到最上面（D365）。
+                        scrollToTop = wantTop,
+                        onScrollToTop = { wantTop = false },
+                        onNewer = { anchor = PageAnchor.Tail },
                         snapshot = snapshot,
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
@@ -1759,6 +1775,17 @@ internal fun ChatScreen(
                         starts = messageStarts.value,
                         visible = railVisible,
                         onHold = { holdRail() },
+                        onHead = {
+                            val page = snapshot?.page
+                            if (page != null && page.truncated) {
+                                // 上面还有更早的：换成"从头一页"，一次查询就到头。
+                                wantTop = true
+                                anchor = PageAnchor.Head
+                            }
+                        },
+                        onTail = {
+                            anchor = PageAnchor.Tail
+                        },
                         modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
                     )
                 }
@@ -2668,6 +2695,18 @@ private const val FLING_GAIN = 2f
  */
 private const val MAX_FLING_SCREENS_PER_SECOND = 8f
 
+/** 这一页是从哪一头读的（D365）。 */
+private sealed interface PageAnchor {
+    /** 最新一页（首屏默认）。 */
+    data object Tail : PageAnchor
+
+    /** 从头一页：位置键的"真正最上方"。 */
+    data object Head : PageAnchor
+
+    /** 从某个 seq 之后的一页（迷你地图点某一条时用）。 */
+    data class After(val seq: Long) : PageAnchor
+}
+
 /** 位置键自己弹出时停多久（D362）。 */
 private const val RAIL_HOLD_MS = 1_000L
 
@@ -2700,6 +2739,10 @@ private fun JumpRail(
     starts: List<Int>,
     visible: Boolean,
     onHold: () -> Unit,
+    /** 上面还有更早的时候，换到"从头一页"（D365）：一次查询就到头。 */
+    onHead: () -> Unit = {},
+    /** 换回最新一页（D365）。 */
+    onTail: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -2728,7 +2771,9 @@ private fun JumpRail(
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             RailKey(double = true, up = true, name = "滑到最上方", enabled = visible) {
                 onHold()
-                NLog.i("Perf", "位置键 最上方 → 0（当前第 ${anchorAt()} 条）")
+                NLog.i("Perf", "位置键 最上方（当前第 ${anchorAt()} 条）")
+                // 这一页上面还有更早的：换页（一次查询），换完会滚到最上面。
+                onHead()
                 jumpTo(0)
             }
             RailKey(double = false, up = true, name = "滑到上一条消息", enabled = visible) {
@@ -2769,7 +2814,9 @@ private fun JumpRail(
             }
             RailKey(double = true, up = false, name = "滑到最下方", enabled = visible) {
                 onHold()
-                NLog.i("Perf", "位置键 最下方 → 到底（共 ${starts.size} 条）")
+                NLog.i("Perf", "位置键 最下方（共 ${starts.size} 条）")
+                // 这一页下面还有更新的：换回最新一页，再滚到底。
+                onTail()
                 jumpToEnd()
             }
         }
@@ -2843,6 +2890,11 @@ private fun RailKey(
 private fun MessageArea(
     /** 消息区的滚动状态（D362）：位置键与消息区共用同一个，滚到哪、键就指到哪。 */
     listState: androidx.compose.foundation.lazy.LazyListState,
+    /** 换到"从头一页"之后要滚到最上面（D365）。 */
+    scrollToTop: Boolean = false,
+    onScrollToTop: () -> Unit = {},
+    /** 点底部那行"下面还有更新的"→ 换回最新一页（D365）。 */
+    onNewer: () -> Unit = {},
     snapshot: ChatSnapshot?,
     /** 刚发出去、还在路上的那句话：**立刻显示在消息区里**，不要留在输入框里等。 */
     pending: PendingSend?,
@@ -3021,7 +3073,14 @@ private fun MessageArea(
     SideEffect { liveState.value = live }
     val hasLive = live != null
     val liveItem = if (hasLive) 1 else 0
-    LaunchedEffect(rows.size, truncated, pending, hasLive, regenTarget) {
+    // 换页时行数可能一样（都是 40 个单元），所以把"第一行的 id"也算进 key（D365）。
+    val pageFirstId = rows.firstOrNull()?.let { rowKey(it) }
+    LaunchedEffect(rows.size, pageFirstId, truncated, pending, hasLive, regenTarget) {
+        if (scrollToTop) {
+            listState.scrollToItem(0)
+            onScrollToTop()
+            return@LaunchedEffect
+        }
         val target = headerCount + rows.size + if (pending != null) 1 else 0 + liveItem
         if (target - 1 >= 0) listState.scrollToItem(target - 1)
     }
@@ -3188,6 +3247,21 @@ private fun MessageArea(
                     sending = true,
                     pendingImageCount = outbox.imageCount,
                     pendingFileCount = outbox.fileCount,
+                )
+            }
+        }
+        // 从"从头一页"看起时，下面还有更新的（D365）。不说的话，上面的提示行一消失，
+        // 用户会以为这就是全部——那正是铁律②要防的"存了但看不见"。
+        if (page?.hasNewer == true) {
+            item(key = "newer-banner") {
+                Text(
+                    text = "下面还有更新的：共 ${page.total} 个单元，这里读的是最早 ${units.size} 个",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onNewer)
+                        .padding(vertical = 4.dp),
                 )
             }
         }

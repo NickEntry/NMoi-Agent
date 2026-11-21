@@ -112,6 +112,21 @@ internal object NmoiFfi {
             NativeBridge.loadUnitsPageJson(handle, session, before, limit)
         }
 
+    /** 往下翻一页（D365）：`after <= 0` 就是**从头读一页**。 */
+    suspend fun loadUnitsAfter(
+        handle: Long,
+        session: String,
+        after: Long,
+        limit: Long = 40L,
+    ): Result<JSONObject> =
+        call("load_units_after") {
+            NativeBridge.loadUnitsAfterJson(handle, session, after, limit)
+        }
+
+    /** 迷你地图（D365）：一条消息一行，只带正文开头那 24 个字。 */
+    suspend fun unitPreviews(handle: Long, session: String): Result<JSONObject> =
+        call("unit_previews") { NativeBridge.unitPreviewsJson(handle, session) }
+
     /** 删一批会话（D354）：一次开库、一次事务。`results` 与入参一一对应。 */
     suspend fun deleteConversations(handle: Long, sessions: List<String>): Result<JSONObject> =
         call("delete_conversations") {

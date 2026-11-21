@@ -47,6 +47,93 @@ internal object ChatRepository {
         empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
     }
 
+    /**
+     * 读**一页**单元，但是往**下**（D365）：`after = null` 就是从头读一页。
+     *
+     * 位置键的"真正最上方"用它：一次查询就到头，不逐页往上翻（那是 N 次 open）。
+     * 迷你地图点某一条也走它——`after` 给"那一条之前那个 seq"就是从那条开始的一页。
+     */
+    suspend fun loadAfter(
+        databasePath: String,
+        sessionId: String,
+        after: Long? = null,
+        limit: Long = PAGE_SIZE,
+    ): ChatSnapshot {
+        return try {
+        if (!NativeBridge.loaded) return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")
+        val handle = openOrExplain(databasePath) ?: return empty(lastOpenIssue)
+        try {
+            val envelope = JSONObject(
+                NativeBridge.loadUnitsAfterJson(handle, sessionId, after ?: 0L, limit),
+            )
+            if (!envelope.ok()) {
+                empty("读消息失败：${envelope.errorText()}")
+            } else {
+                val page = parseUnits(envelope)
+                NLog.i(
+                    "Chat",
+                    "会话 $sessionId 读到 ${page.units.size}/${page.total} 个单元" +
+                        (if (after == null) "（从头一页）" else "（往下翻，游标 $after）"),
+                )
+                ChatSnapshot(
+                    page = page,
+                    source = RowSource.Native,
+                    note = if (page.isEmpty) "这个会话还一条消息都没有" else null,
+                )
+            }
+        } finally {
+            runCatching { NativeBridge.closeStorageJson(handle) }
+        }
+    } catch (failure: Throwable) {
+        empty("读会话时出错：${failure.javaClass.simpleName}: ${failure.message}")
+    }
+    }
+
+    /** 迷你地图的一行（D365）：`preview` 是写入时算好的那 24 个字，不带正文。 */
+    data class PreviewRow(
+        val unit: String,
+        val role: String,
+        val at: Long,
+        val preview: String,
+    )
+
+    /** 整条会话的迷你地图（D365）：几千条也只有几十 KB。 */
+    suspend fun previews(databasePath: String, sessionId: String): List<PreviewRow> {
+        return try {
+        if (!NativeBridge.loaded) return emptyList()
+        val handle = openOrExplain(databasePath) ?: return emptyList()
+        try {
+            val envelope = JSONObject(NativeBridge.unitPreviewsJson(handle, sessionId))
+            if (!envelope.ok()) {
+                NLog.w("Chat", "迷你地图读不出来：${envelope.errorText()}")
+                emptyList()
+            } else {
+                val items = envelope.optJSONArray("items") ?: JSONArray()
+                buildList {
+                    for (index in 0 until items.length()) {
+                        val row = items.optJSONObject(index) ?: continue
+                        val unit = row.optString("unit", "").trim()
+                        if (unit.isEmpty()) continue
+                        add(
+                            PreviewRow(
+                                unit = unit,
+                                role = row.optString("role", ""),
+                                at = row.optLong("at", 0L),
+                                preview = row.optString("preview", ""),
+                            ),
+                        )
+                    }
+                }
+            }
+        } finally {
+            runCatching { NativeBridge.closeStorageJson(handle) }
+        }
+    } catch (failure: Throwable) {
+        NLog.w("Chat", "迷你地图出错：${failure.javaClass.simpleName}: ${failure.message}")
+        emptyList()
+    }
+    }
+
     private fun loadPageInner(
         databasePath: String,
         sessionId: String,

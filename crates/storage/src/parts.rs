@@ -30,6 +30,20 @@ pub fn write_part_list(
             params![message, part.id(), ord as i64, part.kind(), body],
         )?;
     }
+    // 正文开头那 24 个字单存一列（D365）：迷你地图要"每条一句话"，而正文可能一百多 KB，
+    // 查询时再 `substr` 等于把正文读一遍。写入这一刻算好，读的时候只读这一列。
+    let preview = parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Text { text, .. } => Some(preview_of(text)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    tx.execute(
+        "UPDATE messages SET preview = ?2 WHERE id = ?1",
+        params![message, preview],
+    )?;
+
     // 单元形状跟着块走（D258）：一条消息就是一个单元，`unit_kind` / `unit_closed`
     // 不该有第二个答案。切版本会把工具块摘掉或放回来，这一行必须跟着改。
     tx.execute(
@@ -235,4 +249,31 @@ pub fn read_parts(
         out.entry(message).or_default().push(part);
     }
     Ok(out)
+}
+
+/// 迷你地图那一行字：**连续的空白折成一个空格**，取前 24 个字符。
+///
+/// 按字符取而不是按字节：一个汉字 3 字节，按字节切会把字切成半个，界面上就是方块。
+pub fn preview_of(text: &str) -> String {
+    const LIMIT: usize = 24;
+    let mut out = String::new();
+    let mut count = 0;
+    let mut pending_gap = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            pending_gap = true;
+            continue;
+        }
+        if pending_gap && count > 0 {
+            out.push(' ');
+            count += 1;
+        }
+        pending_gap = false;
+        out.push(ch);
+        count += 1;
+        if count >= LIMIT {
+            break;
+        }
+    }
+    out
 }

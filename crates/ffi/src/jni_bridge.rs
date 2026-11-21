@@ -444,6 +444,66 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_loadUnitsPageJson<'lo
     to_jstring(&mut env, text)
 }
 
+/// `Native.loadUnitsAfterJson(handle, session, after, limit)`：往下翻一页（D365）。
+///
+/// `after <= 0` 是"从头读一页"——位置键的"真正最上方"用它。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_loadUnitsAfterJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    after: jlong,
+    limit: jlong,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => {
+            let Ok(c_session) = CString::new(session) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `session` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_load_units_after_json(
+                handle as u64,
+                c_session.as_ptr(),
+                after,
+                limit,
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.unitPreviewsJson(handle, session)`：迷你地图那一份（D365）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_unitPreviewsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let text = guarded(move || match session {
+        Some(session) => {
+            let Ok(c_session) = CString::new(session) else {
+                return take_json(crate::json::err_json(
+                    "bad_argument",
+                    "参数 `session` 含 NUL 字节",
+                ));
+            };
+            take_json(crate::storage::nmoi_storage_unit_previews_json(
+                handle as u64,
+                c_session.as_ptr(),
+            ))
+        }
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.appendTextJson(handle, session, role, text, nowMs)`：把一句话存成一条消息（不发模型）。
 ///
 /// 这是 UI 唯一的**写入口**：在接入 `turn_run` 之前，没有它就造不出内容，

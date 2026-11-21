@@ -877,6 +877,8 @@ fn units_envelope(
     divider: Option<Value>,
     has_more: bool,
     next_before: Option<i64>,
+    has_newer: bool,
+    next_after: Option<i64>,
 ) -> FfiResult<Value> {
     // 版本概要一次查完（不是每条消息一次：那是 N+1，滚动会顿）。
     let versions = storage.version_index(session).map_err(storage_error)?;
@@ -1007,9 +1009,11 @@ fn units_envelope(
         "window_start": window_start,
         "summary": summary,
         "divider": divider,
-        // 分页（D355）：往上还有没有、下一次的游标。老的接口给 false/null。
+        // 分页（D355 / D365）：两个方向各一对。老的接口（整条读）给 false/null。
         "has_more": has_more,
         "next_before": next_before,
+        "has_newer": has_newer,
+        "next_after": next_after,
     }))
 }
 
@@ -1065,6 +1069,8 @@ pub extern "C" fn nmoi_storage_load_units_json(
                 summary,
                 divider,
                 start > 0,
+                None,
+                false,
                 None,
             )
         })
@@ -1124,7 +1130,97 @@ pub extern "C" fn nmoi_storage_load_units_page_json(
                 divider,
                 page.has_more,
                 page.next_before,
+                page.has_newer,
+                page.next_after,
             )
+        })
+    })
+}
+
+/// 往下翻一页（D365）：`after` 是"比这个 seq 更晚"，`after <= 0` = **从头读一页**。
+///
+/// 位置键的"真正最上方"用它：一次查询就到头，不逐页往上翻（那是 N 次 open）。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_load_units_after_json(
+    handle: u64,
+    session: *const c_char,
+    after: i64,
+    limit: i64,
+) -> *mut c_char {
+    run_json(|| {
+        let session_text = read_str(session, "session")?;
+        let session_id = parse_session(session_text)?;
+        with_storage(handle, |storage| {
+            let cursor = if after <= 0 { None } else { Some(after) };
+            let size = if limit <= 0 {
+                40
+            } else {
+                (limit as usize).min(200)
+            };
+            let page = storage
+                .load_units_after(session_id, cursor, size)
+                .map_err(storage_error)?;
+            let mut window_start = 0usize;
+            let mut summary = None;
+            let mut divider = None;
+            if let Some((line, covered)) =
+                storage.divider_state(session_id).map_err(storage_error)?
+            {
+                window_start = covered;
+                summary = line
+                    .summary_ref()
+                    .and_then(|reference| storage.fetch_archive(&reference).ok())
+                    .map(|entry| entry.content);
+                let tokens = summary
+                    .as_deref()
+                    .map(nmoi_core::estimate_tokens)
+                    .unwrap_or(0);
+                divider = Some(divider_json(&line, covered, tokens));
+            }
+            units_envelope(
+                storage,
+                session_id,
+                &page.units,
+                page.start_index,
+                page.total_units,
+                window_start,
+                summary,
+                divider,
+                page.has_more,
+                page.next_before,
+                page.has_newer,
+                page.next_after,
+            )
+        })
+    })
+}
+
+/// 迷你地图（D365）：整条会话一条单元一行，只有前面 24 个字，**不带正文**。
+///
+/// 读的是写入时算好的 `messages.preview` 列：几千条也只有几十 KB，
+/// 一百多 KB 的那种消息在这里不会被碰。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_unit_previews_json(
+    handle: u64,
+    session: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let session_text = read_str(session, "session")?;
+        let session_id = parse_session(session_text)?;
+        with_storage(handle, |storage| {
+            let rows = storage.unit_previews(session_id).map_err(storage_error)?;
+            let items: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "unit": row.unit,
+                        "role": row.role,
+                        "at": row.at,
+                        "preview": row.preview,
+                    })
+                })
+                .collect();
+            Ok(json!({ "items": items, "count": items.len() }))
         })
     })
 }

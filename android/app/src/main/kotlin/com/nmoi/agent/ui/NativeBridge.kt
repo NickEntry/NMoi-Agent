@@ -100,6 +100,12 @@ internal object NativeBridge {
      */
     external fun loadUnitsPageJson(handle: Long, session: String, before: Long, limit: Long): String
 
+    /** 往下翻一页（D365）：`after <= 0` = 从头读一页（位置键的"真正最上方"）。 */
+    external fun loadUnitsAfterJson(handle: Long, session: String, after: Long, limit: Long): String
+
+    /** 迷你地图（D365）：整条会话一条一行，只有前面 24 个字。 */
+    external fun unitPreviewsJson(handle: Long, session: String): String
+
     /** 复制会话（0.15d）：消息整份拷到新会话。回 `{"session","copied","source"}`；title 空串用默认名。 */
     external fun copyConversationJson(handle: Long, session: String, title: String): String
 
