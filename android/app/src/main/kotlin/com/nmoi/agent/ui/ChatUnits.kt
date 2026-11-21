@@ -196,6 +196,8 @@ internal data class ChatPage(
     val hasNewer: Boolean = false,
     /** 往下翻的游标（这一页最新那个单元的 seq）；`null` = 没有下一页。 */
     val nextAfter: Long? = null,
+    /** 往上翻的游标（这一页最老那个单元的 seq）；`null` = 上面没有了。 */
+    val nextBefore: Long? = null,
     /** 线上那段的摘要正文（D324）。没压过、或取不回来时是 null——不假装还在。 */
     val summary: String? = null,
     /** 生效的那条线的 id。删它 = 还原（原文一条都没删）。 */
@@ -244,6 +246,7 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
         truncated = envelope.optBoolean("truncated", false),
         hasNewer = envelope.optBoolean("has_newer", false),
         nextAfter = envelope.optLong("next_after", 0L).takeIf { it > 0L },
+        nextBefore = envelope.optLong("next_before", 0L).takeIf { it > 0L },
         // `has("summary")` 才算问过：原生那边给 null 是"取不到"，不是"空摘要"。
         summary = if (envelope.has("summary") && !envelope.isNull("summary")) {
             envelope.optString("summary", "")

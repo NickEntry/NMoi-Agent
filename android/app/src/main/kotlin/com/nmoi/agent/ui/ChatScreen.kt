@@ -643,17 +643,19 @@ internal fun ChatScreen(
         }
     }
 
-    // 库里动过（新消息 / 改版本）就把预载的"从头一页"丢掉（铁律①：动作的源是库里此刻那份）。
-    LaunchedEffect(sessionId, reloadKey) {
-        ChatRepository.forgetHead(sessionId)
+    // 库里动过（新消息 / 改版本）就把预载的那几页丢掉（铁律①：动作的源是库里此刻那份）。
+    LaunchedEffect(reloadKey) {
+        ChatRepository.forgetPages()
     }
-    // 慢速预载"从头一页"（D366）：首屏落定之后再读，⇈ 就是按下就到。
-    // 只在这一页上面还有更早的时候做——整条会话都在手上时它没有意义。
-    LaunchedEffect(sessionId, reloadKey, snapshot?.page?.truncated, anchor) {
+    // 慢速预载这一圈（D367）：首页、尾页、上一页、下一页。当前页本来就在手上。
+    // 换页之后也重新补一次——新位置的两邻才是接下来要用到的那两页。
+    LaunchedEffect(sessionId, reloadKey, anchor, snapshot?.page?.nextBefore, snapshot?.page?.nextAfter) {
         val sid = sessionId ?: return@LaunchedEffect
-        if (anchor !is PageAnchor.Tail) return@LaunchedEffect
-        if (snapshot?.page?.truncated != true) return@LaunchedEffect
-        ChatRepository.prefetchHead(File(context.filesDir, "nmoi.db").absolutePath, sid)
+        ChatRepository.prefetchAround(
+            File(context.filesDir, "nmoi.db").absolutePath,
+            sid,
+            snapshot?.page,
+        )
     }
 
     val allMessages = snapshot?.page?.units?.flatMap { it.messages }.orEmpty()

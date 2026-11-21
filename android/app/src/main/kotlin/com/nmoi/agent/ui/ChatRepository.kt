@@ -22,31 +22,41 @@ internal data class ChatSnapshot(
  * `truncated=true` 只用来在顶部提示"还有更早的"，不是分页游标。
  */
 /**
- * "从头一页"的缓存（D366）。
+ * 分页缓存（D367）：最多五页 —— **首页、尾页、当前页、它的上一页、它的下一页**。
  *
- * 只缓存这一页：**历史不会变**，读一次就能一直用（最新一页会变，缓存它等于给用户看旧数据）。
- * 位置键的 ⇈ 因此可以做到"按下就到"——省掉那一次查询。
+ * 只缓存"读出来就不会变"的那几页的历史；最新一页会变（发一条消息就不同），
+ * 所以 `forget()` 在库里动过的时候整份丢掉（铁律①：动作的源是库里此刻那一份）。
  *
- * 会话切走、或者库里动过（新消息 / 改版本）就整份丢掉：铁律①要求动作的源是库里此刻那一份。
+ * 键里带会话：切走再切回来不该读到别人的页。用带访问顺序的 `LinkedHashMap` 做 LRU，
+ * 满五页就丢最久没被碰过的那一页。
  */
-private object HeadPages {
-    private val entries = LinkedHashMap<String, ChatSnapshot>()
-    private const val MAX = 2
+private object PageCache {
+    private const val MAX = 5
+    private data class Entry(val generation: Int, val snapshot: ChatSnapshot)
 
-    fun get(session: String): ChatSnapshot? = entries[session]
+    private var generation = 0
+    private val entries = object : LinkedHashMap<String, Entry>(8, 0.75f, true) {}
 
-    fun put(session: String, page: ChatSnapshot) {
-        entries.remove(session)
-        entries[session] = page
+    fun get(key: String): ChatSnapshot? =
+        entries[key]?.takeIf { it.generation == generation }?.snapshot
+
+    fun put(key: String, snapshot: ChatSnapshot) {
+        entries[key] = Entry(generation, snapshot)
         while (entries.size > MAX) {
             val oldest = entries.keys.firstOrNull() ?: break
             entries.remove(oldest)
         }
     }
 
-    fun forget(session: String? = null) {
-        if (session == null) entries.clear() else entries.remove(session)
+    /** 库动过：换代 + 清空。旧的那几页即使晚一步被写进来，也读不到了。 */
+    fun forget() {
+        generation += 1
+        entries.clear()
     }
+
+    fun size(): Int = entries.size
+
+    fun key(session: String, what: String): String = "$session|$what"
 }
 
 internal object ChatRepository {
@@ -100,7 +110,8 @@ internal object ChatRepository {
         return try {
         if (!NativeBridge.loaded) return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")
         val handle = openOrExplain(databasePath) ?: return empty(lastOpenIssue)
-        if (after == null) HeadPages.get(sessionId)?.let { return it }
+        val cacheKey = PageCache.key(sessionId, after?.let { "after:$it" } ?: "head")
+        PageCache.get(cacheKey)?.let { return it }
         try {
             val envelope = JSONObject(
                 NativeBridge.loadUnitsAfterJson(handle, sessionId, after ?: 0L, limit),
@@ -119,7 +130,7 @@ internal object ChatRepository {
                     source = RowSource.Native,
                     note = if (page.isEmpty) "这个会话还一条消息都没有" else null,
                 )
-                if (after == null && !page.isEmpty) HeadPages.put(sessionId, snapshot)
+                if (!page.isEmpty) PageCache.put(cacheKey, snapshot)
                 snapshot
             }
         } finally {
@@ -131,28 +142,59 @@ internal object ChatRepository {
     }
 
     /**
-     * 慢速预载"从头一页"（D366）。
+     * 慢速预载"当前页的那一圈"（D367）：**首页、尾页、上一页、下一页**。
      *
-     * 为什么慢：它跟首屏抢的是同一块磁盘。第一次读完之后用户还在看最新的消息，
-     * 过上大半秒再把这一页读进来，⇈ 就是"按下就到"。
-     * 失败不当错误：预载只是个提前量，真按了 ⇈ 会再读一次。
+     * 用户 2026-11-21：「可以做好首页、尾页、当前页和相邻两页，这五页的预载」——当前页本来就
+     * 在手上，所以这里补的是另外四页。补上之后：⇈ / ⇊ / 往上贴到边 / 点迷你地图，都是"按下就到"。
+     *
+     * 不做的两件事：
+     * - **不抢首屏**：先等 600 ms，让第一帧和滚动都落定；
+     * - **不一次全读**：一页一页来，每页之间再等 150 ms，磁盘上只排一项。
+     * 失败不当错误：预载只是提前量，真用到了会再读一次。
      */
-    suspend fun prefetchHead(databasePath: String, sessionId: String) {
-        if (HeadPages.get(sessionId) != null) return
+    suspend fun prefetchAround(databasePath: String, sessionId: String, page: ChatPage?) {
+        if (page == null || page.isEmpty) return
         delay(600)
-        val started = System.nanoTime()
-        val page = loadAfter(databasePath, sessionId, after = null)
-        val cost = (System.nanoTime() - started) / 1_000_000
-        val ok = HeadPages.get(sessionId) != null
-        NLog.i(
-            "Chat",
-            "预载 从头一页 " + (if (ok) "好了（${page.page?.units?.size ?: 0} 个单元，${cost}ms）" else "没成（${cost}ms）"),
-        )
+        // 只补"确实还有那一头"的：`truncated` = 上面还有更早的，`hasNewer` = 下面还有更新的。
+        // 一头都没有（整条会话就在这一页里）就什么都不补——预载一页空的不如不预载。
+        val plan = buildList {
+            if (page.truncated) {
+                page.nextBefore?.let { add("home" to it) }
+                add("head" to null)
+            }
+            if (page.hasNewer) {
+                page.nextAfter?.let { add("next" to it) }
+                add("tail" to null)
+            }
+        }
+        for ((what, cursor) in plan) {
+            delay(150)
+            val cacheKey = when (what) {
+                "head" -> PageCache.key(sessionId, "head")
+                "tail" -> PageCache.key(sessionId, "tail")
+                "home" -> PageCache.key(sessionId, "before:$cursor")
+                else -> PageCache.key(sessionId, "after:$cursor")
+            }
+            if (PageCache.get(cacheKey) != null) continue
+            val started = System.nanoTime()
+            when (what) {
+                "head" -> loadAfter(databasePath, sessionId, after = null)
+                "tail" -> loadPage(databasePath, sessionId, before = null)
+                "home" -> loadPage(databasePath, sessionId, before = cursor)
+                else -> loadAfter(databasePath, sessionId, after = cursor)
+            }
+            val cost = (System.nanoTime() - started) / 1_000_000
+            val ok = PageCache.get(cacheKey) != null
+            NLog.i(
+                "Chat",
+                "预载 $what " + (if (ok) "好了（${cost}ms，缓存 ${PageCache.size()} 页）" else "没成（${cost}ms）"),
+            )
+        }
     }
 
-    /** 库里动过（新消息 / 改版本）或者换会话：缓存整份丢掉（铁律①）。 */
-    fun forgetHead(sessionId: String? = null) {
-        HeadPages.forget(sessionId)
+    /** 库里动过（新消息 / 改版本）：五页缓存整份丢掉（铁律①）。 */
+    fun forgetPages() {
+        PageCache.forget()
     }
 
     /** 迷你地图的一行（D365）：`preview` 是写入时算好的那 24 个字，不带正文。 */
@@ -206,6 +248,8 @@ internal object ChatRepository {
         before: Long?,
         limit: Long,
     ): ChatSnapshot {
+        val cacheKey = PageCache.key(sessionId, before?.let { "before:$it" } ?: "tail")
+        PageCache.get(cacheKey)?.let { return it }
         if (!NativeBridge.loaded) return empty("原生层没加载（${NativeBridge.failureMessage ?: "未知原因"}）")
         val handle = openOrExplain(databasePath) ?: return empty(lastOpenIssue)
         return try {
@@ -219,11 +263,13 @@ internal object ChatRepository {
                 "会话 $sessionId 读到 ${page.units.size}/${page.total} 个单元" +
                     (if (before == null) "（首屏）" else "（往上翻，游标 $before）"),
             )
-            ChatSnapshot(
+            val snapshot = ChatSnapshot(
                 page = page,
                 source = RowSource.Native,
                 note = if (page.isEmpty) "这个会话还一条消息都没有" else null,
             )
+            if (!page.isEmpty) PageCache.put(cacheKey, snapshot)
+            snapshot
         } catch (failure: UnsatisfiedLinkError) {
             empty("原生层已加载，但 JNI 符号对不上（logcat 搜 No implementation found）")
         } catch (failure: Throwable) {
