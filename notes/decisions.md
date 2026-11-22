@@ -4087,24 +4087,16 @@ clippy `-D warnings` 干净；kotlinc 全量只剩 9 条既有 `R`；Kotlin 单�
 
 ## D375 左滑删除：删除区高度不再靠父级，图标与文字按进度先后出现（2026-11-22）
 
-**现象**：滑开之后红条在、里面是空的（用户原话：「删除按钮仍然看不见，是空格」）。
+**现象**：滑开之后红条在、里面是空的。
 
-**最可能的原因（推断，未在真机上验）**：`SwipeDeleteRow` 的删除区写在
-`Box { Box(Modifier.matchParentSize()) { Row(fillMaxHeight) } }` 里，而这一行常挂在
-`verticalScroll` 的 `Column` 下——那里高度约束无界，`fillMaxHeight` 在无界约束下拿的是
-`minHeight`（= 0）。**颜色排除了**：深色下 `error` 是浅粉 + `onError` 是暗红，浅色下是暗红 + 白，
-两套都看得见，所以不是配色。
-
-**没验的部分**：`matchParentSize` 本意是"按父级已量好的尺寸量自己"，理论上该拿到正确高度；
-真机上到底是它拿到 0，还是别处（层叠顺序 / 裁剪）把内容切掉了，本机没有 Compose 运行时，
-判不了。所以这次**改的是让它不依赖父级测量**，不是"确认了是 matchParentSize 的错"。
+**这一条的归因是错的**（当时判成"删除区高度塌成 0"），真正原因是 `offset` / `background`
+的书写顺序，见 **D376**。这里留下的是当时试过、后来撤掉的东西，以及仍然成立的那部分（动画）。
 
 **改法**：
 
-- 去掉 `matchParentSize` 那层，删除区直接是 Box 的子节点；
-- 高度**由内容行量出来再写回去**（`measuredHeight` + `onGloballyPositioned`），
-  `measuredHeight` 为 0 时退回 `fillMaxHeight`（第一帧还没有数）。这样无论父级给的是有界还是
-  无界约束，删除区的高度都等于内容行的高度——**把这一条从"依赖测量顺序"变成"依赖一个确定的数"**。
+- 去掉 `matchParentSize` 那层，删除区直接是 Box 的子节点 + `fillMaxHeight`（**留着**，少一层嵌套）；
+- ~~高度由内容行量出来写回去（`measuredHeight`）~~ —— **已撤**：那是基于错误归因加的复杂度，
+  实测编译能过但没解决症状，D376 找到真因后一起删掉了。
 - 红底从 `error` 换成 `errorContainer`，字/图标用 `onErrorContainer`：`error / onError` 是
   "实心破坏性按钮"那一对，铺成整行会读成警告横幅。主题里补了这两档（之前没给值，
   M3 的默认值是从基线紫算的，和灰紫背景不在一套里）。
@@ -4123,3 +4115,43 @@ clippy `-D warnings` 干净；kotlinc 全量只剩 9 条既有 `R`；Kotlin 单�
 **判据**：滑到 20% 时图标已半透、文字仍是 0；40% 时图标全亮、文字仍是 0；70% 松手停在 -88
 且两样都全亮；点行收回；点红区删掉并出带「撤销」的提示。本机用一份假 DOM 跑了 19 条断言
 （`/tmp/test-preview.ts`，19 条全过，**只验了 HTML 预览的脚本，不是 Compose**）。
+
+**保留的规矩**：动画冻结时必须退化成"略小 / 略偏"，不能退化成"看不见"——所以 alpha 也走
+`animateFloatAsState` 而不是 `graphicsLayer{}` 里的 lambda（见 D376 末尾）。
+
+## D376 左滑删除"能点但是空白"：`offset` 写在 `background` 后面（2026-11-22）
+
+**现象**（用户第二次报，附截图：三条行都在、没有任何红条）：「能点击，但是没有显示」。
+
+**原因**：内容行那一串 Modifier 写成了
+
+```kotlin
+Modifier.background(rowColor).fillMaxWidth().offset { IntOffset(x, 0) }
+```
+
+`offset` 在链的**内层**，只移动它包裹的内容；`background` 在外层，按**原位置**画满整宽。
+滑开时文字往左走了（还被外层 `clipToBounds` 裁掉一截），一整块不透明底色留在原处，
+把下面的红条、图标、字整个盖住——**红条那 88dp 仍是点击区，所以"能点"**。
+两者合起来就是"能点，但是一片空白"。
+
+**改法**：`fillMaxWidth().offset { … }.background(rowColor)` —— 底色跟着行一起走。
+
+**这一条从 D215 抽共享件起就是错的**，所以 V48 三次没通过；上一轮我把它归因成
+`matchParentSize` 拿到 0（D375），是错的判断，已经撤掉那段 `measuredHeight`。
+教训：**"看不见"先查层叠与顺序，再查测量**——测量错了通常是"位置不对"，顺序错了才是"整个被盖住"。
+
+**另外两处同时收口**：
+
+- 删除区里的 alpha/scale/位移改用 `animateFloatAsState` 驱动的普通 Modifier，
+  **不写进 `graphicsLayer{}` 的 lambda**：那里算出来的值一旦没被重算，就冻在初值（0）上，
+  表现同样是"能点但看不见"。同一类症状，先排掉第二个可能源。
+- 加 `scripts/check_swipe_row.py` 并挂进 CI（android job）：断言 `offset` 在 `background` 前面、
+  没有 `matchParentSize`、没有 `graphicsLayer{}`。**先把代码改回错误写法跑了一次，它报红**，
+  再还原——没有红过的绿不算绿。
+
+**判据**：滑开 1/5 看见垃圾桶（略小），2/5 垃圾桶清楚、还没有字，过一半「删除」淡入落位；
+点红区能删。V165 第 1–3 步就是这一条。
+
+**这一条的守卫是脚本，不是记性**：`scripts/check_swipe_row.py` 断言 `offset` 在 `background` 前面、
+没有 `matchParentSize`、没有 `graphicsLayer{}`，挂在 CI 的 android job 里。写完先把代码改回错误写法
+跑了一次——它报红（`FAIL .background 在 .offset 前面`），再还原。**没红过的绿不算绿。**

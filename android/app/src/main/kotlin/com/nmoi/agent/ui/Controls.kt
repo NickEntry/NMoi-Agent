@@ -1,6 +1,8 @@
 package com.nmoi.agent.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,7 +21,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -33,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,11 +46,12 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
@@ -288,14 +291,13 @@ internal fun RowDivider(leading: Dp) {
  * 红底铺在这个 Box 上、内容行自己不透明：换成"背后那一层铺红"会在真机上量成 0 高（D215）。
  * 松手不过一半就弹回，不留一条半开的红色待命。
  *
- * 删除区**直接是 Box 的子节点**，不再套一层 `matchParentSize`：套了那层之后它自己的高度
- * 在某些测量顺序下是 0，红条看得见、里面的图标和字被裁成一条缝——真机上就是"滑开是一片空"
- * （D375）。现在高度**由内容行量出来再写回去**（`measuredHeight`），不依赖 Box 的测量顺序：
- * 这一行常常挂在 `verticalScroll` 里，那里高度是无界的，`fillMaxHeight` 会老老实实塌成 0。
+ * **`offset` 必须写在 `background` 前面**（D376）。反过来（`background` 在前、`offset` 在后）
+ * 时，`offset` 只挪动行里的内容，底色留在外层原地不动：滑开之后文字往左走了，
+ * 一整块不透明底色还盖在原处，把下面的红条、图标、字全挡住。真机上的表现是
+ * **"删除区能点，但是一片空白"**。这一条从 D215 抽共享件起就错了，所以 V48 一直没通过。
  *
- * 删除区里的两样东西**按进度先后出现**（D375）：图标在 0–35% 内到齐，文字 45% 才起。
- * 这样删除区一露头就有东西，不用等滑到底才画；而不到一半时"删除"两个字还压着，
- * 因为那时用户还没决定。
+ * 删除区里的两样东西按进度先后出现（D375）：图标在露头时到齐，文字过了 45% 才起。
+ * 不到一半时用户还没决定，先把"删除"两个字压住。
  */
 @Composable
 internal fun SwipeDeleteRow(
@@ -314,15 +316,40 @@ internal fun SwipeDeleteRow(
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val reveal = with(density) { revealWidth.toPx() }
-    val labelShift = with(density) { 8.dp.toPx() }
     val offset = remember(resetKey) { Animatable(0f) }
-    var measuredHeight by remember(resetKey) { mutableStateOf(0) }
 
-    // 露出来的比例（0 = 全收起，1 = 88dp 全露）。两个进度都从它派生，
-    // 所以"图标先到、文字后到"只有一处定义，改手感不必两处对着改。
-    fun revealed(): Float = (-offset.value / reveal).coerceIn(0f, 1f)
-    fun iconProgress(): Float = (revealed() / 0.35f).coerceIn(0f, 1f)
-    fun labelProgress(): Float = ((revealed() - 0.45f) / 0.30f).coerceIn(0f, 1f)
+    // 三档：0 全收起 / 1 图标到位 / 2 文字到位。档位在**组合**阶段算，
+    // 由它驱动四个 `animateFloatAsState`（标准的状态动画，不写进 `graphicsLayer{}`）。
+    val stage by remember(resetKey) {
+        derivedStateOf {
+            val p = (-offset.value / reveal).coerceIn(0f, 1f)
+            when {
+                p <= 0.02f -> 0
+                p < 0.45f -> 1
+                else -> 2
+            }
+        }
+    }
+    val iconAlpha by animateFloatAsState(
+        targetValue = if (stage >= 1) 1f else 0f,
+        animationSpec = tween(durationMillis = 110),
+        label = "swipe-icon-alpha",
+    )
+    val iconScale by animateFloatAsState(
+        targetValue = if (stage >= 1) 1f else 0.72f,
+        animationSpec = tween(durationMillis = 110),
+        label = "swipe-icon-scale",
+    )
+    val labelAlpha by animateFloatAsState(
+        targetValue = if (stage >= 2) 1f else 0f,
+        animationSpec = tween(durationMillis = 110),
+        label = "swipe-label-alpha",
+    )
+    val labelShift by animateFloatAsState(
+        targetValue = if (stage >= 2) 0f else 8f,
+        animationSpec = tween(durationMillis = 110),
+        label = "swipe-label-shift",
+    )
 
     LaunchedEffect(swipeEnabled) {
         if (!swipeEnabled) offset.snapTo(0f)
@@ -338,13 +365,7 @@ internal fun SwipeDeleteRow(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .width(revealWidth)
-                .then(
-                    if (measuredHeight > 0) {
-                        Modifier.height(with(density) { measuredHeight.toDp() })
-                    } else {
-                        Modifier.fillMaxHeight()
-                    },
-                )
+                .fillMaxHeight()
                 .clickable {
                     scope.launch { offset.snapTo(0f) }
                     onDelete()
@@ -352,20 +373,16 @@ internal fun SwipeDeleteRow(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 两个 `graphicsLayer` 里只读 `offset.value`：它在绘制阶段读，拖动时不重组
-            // （D360 的教训：在组合里读位移，拖动期间每帧重组整个外壳）。
+            // 两样东西只动 alpha / scale / translationX，全在组合阶段算好的值上，
+            // 不写进 `graphicsLayer{}`（D376：那里算出来的值真机上冻在初值上）。
             Icon(
                 imageVector = ActionIcons.Trash2,
                 contentDescription = deleteDescription,
                 tint = MaterialTheme.colorScheme.onErrorContainer,
                 modifier = Modifier
                     .size(18.dp)
-                    .graphicsLayer {
-                        val shown = iconProgress()
-                        alpha = shown
-                        scaleX = 0.72f + 0.28f * shown
-                        scaleY = 0.72f + 0.28f * shown
-                    },
+                    .alpha(iconAlpha)
+                    .scale(iconScale),
             )
             Text(
                 text = deleteLabel,
@@ -373,25 +390,20 @@ internal fun SwipeDeleteRow(
                 color = MaterialTheme.colorScheme.onErrorContainer,
                 modifier = Modifier
                     .padding(start = 6.dp)
-                    .graphicsLayer {
-                        val shown = labelProgress()
-                        alpha = shown
-                        translationX = (1f - shown) * labelShift
-                    },
+                    .alpha(labelAlpha)
+                    .offset(x = labelShift.dp),
             )
         }
 
         Row(
             modifier = Modifier
-                .background(rowColor)
+                // **`offset` 必须在 `background` 前面**（D376）。反过来写的话，`offset` 只挪
+                // 行里的内容，底色画在外层节点上原地不动：滑开时文字往左走、底色留在原处，
+                // 右端露出一块空白，下面的红条和图标被这层不透明底色整个盖住。
+                // 真机上的表现就是"删除区能点，但是一片空白"。
                 .fillMaxWidth()
                 .offset { IntOffset(offset.value.roundToInt(), 0) }
-                // 行高由这里量出来交给删除区（见函数头）：删除区自己 `fillMaxHeight` 在无界高度下
-                // 拿的是 minHeight（0），整条删除区会塌成一条缝。这里给一个确定的数，绕开测量顺序。
-                .onGloballyPositioned { coordinates ->
-                    val now = coordinates.size.height
-                    if (now > 0 && now != measuredHeight) measuredHeight = now
-                }
+                .background(rowColor)
                 .pointerInput(resetKey, swipeEnabled) {
                     if (!swipeEnabled) return@pointerInput
                     detectHorizontalDragGestures(

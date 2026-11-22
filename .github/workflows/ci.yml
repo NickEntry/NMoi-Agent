@@ -152,6 +152,10 @@ jobs:
       # 漂移的表现是"设置里点了没反应"或"桌面上两个图标"，编译期完全看不出来，所以对账。
       - name: 图标 alias 对账
         run: ./scripts/check_app_icon_aliases.sh
+      # 左滑删除的 Modifier 顺序（D376）：`offset` 写在 `background` 后面时，滑开之后
+      # 红条被一整块不透明底色盖住——真机上是"能点，但是空白"，编译期看不出来。
+      - name: 左滑删除顺序对账
+        run: python3 scripts/check_swipe_row.py
       # 固定签名（D170）：有 secret 就解到 $RUNNER_TEMP（不进工作树、不进 artifact），
       # 没有就什么都不做——构建会退回 AGP 的 debug 签名，那种包只能本机随手试。
       - name: 解出签名材料
