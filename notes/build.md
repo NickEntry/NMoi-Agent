@@ -72,12 +72,14 @@ bash scripts/target_usage.sh --force     # 不管多大都清
 
 ```text
 路径      /workspace/NMoi-Agent-debug.apk
-字节      19,214,597
-sha256   3f17f5ee27ad0de147cfc5b779822146（前 32）
-commit   4fc38f8（D377：过渡按预览的连续曲线）
-CI run   45016559411（七 job 全绿；Kotlin 单测跑过 SwipeRevealTest）
+字节      19,311,241
+sha256   37aacd999c73bd36b126375e331f9b48（前 32）
+commit   154eabb（D372 / D378–D391：文件变更跟踪 + 变更卡片）
+CI run   45072570525（七 job 全绿）
+schema   v21（messages.changes_json）
 
-上一份      19,214,221 / 80d4c8357c2fed4355da9576d41a3b29 / 65f999e（run 45014651018，D376）
+上一份      19,214,597 / 3f17f5ee27ad0de147cfc5b779822146 / 4fc38f8（run 45016559411，D377）
+再上一份    19,214,221 / 80d4c8357c2fed4355da9576d41a3b29 / 65f999e（run 45014651018，D376）
 再上一份    19,215,233 / 602225ab5e4ba3d57d18c2347f60f1b1 / 82631fe（run 45009513814，D375）
 来源     gh run download <run> -n nmoi-debug-apk  → app-debug.apk
 四样核对 classes.dex / assets/notices/LICENSE / assets/notices/LICENSES/Apache-2.0.txt / lib/arm64-v8a/libnmoi_ffi.so
