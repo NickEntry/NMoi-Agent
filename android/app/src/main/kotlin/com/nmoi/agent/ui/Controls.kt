@@ -386,8 +386,8 @@ internal fun SwipeDeleteRow(
                 .background(rowColor)
                 .fillMaxWidth()
                 .offset { IntOffset(offset.value.roundToInt(), 0) }
-                // 行高由这里量出来交给删除区（见函数头）：`verticalScroll` 里高度无界，
-                // 删除区自己 `fillMaxHeight` 会塌成 0。
+                // 行高由这里量出来交给删除区（见函数头）：删除区自己 `fillMaxHeight` 在无界高度下
+                // 拿的是 minHeight（0），整条删除区会塌成一条缝。这里给一个确定的数，绕开测量顺序。
                 .onGloballyPositioned { coordinates ->
                     val now = coordinates.size.height
                     if (now > 0 && now != measuredHeight) measuredHeight = now
