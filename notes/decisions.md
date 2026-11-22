@@ -4089,16 +4089,22 @@ clippy `-D warnings` 干净；kotlinc 全量只剩 9 条既有 `R`；Kotlin 单�
 
 **现象**：滑开之后红条在、里面是空的（用户原话：「删除按钮仍然看不见，是空格」）。
 
-**原因**：`SwipeDeleteRow` 的删除区写在 `Box { Box(Modifier.matchParentSize()) { Row(...) } }` 里。
-这行经常挂在 `verticalScroll` 的 `Column` 下，那里高度约束是无界的：`matchParentSize` 拿不到
-父级高度，`fillMaxHeight` 的上限是 0，于是 Row 的高度是 0——红条（铺在外层 Box 上）看得见，
-图标和字被裁成一条缝。**不是颜色问题，是测量问题**（先当成颜色问题查了一轮，浪费）。
+**最可能的原因（推断，未在真机上验）**：`SwipeDeleteRow` 的删除区写在
+`Box { Box(Modifier.matchParentSize()) { Row(fillMaxHeight) } }` 里，而这一行常挂在
+`verticalScroll` 的 `Column` 下——那里高度约束无界，`fillMaxHeight` 在无界约束下拿的是
+`minHeight`（= 0）。**颜色排除了**：深色下 `error` 是浅粉 + `onError` 是暗红，浅色下是暗红 + 白，
+两套都看得见，所以不是配色。
+
+**没验的部分**：`matchParentSize` 本意是"按父级已量好的尺寸量自己"，理论上该拿到正确高度；
+真机上到底是它拿到 0，还是别处（层叠顺序 / 裁剪）把内容切掉了，本机没有 Compose 运行时，
+判不了。所以这次**改的是让它不依赖父级测量**，不是"确认了是 matchParentSize 的错"。
 
 **改法**：
 
 - 去掉 `matchParentSize` 那层，删除区直接是 Box 的子节点；
 - 高度**由内容行量出来再写回去**（`measuredHeight` + `onGloballyPositioned`），
-  `measuredHeight` 为 0 时退回 `fillMaxHeight`（第一帧还没有数）。
+  `measuredHeight` 为 0 时退回 `fillMaxHeight`（第一帧还没有数）。这样无论父级给的是有界还是
+  无界约束，删除区的高度都等于内容行的高度——**把这一条从"依赖测量顺序"变成"依赖一个确定的数"**。
 - 红底从 `error` 换成 `errorContainer`，字/图标用 `onErrorContainer`：`error / onError` 是
   "实心破坏性按钮"那一对，铺成整行会读成警告横幅。主题里补了这两档（之前没给值，
   M3 的默认值是从基线紫算的，和灰紫背景不在一套里）。
