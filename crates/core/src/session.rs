@@ -4757,4 +4757,3 @@ mod tests {
         assert!(sent[0].contains("\"type\":\"text\""), "{}", sent[0]);
     }
 }
-
