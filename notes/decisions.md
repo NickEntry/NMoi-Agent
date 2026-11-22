@@ -4142,12 +4142,22 @@ Modifier.background(rowColor).fillMaxWidth().offset { IntOffset(x, 0) }
 
 **另外两处同时收口**：
 
-- 删除区里的 alpha/scale/位移改用 `animateFloatAsState` 驱动的普通 Modifier，
-  **不写进 `graphicsLayer{}` 的 lambda**：那里算出来的值一旦没被重算，就冻在初值（0）上，
-  表现同样是"能点但看不见"。同一类症状，先排掉第二个可能源。
+- 删除区里的 alpha/scale/位移改成从 `offset.value` 直接算出来的普通 Modifier，
+  **不写进 `graphicsLayer{}` 的 lambda**。
+  **这里要说清一件事**：上一版我写"`graphicsLayer{}` 里的值在真机上会冻在初值上"，
+  那是**推测，没验过**——`offset` / `background` 的顺序已经完整解释了症状，不需要第二个原因。
+  换掉它的真实理由只有一条：`graphicsLayer{}` 的 lambda 在绘制阶段跑，本机没有 Compose 运行时，
+  验不了它在那台机器上的行为；而"读一个 State 再算三个数"是**本机能用纯函数单测钉住**的写法
+  （`SwipeReveal` + 10 条断言）。选能验的那个，不是选"我记得它有问题"的那个。
+  代价写在下面「未验」里。
 - 加 `scripts/check_swipe_row.py` 并挂进 CI（android job）：断言 `offset` 在 `background` 前面、
   没有 `matchParentSize`、没有 `graphicsLayer{}`。**先把代码改回错误写法跑了一次，它报红**，
   再还原——没有红过的绿不算绿。
+
+**未验 / 已知代价**：位移在**组合**阶段读（`SwipeReveal.progress(offset.value, …)`），
+拖动期间这一行每帧重组一次。行里只有两三个 `Text`，而同一时刻只有一行在被拖，
+所以判断是"可以接受"——但**这是判断，不是测量**。真机若在这一处掉帧，改法是把这段读挪回
+`graphicsLayer{}` 的 lambda（那样是绘制阶段读、不重组），而不是加缓存。
 
 **判据**：滑开 1/5 看见垃圾桶（略小），2/5 垃圾桶清楚、还没有字，过一半「删除」淡入落位；
 点红区能删。V165 第 1–3 步就是这一条。
@@ -4155,3 +4165,32 @@ Modifier.background(rowColor).fillMaxWidth().offset { IntOffset(x, 0) }
 **这一条的守卫是脚本，不是记性**：`scripts/check_swipe_row.py` 断言 `offset` 在 `background` 前面、
 没有 `matchParentSize`、没有 `graphicsLayer{}`，挂在 CI 的 android job 里。写完先把代码改回错误写法
 跑了一次——它报红（`FAIL .background 在 .offset 前面`），再还原。**没红过的绿不算绿。**
+
+## D377 左滑删除的过渡按预览那一条曲线走（用户 2026-11-22：「尽量复刻那个 html 演示」）
+
+上一版是三档跳变（0 / 图标 / 文字），预览里是**连续跟随**：滑多少露多少。用户要的是预览那个手感，
+所以映射按预览重写，并把整条曲线抽成纯函数。
+
+**落在哪**：`ui/SwipeReveal.kt`，三个常量 + 五个函数，没有 Compose 依赖。
+
+```text
+progress   = -offsetPx / revealPx            收口到 0–1
+iconAlpha  = ramp(p, 0.00, 0.35)
+iconScale  = 0.72 + 0.28 * ramp(p, 0.00, 0.35)
+labelAlpha = ramp(p, 0.45, 0.75)
+labelShift = 8 * (1 - ramp(p, 0.45, 0.75))
+openTarget = p > 0.5
+```
+
+**为什么抽出来**：这是这一版唯一"错了会变成一片空白"的东西，而它没有 Compose 依赖——
+能在本机用 `kotlinc + JUnit` 跑，就能在 CI 之前拦住。`SwipeRevealTest` 10 条，钉的是：
+收起时全 0；1/5 处图标过半、文字仍 0；2/5 处图标全亮文字仍 0；满宽两样到位；
+文字区间中点是一半；过一半才停在打开（正好一半算没过）；`revealPx = 0` 不产生 NaN；
+拖过头收口；区间写反时返回 1 而不是 0（否则又是空白）；整条曲线单调不回落。
+
+**松手回弹**：`spring(dampingRatio = 0.72, stiffness = StiffnessMediumLow)`，
+数值照预览那段（`k = 420`、阻尼比 0.72）。阻尼比小于 1 是**有意**的：过冲一点点才像手放开的，
+1.0 会像被人拖到位置上。**门槛也走同一个纯函数**（`openTarget`），手感只有一处定义。
+
+**未验**：真机手感（V165 第 1–3 步）、拖动帧率（组合阶段读位移，每帧重组这一行）。
+两者都只有真机能答。

@@ -1,8 +1,8 @@
 package com.nmoi.agent.ui
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,7 +34,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -286,6 +285,18 @@ internal fun RowDivider(leading: Dp) {
 }
 
 /**
+ * 松手后回弹用的弹簧。
+ *
+ * 数值照 HTML 预览里那一段（`k = 420`、阻尼比 0.72）：预览的手感就是从这个弹簧来的，
+ * 换成 `tween` 会变成"匀速挪过去"，比拖动本身还抢眼。阻尼比小于 1 是**有意**的——
+ * 过冲一点点才像手放开的，1.0 会像被人拖到位置上。
+ */
+private val SWIPE_SPRING = spring<Float>(
+    dampingRatio = 0.72f,
+    stiffness = Spring.StiffnessMediumLow,
+)
+
+/**
  * 一行可以左滑露出删除的列表行。
  *
  * 红底铺在这个 Box 上、内容行自己不透明：换成"背后那一层铺红"会在真机上量成 0 高（D215）。
@@ -296,8 +307,8 @@ internal fun RowDivider(leading: Dp) {
  * 一整块不透明底色还盖在原处，把下面的红条、图标、字全挡住。真机上的表现是
  * **"删除区能点，但是一片空白"**。这一条从 D215 抽共享件起就错了，所以 V48 一直没通过。
  *
- * 删除区里的两样东西按进度先后出现（D375）：图标在露头时到齐，文字过了 45% 才起。
- * 不到一半时用户还没决定，先把"删除"两个字压住。
+ * 删除区里那两样东西的露出曲线在 [SwipeReveal] 里（纯函数 + 单测）：图标在露头时到齐，
+ * 文字过了 45% 才起。不到一半时用户还没决定，先把"删除"两个字压住。
  */
 @Composable
 internal fun SwipeDeleteRow(
@@ -318,38 +329,14 @@ internal fun SwipeDeleteRow(
     val reveal = with(density) { revealWidth.toPx() }
     val offset = remember(resetKey) { Animatable(0f) }
 
-    // 三档：0 全收起 / 1 图标到位 / 2 文字到位。档位在**组合**阶段算，
-    // 由它驱动四个 `animateFloatAsState`（标准的状态动画，不写进 `graphicsLayer{}`）。
-    val stage by remember(resetKey) {
-        derivedStateOf {
-            val p = (-offset.value / reveal).coerceIn(0f, 1f)
-            when {
-                p <= 0.02f -> 0
-                p < 0.45f -> 1
-                else -> 2
-            }
-        }
-    }
-    val iconAlpha by animateFloatAsState(
-        targetValue = if (stage >= 1) 1f else 0f,
-        animationSpec = tween(durationMillis = 110),
-        label = "swipe-icon-alpha",
-    )
-    val iconScale by animateFloatAsState(
-        targetValue = if (stage >= 1) 1f else 0.72f,
-        animationSpec = tween(durationMillis = 110),
-        label = "swipe-icon-scale",
-    )
-    val labelAlpha by animateFloatAsState(
-        targetValue = if (stage >= 2) 1f else 0f,
-        animationSpec = tween(durationMillis = 110),
-        label = "swipe-label-alpha",
-    )
-    val labelShift by animateFloatAsState(
-        targetValue = if (stage >= 2) 0f else 8f,
-        animationSpec = tween(durationMillis = 110),
-        label = "swipe-label-shift",
-    )
+    // 三个"露出多少"都从位移算，映射本身在 [SwipeReveal] 里（纯函数、有单测）。
+    // 这里只把它读出来——**不写进 `graphicsLayer{}` 的 lambda**：那里算的值一旦没被重算，
+    // 就冻在初值 0 上，表现是"能点但是一片空白"（D376）。
+    val progress = SwipeReveal.progress(offset.value, reveal)
+    val iconAlpha = SwipeReveal.iconAlpha(progress)
+    val iconScale = SwipeReveal.iconScale(progress)
+    val labelAlpha = SwipeReveal.labelAlpha(progress)
+    val labelShift = SwipeReveal.labelShiftDp(progress)
 
     LaunchedEffect(swipeEnabled) {
         if (!swipeEnabled) offset.snapTo(0f)
@@ -413,10 +400,15 @@ internal fun SwipeDeleteRow(
                             }
                         },
                         onDragEnd = {
-                            val target = if (offset.value < -reveal / 2f) -reveal else 0f
-                            scope.launch { offset.animateTo(target) }
+                            // 门槛也走同一个纯函数：手感只有一处定义（D377）。
+                            val open = SwipeReveal.openTarget(
+                                SwipeReveal.progress(offset.value, reveal),
+                            )
+                            scope.launch { offset.animateTo(if (open) -reveal else 0f, SWIPE_SPRING) }
                         },
-                        onDragCancel = { scope.launch { offset.animateTo(0f) } },
+                        onDragCancel = {
+                            scope.launch { offset.animateTo(0f, SWIPE_SPRING) }
+                        },
                     )
                 }
                 .clickable {
