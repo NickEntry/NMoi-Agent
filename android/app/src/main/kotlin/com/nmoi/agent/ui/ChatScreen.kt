@@ -226,6 +226,11 @@ internal fun ChatScreen(
     }
     // 工具块点开的那一条（D243）：半屏弹窗，不在聊天页里就地展开。
     var toolSheet by remember(sessionId) { mutableStateOf<ToolSheetTarget?>(null) }
+    // 变更面板（D381 / D383）：点一个芯片 → 详情；点 `+N` → 整页。
+    // 两个都按会话重置——切走时不该跟着过去。
+    var changeSheet by remember(sessionId) { mutableStateOf<ChangeRow?>(null) }
+    var changeListOpen by remember(sessionId) { mutableStateOf<List<ChangeRow>?>(null) }
+    var missingHint by remember(sessionId) { mutableStateOf<String?>(null) }
     // 在等回答的那条命令（D329）。**只存这一拍的副本**：它在等，屏幕上也该写着"在等"。
     var commandAsk by remember(sessionId) { mutableStateOf<CommandAsk?>(null) }
     // 正在跑的那条调用点开的弹窗（0.15ak）。**只存 id**：对象是这一拍的副本，
@@ -1654,6 +1659,12 @@ internal fun ChatScreen(
                     onOpenDrawer = onOpenDrawer,
                     onNewChat = onNewChat,
                 )
+                // 「文件已不存在」（D383）：**标题栏下方**、向上划出消失。
+                // 为什么不放底部：用户点的是列表里的一行，眼睛在那儿；提示出现在底部看不见。
+                // 为什么向上划：向下划像"又一个面板要收"，向上划才像"一句话飘走了"。
+                missingHint?.let { hint ->
+                    MissingFileHint(text = hint, onDone = { missingHint = null })
+                }
                 ModelBar(label = modelLabel, percent = contextPercent, onClick = { modelSheet = true })
             }
 
@@ -1674,6 +1685,20 @@ internal fun ChatScreen(
                         onScrollToTop = { wantTop = false },
                         onNewer = { anchor = PageAnchor.Tail },
                         snapshot = snapshot,
+                        // 变更（D381）：点芯片先判文件还在不在——那一轮跑完到用户点开
+                        // 之间，文件完全可能被删掉或改名。不在就只弹一句，不开空面板。
+                        onOpenChange = { row ->
+                            val action = ChangeList.onTap(
+                                row.copy(exists = java.io.File(row.path).exists()),
+                            )
+                            when (action) {
+                                is ChangeList.TapAction.Missing ->
+                                    missingHint = "文件已不存在"
+                                is ChangeList.TapAction.Open ->
+                                    changeSheet = action.row
+                            }
+                        },
+                        onOpenAllChanges = { rows -> changeListOpen = rows },
                         // 只画**当前这个会话**的那一条：切走时它不该跟着过去。
                         pending = pending?.takeIf { it.session == sessionId },
                         live = live,
@@ -2083,6 +2108,28 @@ internal fun ChatScreen(
                 onCancel = { cancelCall(target.callId) },
                 onDismiss = { toolSheet = null },
             )
+        }
+
+        // 变更（D381 / D383）：点 `+N` 开整页，点一个芯片开详情。
+        // 两个面板互斥：开详情时先把整页关掉，免得两层遮罩叠在一起（那样颜色就不对了）。
+        changeListOpen?.let { rows ->
+            ChangeListSheet(
+                changes = rows,
+                onDismiss = { changeListOpen = null },
+                onOpenFile = { row ->
+                    changeListOpen = null
+                    val action = ChangeList.onTap(
+                        row.copy(exists = java.io.File(row.path).exists()),
+                    )
+                    when (action) {
+                        is ChangeList.TapAction.Missing -> missingHint = "文件已不存在"
+                        is ChangeList.TapAction.Open -> changeSheet = action.row
+                    }
+                },
+            )
+        }
+        changeSheet?.let { row ->
+            ChangeFileSheet(row = row, onDismiss = { changeSheet = null })
         }
 
         // 图片上下文（D248）：这一轮会发出去的图，能看、能移出一张、能清空。
@@ -2954,6 +3001,9 @@ private fun MessageArea(
     onOpenCompacted: () -> Unit = {},
     /** 每条**消息**的行起点（D363）：位置键按消息跳，不按行走。 */
     onMessageStarts: (List<Int>) -> Unit = {},
+    /** 点变更芯片（D381）。`null` = 这一屏不接。 */
+    onOpenChange: ((ChangeRow) -> Unit)? = null,
+    onOpenAllChanges: ((List<ChangeRow>) -> Unit)? = null,
 ) {
     if (snapshot == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -3227,6 +3277,8 @@ private fun MessageArea(
                 retryEnabled = retryEnabled,
                 onRetryMessage = onRetryMessage,
                 showActions = lastTextOfTurn,
+                onOpenChange = onOpenChange,
+                onOpenAllChanges = onOpenAllChanges,
             )
         }
 
@@ -3597,6 +3649,8 @@ private fun UnitBlock(
      * 前面几段没有可"复制整条回答"的东西，动作行收在最后一段。
      */
     showActions: Boolean = true,
+    onOpenChange: ((ChangeRow) -> Unit)? = null,
+    onOpenAllChanges: ((List<ChangeRow>) -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = gapAbove),
@@ -3672,6 +3726,8 @@ private fun UnitBlock(
                             // 它就是这一条消息的正文，复制 / 更多 / 版本都该在这里。
                             // 只有"纯工具那半行"（ToolsOnly）不画——那里没有正文可复制。
                             showActions = showActions && slice != UnitSlice.ToolsOnly,
+                            onOpenChange = onOpenChange,
+                            onOpenAllChanges = onOpenAllChanges,
                             selecting = selecting,
                             isSelected = message.id in selected,
                             onLongPress = { onLongPressMessage(message.id) },
@@ -4221,6 +4277,9 @@ private fun AssistantMessage(
      * 正文那半行不画（动作行收在整个块的最后），整条消息只有正文时才在这里画。
      */
     showActions: Boolean = true,
+    /** 点变更芯片 / 点 `+N`（D381）。`null` = 这一屏不接（比如导出预览）。 */
+    onOpenChange: ((ChangeRow) -> Unit)? = null,
+    onOpenAllChanges: ((List<ChangeRow>) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val stamp = stampOf(context, message.createdAt)
@@ -4258,6 +4317,15 @@ private fun AssistantMessage(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        // 变更卡片（D372 / D383）：**回答结尾、动作行之前**。
+        // 用户原话：「在助手消息的结尾加上文件变动」。没有变更就不画（不写"无文件变更"）。
+        if (message.changes.isNotEmpty()) {
+            ChangeChips(
+                changes = message.changes,
+                onOpenAll = { onOpenAllChanges?.invoke(message.changes) },
+                onOpenFile = { row -> onOpenChange?.invoke(row) },
             )
         }
         if (showActions) {

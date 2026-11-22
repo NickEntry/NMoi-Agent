@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,8 +24,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,7 +51,7 @@ import java.io.File
 @Composable
 internal fun ChangeChips(
     changes: List<ChangeRow>,
-    onOpenAll: () -> Unit,
+    onOpenAll: (List<ChangeRow>) -> Unit,
     onOpenFile: (ChangeRow) -> Unit,
 ) {
     if (changes.isEmpty()) return
@@ -68,7 +71,7 @@ internal fun ChangeChips(
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
-                    .clickable(onClick = onOpenAll)
+                    .clickable { onOpenAll(changes) }
                     .padding(horizontal = 6.dp, vertical = 4.dp),
             )
         }
@@ -373,14 +376,42 @@ internal fun humanTime(millis: Long): String {
  */
 @Composable
 internal fun MissingFileHint(text: String, onDone: () -> Unit) {
+    // 两段：先停 1.6 秒让人读到，再用 260 ms **向上划出**。
+    //
+    // 用 `Animatable` 而不是 `AnimatedVisibility`：这里要的是"往上挪 + 淡出"，
+    // 而 `AnimatedVisibility` 的默认退出是缩放/滑动，得再包一层 `tween` 才能对上，
+    // 那样反而不如直接写两个数。
+    val slide = remember(text) { androidx.compose.animation.core.Animatable(0f) }
+    val fade = remember(text) { androidx.compose.animation.core.Animatable(1f) }
     LaunchedEffect(text) {
-        kotlinx.coroutines.delay(1800)
+        kotlinx.coroutines.delay(1600)
+        kotlinx.coroutines.coroutineScope {
+            launch {
+                slide.animateTo(
+                    targetValue = -1f,
+                    animationSpec = androidx.compose.animation.core.tween(260),
+                )
+            }
+            launch {
+                fade.animateTo(
+                    targetValue = 0f,
+                    animationSpec = androidx.compose.animation.core.tween(260),
+                )
+            }
+        }
         onDone()
     }
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.inverseSurface,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            // 往上挪 40dp：够移出它自己那一行（一行约 36dp），又不必知道它的实际高度。
+            // `offset{}` 的 lambda 里拿不到 `size`（那是 `graphicsLayer` 才有的），
+            // 所以这里给一个固定值——提示条本来就只有一行高。
+            .offset(y = (slide.value * 40).dp)
+            .graphicsLayer { alpha = fade.value },
     ) {
         Text(
             text = text,

@@ -975,6 +975,17 @@ fn units_envelope(
                             .get(&message.id.to_string())
                             .cloned()
                             .unwrap_or_default(),
+                        // 这一轮改过的文件（D372）。只有整轮最后一条上有；
+                        // 其余是空数组——界面据此决定画不画变更卡片。
+                        "changes": message.changes.iter().map(|change| json!({
+                            "path": change.path,
+                            "kind": change.kind.as_str(),
+                            "added": change.added,
+                            "removed": change.removed,
+                            "lines": change.lines,
+                            "bytes": change.bytes,
+                            "diff": change.diff,
+                        })).collect::<Vec<_>>(),
                     })
                 })
                 .collect();

@@ -45,6 +45,13 @@ internal data class ChatMessage(
     val images: List<ChatImage> = emptyList(),
     /** 文件附件（D337）：芯片上写名字与大小，内容按需由模型读。 */
     val files: List<ChatFile> = emptyList(),
+    /**
+     * 这一轮改过的文件（D372）。**只在整轮的最后一条上有**，其余是空列表。
+     *
+     * 从 `messages.changes_json`（v21）读回来；空 = 这一轮没改文件，
+     * 界面那时不画变更卡片。
+     */
+    val changes: List<ChangeRow> = emptyList(),
 ) {
     val isThinking: Boolean get() = source == "model_thinking"
     val isToolCall: Boolean get() = source == "tool_call"
@@ -284,8 +291,34 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
                     toolArgs = parseToolArgs(message.optJSONArray("tool_call_args")),
                     images = parseImages(message.optJSONArray("images")),
                     files = parseFiles(message.optJSONArray("files")),
+                    changes = parseChanges(message.optJSONArray("changes")),
                 ),
             )
         }
     }
+}
+
+/**
+ * 读 `messages.changes`（D372）。
+ *
+ * 与 `TurnRepository.readChanges` 是**同一个形状**，但两处都要有：
+ * 一个是"这一轮刚跑完"的回包，一个是"重开会话从库里读"。合并成一个函数会让
+ * 其中一个多一次类型转换，而这段只有十几行。
+ */
+internal fun parseChanges(array: JSONArray?): List<ChangeRow> {
+    if (array == null) return emptyList()
+    val rows = ArrayList<ChangeRow>(array.length())
+    for (index in 0 until array.length()) {
+        val row = array.optJSONObject(index) ?: continue
+        val path = row.optString("path", "")
+        if (path.isEmpty()) continue
+        rows += ChangeRow(
+            path = path,
+            created = row.optString("kind", "") == "created",
+            added = row.optInt("added", 0),
+            removed = row.optInt("removed", 0),
+            diff = row.optString("diff", "").takeIf { it.isNotEmpty() },
+        )
+    }
+    return rows
 }

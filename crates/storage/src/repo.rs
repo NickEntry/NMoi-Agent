@@ -2187,8 +2187,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     // 真坏了也只丢那一轮的文件名）。
     let changes_text: String = row.get(18)?;
     if !changes_text.is_empty() {
-        message.changes =
-            serde_json::from_str(&changes_text).unwrap_or_else(|_| Vec::new());
+        message.changes = serde_json::from_str(&changes_text).unwrap_or_else(|_| Vec::new());
     }
     Ok(message)
 }
