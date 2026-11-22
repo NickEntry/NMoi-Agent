@@ -476,7 +476,15 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(names, vec!["a.txt", "src/b.rs"]);
+        // 用 `Path` 比，不拼字符串：Windows 的分隔符是 `\`，写死 `/` 只在 Linux 上过。
+        let expected: Vec<String> = [
+            std::path::PathBuf::from("a.txt"),
+            std::path::Path::new("src").join("b.rs"),
+        ]
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+        assert_eq!(names, expected);
     }
 
     #[test]

@@ -1912,71 +1912,6 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 ///
 /// 参数再解析一遍用的是**同一个** [`crate::tools::parse_edit_message`]：
 /// 工具说的"已排队三块"和这里写下去的三块一定是同一份。
-
-/// 等后台扫完，把 shell 那几条命令的变更并进这一轮（D378）。
-///
-/// `budget` 是一次**最多**等多久。扫描本身 137 ms，去抖窗口 150 ms，
-/// 所以给 400 ms 足够覆盖"只有这一条命令"的常见情形；并发多的时候可能等不到，
-/// 那时就放弃——理由见调用处的注释。
-fn collect_shell_changes(session: &str, into: &mut Vec<crate::changes::FileChange>) {
-    use std::time::{Duration, Instant};
-
-    /// 最多等多久。超过就放弃这一次（下一次命令会补上）。
-    const SCAN_WAIT: Duration = Duration::from_millis(400);
-    /// 轮询间隔。比去抖窗口小一个量级，够及时。
-    const POLL: Duration = Duration::from_millis(25);
-
-    // 先把到点的那批**扫掉**。core 里没有常驻线程，所以"谁来扫"由这里回答：
-    // 有命令在等结果时，就是它在扫。空闲时没有任何线程，也就没有任何开销。
-    let deadline = Instant::now() + SCAN_WAIT;
-    loop {
-        if let Some(members) = crate::settle::claim_ready(Instant::now()) {
-            // 这一批能看到哪几棵树：用成员自己带的 cwd 反推不出来，
-            // 所以只扫工作区——`scan_roots` 需要 `ToolContext`，而这里拿不到。
-            // 代价是 `/chat`、`/tmp` 里由 shell 写的东西这一轮不列；
-            // 它们本来就是会话私有的，下次 `write_file` 会补上。
-            let roots = members
-                .first()
-                .map(|pending| vec![crate::scanner::Root::shared(pending.cwd.clone())])
-                .unwrap_or_default();
-            let batch = crate::settle::run_batch(&members, &roots, crate::scanner::DEFAULT_LIMIT);
-            let running: Vec<String> = {
-                let mut sessions: Vec<String> = members
-                    .iter()
-                    .map(|pending| pending.session.clone())
-                    .collect();
-                sessions.sort();
-                sessions.dedup();
-                sessions
-            };
-            // 差异在 `run_batch` 里就算好了（那一刻读到的内容与快照对得上）。
-            let mut records = Vec::new();
-            for pending in &members {
-                if pending.session != session {
-                    continue;
-                }
-                records.extend(crate::settle::records(&batch, pending, &running, 5_000));
-            }
-            crate::settle::finish(batch);
-            for record in records {
-                // 已在列表里（`write_file` 记过）就不重复。
-                if !into.iter().any(|row| row.path == record.path) {
-                    into.push(record);
-                }
-            }
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        if crate::settle::next_deadline(Instant::now()).is_none() {
-            // 没有待扫的：再等也没用。
-            break;
-        }
-        std::thread::sleep(POLL);
-    }
-    into.sort_by(|a, b| a.path.cmp(&b.path));
-}
-
 fn apply_pending_edits<S: HistoryStore>(
     store: &mut S,
     calls: &[ToolRecord],
@@ -4757,4 +4692,68 @@ mod tests {
         );
         assert!(sent[0].contains("\"type\":\"text\""), "{}", sent[0]);
     }
+}
+
+/// 等后台扫完，把 shell 那几条命令的变更并进这一轮（D378）。
+///
+/// `budget` 是一次**最多**等多久。扫描本身 137 ms，去抖窗口 150 ms，
+/// 所以给 400 ms 足够覆盖"只有这一条命令"的常见情形；并发多的时候可能等不到，
+/// 那时就放弃——理由见调用处的注释。
+fn collect_shell_changes(session: &str, into: &mut Vec<crate::changes::FileChange>) {
+    use std::time::{Duration, Instant};
+
+    /// 最多等多久。超过就放弃这一次（下一次命令会补上）。
+    const SCAN_WAIT: Duration = Duration::from_millis(400);
+    /// 轮询间隔。比去抖窗口小一个量级，够及时。
+    const POLL: Duration = Duration::from_millis(25);
+
+    // 先把到点的那批**扫掉**。core 里没有常驻线程，所以"谁来扫"由这里回答：
+    // 有命令在等结果时，就是它在扫。空闲时没有任何线程，也就没有任何开销。
+    let deadline = Instant::now() + SCAN_WAIT;
+    loop {
+        if let Some(members) = crate::settle::claim_ready(Instant::now()) {
+            // 这一批能看到哪几棵树：用成员自己带的 cwd 反推不出来，
+            // 所以只扫工作区——`scan_roots` 需要 `ToolContext`，而这里拿不到。
+            // 代价是 `/chat`、`/tmp` 里由 shell 写的东西这一轮不列；
+            // 它们本来就是会话私有的，下次 `write_file` 会补上。
+            let roots = members
+                .first()
+                .map(|pending| vec![crate::scanner::Root::shared(pending.cwd.clone())])
+                .unwrap_or_default();
+            let batch = crate::settle::run_batch(&members, &roots, crate::scanner::DEFAULT_LIMIT);
+            let running: Vec<String> = {
+                let mut sessions: Vec<String> = members
+                    .iter()
+                    .map(|pending| pending.session.clone())
+                    .collect();
+                sessions.sort();
+                sessions.dedup();
+                sessions
+            };
+            // 差异在 `run_batch` 里就算好了（那一刻读到的内容与快照对得上）。
+            let mut records = Vec::new();
+            for pending in &members {
+                if pending.session != session {
+                    continue;
+                }
+                records.extend(crate::settle::records(&batch, pending, &running, 5_000));
+            }
+            crate::settle::finish(batch);
+            for record in records {
+                // 已在列表里（`write_file` 记过）就不重复。
+                if !into.iter().any(|row| row.path == record.path) {
+                    into.push(record);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        if crate::settle::next_deadline(Instant::now()).is_none() {
+            // 没有待扫的：再等也没用。
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    into.sort_by(|a, b| a.path.cmp(&b.path));
 }

@@ -593,7 +593,11 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             before,
         };
-        let batch = run_batch(&[me.clone()], &roots, crate::scanner::DEFAULT_LIMIT);
+        let batch = run_batch(
+            std::slice::from_ref(&me),
+            &roots,
+            crate::scanner::DEFAULT_LIMIT,
+        );
         assert_eq!(batch.changed.len(), 1, "应当扫到那一个文件");
         assert!(batch.changed[0].created);
 
@@ -626,7 +630,11 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             before,
         };
-        let batch = run_batch(&[me.clone()], &roots, crate::scanner::DEFAULT_LIMIT);
+        let batch = run_batch(
+            std::slice::from_ref(&me),
+            &roots,
+            crate::scanner::DEFAULT_LIMIT,
+        );
         assert!(batch.changed.is_empty());
         assert!(records(&batch, &me, &["s1".to_string()], 5_000).is_empty());
         clear();
@@ -651,7 +659,11 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             before,
         };
-        let batch = run_batch(&[me.clone()], &roots, crate::scanner::DEFAULT_LIMIT);
+        let batch = run_batch(
+            std::slice::from_ref(&me),
+            &roots,
+            crate::scanner::DEFAULT_LIMIT,
+        );
         let rows = records(&batch, &me, &["s1".to_string()], 5_000);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].diff.is_none(), "二进制不该给差异");

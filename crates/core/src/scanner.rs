@@ -358,7 +358,15 @@ mod tests {
             .keys()
             .map(|p| p.strip_prefix(dir.path()).unwrap().display().to_string())
             .collect();
-        assert_eq!(names, vec!["a.txt", "src/b.rs"]);
+        // 同 `attribution` 那一条：Windows 的分隔符是 `\`，不拼字符串。
+        let expected: Vec<String> = [
+            std::path::PathBuf::from("a.txt"),
+            std::path::Path::new("src").join("b.rs"),
+        ]
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+        assert_eq!(names, expected);
         assert!(!snapshot.truncated);
     }
 
