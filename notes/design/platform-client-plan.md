@@ -329,6 +329,57 @@ meta(key TEXT PK, value TEXT)       -- 含 schema_version、最后备份时间�
 - **保留策略**：最近 N 份 + 每周一份
 - **同步目录不放备份**：备份与活动库分离，避免同步冲突
 
+### 4.6.1 备份目标：本地目录 / WebDAV（用户 2026-11-22 提）
+
+用户原话：「常见的云备份支持，比如 webdav 什么的」。
+
+**目标抽象**（core 侧 trait，三个实现）：
+
+```rust
+pub trait BackupTarget {
+    fn put(&self, path: &str, bytes: &[u8], if_match: Option<&str>) -> Result<(), BackupError>;
+    fn get(&self, path: &str) -> Result<Vec<u8>, BackupError>;
+    fn list(&self, dir: &str) -> Result<Vec<RemoteEntry>, BackupError>;
+    fn mkcol(&self, dir: &str) -> Result<(), BackupError>;
+    fn delete(&self, path: &str) -> Result<(), BackupError>;
+    fn move_to(&self, from: &str, to: &str) -> Result<(), BackupError>;
+}
+```
+
+实现：`LocalDir`（现在就有，SAF 目录）、`WebDav`（Basic + TLS，够 Nextcloud / 坚果云 / Alist 那一档）、
+`S3`（**先不做**，v4 签名自己写要一大段，等真有人要）。
+
+**传输层只改一处**：`transport.rs` 的 `Method` 现在只有 `Get` / `Post`，
+加 `Put` / `Delete` / `Head` 与 `Method::Custom(&'static str)`（PROPFIND / MKCOL / MOVE 走它）。
+**不要在 WebDAV 里另写一份 HTTP**——两份 HTTP 就是两份超时、两份 TLS、两份错误映射。
+
+**原子性**（这一条是备份能不能用的分界）：
+
+```text
+PUT  <name>.part      →  HEAD 核对 Content-Length 与本地字节数
+                      →  MOVE <name>.part → <name>（Overwrite: T）
+```
+
+不直接 PUT 正式名：传一半断网会在服务端留下一个「看着像备份」的坏文件，而恢复的时候没人知道它是坏的。
+同理，`manifest.json` 里写 sha256 与字节数，恢复前算一遍再动库。
+
+**恢复顺序**（与 §4.4 那三层对齐）：
+
+```text
+GET 到临时目录 → 校验 sha256 / 字节数 → schema_version 高于本地？拒绝并提示升级
+              → 备份当前库（改名，不删）→ 替换 → 重跑 L1 quick_check + L3 语义校验
+              → 任一失败：把当前库换回来，报哪一步失败
+```
+
+**不做增量**（第一版）：整库 + 附件 tar.gz 通常几十 MB，一次传完比维护增量索引便宜；
+真上 1 GB 再说。**不做端到端加密**（那是 §5.3，另算）。
+
+**凭据不进库**：WebDAV 口令进 `Vault`（已有），备份 manifest 里只写「用了哪个 target 的 id」，
+不写口令、不写完整 URL（URL 里可能带 token）。
+
+**定时**：只在充电 + 有网时跑，失败退避 15 分钟起。Android 侧 `WorkManager`；
+**不碰前台服务**（那是 0.15aj 那条的地盘，另外等真机）。
+
 ### 4.7 版本兼容
 
 - 每次写入 `schema_version`
@@ -380,6 +431,150 @@ meta(key TEXT PK, value TEXT)       -- 含 schema_version、最后备份时间�
 - 方案：**端到端加密**，密钥由用户口令派生（Argon2id），日志文件加密后再落地
 - 不放服务端，客户端自己加解密
 - 第一版可以先只支持局域网/自建 Syncthing（信任网络）
+
+### 5.4 远程会话模式（2026-11-22 用户提，**与同步是两件事**）
+
+用户原话：「进入一个远程连接模式，通过外部调用接口进行连接，比如手机上的 NMoi 连接我们未来的其他平台的
+NMoi 客户端，从而做到这边只传数据到那边，具体的运行在那边，这边加载的也是那边的数据」。
+
+**先分清两件事**，混起来就会做出一个两份数据互相顶掉的东西：
+
+| | 同步（§5.2） | 远程（本节） |
+|---|---|---|
+| 库在哪 | 每台设备各一份 | **只有一份，在远端** |
+| 冲突 | 要变更日志 + 确定性合并 | 不存在（本地没有副本） |
+| 断网 | 照常用，回头合 | 那几行变灰 |
+| 工作量 | 数月（日志、重放、冲突、三端物化） | 数周 |
+
+**判断：先做远程，不做同步。** 用户真正要的是「在手机上接着用桌面那份数据」，远程就满足了；
+而同步要的冲突解决在「只有一份库」的前提下根本不存在。等远程做完，同步的需求会被削掉一大半。
+
+**本地存什么**：只存「我知道哪些远端」——`remotes.json`：`{id, name, base_url, token, last_ok_at}`。
+**不存内容**：正文、图片、附件一个字都不落本地（落了就有两份，而两份迟早不一样）。
+会话列表 = 本地会话 ∪ 各远端会话，每行带来源徽标；远端 id 只在显示层加前缀，不写库。
+
+**接口切在哪一层**：`NmoiFfi.kt` 是唯一的 Kotlin 门面（556 行 / 94 个符号），切在**它下面**：
+
+```kotlin
+internal interface Link { suspend fun call(symbol: String, args: JSONObject): Result<JSONObject> }
+internal object LocalLink : Link                       // 现有 JNI 实现
+internal class RemoteLink(base: String, token: String) : Link   // POST /rpc/<symbol>
+```
+
+- 94 个方法体从直接调 JNI 改成 `link(session).call("nmoi_xxx_json", args)`。机械改动，但量大，
+  分两批：先 storage 那一组（约 40 个），再 turn / workspace（约 30 个）。
+- **句柄翻译**：本地 handle 是 u64，远端有自己的一套。`handles.rs` 加 `Entry::Remote(RemoteHandle)`，
+  进远端会话时本地分配新 id 并记住 `local → remote`；关的时候先在远端关、再删本地格。
+- **流式不用改**：界面本来就是轮询 `turn_busy`（`LiveStream` 那套「见过 `running:true` 才算终态」的规矩），
+  远程只是把这次轮询从 JNI 换成 HTTP。**这是这次重构能小下来的唯一原因**——如果当初选了 SSE 推，
+  现在就得在两边各实现一遍断线重连。
+- **附件与文件**：`putAttachment` 要传字节，走 base64 不划算（一张图几 MB）。
+  另开 `POST /files?session=&name=`（`Content-Length` + 原始字节，回 `{id}`）与 `GET /files/{id}`（流式回）。
+  下载的 `Content-Length` 必须对，否则界面拿不到进度、也不知道收完没有。
+- **本地不能跑轮**：远程会话的 `TurnRunner` 直接调远端 `turn_run`；本地那份 `GeneratingTracker`
+  **从远端 busy 派生**，不自己 mark。两边各有一份「在跑」就会出现「第二个入口一点就吃 busy」
+  （这个毛病文档里已经有过一次）。
+- **断线**：远端不可达 → 那一行变灰 + 一句「远端离线」，不删、不缓存正文、不假装还能发。
+
+**重构量（诚实估）**：新增 `api_server.rs`（约 500 行 + 测试）、`remote.rs`（Link 客户端 + 句柄映射，
+约 400 行）、FFI 3 条 + JNI 3 条、Kotlin `Link` / `RemoteLink`（约 200 行）、`remotes.json`（约 100 行）；
+改动 `NmoiFfi.kt` 94 处、`handles.rs` 一种 Entry、`PageCache` 的键加来源、抽屉加来源徽标与「添加远程」、
+`SendQueue` 认来源。
+
+**不做成一次**：先做 §5.5（本机能验到底），再做远程的**只读一半**（浏览远端会话），
+最后才做「在远端跑轮」。只读一半就能验完句柄映射、分页、附件下载三样；跑轮那一步再验流式与审批。
+
+### 5.5 外部调用接口（默认关，开在 `127.0.0.1:7989`）
+
+用户原话：「做一个外部调用接口……这个是可开关的，默认关闭，打开的话会在 localhost 的某个端口启动服务，
+默认就 7989」。
+
+**位置**：`crates/core/src/api_server.rs`，形状照 `proxy_server.rs`（std `TcpListener` + 线程 + 停止标志）；
+FFI 三条（`start` / `stop` / `status`）+ JNI 三条。
+
+**不加依赖**：手写 HTTP/1.1 最小子集——只要 `Content-Length` 与 `Connection: close`，
+不做 chunked、不做 keep-alive、不做 100-continue。项目里手写 SOCKS5 已经开过这个头，
+zip 那条禁令也是同一个意思：能自己写清楚就别引依赖。
+
+**绑定与认证**：
+
+- 默认只绑 `127.0.0.1`。跨设备（远程模式）必须**显式**改绑 `0.0.0.0`，并且这时界面要红字说明
+  「同一网络里谁都能连」。
+- `Authorization: Bearer <token>`，开启时随机生成 32 hex，存 prefs（设备本地），界面上能看、能换。
+  **loopback 也要 token**：同设备别的 App 连得到 loopback，`proxy_server` 的注释已经踩过这一条。
+- 端口被占 → 报 `port_in_use` 并给「换一个端口」的入口，**不静默 +1**（静默换端口 = 外部工具连不上，
+  而且没人知道为什么）。
+
+**两层，别混**：
+
+| 层 | 路径 | 给谁 | 稳定性 |
+|---|---|---|---|
+| 控制面 | `/v1/*` | 人和别的 AGENT / 工具 | 语义化，改要通知 |
+| 数据面 | `/rpc/<symbol>` | 另一台 NMoi | 跟着 FFI 走，每周都在变 |
+
+控制面（第一版就这些，够一个外部 agent 干完活）：
+
+```text
+GET  /v1/health                          {version, schema, busy:[session…]}
+GET  /v1/conversations?limit=&cursor=
+GET  /v1/conversations/{id}/messages?before=&limit=
+POST /v1/conversations/{id}/messages     {text, images?, files?} → 202 {turn_id}
+GET  /v1/conversations/{id}/turn         {running, text_tail, text_len, round, calls:[…]}
+POST /v1/conversations/{id}/cancel
+GET  /v1/conversations/{id}/changes?turn= 文件变更（见 §5.6）
+POST /v1/conversations/{id}/approve      {call_id, decision}
+```
+
+`/turn` 就是 `turn_busy` 那一份，语义已经定型（`LiveStream` 的规矩都是按它写的），
+**不要为外部接口另造一份形状**——两份形状迟早对不上。
+
+数据面：`POST /rpc/<symbol>`，body = 该符号的参数 JSON，回包 = 该符号原来的 JSON。
+`GET /rpc/capabilities` 回 `{abi: 1, symbols: [...]}`，**版本对不上就拒绝连接**，不给半份数据。
+
+为什么分两层：控制面是「别人写好的工具」依赖的，改一次要通知所有人；数据面跟着 FFI 走。
+混成一层，等于让 FFI 的每次改动都变成一次外部破坏性变更。
+
+### 5.6 文件变更跟踪（用户 2026-11-22 提）
+
+用户原话：「调用子 AGENT 的时候应该选择性的屏蔽一些内容，就是这个调用输出的内容一般来说应该是
+『哪次调用子 AGENT 修改了哪些文件』什么的，记得做好文件跟踪，而且平常主 AGENT 执行一些命令
+还是什么记得在助手消息的结尾加上文件变动」。参考图：变更芯片按文件名排、最多三排、
+点开是文件详情（图标 + 名字 + 大小 · 时间 + 路径 + 打开方式 / 分享 / 导出）。
+
+**单一出处**：`crates/core/src/changes.rs`：
+
+```rust
+pub struct FileChange { pub path: String, pub kind: ChangeKind, pub added: i64, pub removed: i64 }
+pub enum ChangeKind { Created, Modified, Deleted }
+```
+
+`TurnReport.changes: Vec<FileChange>` 带出，Kotlin **不自己数**（两个地方各数一次，迟早对不上，
+这条已经吃过一次亏）。
+
+**四条规矩**：
+
+1. **按路径合并**：同一轮里同一文件改三次 = 一条，`added` / `removed` 累加。用 `BTreeMap`，
+   排序天然是路径 A–Z（用户要的顺序），不必另写比较器。
+2. **只统计工具自己的写操作**：`write_file` / `edit_file` / `delete`。**shell 不算**——
+   从命令行猜「它改了哪些文件」是猜，猜错比不列更糟。要统计 shell 的副作用得接 `strace` 一类，
+   不在这一版。
+3. **只存结束**（铁律③）：轮开始清空，轮结束写 `messages.changes_json`（schema v21，与 `preview` 同类）。
+   进行中的变更不进库。
+4. **上限与截断**：core 侧上限 200 条，超了 `truncated: true`，界面如实写「仅列出部分文件」；
+   界面最多 3 排（用户原话），第 4 排起收进「+N」。
+
+**子 AGENT 的回包契约**（0.14v 那条一直没实现，这里定死）：
+
+```json
+{ "conversation_id": "…", "rounds": 3, "tokens": 8123, "truncated": false,
+  "reply": "改了 3 个文件：a.rs(+12 −4)、b.rs(新建)、c.rs(删)",
+  "changes": [{"path": "a.rs", "kind": "modified", "added": 12, "removed": 4}] }
+```
+
+- **默认只回摘要 + 变更清单**，不回子会话全文。全文在子会话里，主 AGENT 要就自己去取
+  （`read_file`，或以后加 `sub_agent_transcript`）。
+- 理由：子 AGENT 的输出会进主上下文，全文会把主上下文吃掉、也会把「我在干什么」冲掉；
+  而「改了哪些文件」是**可核对的**（铁律①：能在界面上指出来）。
 
 ---
 
@@ -464,6 +659,10 @@ meta(key TEXT PK, value TEXT)       -- 含 schema_version、最后备份时间�
 | Q4 | 变更日志粒度 | 每条消息 / 每轮 / 每会话 | 同步流量 vs 冲突面 |
 | Q5 | 归档原文存哪 | SQLite BLOB / 文件系统 | 库体积 vs 检索速度 |
 | Q6 | 第一阶段先做 Linux 还是先做 Android | Linux（无 FFI，快）/ Android（移动优先） | 见 §6 阶段 1 理由 |
+| Q7 | 同步 vs 远程先做哪个 | 远程（一份库在远端）/ 同步（变更日志） | 见 §5.4：远程能把「在手机上接着用桌面那份」直接满足，同步要的冲突面在远程里不存在 |
+| Q8 | 外部接口绑 `127.0.0.1` 还是 `0.0.0.0` | 默认 loopback，跨设备要显式打开 | 打开那一下要红字说「同网段谁都能连」 |
+| Q9 | 备份目标第一版做几个 | 本地目录 + WebDAV；S3 不做 | 见 §4.6.1：S3 签名自己写一大段，等真有人要 |
+| Q10 | 文件变更要不要统计 shell 的副作用 | 不统计（只认工具自己的写操作） | 从命令行猜是猜；猜错比不列更糟，见 §5.6 |
 
 ---
 
