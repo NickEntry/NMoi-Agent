@@ -45,6 +45,12 @@ pub struct Pending {
     pub script: Option<String>,
     /// 命令的 cwd，用来算相对路径。
     pub cwd: std::path::PathBuf,
+    /// **命令开始前**那一刻的快照（[`mark`] 的返回值）。
+    ///
+    /// 这一格是这一层能不能成立的关键：baseline 必须在命令**之前**取。
+    /// 早先的写法是在命令结束后才 `baseline()`，那样 diff 的永远是"现在 vs 现在"，
+    /// 差异恒为空——而空差异看起来跟"这条命令没改文件"一模一样，最难发现。
+    pub before: std::sync::Arc<crate::scanner::Baseline>,
 }
 
 /// 一条命令的收尾结论。
@@ -69,6 +75,14 @@ pub struct BatchResult {
     pub truncated: bool,
     /// 参与这一批的 call_id，用来判断"我要的结果到了没有"。
     pub members: Vec<String>,
+    /// 每个变化文件的**现读内容**（路径 → 内容）。
+    ///
+    /// 在这里读而不是在 `split` 里读：`split` 是纯函数（有单测），
+    /// 而读盘会让它变成"跑一次一个结果"。读的内容是扫描那一刻的，
+    /// 与 `after` 快照对得上——晚读一步，文件可能又被改了。
+    ///
+    /// 二进制 / 读不了的文件不在表里（`None` 语义），界面标「无法预览」。
+    pub texts: std::collections::BTreeMap<std::path::PathBuf, String>,
 }
 
 struct State {
@@ -217,19 +231,95 @@ pub fn writes_maybe(command: &str) -> bool {
     true
 }
 
+/// 命令**开始之前**调一次：拿这一刻的快照，命令结束后交给 [`Pending::before`]。
+///
+/// 放在开始之前是这一层唯一正确的顺序。命令跑完再取，diff 就是"现在 vs 现在"。
+pub fn mark(roots: &[Root], limit: usize) -> std::sync::Arc<crate::scanner::Baseline> {
+    std::sync::Arc::new(scanner::baseline(roots, scanner::DEFAULT_MAX_AGE, limit))
+}
+
 /// 扫一批。**由后台线程调用**，`settle` 到期之后。
 ///
-/// 返回这一批的结论。`roots` 由调用方按"这条命令能看到哪几棵树"给：
+/// `roots` 由调用方按"这条命令能看到哪几棵树"给：
 /// 共享的（工作区 / 技能）+ 这条会话私有的（chat / tmp）。
+///
+/// baseline 用**第一条命令**开始前那一份（`members[0].before`）。
+/// 为什么不是每条各用各的：一批里的命令是**故意**合并的，用同一份基线才谈得上
+/// "这一批一共变了什么"；各用各的基线会让同一份差异被算两遍，而两遍之间还夹着别人的写入。
 pub fn run_batch(members: &[Pending], roots: &[Root], limit: usize) -> BatchResult {
-    let baseline = scanner::baseline(roots, scanner::DEFAULT_MAX_AGE, limit);
+    let before = members
+        .first()
+        .map(|pending| pending.before.clone())
+        .unwrap_or_else(|| mark(roots, limit));
     let after = scanner::refresh(roots, limit);
-    let changed = scanner::changed(&baseline, &after, roots);
+    let changed = scanner::changed(&before, &after, roots);
+    // 顺手把内容读出来：差异要它，而这一刻读到的与 `after` 快照对得上。
+    let mut texts = std::collections::BTreeMap::new();
+    for change in &changed {
+        if let Ok(text) = std::fs::read_to_string(&change.path) {
+            texts.insert(change.path.clone(), text);
+        }
+    }
     BatchResult {
         changed,
-        truncated: baseline.truncated || after.truncated,
+        truncated: before.truncated || after.truncated,
         members: members.iter().map(|p| p.call_id.clone()).collect(),
+        texts,
     }
+}
+
+/// 从一批里挑出属于某条会话的变更，**已经算好差异**。
+///
+/// 与 [`split`] 的区别：那个只回答"归谁"，这个把 `FileChange` 一并造好
+/// （差异、行数、`created`）。上层不必再读一次盘，也不必自己判 created/modified。
+pub fn records(
+    batch: &BatchResult,
+    me: &Pending,
+    running: &[String],
+    window_ms: u64,
+) -> Vec<crate::changes::FileChange> {
+    let outcome = split(batch, me, running, window_ms);
+    let mut out = Vec::new();
+    for change in outcome.changed.iter().chain(outcome.ambiguous.iter()) {
+        let path = change.path.to_string_lossy().to_string();
+        let Some(after) = batch.texts.get(&change.path) else {
+            // 读不出来（二进制 / 权限）：给一条没有差异的记录，
+            // 界面据此说"文件变了、但看不了内容"。
+            out.push(crate::changes::FileChange {
+                path,
+                kind: if change.created {
+                    crate::changes::ChangeKind::Created
+                } else {
+                    crate::changes::ChangeKind::Modified
+                },
+                added: 0,
+                removed: 0,
+                diff: None,
+                lines: 0,
+                bytes: 0,
+            });
+            continue;
+        };
+        // `before` 给 `None` 表示"之前不存在"：这里只有 `created` 一个信号，
+        // 而 `record` 拿它判 `Created` / `Modified`。旧内容读不到（扫描只存指纹），
+        // 所以**修改类**的差异只能给出"整份替换"的形状——这是这一层的已知代价，
+        // 写进 D378 了。
+        let before_text = if change.created { None } else { Some("") };
+        // **忽略判断按相对路径做**：绝对路径里含有根目录名，而根完全可能叫
+        // `.config` / `/.tmpXXXX`（测试的 `tempfile` 就是这样）。拿绝对路径去判，
+        // 整棵树会被当成"点目录"吞掉——`record` 返回 `None`，界面上一条都没有。
+        let relative = change
+            .path
+            .strip_prefix(&me.cwd)
+            .map(|rest| rest.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.clone());
+        let ignored = crate::changes::is_ignored(&relative);
+        if let Some(record) = crate::changes::record(&path, before_text, after, ignored) {
+            out.push(record);
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }
 
 /// 把一批的变化分给每条命令。
@@ -336,18 +426,10 @@ pub fn clear() {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    /// 这一组测试**必须串行**：`settle` 的状态是进程级的（生产里多条会话共用一份），
-    /// 而 `cargo test` 默认并行跑，一个测试的 `clear()` 会把另一个的队列清掉。
-    /// 表现是"单跑绿、全跑红"，而那种红最容易被人当成测试写错。
-    #[allow(dead_code)]
-    fn serial() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
+    /// 这一组测试**必须串行**：`settle` 的状态是进程级的（生产里多条会话共用一份）。
+    /// 锁在 `crate::test_lock`，与 `scanner` 的测试共用一把。
+    use crate::test_lock::serial;
 
     fn pending(session: &str, call: &str, command: &str) -> Pending {
         Pending {
@@ -356,6 +438,7 @@ mod tests {
             command: command.to_string(),
             script: None,
             cwd: PathBuf::from("/workspace"),
+            before: std::sync::Arc::new(crate::scanner::Baseline::default()),
         }
     }
 
@@ -388,6 +471,7 @@ mod tests {
 
     #[test]
     fn queue_merges_commands_arriving_within_the_window() {
+        let _guard = serial();
         clear();
         enqueue(
             pending("s1", "c1", "echo a > a.txt"),
@@ -405,6 +489,7 @@ mod tests {
 
     #[test]
     fn nothing_is_claimed_before_the_deadline() {
+        let _guard = serial();
         clear();
         enqueue(
             pending("s1", "c1", "echo a > a.txt"),
@@ -420,6 +505,7 @@ mod tests {
 
     #[test]
     fn only_one_claimer_at_a_time() {
+        let _guard = serial();
         clear();
         enqueue(
             pending("s1", "c1", "echo a > a.txt"),
@@ -434,6 +520,7 @@ mod tests {
 
     #[test]
     fn results_are_handed_back_per_call() {
+        let _guard = serial();
         clear();
         enqueue(
             pending("s1", "c1", "echo a > a.txt"),
@@ -444,6 +531,7 @@ mod tests {
             changed: Vec::new(),
             truncated: false,
             members: members.iter().map(|p| p.call_id.clone()).collect(),
+            texts: Default::default(),
         });
         assert!(take("c1").is_some());
         // 取走即删
@@ -453,6 +541,7 @@ mod tests {
 
     #[test]
     fn commands_during_scanning_get_a_new_deadline() {
+        let _guard = serial();
         clear();
         enqueue(
             pending("s1", "c1", "echo a > a.txt"),
@@ -465,14 +554,107 @@ mod tests {
             pending("s2", "c2", "echo b > b.txt"),
             Duration::from_millis(50),
         );
+        // 扫描期间不该有第二个线程来取：`next_deadline` 给 None 是**对的**。
+        assert!(next_deadline(Instant::now()).is_none());
         finish(BatchResult {
             changed: Vec::new(),
             truncated: false,
             members: members.iter().map(|p| p.call_id.clone()).collect(),
+            texts: Default::default(),
         });
-        // 新的那条必须能等到一个 deadline，不能永远挂着
+        // 扫完之后，新的那条必须能等到一个 deadline，不能永远挂着。
         assert!(next_deadline(Instant::now()).is_some());
         clear();
+    }
+
+    /// 端到端：真的跑一条命令改文件，`records` 要把它报出来。
+    ///
+    /// 这一条钉的是整条链：`mark` → 命令 → `enqueue` → `run_batch` → `records`。
+    /// 任何一环断了它都会红，而单看某一个模块的测试全绿。
+    #[cfg(unix)]
+    #[test]
+    fn a_real_shell_write_shows_up_in_records() {
+        let _guard = serial();
+        clear();
+        // `mark` 走的是 `scanner` 的缓存（250 ms），不清它可能拿到上一个测试的快照。
+        crate::scanner::clear();
+        let dir = tempfile::tempdir().unwrap();
+        let roots = [crate::scanner::Root::shared(dir.path())];
+
+        // 命令开始前取基线（这一步是整条链的关键，缺了差异恒为空）
+        let before = mark(&roots, crate::scanner::DEFAULT_LIMIT);
+        std::fs::write(dir.path().join("made.txt"), "hello\nworld\n").unwrap();
+
+        let me = Pending {
+            session: "s1".to_string(),
+            call_id: "c1".to_string(),
+            command: "printf hello > made.txt".to_string(),
+            script: None,
+            cwd: dir.path().to_path_buf(),
+            before,
+        };
+        let batch = run_batch(&[me.clone()], &roots, crate::scanner::DEFAULT_LIMIT);
+        assert_eq!(batch.changed.len(), 1, "应当扫到那一个文件");
+        assert!(batch.changed[0].created);
+
+        let rows = records(&batch, &me, &["s1".to_string()], 5_000);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].path.ends_with("made.txt"));
+        assert_eq!(rows[0].kind, crate::changes::ChangeKind::Created);
+        assert_eq!(rows[0].added, 2, "两行都是新增");
+        assert!(rows[0].diff.as_ref().unwrap().contains("+hello"));
+        clear();
+    }
+
+    /// 命令没改东西 → 一条记录都不该有（空差异不能变成"改了 0 行"的记录）。
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_changes_nothing_yields_no_records() {
+        let _guard = serial();
+        clear();
+        crate::scanner::clear();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "same\n").unwrap();
+        let roots = [crate::scanner::Root::shared(dir.path())];
+        let before = mark(&roots, crate::scanner::DEFAULT_LIMIT);
+        // 什么也不写
+        let me = Pending {
+            session: "s1".to_string(),
+            call_id: "c1".to_string(),
+            command: "true".to_string(),
+            script: None,
+            cwd: dir.path().to_path_buf(),
+            before,
+        };
+        let batch = run_batch(&[me.clone()], &roots, crate::scanner::DEFAULT_LIMIT);
+        assert!(batch.changed.is_empty());
+        assert!(records(&batch, &me, &["s1".to_string()], 5_000).is_empty());
+        clear();
+    }
+
+    /// 二进制文件（读不成字符串）也给一条记录，但没有差异——界面据此标「无法预览」。
+    #[cfg(unix)]
+    #[test]
+    fn binary_output_gets_a_record_without_a_diff() {
+        let _guard = serial();
+        clear();
+        crate::scanner::clear();
+        let dir = tempfile::tempdir().unwrap();
+        let roots = [crate::scanner::Root::shared(dir.path())];
+        let before = mark(&roots, crate::scanner::DEFAULT_LIMIT);
+        std::fs::write(dir.path().join("a.bin"), [0u8, 1, 2, 3, 0xff]).unwrap();
+        let me = Pending {
+            session: "s1".to_string(),
+            call_id: "c1".to_string(),
+            command: "cc -o a.bin x.c".to_string(),
+            script: None,
+            cwd: dir.path().to_path_buf(),
+            before,
+        };
+        let batch = run_batch(&[me.clone()], &roots, crate::scanner::DEFAULT_LIMIT);
+        let rows = records(&batch, &me, &["s1".to_string()], 5_000);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].diff.is_none(), "二进制不该给差异");
     }
 
     #[test]
@@ -486,6 +668,7 @@ mod tests {
             }],
             truncated: false,
             members: vec!["c1".to_string()],
+            texts: Default::default(),
         };
         let outcome = split(&batch, &me, &["s1".to_string()], 5_000);
         assert_eq!(outcome.changed.len(), 1);
@@ -503,6 +686,7 @@ mod tests {
             }],
             truncated: false,
             members: vec!["c1".to_string()],
+            texts: Default::default(),
         };
         let outcome = split(&batch, &me, &["s1".to_string(), "s2".to_string()], 5_000);
         // 既不是我的，也不该算"判不出"——它明确是 s2 的
@@ -528,6 +712,7 @@ mod tests {
             ],
             truncated: false,
             members: vec!["c1".to_string(), "c2".to_string()],
+            texts: Default::default(),
         };
         let outcome = split(&batch, &me, &["s1".to_string(), "s2".to_string()], 5_000);
         // 命令里写了 data.bin → 归我
@@ -550,6 +735,7 @@ mod tests {
             }],
             truncated: false,
             members: vec!["c1".to_string()],
+            texts: Default::default(),
         };
         let outcome = split(&batch, &me, &["s1".to_string()], 5_000);
         assert_eq!(outcome.changed.len(), 1);

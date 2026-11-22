@@ -293,6 +293,8 @@ struct TurnInput {
     sing: bool,
     /// 面板上被关掉的工具（0.17e）：这一轮不声明它们。空 = 一个都没关。
     tools_off: Vec<String>,
+    /// 技能根目录（D379）：`/skills` 前缀映射到它，可写。`None` = 这一轮没装技能。
+    skills_root: Option<PathBuf>,
     /// 语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
     /// **不传 = 没配或总开关关着**，`Voice-Caps` 不声明。
     voice: Option<nmoi_core::voicecaps::VoiceCaps>,
@@ -631,6 +633,10 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
         sing: optional_bool(&root, "sing")?.unwrap_or(false),
         voice: parse_voice(&root)?,
         tools_off: parse_str_list(&root, "tools_off")?,
+        skills_root: match root.get("skills_root") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(PathBuf::from(envir_path(&root, "skills_root")?)),
+        },
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
@@ -1262,6 +1268,18 @@ fn turn_json(turn: &SessionTurn, presets: &Value) -> Value {
             "failed_count": turn.report.failed_count(),
             "finish": turn.report.finish.as_ref().map(|finish| finish.as_str().to_string()),
             "tool_calls": tool_calls,
+            // 这一轮改过的文件（D372）：按路径 A–Z，界面不再排一次。
+            // `diff` 可能为 `null`（二进制 / 太大）——那时界面标「无法预览」，
+            // 不假装有差异。
+            "changes": turn.report.changes.iter().map(|change| json!({
+                "path": change.path,
+                "kind": change.kind.as_str(),
+                "added": change.added,
+                "removed": change.removed,
+                "lines": change.lines,
+                "bytes": change.bytes,
+                "diff": change.diff,
+            })).collect::<Vec<_>>(),
         },
         "compression": turn.compression.map(|signal| json!({
             "trigger": trigger_json(signal.trigger),
@@ -1403,6 +1421,8 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
             voice: input.voice.as_ref(),
             transport: Some(&voice_transport),
             tools_off: &input.tools_off,
+            // 技能根（D379）：`/skills` 可写。没配就 `None`，那条前缀会如实说一句。
+            skills_root: input.skills_root.as_deref(),
             budget: input.budget.as_ref(),
             trigger: &trigger(input.suggest_line, input.absolute_line),
             avg_per_turn: input.avg_per_turn,
@@ -1775,6 +1795,8 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             voice: input.voice.as_ref(),
             transport: Some(&voice_transport),
             tools_off: &input.tools_off,
+            // 技能根（D379）：`/skills` 可写。没配就 `None`，那条前缀会如实说一句。
+            skills_root: input.skills_root.as_deref(),
         };
 
         let client = crate::proxy::client();
@@ -1856,6 +1878,16 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
             "appended": outcome.appended.map(|id| id.to_string()),
             "rounds": outcome.report.rounds,
             "tool_calls": outcome.report.tool_calls.len(),
+            // 重试/续话也可能改文件（比如"把这一段改回来"），所以这里也给一份。
+            "changes": outcome.report.changes.iter().map(|change| json!({
+                "path": change.path,
+                "kind": change.kind.as_str(),
+                "added": change.added,
+                "removed": change.removed,
+                "lines": change.lines,
+                "bytes": change.bytes,
+                "diff": change.diff,
+            })).collect::<Vec<_>>(),
             "finished": outcome.report.finished,
             // 两种"没做完"要分开说（D245）：用户按了停止 / 上下文到了绝对线 / （设了）轮数上限。
             // 以前这两个字段没进包，界面只能把 `finished=false` 一律读成"到了轮数上限"——

@@ -167,6 +167,17 @@ pub struct ToolContext<'a> {
     pub tools_off: &'a [String],
     /// 世界书里的工具定义覆写（0.17f）：`tool_call_<名字>` 那几条。
     pub tool_overrides: &'a [crate::tooldefs::ToolOverride],
+    /// 这一轮改过的文件（D372）。写工具落地之后往里推一条，`run_turn` 收尾时取走。
+    ///
+    /// 为什么是 `&'a Mutex` 而不是返回值：工具签名是 `invoke(args, ctx) -> ToolOutcome`，
+    /// 结果那一栏要留给"喂回模型的文字"。往里推一条不占那个位置，也不必让每个写工具
+    /// 各自改返回类型。
+    pub changes: Option<&'a std::sync::Mutex<Vec<crate::changes::FileChange>>>,
+    /// 技能根目录（D379）：`/skills` 前缀映射到它。
+    ///
+    /// 用户 2026-11-22 明确要**可写**（kelivo 那边是只读）。技能就是提示词，
+    /// 让模型能自己改技能是这一层存在的理由。
+    pub skills_root: Option<&'a std::path::Path>,
 }
 
 /// 手写而不是 derive：这里面有一个 `&dyn SessionCatalog`，它不该被打印出来，
@@ -204,6 +215,47 @@ impl<'a> ToolContext<'a> {
             session_audio: None,
             tools_off: &[],
             tool_overrides: &[],
+            changes: None,
+            skills_root: None,
+        }
+    }
+
+    /// 技能根（D379）。
+    pub fn with_skills_root(mut self, root: Option<&'a std::path::Path>) -> Self {
+        self.skills_root = root;
+        self
+    }
+
+    /// 这一轮把改过的文件记在哪儿（D372）。
+    pub fn with_changes(
+        mut self,
+        sink: Option<&'a std::sync::Mutex<Vec<crate::changes::FileChange>>>,
+    ) -> Self {
+        self.changes = sink;
+        self
+    }
+
+    /// 记一条变更。写工具落地之后调它——**只有真的写成功了才记**。
+    ///
+    /// 为什么在这里统一做而不是让调用方自己 push：`changes` 是 `Option`，
+    /// 而且"写入口日志 + 变更记录"必须成对出现（一个漏了，归属判断就会偏）。
+    fn record_change(&self, change: Option<crate::changes::FileChange>) {
+        let Some(change) = change else { return };
+        if let Some(sink) = self.changes {
+            if let Ok(mut list) = sink.lock() {
+                // 按路径合并：同一轮里同一文件改两次算一条，行数相加。
+                if let Some(existing) = list.iter_mut().find(|row| row.path == change.path) {
+                    existing.added += change.added;
+                    existing.removed += change.removed;
+                    existing.lines = change.lines;
+                    existing.bytes = change.bytes;
+                    existing.kind = change.kind;
+                    // 差异以最后一次为准：用户要看的是"最后长什么样"。
+                    existing.diff = change.diff;
+                    return;
+                }
+                list.push(change);
+            }
         }
     }
 
@@ -280,6 +332,15 @@ impl<'a> ToolContext<'a> {
     /// 这一轮属于哪条会话（手动关闭的登记键）。
     pub fn with_call_session(mut self, session: &'a str) -> Self {
         self.call_session = Some(session);
+        self
+    }
+
+    /// 正在跑的这一条调用（0.15ak / D378）。
+    ///
+    /// 变更跟踪要它：一条命令的结果得挂回"哪一次调用"，
+    /// 而 `(session, call_id)` 是唯一的钥匙。
+    pub fn with_call(mut self, call: Option<&'a crate::kills::CallHandle>) -> Self {
+        self.call = call;
         self
     }
 
@@ -571,6 +632,16 @@ struct Target<'a> {
     read_only: bool,
 }
 
+impl Target<'_> {
+    /// 这个目标的**绝对路径**，给写入口日志用（D378）。
+    ///
+    /// 日志按绝对路径比：同一份文件可能通过 `/tmp/x` 和 `sessions/<id>/tmp/x` 两种写法
+    /// 到达，只有绝对路径能把它们认成同一个。
+    fn absolute(&self) -> Option<std::path::PathBuf> {
+        self.workspace.resolve(&self.path).ok()
+    }
+}
+
 /// `path` 是不是落在 `prefix` 这个虚拟根下；是的话给出它后面那一段（前缀本身给空串）。
 fn under<'p>(path: &'p str, prefix: &str) -> Option<&'p str> {
     if path == prefix {
@@ -654,7 +725,35 @@ fn target<'a>(
             read_only: true,
         });
     }
-    // 会话 `/chat`（D337）：用户发来的文件落在这儿，工具只读。
+    // 技能根（D379）：`/skills` 是**共享**的一棵树，可写。
+    // 放在 `/chat` 之前判：两者前缀不会互相命中，顺序只是为了让读的人先看到"共享"那条。
+    if let Some(rest) = under(trimmed, "/skills") {
+        let Some(root) = ctx.skills_root else {
+            return Err(ToolOutcome::failed(
+                "这一轮没有技能目录（没装技能、或这个历史实现不带技能）。\
+                 用工作区相对路径。"
+                    .to_string(),
+            ));
+        };
+        if !rest.is_empty() && !root.join(rest).exists() {
+            return Err(ToolOutcome::failed(format!(
+                "技能里没有这个文件：`{trimmed}`。先用 `list_dir` 的 `/skills` 看一眼有什么。"
+            )));
+        }
+        let opened = Workspace::open(root).map_err(|error| {
+            ToolOutcome::failed(format!("技能目录打不开（{}）：{error}", root.display()))
+        })?;
+        return Ok(Target {
+            workspace: std::borrow::Cow::Owned(opened),
+            path: if rest.is_empty() {
+                ".".to_string()
+            } else {
+                rest.to_string()
+            },
+            read_only: false,
+        });
+    }
+    // 会话 `/chat`（D337）：用户发来的文件落这儿，**可写但一般不建议动**。
     // 放在 `/tmp` 之前判：两条前缀不会互相命中，但顺序写死了更好读。
     if let Some(rest) = under(trimmed, "/chat") {
         let Some(root) = ctx.session_chat else {
@@ -676,6 +775,8 @@ fn target<'a>(
                 root.display()
             ))
         })?;
+        // `/chat` **可写**（用户 2026-11-22 明确：kelivo 那边是只读，我们这边要能写）。
+        // 但它是"用户发来的原文件"，工具描述里写了不建议动——这里不拦，只提示。
         return Ok(Target {
             workspace: std::borrow::Cow::Owned(opened),
             path: if rest.is_empty() {
@@ -683,7 +784,7 @@ fn target<'a>(
             } else {
                 rest.to_string()
             },
-            read_only: true,
+            read_only: false,
         });
     }
 
@@ -1139,8 +1240,26 @@ impl Tool for WriteFileTool {
                 path.trim()
             ));
         }
+        // 写之前先读一遍旧内容：差异要它，`created` / `modified` 也要它。
+        // 读不到就是"之前不存在"，**不区分**是"真没有"还是"读不了"——
+        // 两者在这里的处理一样（按新建算），而多问一句只会让写操作多一次失败可能。
+        let before = spot
+            .workspace
+            .read_file(&spot.path, &ReadOptions::default())
+            .ok();
+        let before_text = before.as_ref().map(|read| read.content.as_str());
         match spot.workspace.write_file(&spot.path, &content) {
             Ok(result) => {
+                // 写入口日志（D378）：会话是已知的，归属不必猜。
+                if let Some(full) = spot.absolute() {
+                    crate::attribution::note_write(&full, ctx.call_session);
+                    ctx.record_change(crate::changes::record(
+                        &format!("/workspace/{}", result.path),
+                        before_text,
+                        &content,
+                        false,
+                    ));
+                }
                 ToolOutcome::ok(format!("已写入 {}（{} 字节）", result.path, result.bytes))
             }
             Err(error) => workspace_error(error),
@@ -1204,14 +1323,40 @@ impl Tool for EditFileTool {
                 path.trim()
             ));
         }
+        // 改之前读旧内容：差异要它。读不到就退回"只报行数变化"，
+        // 而不是把整份文件当成新建。
+        let before = spot
+            .workspace
+            .read_file(&spot.path, &ReadOptions::default())
+            .ok()
+            .map(|read| read.content);
         match spot
             .workspace
             .edit_file(&spot.path, &old, &new, replace_all)
         {
-            Ok(result) => ToolOutcome::ok(format!(
-                "已改 {}：{} 处，{} → {} 字节",
-                result.path, result.replacements, result.bytes_before, result.bytes_after
-            )),
+            Ok(result) => {
+                if let Some(full) = spot.absolute() {
+                    crate::attribution::note_write(&full, ctx.call_session);
+                    // 改完之后重新读一遍：差异要的是"现在的全文"，
+                    // 而 `edit_file` 只回报了字节数。
+                    let after = spot
+                        .workspace
+                        .read_file(&spot.path, &ReadOptions::default())
+                        .ok()
+                        .map(|read| read.content)
+                        .unwrap_or_default();
+                    ctx.record_change(crate::changes::record(
+                        &format!("/workspace/{}", result.path),
+                        before.as_deref(),
+                        &after,
+                        false,
+                    ));
+                }
+                ToolOutcome::ok(format!(
+                    "已改 {}：{} 处，{} → {} 字节",
+                    result.path, result.replacements, result.bytes_before, result.bytes_after
+                ))
+            }
             Err(error) => workspace_error(error),
         }
     }
@@ -1936,6 +2081,161 @@ mod tests {
     ) -> ToolOutcome {
         let ctx = ToolContext::new(policy, Some(workspace));
         registry.invoke(name, args, &ctx)
+    }
+
+    /// 写入口记录（D372）：`write_file` 成功之后要往里推一条，
+    /// 而且**按路径合并**——同一轮改同一个文件两次算一条。
+    #[test]
+    fn write_file_records_a_change() {
+        let (_work, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let sink = std::sync::Mutex::new(Vec::new());
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s1")
+            .with_changes(Some(&sink));
+
+        let outcome = registry.invoke(
+            "write_file",
+            r#"{"path":"new.txt","content":"one\ntwo\n"}"#,
+            &ctx,
+        );
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
+
+        let changes = sink.lock().unwrap();
+        assert_eq!(changes.len(), 1);
+        let change = &changes[0];
+        assert_eq!(change.path, "/workspace/new.txt");
+        assert_eq!(change.kind, crate::changes::ChangeKind::Created);
+        assert_eq!(change.added, 2);
+        assert_eq!(change.removed, 0);
+        assert!(change.diff.as_ref().unwrap().contains("+one"));
+    }
+
+    #[test]
+    fn editing_twice_merges_into_one_row() {
+        let (_work, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let sink = std::sync::Mutex::new(Vec::new());
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s1")
+            .with_changes(Some(&sink));
+
+        registry.invoke("write_file", r#"{"path":"m.txt","content":"a\n"}"#, &ctx);
+        registry.invoke("write_file", r#"{"path":"m.txt","content":"a\nb\n"}"#, &ctx);
+
+        let changes = sink.lock().unwrap();
+        assert_eq!(changes.len(), 1, "同一个文件两次应当合并成一条");
+        assert_eq!(changes[0].kind, crate::changes::ChangeKind::Modified);
+        assert_eq!(changes[0].lines, 2);
+    }
+
+    /// 只读的目录（`/archive`）不该产生变更记录：那里写不进去。
+    #[test]
+    fn read_only_targets_do_not_record() {
+        let (_work, workspace, policy) = sandbox();
+        let store = tempfile::tempdir().unwrap();
+        let archive = store.path().join("archive");
+        fs::create_dir_all(&archive).unwrap();
+        let registry = ToolRegistry::workspace_defaults();
+        let sink = std::sync::Mutex::new(Vec::new());
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s1")
+            .with_session_archive(Some(&archive))
+            .with_changes(Some(&sink));
+
+        let outcome = registry.invoke(
+            "write_file",
+            r#"{"path":"/archive/x.txt","content":"hi"}"#,
+            &ctx,
+        );
+        assert!(matches!(outcome, ToolOutcome::Failed { .. }), "{outcome:?}");
+        assert!(sink.lock().unwrap().is_empty(), "失败不该记变更");
+    }
+
+    /// 写失败（越界）也不该记：失败的那一下没改盘上任何东西。
+    #[test]
+    fn failed_writes_do_not_record() {
+        let (_work, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let sink = std::sync::Mutex::new(Vec::new());
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s1")
+            .with_changes(Some(&sink));
+
+        let outcome = registry.invoke(
+            "write_file",
+            r#"{"path":"../escape.txt","content":"x"}"#,
+            &ctx,
+        );
+        assert!(matches!(outcome, ToolOutcome::Failed { .. }), "{outcome:?}");
+        assert!(sink.lock().unwrap().is_empty());
+    }
+
+    /// `/skills` 可写（D379）：用户明确要求，kelivo 那边是只读。
+    #[test]
+    fn skills_prefix_is_writable() {
+        let (_work, workspace, policy) = sandbox();
+        let skills = tempfile::tempdir().unwrap();
+        fs::write(skills.path().join("SKILL.md"), "# 技能\n").unwrap();
+        let registry = ToolRegistry::workspace_defaults();
+        let sink = std::sync::Mutex::new(Vec::new());
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s1")
+            .with_skills_root(Some(skills.path()))
+            .with_changes(Some(&sink));
+
+        let outcome = registry.invoke(
+            "write_file",
+            r##"{"path":"/skills/SKILL.md","content":"# 改过的技能\n"}"##,
+            &ctx,
+        );
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
+        assert_eq!(
+            fs::read_to_string(skills.path().join("SKILL.md")).unwrap(),
+            "# 改过的技能\n"
+        );
+        let changes = sink.lock().unwrap();
+        assert_eq!(changes[0].kind, crate::changes::ChangeKind::Modified);
+    }
+
+    /// `/chat` 也**可写**（用户 2026-11-22 明确），但它是用户发来的原文件。
+    #[test]
+    fn chat_prefix_is_writable() {
+        let (_work, workspace, policy) = sandbox();
+        let chat = tempfile::tempdir().unwrap();
+        fs::write(chat.path().join("in.txt"), "原文\n").unwrap();
+        let registry = ToolRegistry::workspace_defaults();
+        let sink = std::sync::Mutex::new(Vec::new());
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s1")
+            .with_session_chat(Some(chat.path()))
+            .with_changes(Some(&sink));
+
+        let outcome = registry.invoke(
+            "write_file",
+            r#"{"path":"/chat/in.txt","content":"改过\n"}"#,
+            &ctx,
+        );
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
+        assert_eq!(
+            fs::read_to_string(chat.path().join("in.txt")).unwrap(),
+            "改过\n"
+        );
+    }
+
+    /// 没有变更收集器时不能崩（直接 `invoke` 的调用没有它）。
+    #[test]
+    fn writes_without_a_sink_are_fine() {
+        let (_work, workspace, policy) = sandbox();
+        let registry = ToolRegistry::workspace_defaults();
+        let outcome = invoke(
+            &registry,
+            &policy,
+            &workspace,
+            "write_file",
+            r#"{"path":"x.txt","content":"hi"}"#,
+        );
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
     }
 
     /// 文件工具里的 `/tmp` 落到这个会话自己的暂存目录（D294）：

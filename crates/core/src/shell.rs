@@ -175,14 +175,113 @@ impl Tool for SystemShellTool {
             return outcome;
         }
 
-        match run(&command, &cwd, timeout, ctx.call) {
+        // 变更跟踪（D378）：命令**开始前**取一次快照，结束后交给去抖队列。
+        //
+        // 只在"可能写文件"的命令上做（`writes_maybe`）：`ls` / `cat` 这类跑得最多，
+        // 让它们也排队会把去抖窗口一直占着，反而更慢。
+        let tracking = track_changes(ctx, &command, &cwd);
+
+        let outcome = match run(&command, &cwd, timeout, ctx.call) {
             Ok(completed) => ToolOutcome::Ok {
                 text: completed.to_json(&command).to_string(),
                 truncated: completed.truncated,
             },
             Err(message) => ToolOutcome::failed(message),
+        };
+        if let Some(before) = tracking {
+            settle_changes(ctx, &command, &cwd, before);
+        }
+        outcome
+    }
+}
+
+/// 这条命令要不要跟踪变更；要的话返回**开始前**的快照。
+///
+/// 返回 `None` 的三种情况，都不该跟踪：
+/// - 命令不像写（`ls` / `cat` / `git status`）；
+/// - 没有会话上下文（直接 `invoke` 的调用没有归属可记）；
+/// - 这一轮没有变更收集器（`run_turn` 之外）。
+fn track_changes(
+    ctx: &ToolContext<'_>,
+    command: &str,
+    cwd: &std::path::Path,
+) -> Option<std::sync::Arc<crate::scanner::Baseline>> {
+    if !crate::settle::writes_maybe(command) {
+        return None;
+    }
+    ctx.call_session?;
+    let roots = scan_roots(ctx, cwd);
+    Some(crate::settle::mark(&roots, crate::scanner::DEFAULT_LIMIT))
+}
+
+/// 命令收尾：把这一条排进去抖队列，等一批扫完再把结果挂回来。
+///
+/// **不在这里等扫描**：一条命令的收尾不该被 150 ms 的去抖窗口 + 137 ms 的扫描拖住，
+/// 而用户此刻要的是命令的输出。结果由上层（`session.rs`）在需要时取。
+fn settle_changes(
+    ctx: &ToolContext<'_>,
+    command: &str,
+    cwd: &std::path::Path,
+    before: std::sync::Arc<crate::scanner::Baseline>,
+) {
+    let Some(session) = ctx.call_session else {
+        return;
+    };
+    let call_id = ctx.call.map(|handle| handle.call_id()).unwrap_or("");
+    if call_id.is_empty() {
+        return;
+    }
+    // 脚本内容：`bash build.sh` 里真正的文件名在脚本里，只匹配命令文本会全落进"判不出"。
+    // 读不到就给 None（退化成只看命令文本），不报错。
+    let script = crate::attribution::scripts_in(command)
+        .into_iter()
+        .filter_map(|name| crate::attribution::read_script(cwd, &name))
+        .reduce(|mut acc, next| {
+            acc.push('\n');
+            acc.push_str(&next);
+            acc
+        });
+    crate::settle::enqueue(
+        crate::settle::Pending {
+            session: session.to_string(),
+            call_id: call_id.to_string(),
+            command: command.to_string(),
+            script,
+            cwd: cwd.to_path_buf(),
+            before,
+        },
+        crate::scanner::DEFAULT_SETTLE,
+    );
+}
+
+/// 这条命令能看到哪几棵树（D379）。
+///
+/// 共享的（工作区 / 技能）+ 这条会话**私有**的（chat / tmp）。
+/// 私有那两棵由 `scanner` 打上归属，落在里面的变化不必再判。
+pub(crate) fn scan_roots(
+    ctx: &ToolContext<'_>,
+    cwd: &std::path::Path,
+) -> Vec<crate::scanner::Root> {
+    let mut roots = Vec::new();
+    // 工作区：从 `cwd` 往上找到绑定的根。找不到就用 cwd 本身——
+    // 那样范围会小一些，但**不会漏掉这一条命令真正动的地方**。
+    let workspace_root = ctx
+        .workspace
+        .map(|workspace| workspace.root().to_path_buf())
+        .unwrap_or_else(|| cwd.to_path_buf());
+    roots.push(crate::scanner::Root::shared(workspace_root));
+    if let Some(skills) = ctx.skills_root {
+        roots.push(crate::scanner::Root::shared(skills.to_path_buf()));
+    }
+    if let Some(session) = ctx.call_session {
+        if let Some(chat) = ctx.session_chat {
+            roots.push(crate::scanner::Root::private(chat.to_path_buf(), session));
+        }
+        if let Some(tmp) = ctx.session_tmp {
+            roots.push(crate::scanner::Root::private(tmp.to_path_buf(), session));
         }
     }
+    roots
 }
 
 /// 容器里的 `PATH`。**必须显式给**：不给的话容器里的 `sh` 继承的是宿主的 PATH
@@ -897,6 +996,119 @@ mod tests {
         assert!(value["stdout"].as_str().unwrap().contains("out"));
         assert!(value["stderr"].as_str().unwrap().contains("err"));
         assert_eq!(value["timed_out"], json!(false));
+    }
+
+    /// 变更跟踪（D378）：写文件的命令要**排进去抖队列**，只读命令不排。
+    ///
+    /// 这一条钉的是"接线接上了没有"——`settle::writes_maybe` 本身有单测，
+    /// 但"`SystemShellTool` 到底调没调它"只有这里能验。
+    #[cfg(unix)]
+    #[test]
+    fn a_writing_command_enqueues_a_change_scan() {
+        crate::settle::clear();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy = policy();
+        // 真实调用一定带 `call` 句柄（`agent.rs` 在跑工具前 `kills::begin`），
+        // 没有它就挂不回"哪一次调用"——这里照真实形状造一个。
+        let handle = crate::kills::begin("s-shell", "call-1", "system_shell", "{}");
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s-shell")
+            .with_call(Some(&handle));
+        let outcome = SystemShellTool.invoke(&json!({"command": "printf hi > made.txt"}), &ctx);
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
+        // 排进去了：deadline 一定存在（不管到没到点）
+        assert!(
+            crate::settle::next_deadline(std::time::Instant::now()).is_some(),
+            "写命令应当排进去抖队列"
+        );
+        crate::settle::clear();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_command_does_not_enqueue() {
+        crate::settle::clear();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy = policy();
+        let handle = crate::kills::begin("s-shell", "call-2", "system_shell", "{}");
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s-shell")
+            .with_call(Some(&handle));
+        let outcome = SystemShellTool.invoke(&json!({"command": "cat marker.txt"}), &ctx);
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
+        assert!(
+            crate::settle::next_deadline(std::time::Instant::now()).is_none(),
+            "只读命令不该排队（`cat` 跑得最多，排了会把窗口一直占着）"
+        );
+        crate::settle::clear();
+    }
+
+    /// 没有会话上下文时**不跟踪**：`call_session` 是归属的唯一来源，
+    /// 没有它记下来的东西没法挂到任何一条会话上。
+    #[cfg(unix)]
+    #[test]
+    fn without_a_session_nothing_is_tracked() {
+        crate::settle::clear();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let policy = policy();
+        let ctx = ToolContext::new(&policy, Some(&workspace));
+        let outcome = SystemShellTool.invoke(&json!({"command": "printf hi > x.txt"}), &ctx);
+        assert!(matches!(outcome, ToolOutcome::Ok { .. }), "{outcome:?}");
+        assert!(crate::settle::next_deadline(std::time::Instant::now()).is_none());
+        crate::settle::clear();
+    }
+
+    /// 扫描范围（D379）：共享两棵（工作区 / 技能）+ 私有两棵（chat / tmp），
+    /// 私有那两棵带上会话名——落在里面的变化不必再判归属。
+    #[test]
+    fn scan_roots_cover_shared_and_private_trees() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let skills = tempfile::tempdir().unwrap();
+        let chat = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = policy();
+        let ctx = ToolContext::new(&policy, Some(&workspace))
+            .with_call_session("s-roots")
+            .with_skills_root(Some(skills.path()))
+            .with_session_chat(Some(chat.path()))
+            .with_session_tmp(Some(tmp.path()));
+
+        let roots = scan_roots(&ctx, dir.path());
+        let shared = roots
+            .iter()
+            .filter(|root| matches!(root.kind, crate::scanner::RootKind::Shared))
+            .count();
+        let private = roots
+            .iter()
+            .filter(|root| matches!(root.kind, crate::scanner::RootKind::Private(_)))
+            .count();
+        assert_eq!(shared, 2, "工作区 + 技能");
+        assert_eq!(private, 2, "chat + tmp");
+        // 私有的那两个必须指名道姓
+        for root in &roots {
+            if let crate::scanner::RootKind::Private(session) = &root.kind {
+                assert_eq!(session, "s-roots");
+            }
+        }
+    }
+
+    /// 没有会话时只给共享的两棵：私有树不知道属于谁，给了也没用。
+    #[test]
+    fn scan_roots_without_a_session_are_shared_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let chat = tempfile::tempdir().unwrap();
+        let policy = policy();
+        let ctx = ToolContext::new(&policy, Some(&workspace)).with_session_chat(Some(chat.path()));
+        let roots = scan_roots(&ctx, dir.path());
+        assert!(roots
+            .iter()
+            .all(|root| matches!(root.kind, crate::scanner::RootKind::Shared)));
     }
 
     #[test]

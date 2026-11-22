@@ -332,6 +332,8 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 与 `settle` 共用一把锁：两边都动 `scanner` 的进程级缓存。
+    use crate::test_lock::serial;
 
     fn touch(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
@@ -362,6 +364,7 @@ mod tests {
 
     #[test]
     fn changed_reports_new_and_modified_only() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         let a = touch(dir.path(), "a.txt", "1");
         touch(dir.path(), "b.txt", "22");
@@ -382,6 +385,7 @@ mod tests {
 
     #[test]
     fn private_roots_carry_their_owner() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         let chat = dir.path().join("sessions/s1/chat");
         let tmp = dir.path().join("sessions/s1/tmp");
@@ -415,6 +419,7 @@ mod tests {
 
     #[test]
     fn private_and_shared_are_separated_by_root_not_by_path_prefix() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("workspace");
         let private = dir.path().join("workspace/sub");
@@ -434,6 +439,7 @@ mod tests {
 
     #[test]
     fn missing_roots_are_skipped() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         let roots = vec![
             Root::shared(dir.path().join("nope")),
@@ -445,6 +451,7 @@ mod tests {
 
     #[test]
     fn baseline_is_reused_within_max_age() {
+        let _guard = serial();
         clear();
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "a.txt", "1");
@@ -464,6 +471,7 @@ mod tests {
 
     #[test]
     fn expired_baseline_rescans() {
+        let _guard = serial();
         clear();
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "a.txt", "1");
@@ -477,6 +485,7 @@ mod tests {
 
     #[test]
     fn limit_marks_snapshot_truncated() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         for i in 0..10 {
             touch(dir.path(), &format!("f{i}.txt"), "x");
@@ -492,6 +501,7 @@ mod tests {
 
     #[test]
     fn forget_drops_the_cached_snapshot() {
+        let _guard = serial();
         clear();
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "a.txt", "1");
@@ -506,6 +516,7 @@ mod tests {
 
     #[test]
     fn created_flag_distinguishes_new_from_modified() {
+        let _guard = serial();
         let dir = tempfile::tempdir().unwrap();
         let a = touch(dir.path(), "a.txt", "1");
         let roots = [Root::shared(dir.path())];

@@ -156,3 +156,23 @@ pub const PRODUCT_NAME: &str = "NMoi-Agent";
 
 /// 与 `Cargo.toml` 同步的 crate 版本。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 测试用的全局串行锁。
+///
+/// 为什么要有：`settle` / `scanner` / `attribution` 的状态都是**进程级**的
+/// （生产里多条会话共用一份），而 `cargo test` 默认并行跑。一个测试的 `clear()`
+/// 会把另一个的队列清掉，表现是"单跑绿、全跑红"——那种红最容易被当成测试写错。
+///
+/// 只给 `#[cfg(test)]` 用，不进发布包。
+#[cfg(test)]
+pub mod test_lock {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// 拿住它，这一整段测试就是串行的。
+    pub fn serial() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}

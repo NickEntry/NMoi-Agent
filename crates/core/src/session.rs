@@ -481,6 +481,9 @@ pub struct SessionConfig<'a> {
     pub transport: Option<&'a dyn crate::transport::Transport>,
     /// 面板上被关掉的工具（0.17e）：这一轮不声明它们。
     pub tools_off: &'a [String],
+    /// 技能根目录（D379）：`/skills` 前缀映射到它，可写。
+    /// `None` = 这一轮没装技能，`/skills/...` 会如实说一句。
+    pub skills_root: Option<&'a std::path::Path>,
 }
 
 // 手写 Debug：`dyn Cancellation` 没有 Debug，而配置打日志时想知道的是"会不会被取消"。
@@ -529,6 +532,7 @@ impl Default for SessionConfig<'_> {
             voice: None,
             transport: None,
             tools_off: &[],
+            skills_root: None,
         }
     }
 }
@@ -1396,6 +1400,10 @@ pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
             store.chat_dir(session).as_deref(),
         );
     }
+    // 这一轮改过哪些文件（D372）：收集器活到 `run_turn` 返回为止，
+    // 由写工具往里推（`ToolContext::record_change`）。
+    let changes: std::sync::Mutex<Vec<crate::changes::FileChange>> =
+        std::sync::Mutex::new(Vec::new());
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     // 手动关闭（0.15ak）按 `(会话, call_id)` 登记，所以这一轮得带上自己是谁。
     let call_session = session.to_string();
@@ -1428,7 +1436,9 @@ pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
         .with_transport(config.transport)
         .with_audio(session_audio.as_deref())
         .with_tools_off(config.tools_off)
-        .with_tool_overrides(&tool_overrides);
+        .with_tool_overrides(&tool_overrides)
+        .with_changes(Some(&changes))
+        .with_skills_root(config.skills_root);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1442,7 +1452,7 @@ pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
     if let Some(budget) = config.budget {
         turn_config.truncate_at = Some(config.trigger.absolute.resolve(budget.usable()));
     }
-    let report = run_turn(
+    let mut report = run_turn(
         client,
         &frozen_base,
         &history,
@@ -1452,6 +1462,22 @@ pub fn run_session_turn_with_attachments<T: Transport, S: HistoryStore>(
         config.cancel,
         config.retry,
     )?;
+    // 写工具的变更（D372）：收集器在 `ctx` 里，`run_turn` 跑完就取走。
+    // **按路径 A–Z 排在这里**：界面不该再排一次，两处各排一次迟早不一致。
+    if let Ok(mut list) = changes.lock() {
+        let mut taken = std::mem::take(&mut *list);
+        taken.sort_by(|a, b| a.path.cmp(&b.path));
+        report.changes = taken;
+    }
+    // shell 的变更（D378）：那条命令是**排队**的，扫描在后台做，结果要等。
+    //
+    // 这里等一小段（最多 `SCAN_WAIT`）：命令收尾之后去抖窗口 + 一次扫描大约 150+137 ms，
+    // 而用户此刻正等着这一轮的回复。等不到就**不写进这一轮**——下一次命令会把那段补上，
+    // 或者界面上少列一个文件。两害相权，让用户少等几百毫秒更值。
+    //
+    // 为什么不是"后台线程扫完再改库"：那一轮已经落库了，改一条已落库的消息
+    // 是另一套机制（版本），为了几个文件名不值得。
+    collect_shell_changes(&call_session, &mut report.changes);
 
     // 3. 落模型这一轮：**按轮落**（D253）。
     //
@@ -1683,6 +1709,10 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
             store.chat_dir(session).as_deref(),
         );
     }
+    // 这一轮改过哪些文件（D372）：收集器活到 `run_turn` 返回为止，
+    // 由写工具往里推（`ToolContext::record_change`）。
+    let changes: std::sync::Mutex<Vec<crate::changes::FileChange>> =
+        std::sync::Mutex::new(Vec::new());
     let mut ctx = ToolContext::new(policy, workspace).with_history(&history);
     let call_session = session.to_string();
     crate::kills::clear_done(&call_session);
@@ -1712,7 +1742,9 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
         .with_transport(config.transport)
         .with_audio(session_audio.as_deref())
         .with_tools_off(config.tools_off)
-        .with_tool_overrides(&tool_overrides);
+        .with_tool_overrides(&tool_overrides)
+        .with_changes(Some(&changes))
+        .with_skills_root(config.skills_root);
     if let Some(envir) = config.envir {
         ctx = ctx.with_envir(envir);
     }
@@ -1873,6 +1905,71 @@ pub fn regenerate_turn<T: Transport, S: HistoryStore>(
 ///
 /// 参数再解析一遍用的是**同一个** [`crate::tools::parse_edit_message`]：
 /// 工具说的"已排队三块"和这里写下去的三块一定是同一份。
+
+/// 等后台扫完，把 shell 那几条命令的变更并进这一轮（D378）。
+///
+/// `budget` 是一次**最多**等多久。扫描本身 137 ms，去抖窗口 150 ms，
+/// 所以给 400 ms 足够覆盖"只有这一条命令"的常见情形；并发多的时候可能等不到，
+/// 那时就放弃——理由见调用处的注释。
+fn collect_shell_changes(session: &str, into: &mut Vec<crate::changes::FileChange>) {
+    use std::time::{Duration, Instant};
+
+    /// 最多等多久。超过就放弃这一次（下一次命令会补上）。
+    const SCAN_WAIT: Duration = Duration::from_millis(400);
+    /// 轮询间隔。比去抖窗口小一个量级，够及时。
+    const POLL: Duration = Duration::from_millis(25);
+
+    // 先把到点的那批**扫掉**。core 里没有常驻线程，所以"谁来扫"由这里回答：
+    // 有命令在等结果时，就是它在扫。空闲时没有任何线程，也就没有任何开销。
+    let deadline = Instant::now() + SCAN_WAIT;
+    loop {
+        if let Some(members) = crate::settle::claim_ready(Instant::now()) {
+            // 这一批能看到哪几棵树：用成员自己带的 cwd 反推不出来，
+            // 所以只扫工作区——`scan_roots` 需要 `ToolContext`，而这里拿不到。
+            // 代价是 `/chat`、`/tmp` 里由 shell 写的东西这一轮不列；
+            // 它们本来就是会话私有的，下次 `write_file` 会补上。
+            let roots = members
+                .first()
+                .map(|pending| vec![crate::scanner::Root::shared(pending.cwd.clone())])
+                .unwrap_or_default();
+            let batch = crate::settle::run_batch(&members, &roots, crate::scanner::DEFAULT_LIMIT);
+            let running: Vec<String> = {
+                let mut sessions: Vec<String> = members
+                    .iter()
+                    .map(|pending| pending.session.clone())
+                    .collect();
+                sessions.sort();
+                sessions.dedup();
+                sessions
+            };
+            // 差异在 `run_batch` 里就算好了（那一刻读到的内容与快照对得上）。
+            let mut records = Vec::new();
+            for pending in &members {
+                if pending.session != session {
+                    continue;
+                }
+                records.extend(crate::settle::records(&batch, pending, &running, 5_000));
+            }
+            crate::settle::finish(batch);
+            for record in records {
+                // 已在列表里（`write_file` 记过）就不重复。
+                if !into.iter().any(|row| row.path == record.path) {
+                    into.push(record);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        if crate::settle::next_deadline(Instant::now()).is_none() {
+            // 没有待扫的：再等也没用。
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    into.sort_by(|a, b| a.path.cmp(&b.path));
+}
+
 fn apply_pending_edits<S: HistoryStore>(
     store: &mut S,
     calls: &[ToolRecord],

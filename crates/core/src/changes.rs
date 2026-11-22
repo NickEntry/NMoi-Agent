@@ -412,8 +412,13 @@ pub fn count_changes(diff: &str) -> (u32, u32) {
 /// 两件事在这一处收口，调用方不必各写一遍：
 /// 1. `added` / `removed` **从差异里数**（没有差异时退回"整体替换"的行数）；
 /// 2. 二进制 / 太大时 `diff` 给 `None`，界面据此只说"文件变了"，不假装有差异。
+///
+/// `ignored` 由**调用方**判：它知道这棵树根在哪儿，能算出相对路径。
+/// 这里**不再**拿 `path` 自己判一次——绝对路径里含有根目录名，而根完全可能叫
+/// `.config` / `/.tmpXXXX`（测试的 `tempfile` 就是这样）。判两次等于把整棵树吞掉，
+/// 界面上一条都没有，而调用方以为自己已经判过了。
 pub fn record(path: &str, before: Option<&str>, after: &str, ignored: bool) -> Option<FileChange> {
-    if ignored || is_ignored(path) {
+    if ignored {
         return None;
     }
     let kind = if before.is_some() {
@@ -544,10 +549,15 @@ mod tests {
         assert_eq!(change.removed, (MAX_DIFF_LINES + 1) as u32);
     }
 
+    /// `ignored` 由**调用方**判（它知道树根在哪儿、能算出相对路径）。
+    /// 这里验的是"传 true 就不记"，以及"传 false 就照记"——
+    /// `record` 自己不再判路径，那样会把 `/.tmpXXXX` 这种根整个吞掉。
     #[test]
-    fn ignored_paths_produce_no_record() {
-        assert!(record("/workspace/target/debug/x", Some("a"), "b", false).is_none());
+    fn ignored_flag_alone_decides() {
         assert!(record("/workspace/src/x.rs", Some("a"), "b", true).is_none());
+        assert!(record("/workspace/src/x.rs", Some("a"), "b", false).is_some());
+        // 绝对路径里有点目录段也不影响：判的是调用方给的相对路径
+        assert!(record("/tmp/.tmpXXXX/x.rs", Some("a"), "b", false).is_some());
     }
 
     #[test]

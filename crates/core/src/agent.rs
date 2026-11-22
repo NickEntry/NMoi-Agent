@@ -222,6 +222,12 @@ pub struct TurnReport {
     /// 最后一次请求的用量。工具循环会发好几次，前面的那几次的 prompt 都更短，
     /// 拿它们去校准只会把因子算低——所以只留最后一次。
     pub usage: Usage,
+    /// 这一轮改过的文件（D372 / D378）。
+    ///
+    /// 来源是**写入口**：`write_file` / `edit_file` 落地时记一条（会话已知，不必猜），
+    /// `system_shell` 收尾时按去抖合并扫出来的差异补上（见 `crate::settle`）。
+    /// 按路径合并、按 A–Z 排——顺序在这里定死，界面不再排一次。
+    pub changes: Vec<crate::changes::FileChange>,
 }
 
 impl TurnReport {
