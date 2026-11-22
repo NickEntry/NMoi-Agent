@@ -37,6 +37,12 @@ internal data class TurnOutcome(
     val presetsLine: String,
     /** 超窗时撤回的那一份（D336 / D342）：一条工具输出，或者清单里几张图。 */
     val shrunk: ShrunkRow? = null,
+    /**
+     * 这一轮改过的文件（D372）。**按路径 A–Z，core 已经排好**——这里不再排一次。
+     *
+     * 空列表 = 这一轮没改文件（只读工具、或命令没写东西）。界面那时不画变更卡片。
+     */
+    val changes: List<ChangeRow> = emptyList(),
 ) {
     /** 提示行那一句。用户要能一眼看出"它到底跑完了没有"。 */
     fun describe(): String {
@@ -714,6 +720,32 @@ internal object TurnRepository {
             editedBlocks = edited.size,
             failedEdits = failed.size,
             presetsLine = presetsLine,
+            changes = readChanges(report?.optJSONArray("changes")),
         )
+    }
+
+    /**
+     * 把 `report.changes` 读成界面用的行。
+     *
+     * `exists` 在这里**不判**：那一轮跑完到用户点开之间文件可能已经没了，
+     * 而判它要碰文件系统——放在点开那一刻（`ChangeList.onTap` 的调用方）更准，
+     * 也不会让每一条记录都多一次 stat。
+     */
+    private fun readChanges(array: JSONArray?): List<ChangeRow> {
+        if (array == null) return emptyList()
+        val rows = ArrayList<ChangeRow>(array.length())
+        for (index in 0 until array.length()) {
+            val row = array.optJSONObject(index) ?: continue
+            val path = row.optString("path", "")
+            if (path.isEmpty()) continue
+            rows += ChangeRow(
+                path = path,
+                created = row.optString("kind", "") == "created",
+                added = row.optInt("added", 0),
+                removed = row.optInt("removed", 0),
+                diff = row.optString("diff", "").takeIf { it.isNotEmpty() },
+            )
+        }
+        return rows
     }
 }

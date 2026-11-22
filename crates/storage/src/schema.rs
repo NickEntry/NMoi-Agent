@@ -540,3 +540,18 @@ UPDATE messages SET preview = COALESCE((
      ORDER BY p.ord
      LIMIT 1), '');
 "#;
+
+/// v21（D372）：这一轮改过哪些文件。
+///
+/// 存 JSON 数组（`[{path,kind,added,removed,lines,bytes,diff}]`），不建子表：
+///
+/// - 它是**整份读、整份写**的（消息区一次要那一条的全部变更），没有"查所有改过 a.rs 的轮次"
+///   这种需求；
+/// - 建子表就要为它写迁移、写级联删除、写一致性校验，而收益只是"能按文件查"——
+///   现在没人要按文件查。
+///
+/// 空串 = 这一轮没改文件（绝大多数轮次）。**不存 NULL**：`NOT NULL DEFAULT ''` 让
+/// 读的那一侧少一个分支。
+pub const SCHEMA_V21: &str = r#"
+ALTER TABLE messages ADD COLUMN changes_json TEXT NOT NULL DEFAULT '';
+"#;

@@ -1174,6 +1174,13 @@ fn round_units(
         units.push(unit);
         seq += 1;
     }
+    // 变更挂在**最后一条**上（D372）：一轮多往返时，它是"这一轮"的结果，
+    // 不是某一次往返的。界面拿它画在回答结尾。
+    if let Some(last) = units.last_mut() {
+        if let Some(message) = last.messages.last_mut() {
+            message.changes = report.changes.clone();
+        }
+    }
     Ok(units)
 }
 

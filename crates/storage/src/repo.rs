@@ -1134,7 +1134,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                     form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                    locked, revision, tool_call_id, incomplete
+                    locked, revision, tool_call_id, incomplete, changes_json
              FROM messages WHERE conv_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([session.to_string()], row_to_message)?;
@@ -1333,7 +1333,8 @@ impl Storage {
             "{page}
              SELECT m.id, m.unit_id, m.unit_kind, m.unit_closed, m.seq, m.role, m.source,
                     m.form, m.tokens, m.created_at, m.logical_clock, m.archived_ref,
-                    m.protected, m.pinned, m.locked, m.revision, m.tool_call_id, m.incomplete
+                    m.protected, m.pinned, m.locked, m.revision, m.tool_call_id, m.incomplete,
+                    m.changes_json
                FROM messages m JOIN page p ON p.unit_id = m.unit_id
               WHERE m.conv_id = ?1 ORDER BY m.seq ASC"
         ))?;
@@ -2021,8 +2022,8 @@ pub(crate) fn insert_unit_rows(
             "INSERT INTO messages(
                  id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
                  form, tokens, created_at, logical_clock, archived_ref,
-                 protected, pinned, locked, revision, incomplete)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                 protected, pinned, locked, revision, incomplete, changes_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(id) DO UPDATE SET
                  form = excluded.form,
                  tokens = excluded.tokens,
@@ -2053,6 +2054,13 @@ pub(crate) fn insert_unit_rows(
                 if message.locked { 1 } else { 0 },
                 message.revision,
                 if message.incomplete { 1 } else { 0 },
+                // 变更（D372）：空列表写成空串，不写 `[]`——
+                // 空串是"没有"，`[]` 是"有但是空的"，读的那一侧少一个分支。
+                if message.changes.is_empty() {
+                    String::new()
+                } else {
+                    serde_json::to_string(&message.changes).unwrap_or_default()
+                },
             ],
         )?;
         crate::parts::write_parts(tx, message)?;
@@ -2076,7 +2084,7 @@ pub(crate) fn load_tail_messages(
     let mut stmt = tx.prepare(
         "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                 form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                locked, revision, tool_call_id, incomplete
+                locked, revision, tool_call_id, incomplete, changes_json
          FROM messages WHERE conv_id = ?1 AND seq > ?2 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map(
@@ -2174,6 +2182,14 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     message.revision = row.get::<_, i64>(15)? as u32;
     // 第 16 列是 `tool_call_id`：折行之后不再有 `role=tool` 的行，这一列只留给旧库。
     message.incomplete = row.get::<_, i64>(17)? != 0;
+    // 第 18 列是变更（D372）。空串 = 没改文件；坏 JSON 也按"没改"处理——
+    // 一条读不出来的变更列表不该让整条会话打不开（`changes_json` 是本客户端自己写的，
+    // 真坏了也只丢那一轮的文件名）。
+    let changes_text: String = row.get(18)?;
+    if !changes_text.is_empty() {
+        message.changes =
+            serde_json::from_str(&changes_text).unwrap_or_else(|_| Vec::new());
+    }
     Ok(message)
 }
 
@@ -2219,7 +2235,7 @@ fn load_unit_in(conn: &Connection, unit_id: &UnitId) -> Result<AtomicUnit, Stora
     let mut stmt = conn.prepare(
         "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                 form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                locked, revision, tool_call_id, incomplete
+                locked, revision, tool_call_id, incomplete, changes_json
          FROM messages WHERE unit_id = ?1 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map([unit_id.to_string()], row_to_message)?;

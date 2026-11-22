@@ -135,6 +135,21 @@ internal object ActionIcons {
         stroke("M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2")
     }
 
+    /**
+     * Lucide `file-code.svg`：变更卡片里的文件图标（D381）。
+     *
+     * 用 `file-code` 而不是 `file`：这一组芯片讲的都是"代码文件变了"，
+     * 而 `file` 太泛（会话附件那边也在用同类图标）。
+     */
+    val FileCode: ImageVector = buildVector("file-code") {
+        stroke(
+            "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z",
+        )
+        stroke("M14 2v6h6")
+        stroke("m10 13-2 2 2 2")
+        stroke("m14 17 2-2-2-2")
+    }
+
     /** Lucide `check.svg`：选中态 / 复制成功。 */
     val Check: ImageVector = buildVector("check") {
         stroke("M20 6 9 17l-5-5")

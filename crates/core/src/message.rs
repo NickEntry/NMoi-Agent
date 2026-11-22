@@ -597,6 +597,12 @@ pub struct Message {
     pub locked: bool,
     /// 编辑版本号。每次内容 / 思考 / 工具块被改写加一，用于审计与同步冲突判断。
     pub revision: u32,
+    /// 这一轮改过哪些文件（D372）。**只挂在整轮的最后一条**上——
+    /// 一轮多往返时，变更属于"这一轮"而不是"某一次往返"。
+    ///
+    /// 空 = 没改文件（绝大多数轮次）。落库进 `messages.changes_json`（v21）。
+    #[serde(default)]
+    pub changes: Vec<crate::changes::FileChange>,
     /// 这一轮**没说完整**：断流、被掐断、用户点了停止（D21）。
     #[serde(default)]
     pub incomplete: bool,
@@ -637,6 +643,7 @@ impl Message {
             pinned: false,
             locked: false,
             revision: 0,
+            changes: Vec::new(),
             incomplete: false,
         }
     }
