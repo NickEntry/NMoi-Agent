@@ -4084,3 +4084,36 @@ clippy `-D warnings` 干净；kotlinc 全量只剩 9 条既有 `R`；Kotlin 单�
 - **恢复**：sha256 → schema 版本比对（高于本地就拒绝）→ 备份当前库 → 替换 → 重跑 L1 + L3；
   任一步失败换回原库。
 - **不做增量、不做端到端加密**（后者是 §5.3，另算）。凭据进 `Vault`，manifest 里只写 target id。
+
+## D375 左滑删除：删除区高度不再靠父级，图标与文字按进度先后出现（2026-11-22）
+
+**现象**：滑开之后红条在、里面是空的（用户原话：「删除按钮仍然看不见，是空格」）。
+
+**原因**：`SwipeDeleteRow` 的删除区写在 `Box { Box(Modifier.matchParentSize()) { Row(...) } }` 里。
+这行经常挂在 `verticalScroll` 的 `Column` 下，那里高度约束是无界的：`matchParentSize` 拿不到
+父级高度，`fillMaxHeight` 的上限是 0，于是 Row 的高度是 0——红条（铺在外层 Box 上）看得见，
+图标和字被裁成一条缝。**不是颜色问题，是测量问题**（先当成颜色问题查了一轮，浪费）。
+
+**改法**：
+
+- 去掉 `matchParentSize` 那层，删除区直接是 Box 的子节点；
+- 高度**由内容行量出来再写回去**（`measuredHeight` + `onGloballyPositioned`），
+  `measuredHeight` 为 0 时退回 `fillMaxHeight`（第一帧还没有数）。
+- 红底从 `error` 换成 `errorContainer`，字/图标用 `onErrorContainer`：`error / onError` 是
+  "实心破坏性按钮"那一对，铺成整行会读成警告横幅。主题里补了这两档（之前没给值，
+  M3 的默认值是从基线紫算的，和灰紫背景不在一套里）。
+
+**动画**（用户给了 kelivo 四张连拍，要求先出 HTML 预览）：
+
+- 图标 0–35% 内 alpha 0→1、scale 0.72→1；文字 45%→75% alpha 0→1、translationX 8→0。
+- **两段进度都从 `offset.value` 派生，只有一处定义**（`iconProgress()` / `labelProgress()`），
+  要调手感改两个常数，不必在图标和文字两处各改一遍。
+- 两个 `graphicsLayer` 里只读 `offset.value`：绘制阶段读，拖动期间不重组（D360 的教训）。
+- **不做**"跟着进度放大到 1.4 倍"：88dp 里放大到底会挤到边，回弹时字跟着缩，像手抖。
+
+**否掉**：把删除区改成 `Modifier.height(IntrinsicSize.Min)`。它要求父级有界高度，
+而这里恰恰没有；而且它每帧多一次测量，正好压在拖动路径上。
+
+**判据**：滑到 20% 时图标已半透、文字仍是 0；40% 时图标全亮、文字仍是 0；70% 松手停在 -88
+且两样都全亮；点行收回；点红区删掉并出带「撤销」的提示。本机用一份假 DOM 跑了 19 条断言
+（`/tmp/test-preview.ts`，19 条全过，**只验了 HTML 预览的脚本，不是 Compose**）。

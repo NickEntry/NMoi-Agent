@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
@@ -285,6 +287,15 @@ internal fun RowDivider(leading: Dp) {
  *
  * 红底铺在这个 Box 上、内容行自己不透明：换成"背后那一层铺红"会在真机上量成 0 高（D215）。
  * 松手不过一半就弹回，不留一条半开的红色待命。
+ *
+ * 删除区**直接是 Box 的子节点**，不再套一层 `matchParentSize`：套了那层之后它自己的高度
+ * 在某些测量顺序下是 0，红条看得见、里面的图标和字被裁成一条缝——真机上就是"滑开是一片空"
+ * （D375）。现在高度**由内容行量出来再写回去**（`measuredHeight`），不依赖 Box 的测量顺序：
+ * 这一行常常挂在 `verticalScroll` 里，那里高度是无界的，`fillMaxHeight` 会老老实实塌成 0。
+ *
+ * 删除区里的两样东西**按进度先后出现**（D375）：图标在 0–35% 内到齐，文字 45% 才起。
+ * 这样删除区一露头就有东西，不用等滑到底才画；而不到一半时"删除"两个字还压着，
+ * 因为那时用户还没决定。
  */
 @Composable
 internal fun SwipeDeleteRow(
@@ -301,8 +312,17 @@ internal fun SwipeDeleteRow(
     content: @Composable RowScope.() -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val reveal = with(LocalDensity.current) { revealWidth.toPx() }
+    val density = LocalDensity.current
+    val reveal = with(density) { revealWidth.toPx() }
+    val labelShift = with(density) { 8.dp.toPx() }
     val offset = remember(resetKey) { Animatable(0f) }
+    var measuredHeight by remember(resetKey) { mutableStateOf(0) }
+
+    // 露出来的比例（0 = 全收起，1 = 88dp 全露）。两个进度都从它派生，
+    // 所以"图标先到、文字后到"只有一处定义，改手感不必两处对着改。
+    fun revealed(): Float = (-offset.value / reveal).coerceIn(0f, 1f)
+    fun iconProgress(): Float = (revealed() / 0.35f).coerceIn(0f, 1f)
+    fun labelProgress(): Float = ((revealed() - 0.45f) / 0.30f).coerceIn(0f, 1f)
 
     LaunchedEffect(swipeEnabled) {
         if (!swipeEnabled) offset.snapTo(0f)
@@ -312,34 +332,53 @@ internal fun SwipeDeleteRow(
         modifier = modifier
             .fillMaxWidth()
             .clipToBounds()
-            .background(MaterialTheme.colorScheme.error),
+            .background(MaterialTheme.colorScheme.errorContainer),
     ) {
-        Box(modifier = Modifier.matchParentSize()) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .width(revealWidth)
-                    .fillMaxHeight()
-                    .clickable {
-                        scope.launch { offset.snapTo(0f) }
-                        onDelete()
+        Row(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(revealWidth)
+                .then(
+                    if (measuredHeight > 0) {
+                        Modifier.height(with(density) { measuredHeight.toDp() })
+                    } else {
+                        Modifier.fillMaxHeight()
                     },
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = ActionIcons.Trash2,
-                    contentDescription = deleteDescription,
-                    tint = MaterialTheme.colorScheme.onError,
-                    modifier = Modifier.size(18.dp),
                 )
-                Text(
-                    text = deleteLabel,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onError,
-                    modifier = Modifier.padding(start = 6.dp),
-                )
-            }
+                .clickable {
+                    scope.launch { offset.snapTo(0f) }
+                    onDelete()
+                },
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 两个 `graphicsLayer` 里只读 `offset.value`：它在绘制阶段读，拖动时不重组
+            // （D360 的教训：在组合里读位移，拖动期间每帧重组整个外壳）。
+            Icon(
+                imageVector = ActionIcons.Trash2,
+                contentDescription = deleteDescription,
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier
+                    .size(18.dp)
+                    .graphicsLayer {
+                        val shown = iconProgress()
+                        alpha = shown
+                        scaleX = 0.72f + 0.28f * shown
+                        scaleY = 0.72f + 0.28f * shown
+                    },
+            )
+            Text(
+                text = deleteLabel,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier
+                    .padding(start = 6.dp)
+                    .graphicsLayer {
+                        val shown = labelProgress()
+                        alpha = shown
+                        translationX = (1f - shown) * labelShift
+                    },
+            )
         }
 
         Row(
@@ -347,6 +386,12 @@ internal fun SwipeDeleteRow(
                 .background(rowColor)
                 .fillMaxWidth()
                 .offset { IntOffset(offset.value.roundToInt(), 0) }
+                // 行高由这里量出来交给删除区（见函数头）：`verticalScroll` 里高度无界，
+                // 删除区自己 `fillMaxHeight` 会塌成 0。
+                .onGloballyPositioned { coordinates ->
+                    val now = coordinates.size.height
+                    if (now > 0 && now != measuredHeight) measuredHeight = now
+                }
                 .pointerInput(resetKey, swipeEnabled) {
                     if (!swipeEnabled) return@pointerInput
                     detectHorizontalDragGestures(

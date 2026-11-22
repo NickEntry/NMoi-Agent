@@ -40,6 +40,10 @@ private val DarkColors = darkColorScheme(
     inverseSurface = Color(0xFFE6E6EA),
     inverseOnSurface = Color(0xFF1A1A20),
     error = Color(0xFFF2B8B5),
+    // 左滑删除那条红底用的就是这一对（D375）。深色下**不能**照参考图铺浅粉：
+    // 一条整行高的浅粉在灰紫底上刺眼。深红底 + 浅粉内容，深浅两套各自成立。
+    errorContainer = Color(0xFF5C1A20),
+    onErrorContainer = Color(0xFFFFD9D6),
 )
 
 private val LightColors = lightColorScheme(
@@ -63,6 +67,8 @@ private val LightColors = lightColorScheme(
     inverseSurface = Color(0xFF2E2E33),
     inverseOnSurface = Color(0xFFF4F4F8),
     error = Color(0xFFB3261E),
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002),
 )
 
 /**
