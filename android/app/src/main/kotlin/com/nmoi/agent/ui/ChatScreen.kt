@@ -262,6 +262,10 @@ internal fun ChatScreen(
     // 「工具」面板（D271）：这一条会话绑哪个工作区。
     // 名字别叫 toolSheet——那是工具详情弹窗（D261）的 state，撞上就变成两个类型抢一个名字。
     var toolsPanel by remember { mutableStateOf(false) }
+    // 「对话文件」三页签（D393）：附件 / 输出 / 工作区。与工具面板同一层，互斥。
+    var filesPanel by remember { mutableStateOf(false) }
+    // 预览页（D393）：从「对话文件」点进来的那一份。`root` 决定相对路径从哪儿算。
+    var filesPreview by remember { mutableStateOf<Pair<java.io.File, com.nmoi.agent.ui.Files.FileRow>?>(null) }
     // 过程块展开/收起（D229）：**只在本次浏览会话内记忆**——切到别的会话再回来，
     // 恢复默认（最新两个 + 其余折叠）。所以键里带 sessionId，换会话就是一张新表。
     val openGroups = remember(sessionId) { mutableStateMapOf<String, Boolean>() }
@@ -1039,7 +1043,7 @@ internal fun ChatScreen(
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
     val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen ||
         selecting || modelSheet || thinkingSheet || queueSheet || plusMenu || regenFailure != null ||
-        stopPrompt != null || toolsPanel
+        stopPrompt != null || toolsPanel || filesPanel || filesPreview != null
     BackHandler(enabled = overlayOpen) {
         when {
             // 三选一**必须处理**（D228）：它决定库里留下哪一版，返回键在这里什么也不做。
@@ -1051,6 +1055,8 @@ internal fun ChatScreen(
             plusMenu -> plusMenu = false
             queueSheet -> queueSheet = false
             toolsPanel -> toolsPanel = false
+            filesPreview != null -> filesPreview = null
+            filesPanel -> filesPanel = false
             thinkingSheet -> thinkingSheet = false
             modelSheet -> modelSheet = false
             confirmDelete != null -> confirmDelete = null
@@ -1896,6 +1902,7 @@ internal fun ChatScreen(
                     onPickFiles = { pickFiles.launch("*/*") },
                     onPlus = { plusMenu = true },
                     onTools = { toolsPanel = true },
+                    onFiles = { filesPanel = true },
                     imageCapability = imageCapability,
                     contextImageCount = contextImages.size,
                     contextImageLimit = AppSettings.imageLimit(context),
@@ -2197,6 +2204,29 @@ internal fun ChatScreen(
                 onDraft = onDraftWorkspace,
                 onDismiss = { toolsPanel = false },
                 onNotice = { notice = it },
+            )
+        }
+
+        // 「对话文件」三页签（D393）。预览页压在它上面：先关面板再开预览，
+        // 两层遮罩叠在一起颜色就不对了（D390 同一条理由）。
+        if (filesPanel) {
+            com.nmoi.agent.ui.Files.DialogFilesSheet(
+                sessionId = sessionId,
+                workspaceRoot = com.nmoi.agent.ui.WorkspaceRepository
+                    .resolve(context, draftWorkspace ?: assistant?.workspaceId).dir,
+                onDismiss = { filesPanel = false },
+                onOpenFile = { root, row ->
+                    filesPanel = false
+                    filesPreview = root to row
+                },
+            )
+        }
+
+        filesPreview?.let { (root, row) ->
+            com.nmoi.agent.ui.Files.FilePreviewScreen(
+                root = root,
+                row = row,
+                onBack = { filesPreview = null },
             )
         }
 
@@ -5616,6 +5646,8 @@ private fun Composer(
     onPickFiles: () -> Unit = {},
     /** 「工具」面板（D271）：这一条会话绑哪个工作区。 */
     onTools: () -> Unit = {},
+    /** 「对话文件」面板（D393）：附件 / 输出 / 工作区。 */
+    onFiles: () -> Unit = {},
     /** 「＋」面板：附件入口。 */
     onPlus: () -> Unit,
     /** `false` = 这个模型明确不收图（灰掉「图片」那一项并给原因）。 */
@@ -5758,6 +5790,12 @@ private fun Composer(
                         image = ActionIcons.Wrench,
                         description = "工具",
                         onClick = onTools,
+                        compact = true,
+                    )
+                    IconActionButton(
+                        image = ActionIcons.Folder,
+                        description = "对话文件",
+                        onClick = onFiles,
                         compact = true,
                     )
                     Spacer(Modifier.weight(1f))
