@@ -36,6 +36,20 @@ import com.nmoi.agent.ui.ConfirmDialog
 import com.nmoi.agent.ui.NLog
 import kotlinx.coroutines.launch
 import java.io.File
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.runtime.LaunchedEffect
+import com.nmoi.agent.ui.ActionIcons
+import com.nmoi.agent.ui.NmoiFfi
+import com.nmoi.agent.ui.ToolingRepository
+import com.nmoi.agent.ui.toolDisplayName
+import com.nmoi.agent.ui.toolGroups
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 工作区独立页的两个页签。 */
 private enum class WorkspaceTab { Files, Tools }
@@ -52,6 +66,7 @@ private enum class WorkspaceTab { Files, Tools }
 @Composable
 internal fun WorkspaceFilesScreen(
     root: File,
+    workspaceId: String,
     title: String,
     onBack: () -> Unit,
 ) {
@@ -141,7 +156,7 @@ internal fun WorkspaceFilesScreen(
                 )
 
                 WorkspaceTab.Tools -> WorkspaceToolsTab(
-                    workspaceId = title,
+                    workspaceId = workspaceId,
                     notice = { notice = it },
                 )
             }
@@ -270,70 +285,149 @@ private data class NameTarget(
 )
 
 /**
- * 工作区页的「工具」页签（D392）。
+ * 工作区页的「工具」页签（D394）：**这个工作区**的会话能用哪些工具。
  *
- * 一行一个开关，改完即时保存。**与助手/会话那两级取交集**：任何一级关掉就不声明。
- * 这一页只做"再收一道"，不做"再放一道"——放开的权力在上面那两级，不在这里。
+ * 一行一个开关，改完即时保存（`ToolingRepository.setWorkspaceToolOff`）。
+ * 与助手 / 会话那两级**取并集**：任何一级关掉就不声明。它是"再收一道"，
+ * 不是"再放一道"——所以这一页只能关，不能把全局关掉的打开。
  *
- * 第一版只摆出「这个工作区能关掉哪几样」，落库那一步（`settings(workspace,<id>)`）
- * 要等 policy 那一层把工作区这一级读进去——**没接的东西不摆假开关**，
- * 所以这一屏现在写清"还没接"并且不给可拨的控件。
+ * 清单从 native 注册表现读（`NmoiFfi.toolNames()`）：在 Kotlin 里另列一份，
+ * 迟早只改一份。
  */
 @Composable
 private fun WorkspaceToolsTab(workspaceId: String, notice: (String) -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Text(
-                    text = "这个工作区能用哪些工具",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = "这一级是**再收一道**：与助手、会话那两级取交集，任何一级关掉就不声明。" +
-                        "现在还差 policy 读工作区这一级（下一批），所以这里先不摆开关——" +
-                        "摆了也拨不动的那种，比没有更糟。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
+    val context = LocalContext.current
+    var names by remember { mutableStateOf<List<String>>(emptyList()) }
+    var off by remember(workspaceId) {
+        mutableStateOf(ToolingRepository.workspaceToolsOff(context, workspaceId).toSet())
+    }
+    var globalOff by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
+    var folded by remember { mutableStateOf(ToolingRepository.foldedGroups(context)) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(workspaceId) {
+        names = withContext(Dispatchers.IO) {
+            NmoiFfi.toolNames().getOrNull()
+                ?.optJSONArray("names")
+                ?.let { array ->
+                    buildList {
+                        for (index in 0 until array.length()) {
+                            array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
+                        }
+                    }
+                }
+                .orEmpty()
         }
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { notice("逐项开关要等 policy 那一层（下一批）；现在去 设置 → 工具与工作区 改全局那几颗") },
-        ) {
+        globalOff = ToolingRepository.toolsOff(context).toSet()
+        loading = false
+    }
+
+    if (loading) {
+        LoadingPage()
+        return
+    }
+    if (names.isEmpty()) {
+        UnreadablePage(reason = "读不到工具清单（原生层没加载？）")
+        return
+    }
+
+    val open = names.count { !off.contains(it) && !globalOff.contains(it) }
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+    ) {
+        Text(
+            text = "这个工作区能用哪些工具",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
+        )
+        Text(
+            text = "本地工具 $open/${names.size} · 关掉的不发给模型（与全局那一份取并集）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+        )
+        toolGroups(names).forEach { group ->
+            val isFolded = folded.contains(group.title)
+            val groupOpen = group.names.count { !off.contains(it) && !globalOff.contains(it) }
             Row(
-                modifier = Modifier.padding(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 40.dp)
+                    .clickable {
+                        val next = if (isFolded) {
+                            folded - group.title
+                        } else {
+                            folded + group.title
+                        }
+                        folded = next
+                        ToolingRepository.setFoldedGroups(context, next)
+                    }
+                    .padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "全局那几颗开关",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    text = group.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = "设置 → 工具与工作区 ›",
+                    text = "$groupOpen/${group.names.size}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Icon(
+                    imageVector = if (isFolded) ActionIcons.ChevronRight else ActionIcons.ChevronDown,
+                    contentDescription = if (isFolded) "展开「${group.title}」" else "收起「${group.title}」",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp).size(18.dp),
+                )
+            }
+            if (isFolded) return@forEach
+            group.names.forEach { name ->
+                // 全局关掉的那一条：这一级**拨不开**。灰着并写清为什么——
+                // "拨了也不会生效"的开关比没有更糟。
+                val blocked = globalOff.contains(name)
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = toolDisplayName(name),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (blocked) {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        if (blocked) {
+                            Text(
+                                text = "全局关着：去 设置 → 工具与工作区 打开",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = !off.contains(name) && !blocked,
+                        enabled = !blocked,
+                        onCheckedChange = { on ->
+                            ToolingRepository.setWorkspaceToolOff(context, workspaceId, name, !on)
+                            off = if (on) off - name else off + name
+                            notice("${toolDisplayName(name)}：${if (on) "这个工作区声明" else "这个工作区不声明"}")
+                        },
+                    )
+                }
             }
         }
         Text(
             text = "工作区：$workspaceId",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
         )
     }
 }

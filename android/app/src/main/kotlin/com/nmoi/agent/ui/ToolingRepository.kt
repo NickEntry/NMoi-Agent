@@ -25,6 +25,9 @@ internal object ToolingRepository {
 
     private const val PREFIX_TOOL_OFF = "tool.off."
 
+    /** 工作区那一级的开关前缀（D394）：`tool.ws.<工作区 id>.<工具名>`。 */
+    private const val PREFIX_WORKSPACE_OFF = "tool.ws."
+
     /** 默认工作区（`files/workspace`）。**先建好再绑**：FFI 那边不替用户建目录。 */
     fun sharedRoot(context: Context): File = WorkspaceRepository.defaultRoot(context)
 
@@ -154,6 +157,38 @@ internal object ToolingRepository {
     fun setToolOff(context: Context, name: String, off: Boolean) {
         prefs(context).edit().putBoolean(PREFIX_TOOL_OFF + name, off).apply()
         NLog.i("Tools", "$name：${if (off) "不声明" else "声明"}")
+    }
+
+    /**
+     * **某一个工作区**里被关掉的工具（D394）。
+     *
+     * 用户 2026-11-22 要的是「工作区页签里的工具开关，改完即时保存」，
+     * 落 `settings(workspace, <id>)` 的一份文档。但那一份文档要 `storage` 句柄才能读写，
+     * 而这里（读 prefs 的这一层）拿不到句柄——所以第一版落在 prefs 里，
+     * **键里带工作区 id**：`tool.ws.<id>.<工具名>`。
+     *
+     * 为什么不先等库那条路：开关的价值在"这个工作区的会话不再声明它"，
+     * 而那件事这一版就能做到。落库要等 policy 那一层把工作区这一级读进去——
+     * 那时把这一份搬进 `settings` 即可，判据不变。
+     *
+     * 与全局那一份的关系：**取并集**（任何一级关掉就不声明）。它是"再收一道"。
+     */
+    fun workspaceToolsOff(context: Context, workspaceId: String): List<String> {
+        if (workspaceId.isBlank()) return emptyList()
+        val prefix = "$PREFIX_WORKSPACE_OFF$workspaceId."
+        return prefs(context).all
+            .filter { (key, value) -> key.startsWith(prefix) && value == true }
+            .keys
+            .map { it.removePrefix(prefix) }
+            .sorted()
+    }
+
+    fun setWorkspaceToolOff(context: Context, workspaceId: String, name: String, off: Boolean) {
+        if (workspaceId.isBlank()) return
+        prefs(context).edit()
+            .putBoolean("$PREFIX_WORKSPACE_OFF$workspaceId.$name", off)
+            .apply()
+        NLog.i("Tools", "工作区 $workspaceId：$name ${if (off) "不声明" else "声明"}")
     }
 
     /** 本机开关：原生命令（`System-Shell`）。默认关。 */

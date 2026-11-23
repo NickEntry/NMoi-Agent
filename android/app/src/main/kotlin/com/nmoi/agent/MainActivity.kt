@@ -706,6 +706,7 @@ class MainActivity : ComponentActivity() {
                             }
                             com.nmoi.agent.ui.Files.WorkspaceFilesScreen(
                                 root = ws.dir,
+                                workspaceId = ws.id,
                                 title = ws.name,
                                 onBack = { backStack = backStack.dropLast(1) },
                             )

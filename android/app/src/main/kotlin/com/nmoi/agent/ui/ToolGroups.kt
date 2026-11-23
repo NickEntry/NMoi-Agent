@@ -30,3 +30,27 @@ internal fun toolGroups(names: List<String>): List<ToolGroup> {
     if (rest.isNotEmpty()) out.add(ToolGroup("其他", rest))
     return out
 }
+
+/**
+ * 工具名的中文显示名。
+ *
+ * 放在这里而不是 ChatScreen：工具面板与工作区「工具」页签都要用它，
+ * 两处各写一份就会有两个说法（用户看到的是"运行命令"和"System-Shell"）。
+ * 认不出的名字原样返回——注册表里多一个工具时，界面上至少还认得出它叫什么。
+ */
+internal fun toolDisplayName(name: String): String = when (name) {
+    "System-Shell" -> "运行命令"
+    "WorkSpace-EnvirShell" -> "运行命令（容器）"
+    "View-Image" -> "查看图像"
+    "read_file" -> "读取文件"
+    "write_file" -> "写入文件"
+    "edit_file" -> "修改文件"
+    "list_dir" -> "列出目录"
+    "find_files" -> "查找文件"
+    "search" -> "搜索内容"
+    "edit_unit" -> "修改消息"
+    "Session-Files" -> "读别的会话"
+    "Voice-Caps" -> "语音能力"
+    "Speak" -> "文字转语音"
+    else -> name
+}

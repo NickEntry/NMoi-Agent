@@ -334,7 +334,16 @@ internal object TurnRepository {
                     .put("shell_off_groups", org.json.JSONArray(guard.offGroups))
                     .put("shell_extra", org.json.JSONArray(guard.extra))
                     // 面板上关掉的工具（0.17e）：core 只负责"不声明"。
-                    .put("tools_off", org.json.JSONArray(ToolingRepository.toolsOff(context)))
+                    // 工作区那一级（D394）在这里并进来：两级取**并集**，任何一级关掉就不声明。
+                    // 取并集而不是取交集，是因为"关掉"在两级里的语义相同——都是"别声明它"；
+                    // 交集会让"工作区关了、会话开着"变成开着，那是"再放一道"，与设计相反。
+                    .put(
+                        "tools_off",
+                        org.json.JSONArray(
+                            (ToolingRepository.toolsOff(context) +
+                                ToolingRepository.workspaceToolsOff(context, bound.id)).distinct(),
+                        ),
+                    )
                     // 语音现状（0.17c）：`Voice-Caps` 只读这一段。没配就不发——
                     // core 那边"没这一段"= 不声明这个工具。
                     .also { row -> VoiceRepository.turnJson(context)?.let { row.put("voice", it) } }

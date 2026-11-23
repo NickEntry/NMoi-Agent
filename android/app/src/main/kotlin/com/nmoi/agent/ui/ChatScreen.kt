@@ -5226,22 +5226,6 @@ private fun ToolCallLine(
  * `WorkSpace-EnvirShell`——用户 2026-11-04 给的参考图里那一行写的是「运行命令」。
  * 认不出的名字原样显示：编一个中文名比显示原名更糟。
  */
-private fun toolDisplayName(name: String): String = when (name) {
-    "System-Shell" -> "运行命令"
-    "WorkSpace-EnvirShell" -> "运行命令（容器）"
-    "View-Image" -> "查看图像"
-    "read_file" -> "读取文件"
-    "write_file" -> "写入文件"
-    "edit_file" -> "修改文件"
-    "list_dir" -> "列出目录"
-    "find_files" -> "查找文件"
-    "search" -> "搜索内容"
-    "edit_unit" -> "修改消息"
-    "Session-Files" -> "读别的会话"
-    "Voice-Caps" -> "语音能力"
-    "Speak" -> "文字转语音"
-    else -> name
-}
 
 /** 结果摘要：`exit 0 · 202ms`。取不到就说"结果 N 条"，不编数字。 */
 private fun toolSummary(results: List<ChatMessage>): String {
