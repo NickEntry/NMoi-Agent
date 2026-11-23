@@ -105,6 +105,13 @@ internal fun TerminalScreen(
                     if (result.stderr.isNotEmpty()) lines += TerminalLine.Error(result.stderr.trimEnd('\n'))
                     if (result.isEmpty) lines += TerminalLine.Notice("（没有输出）")
                     lines += TerminalLine.Notice(result.summary())
+                    // 改了的文件要说出来（铁律②：不能有"存了但看不见"的东西）。
+                    // 终端这一层不画卡片，只在这里列一行——变更卡片是助手消息那边的事。
+                    if (result.changes.isNotEmpty()) {
+                        lines += TerminalLine.Notice(
+                            "改了 ${result.changes.size} 个文件：" + result.changes.joinToString("、"),
+                        )
+                    }
                 },
                 onFailure = { lines += TerminalLine.Error(it.message ?: "跑不起来") },
             )

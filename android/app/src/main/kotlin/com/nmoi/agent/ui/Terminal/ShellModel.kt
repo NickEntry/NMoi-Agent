@@ -14,6 +14,8 @@ internal data class ShellResult(
     val truncated: Boolean,
     val timedOut: Boolean,
     val durationMs: Long,
+    /** 这一条命令改了哪些文件（相对工作区）。空 = 没改，或者判成只读没扫。 */
+    val changes: List<String> = emptyList(),
 ) {
     /** 有没有东西可画。空输出 + 退出码 0 是"跑成功了但什么都没说"，那也要有一行。 */
     val isEmpty: Boolean get() = stdout.isBlank() && stderr.isBlank()

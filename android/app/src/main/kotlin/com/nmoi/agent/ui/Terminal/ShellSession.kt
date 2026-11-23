@@ -40,6 +40,16 @@ internal object SystemShell : ShellSession {
                     truncated = envelope.optBoolean("truncated", false),
                     timedOut = envelope.optBoolean("timed_out", false),
                     durationMs = envelope.optLong("duration_ms", 0L),
+                    changes = envelope.optJSONArray("changes")?.let { array ->
+                        buildList {
+                            for (index in 0 until array.length()) {
+                                array.optJSONObject(index)
+                                    ?.optString("path", "")
+                                    ?.takeIf { it.isNotEmpty() }
+                                    ?.let { add(it) }
+                            }
+                        }
+                    }.orEmpty(),
                 )
             }
         }

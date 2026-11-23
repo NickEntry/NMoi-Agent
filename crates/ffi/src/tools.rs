@@ -206,6 +206,16 @@ pub extern "C" fn nmoi_tool_invoke_json(
 ///
 /// 出参：`{exit_code, stdout, stderr, truncated, timed_out, killed_by_user, duration_ms}`，
 /// 与 `System-Shell` 的工具结果同形——界面那边不必分辨来路。
+///
+/// # 改了的文件要说得出来（计划稿 §3.4）
+///
+/// 终端改的文件如果在界面上隐形，用户从终端改的东西就等于"存了但看不见"（铁律②）。
+/// 这一条**同步**扫一次：命令前取基线、命令后比对，把变化的相对路径放进 `changes`。
+///
+/// 为什么不像模型那条路走去抖队列：那边要"一批合并 + 归属判断"（多个会话并发），
+/// 而终端是一条命令一条结果、就在用户眼前，等 150 ms 去抖没有意义。
+/// 代价是每一条命令多一次扫描（工作区规模下约 137 ms）——只在 `writes_maybe`
+/// 为真时才扫，`ls` / `cat` 这类不付这个钱。
 #[no_mangle]
 pub extern "C" fn nmoi_terminal_run_json(config: *const c_char) -> *mut c_char {
     run_json(|| {
@@ -236,12 +246,37 @@ pub extern "C" fn nmoi_terminal_run_json(config: *const c_char) -> *mut c_char {
                 format!("工作目录不存在：{root}"),
             ));
         }
+
+        // 命令**之前**取基线（D384 那条教训：在命令之后取，差异恒空）。
+        let roots = vec![nmoi_core::scanner::Root::shared(cwd.to_path_buf())];
+        let tracking = nmoi_core::settle::writes_maybe(command)
+            .then(|| nmoi_core::settle::mark(&roots, nmoi_core::scanner::DEFAULT_LIMIT));
+
         // 终端这一条**不挂 CallHandle**：界面上停一条命令走的是杀进程组那条路，
         // 而这里连"这一条叫什么"都没有（终端不是模型的工具调用）。
         // 超时仍然生效——那是最基本的兜底。
-        let result = nmoi_core::shell::terminal_run(command, cwd, timeout, None)
-            .map_err(|message| FfiError::new("shell", message))?;
-        Ok(result)
+        let result = nmoi_core::shell::terminal_run(command, cwd, timeout, None);
+        let mut out = result.map_err(|message| FfiError::new("shell", message))?;
+
+        if let Some(before) = tracking {
+            let after = nmoi_core::scanner::refresh(&roots, nmoi_core::scanner::DEFAULT_LIMIT);
+            let changed: Vec<Value> = nmoi_core::scanner::changed(&before, &after, &roots)
+                .into_iter()
+                .map(|change| {
+                    let relative = change
+                        .path
+                        .strip_prefix(cwd)
+                        .unwrap_or(&change.path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    serde_json::json!({ "path": relative, "created": change.created })
+                })
+                .collect();
+            out["changes"] = Value::Array(changed);
+        } else {
+            out["changes"] = Value::Array(Vec::new());
+        }
+        Ok(out)
     })
 }
 

@@ -752,6 +752,10 @@ int main(void) {
         char *term = take(nmoi_terminal_run_json(term_config), "terminal_run");
         check(contains(term, "\"exit_code\":0"), "终端能跑通一条命令", term);
         check(contains(term, "hello-from-terminal"), "拿到 stdout", term);
+        /* `changes` 这个键**永远在**（没有变化就是空数组），界面不必判"有没有这个键"。
+         * 注意 `echo` 不在 `writes_maybe` 的只读白名单里——`echo x > f` 是会写的，
+         * 所以它照样扫一次，只是这一条命令什么都没改，于是空数组。 */
+        check(contains(term, "\"changes\":"), "changes 这个键永远在", term);
         nmoi_string_free(term);
 
         char *term_empty = take_error(nmoi_terminal_run_json(empty_term_config),
@@ -764,6 +768,17 @@ int main(void) {
         check(is_error(term_no_root) && contains(term_no_root, "root"),
               "缺 root 要点名是它", term_no_root);
         nmoi_string_free(term_no_root);
+
+        /* 写命令改的文件要说得出来（计划图 §3.4 / 铁律②）。 */
+        char write_term_config[512];
+        snprintf(write_term_config, sizeof(write_term_config),
+                 "{\"root\":\"%s\",\"command\":\"echo made > made-by-terminal.txt\"}",
+                 work_dir);
+        char *term_wrote = take(nmoi_terminal_run_json(write_term_config), "terminal_run(写)");
+        check(contains(term_wrote, "made-by-terminal.txt"),
+              "终端写出来的文件要出现在 changes 里", term_wrote);
+        check(contains(term_wrote, "\"created\":true"), "新建的那个标 created", term_wrote);
+        nmoi_string_free(term_wrote);
     }
 
     /* ---- 5. 工具面 ---- */
