@@ -4475,3 +4475,36 @@ JNI 符号 63 → **70**（`workspaceList/Read/Stat/Mkdir/Rename/Delete/Write`�
   "拨了也不会生效"的开关比没有更糟。
 - **`toolDisplayName` 从 `ChatScreen` 挪到 `ToolGroups.kt`**：工具面板与工作区「工具」页签
   都要用它，两处各写一份就会有两个说法（用户看到"运行命令"和"System-Shell"并存）。
+
+## D395 终端第一版：命令回显式，不做 PTY（2026-11-23）
+
+用户 2026-11-22 定：工具面板右边那颗按钮是终端；优先进容器，次优先系统 shell，
+长按可选；还能给一个"系统 shell 但环境变量用容器的"。
+
+- **第一版不做 PTY**。真终端要 `forkpty` / `openpty`，Android 上没有公开 API，
+  得自己写 native 或者塞一套 termios。这一版做**命令回显式**：一行一条命令，
+  输出追加到滚动区，提示符自己画。能跑脚本与构建，跑不了全屏程序。
+- **升级路径留好**：`ShellSession` 是一个接口（`ShellModel.kt`），将来换 PTY 只换实现，
+  界面那一层不动。
+- **用户自己敲的命令不过能力门控**：core 里新增 `shell::terminal_run`，与
+  `System-Shell` 共用同一条 `run`（超时、封顶、杀进程组只有一份实现），
+  区别只在"谁发起的"。锁住用户自己的手只会得到一个需要反复解锁的界面
+  （与 `crates/ffi/src/workspace.rs` 那条同一个理由）。
+- **超时 10 分钟**，不是模型的 30 秒：终端里跑 `make` / `npm install` 是常事。
+- **全屏程序在按下之前就拦下来**（`ShellRules.blockedReason`，15 条单测）：
+  `vim` / `top` / `less` 那一类会卡住屏，而"按了没反应"是最难查的一种。
+  拦下来那一句要说清替代办法（"要看文件用 cat，要看进程用 ps"）。
+  裸的 `python` / `node` / `sh` 也拦（会进 REPL 等输入），带脚本就放行。
+- **三档里只有系统 shell 可用**。容器档要复用发请求时那一份 proot 配置
+  （得先把 `envirJson` 抽出来共用），宿主档跑不了 rootfs 里的 ELF
+  （宿主 sh 是 bionic 编的，链 glibc 会 `CANNOT LINK EXECUTABLE`）。
+  两档都**如实说清为什么不可用**，不是拨了没反应。
+- **底部修饰键只做清屏与复制**：Esc / Tab / Ctrl / Alt 四颗灰着——没有 PTY 时
+  它们没有可发的东西。**不摆点了没反应的键**。
+- **历史与偏好只存本机 prefs、不进备份**（计划稿 §4）：命令里可能有 token。
+  历史用 `\u0000` 分隔而不是换行（命令本身可能含换行，而 NUL 在 shell 命令里不可能出现）。
+- **终端改的文件还没进变更卡片**（计划稿 §3.4 那条）：`terminal_run` 这一版
+  没挂 `track_changes` —— 它要 `ToolContext`，而终端这条路上没有会话上下文。
+  这是这一版**已知的缺口**，下一批补。
+
+JNI 符号 70 → **71**。C ABI 冒烟 347 → **357** 项。

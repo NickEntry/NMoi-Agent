@@ -739,6 +739,31 @@ int main(void) {
         check(contains(stat2, "\"modified_ms\":"), "stat 要给修改时间", stat2);
         check(contains(stat2, "\"modified_ms\":0,") == 0, "改过的文件不该是 0 毫秒", stat2);
         nmoi_string_free(stat2);
+
+        /* 终端（D395）：用户自己敲的命令，不过能力门控。 */
+        char term_config[512];
+        snprintf(term_config, sizeof(term_config),
+                 "{\"root\":\"%s\",\"command\":\"echo hello-from-terminal\",\"timeout_ms\":30000}",
+                 work_dir);
+        char empty_term_config[512];
+        snprintf(empty_term_config, sizeof(empty_term_config),
+                 "{\"root\":\"%s\",\"command\":\"  \"}", work_dir);
+        const char *no_root_config = "{\"command\":\"ls\"}";
+        char *term = take(nmoi_terminal_run_json(term_config), "terminal_run");
+        check(contains(term, "\"exit_code\":0"), "终端能跑通一条命令", term);
+        check(contains(term, "hello-from-terminal"), "拿到 stdout", term);
+        nmoi_string_free(term);
+
+        char *term_empty = take_error(nmoi_terminal_run_json(empty_term_config),
+                                      "terminal_run(空命令)");
+        check(is_error(term_empty), "空命令要报错，不是静默成功", term_empty);
+        nmoi_string_free(term_empty);
+
+        char *term_no_root = take_error(nmoi_terminal_run_json(no_root_config),
+                                        "terminal_run(缺 root)");
+        check(is_error(term_no_root) && contains(term_no_root, "root"),
+              "缺 root 要点名是它", term_no_root);
+        nmoi_string_free(term_no_root);
     }
 
     /* ---- 5. 工具面 ---- */

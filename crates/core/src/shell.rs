@@ -647,8 +647,37 @@ impl Completed {
     }
 }
 
-/// 起进程、读两个流、按超时收工。
+/// 终端里跑一条命令（D395）：**用户自己敲的**，不经过模型那套能力开关。
 ///
+/// 与 `System-Shell` 的区别只在"谁发起的"：那条是模型发起的，要过 `Capability::NativeShell`
+/// 与命令询问；这里是用户在自己屏幕上一行一行敲的，锁住它只会得到一个需要反复解锁的界面
+/// （与 `crates/ffi/src/workspace.rs` 那条"这一层不过能力门控"同一个理由）。
+///
+/// 共用同一条 `run`：超时、封顶、杀进程组只有一份实现。
+/// 返回 `(文本, 前面裁过没有)`，形状与 `Completed::to_json` 一致——界面那边不必分辨来路。
+pub fn terminal_run(
+    command: &str,
+    cwd: &Path,
+    timeout: Option<Duration>,
+    call: Option<&crate::kills::CallHandle>,
+) -> Result<Value, String> {
+    if command.trim().is_empty() {
+        return Err("命令是空的".to_string());
+    }
+    if command.contains('\0') {
+        return Err("命令里有 NUL 字节".to_string());
+    }
+    let completed = run(command, cwd, timeout, call)?;
+    Ok(completed.to_json(command))
+}
+
+/// 终端那条命令的默认超时（D395）。
+///
+/// 与模型的 30 秒不同：用户在终端里跑 `make` / `npm install` 是常事，
+/// 30 秒会把它掐掉。给 10 分钟——够跑一次构建，又不至于一条挂住的命令永远占着。
+pub const TERMINAL_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
+/// 起进程、读两个流、按超时收工。
 /// 结构是"两个读线程 + 主线程 `try_wait` 轮询"：这样两个管道同时有人读（不会互相堵），
 /// 主线程又能按时超时。用 `wait_with_output` 就没有超时可言了。
 fn run(

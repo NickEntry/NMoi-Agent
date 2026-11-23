@@ -104,6 +104,9 @@ private sealed interface Route {
     /** 一个工作区的文件与工具（D392）：文件页签 / 工具页签。 */
     data class WorkspaceFiles(val id: String) : Route
 
+    /** 终端（D395）：命令回显式，起点是工作区。 */
+    data class Terminal(val workspaceId: String) : Route
+
     /** 安全（0.17g）：两颗总开关 + 规则组（主项与子项）。入口在设置根页。 */
     data object Security : Route
 
@@ -581,6 +584,16 @@ class MainActivity : ComponentActivity() {
                             // 切了助手要让聊天页顶部跟着换模型（D174）。
                             assistantKey = listReload,
                             externalReload = messageReload,
+                            onTerminal = {
+                                // 终端起点 = 这一条会话现在用的工作区（与工具根同一个判据）。
+                                val ws = com.nmoi.agent.ui.WorkspaceRepository.resolve(
+                                    applicationContext,
+                                    draftWorkspace ?: assistantList?.rows
+                                        ?.firstOrNull { it.id == activeAssistantId }
+                                        ?.workspaceId,
+                                )
+                                backStack = backStack + Route.Terminal(ws.id)
+                            },
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
                                 if (route.sessionId != null) {
@@ -699,6 +712,16 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                             onOpenFiles = { id -> backStack = backStack + Route.WorkspaceFiles(id) },
                         )
+
+                        is Route.Terminal -> {
+                            val ws = remember(route.workspaceId) {
+                                com.nmoi.agent.ui.WorkspaceRepository.resolve(context, route.workspaceId)
+                            }
+                            com.nmoi.agent.ui.Terminal.TerminalScreen(
+                                workspaceRoot = ws.dir,
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+                        }
 
                         is Route.WorkspaceFiles -> {
                             val ws = remember(route.id) {
@@ -883,6 +906,7 @@ private fun waitsForData(route: Route): Boolean = when (route) {
 private fun routeKeyOf(route: Route): String = when (route) {
     is Route.Chat -> "chat:${route.sessionId ?: "new"}"
     is Route.WorkspaceFiles -> "wsfiles:${route.id}"
+    is Route.Terminal -> "terminal:${route.workspaceId}"
     is Route.SettingsGroupRoute -> "group:${route.group.name}"
     is Route.AssistantEdit -> "assistant:${route.id}"
     is Route.MessageEdit -> "edit:${route.sessionId}:${route.messageId}"

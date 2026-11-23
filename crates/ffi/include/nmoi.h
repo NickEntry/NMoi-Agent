@@ -268,6 +268,12 @@ char *nmoi_workspace_rename_json(uint64_t handle, const char *path, const char *
 /* 删一个文件或一整棵目录。不跟随符号链接。回 {path, is_dir, removed}。 */
 char *nmoi_workspace_delete_json(uint64_t handle, const char *path);
 
+/* 终端里跑一条命令（D395）：用户自己敲的，**不过能力门控**。
+ * 入参 {"root":"<工作区绝对路径>","command":"…","timeout_ms":600000}；
+ * timeout_ms 传 0 用默认（10 分钟），要一直跑就写字符串 "inf"。
+ * 出参与 System-Shell 的工具结果同形。 */
+char *nmoi_terminal_run_json(const char *config);
+
 /* ---- 工具 ---------------------------------------------------------------- */
 
 /* 全部工具名（不看策略）。 */

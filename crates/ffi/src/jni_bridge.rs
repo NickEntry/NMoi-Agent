@@ -1813,7 +1813,6 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceStatJson<'lo
 }
 
 /// `NativeBridge.workspaceWriteJson(handle, path, content)`：整篇写入（父目录会被创建）。
-///
 /// 界面上"新建一个空文件"也走这一条：空串是合法内容，不是"没给内容"。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceWriteJson<'local>(
@@ -1920,5 +1919,26 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_proxyServerStopJson<'
     _this: JObject<'local>,
 ) -> jstring {
     let text = guarded(|| take_json(crate::proxy::nmoi_proxy_server_stop_json()));
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.terminalRunJson(config)`：终端里跑一条命令（D395）。
+///
+/// 用户自己敲的命令**不过能力门控**：锁住它只会得到一个需要反复解锁的界面。
+/// 与 `System-Shell` 共用同一条 `run`（超时、封顶、杀进程组只有一份实现）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_terminalRunJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::tools::nmoi_terminal_run_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
     to_jstring(&mut env, text)
 }

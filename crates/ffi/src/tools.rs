@@ -16,7 +16,7 @@ use nmoi_core::tools::{ToolContext, ToolOutcome, ToolRegistry};
 use serde_json::{json, Value};
 
 use crate::handles::with_workspace;
-use crate::json::{read_str, run_json};
+use crate::json::{read_str, run_json, FfiError};
 
 /// 策略只看两件事：有没有绑工作区、是不是只读。其余四类能力（容器 / 原生命令 /
 /// 网络 / 凭据代理）在这一层**故意不给开关**：F1 里没有实现，给了开关就是骗人。
@@ -193,6 +193,55 @@ pub extern "C" fn nmoi_tool_invoke_json(
             })?
         };
         Ok(outcome)
+    })
+}
+
+/// 终端里跑一条命令（D395）：用户自己敲的，不过能力门控。
+///
+/// 与 `nmoi_tool_invoke_json("System-Shell", …)` 的区别只在"谁发起的"：
+/// 那条是模型发起的，要过能力开关与命令询问；这里锁住只会得到一个需要反复解锁的界面。
+///
+/// 入参：`{"root":"<工作区绝对路径>","command":"…","timeout_ms":600000}`。
+/// `timeout_ms` 传 0 用默认（10 分钟）；要一直跑就写字符串 `"inf"`。
+///
+/// 出参：`{exit_code, stdout, stderr, truncated, timed_out, killed_by_user, duration_ms}`，
+/// 与 `System-Shell` 的工具结果同形——界面那边不必分辨来路。
+#[no_mangle]
+pub extern "C" fn nmoi_terminal_run_json(config: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(config, "config")?;
+        let value: Value = serde_json::from_str(text)
+            .map_err(|error| FfiError::new("bad_argument", error.to_string()))?;
+        let root = value
+            .get("root")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| FfiError::new("bad_argument", "缺 root（工作区绝对路径）"))?;
+        let command = value
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FfiError::new("bad_argument", "缺 command"))?;
+        let timeout = match value.get("timeout_ms") {
+            Some(Value::String(text)) if text.eq_ignore_ascii_case("inf") => None,
+            Some(Value::Number(number)) => number.as_u64().map(std::time::Duration::from_millis),
+            _ => Some(std::time::Duration::from_millis(
+                nmoi_core::shell::TERMINAL_TIMEOUT_MS,
+            )),
+        };
+        let cwd = std::path::Path::new(root);
+        if !cwd.is_dir() {
+            return Err(FfiError::new(
+                "bad_argument",
+                format!("工作目录不存在：{root}"),
+            ));
+        }
+        // 终端这一条**不挂 CallHandle**：界面上停一条命令走的是杀进程组那条路，
+        // 而这里连"这一条叫什么"都没有（终端不是模型的工具调用）。
+        // 超时仍然生效——那是最基本的兜底。
+        let result = nmoi_core::shell::terminal_run(command, cwd, timeout, None)
+            .map_err(|message| FfiError::new("shell", message))?;
+        Ok(result)
     })
 }
 

@@ -167,6 +167,8 @@ internal fun ChatScreen(
     onRenamed: (String) -> Unit = {},
     /** 默认标题的字面量：等于它才自动起名，用户改过的标题不动。 */
     defaultTitle: String = "新会话",
+    /** 终端（D395）：工具面板右边那颗按钮。 */
+    onTerminal: () -> Unit = {},
 ) {
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
@@ -1903,6 +1905,7 @@ internal fun ChatScreen(
                     onPlus = { plusMenu = true },
                     onTools = { toolsPanel = true },
                     onFiles = { filesPanel = true },
+                    onTerminal = onTerminal,
                     imageCapability = imageCapability,
                     contextImageCount = contextImages.size,
                     contextImageLimit = AppSettings.imageLimit(context),
@@ -5632,6 +5635,8 @@ private fun Composer(
     onTools: () -> Unit = {},
     /** 「对话文件」面板（D393）：附件 / 输出 / 工作区。 */
     onFiles: () -> Unit = {},
+    /** 终端（D395）。 */
+    onTerminal: () -> Unit = {},
     /** 「＋」面板：附件入口。 */
     onPlus: () -> Unit,
     /** `false` = 这个模型明确不收图（灰掉「图片」那一项并给原因）。 */
@@ -5780,6 +5785,12 @@ private fun Composer(
                         image = ActionIcons.Folder,
                         description = "对话文件",
                         onClick = onFiles,
+                        compact = true,
+                    )
+                    IconActionButton(
+                        image = ActionIcons.PanelLeft,
+                        description = "终端",
+                        onClick = onTerminal,
                         compact = true,
                     )
                     Spacer(Modifier.weight(1f))

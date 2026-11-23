@@ -75,6 +75,15 @@ internal object NativeBridge {
     /** 整篇写入（D392）。父目录会被创建。 */
     external fun workspaceWriteJson(handle: Long, path: String, content: String): String
 
+    /**
+     * 终端里跑一条命令（D395）。`config` 是
+     * `{"root":"<工作区绝对路径>","command":"…","timeout_ms":600000}`。
+     *
+     * 与 `toolInvokeJson("System-Shell")` 的区别只在"谁发起的"：这里**不过能力门控**——
+     * 用户在自己屏幕上一行一行敲的命令，锁住它只会得到一个需要反复解锁的界面。
+     */
+    external fun terminalRunJson(config: String): String
+
     external fun versionsJson(handle: Long, message: String): String
 
     external fun switchVersionJson(handle: Long, message: String, versionNo: Long, view: String): String
