@@ -111,6 +111,11 @@ struct Entry {
     arguments: String,
     started: Instant,
     live: Arc<Mutex<Live>>,
+    /// 这条命令的 stdin（终端要往跑着的程序里送控制字节，D397）。
+    ///
+    /// `None` = 没接管道（模型的 `System-Shell` 接的是 `/dev/null`：模型不该往
+    /// 一条命令里塞交互输入，那会让它卡在等输入上）。
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
 }
 
 type Table = HashMap<String, HashMap<String, Entry>>;
@@ -127,6 +132,7 @@ pub struct CallHandle {
     call_id: String,
     flag: Arc<AtomicBool>,
     live: Arc<Mutex<Live>>,
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
 }
 
 impl CallHandle {
@@ -147,6 +153,34 @@ impl CallHandle {
     pub fn live(&self) -> LiveBuffer {
         LiveBuffer {
             live: Arc::clone(&self.live),
+        }
+    }
+
+    /// 把这条命令的 stdin 挂上来（D397）。**只有终端会调**：模型那条路接 `/dev/null`，
+    /// 让模型往一条命令里塞交互输入，结果是它卡在等输入上。
+    pub fn attach_stdin(&self, stdin: std::process::ChildStdin) {
+        let mut slot = self.stdin.lock().unwrap_or_else(|p| p.into_inner());
+        *slot = Some(stdin);
+    }
+
+    /// 往正在跑的程序里送一段字节（控制字符 / 组合键）。
+    ///
+    /// 返回**实际写进去几个字节**。`0` 的三种情况：没有 stdin（不是终端那条路）、
+    /// 已经关掉了、程序不再读（管道断了）。三种都不算错误——用户按一下键没反应
+    /// 比弹一条红字更接近真相（那条命令可能刚好结束了）。
+    pub fn write_stdin(&self, bytes: &[u8]) -> usize {
+        use std::io::Write;
+        let mut slot = self.stdin.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(stdin) = slot.as_mut() else {
+            return 0;
+        };
+        match stdin.write_all(bytes).and_then(|()| stdin.flush()) {
+            Ok(()) => bytes.len(),
+            Err(_) => {
+                // 管道断了：清掉，别让下一次写还对着一个死句柄。
+                *slot = None;
+                0
+            }
         }
     }
 }
@@ -180,6 +214,7 @@ const ARGUMENTS_CAP: usize = 2_000;
 pub fn begin(session: &str, call_id: &str, name: &str, arguments: &str) -> CallHandle {
     let flag = Arc::new(AtomicBool::new(false));
     let live = Arc::new(Mutex::new(Live::default()));
+    let stdin = Arc::new(Mutex::new(None));
     let mut table = table().lock().unwrap_or_else(|poison| poison.into_inner());
     table.entry(session.to_string()).or_default().insert(
         call_id.to_string(),
@@ -189,6 +224,7 @@ pub fn begin(session: &str, call_id: &str, name: &str, arguments: &str) -> CallH
             arguments: arguments.chars().take(ARGUMENTS_CAP).collect(),
             started: Instant::now(),
             live: Arc::clone(&live),
+            stdin: Arc::clone(&stdin),
         },
     );
     CallHandle {
@@ -196,6 +232,7 @@ pub fn begin(session: &str, call_id: &str, name: &str, arguments: &str) -> CallH
         call_id: call_id.to_string(),
         flag,
         live,
+        stdin,
     }
 }
 
@@ -224,6 +261,45 @@ pub fn cancel_all(session: &str) -> usize {
         entry.flag.store(true, Ordering::SeqCst);
     }
     calls.len()
+}
+
+/// 把这个会话名下的调用**全部**置上（终端用，D397）。
+///
+/// 与 [`cancel_all`] 是同一件事，只是那个名字是为"整轮停止"起的。
+/// 单独留一个名字：终端那边一个会话同一时刻只有一条命令在跑，
+/// 调用方不需要知道 `call_id`——而 `call_id` 是 FFI 内部生成的。
+pub fn cancel_session(session: &str) -> bool {
+    cancel_all(session) > 0
+}
+
+/// 往这个会话里正在跑的那条命令送一段字节（D397）。
+///
+/// 终端要按 `Ctrl+C` / `Esc` / `Tab` 这类控制键，而它们**不是合法 UTF-8**——
+/// 所以走字节，不走字符串。返回实际写进去几个字节（0 = 没在跑、或管道已断）。
+pub fn write_session_stdin(session: &str, bytes: &[u8]) -> usize {
+    let table = table().lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(calls) = table.get(session) else {
+        return 0;
+    };
+    // 一个会话同一时刻只有一条在跑（终端界面一次只发一条），所以取第一条就够。
+    // 取全部、把字节写给每一条会让"两条都在读 stdin"时各收到半份。
+    let Some(entry) = calls.values().next() else {
+        return 0;
+    };
+    let stdin = Arc::clone(&entry.stdin);
+    drop(table);
+    use std::io::Write;
+    let mut slot = stdin.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(handle) = slot.as_mut() else {
+        return 0;
+    };
+    match handle.write_all(bytes).and_then(|()| handle.flush()) {
+        Ok(()) => bytes.len(),
+        Err(_) => {
+            *slot = None;
+            0
+        }
+    }
 }
 
 /// 工具结果的一句话摘要：`exit 0 · 121ms`。

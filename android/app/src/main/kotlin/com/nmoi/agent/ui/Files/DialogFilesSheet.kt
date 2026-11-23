@@ -55,7 +55,14 @@ internal fun DialogFilesSheet(
     onOpenFile: (root: File, row: FileRow) -> Unit,
 ) {
     val context = LocalContext.current
-    var tab by remember { mutableStateOf(DialogTab.Attachments) }
+    // 默认停在「工作区」（用户 2026-11-24：点这个图标默认是工作区）。
+    // **没开工作区时才落到附件**：那时工作区那一页只会是一句"这个工作区还是空的"，
+    // 而用户点进来是想看这个会话的文件。
+    var tab by remember(sessionId) {
+        mutableStateOf(
+            if (workspaceRoot.isDirectory) DialogTab.Workspace else DialogTab.Attachments,
+        )
+    }
     var snapshot by remember(sessionId) { mutableStateOf<DialogFilesSnapshot?>(null) }
     var loading by remember(sessionId) { mutableStateOf(true) }
     var order by remember { mutableStateOf(FileOrder()) }

@@ -19,13 +19,14 @@ internal object SystemShell : ShellSession {
     override fun unavailableReason(): String? =
         if (available()) null else "原生层没加载（${com.nmoi.agent.ui.NativeBridge.failureMessage ?: "未知原因"}）"
 
-    override suspend fun run(command: String, cwd: String): Result<ShellResult> =
+    override suspend fun run(session: String, command: String, cwd: String): Result<ShellResult> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val config = JSONObject()
                     .put("root", File(cwd).absolutePath)
                     .put("command", command)
                     .put("timeout_ms", TIMEOUT_MS)
+                    .put("session", session)
                     .toString()
                 val envelope = JSONObject(com.nmoi.agent.ui.NativeBridge.terminalRunJson(config))
                 if (!envelope.optBoolean("ok", false)) {
@@ -54,6 +55,30 @@ internal object SystemShell : ShellSession {
             }
         }
 
+    override suspend fun write(session: String, bytes: ByteArray): Int =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val config = JSONObject()
+                    .put("session", session)
+                    .put(
+                        "data",
+                        android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP),
+                    )
+                    .toString()
+                val envelope = JSONObject(com.nmoi.agent.ui.NativeBridge.terminalWriteJson(config))
+                if (!envelope.optBoolean("ok", false)) 0 else envelope.optInt("written", 0)
+            }.getOrDefault(0)
+        }
+
+    override suspend fun cancel(session: String): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val config = JSONObject().put("session", session).toString()
+                val envelope = JSONObject(com.nmoi.agent.ui.NativeBridge.terminalCancelJson(config))
+                envelope.optBoolean("found", false)
+            }.getOrDefault(false)
+        }
+
     /** 10 分钟：够跑一次构建，又不至于一条挂住的命令永远占着（与 core 同值）。 */
     private const val TIMEOUT_MS = 10 * 60 * 1000L
 }
@@ -73,8 +98,12 @@ internal object EnvirShell : ShellSession {
     override fun unavailableReason(): String =
         "容器终端还没接：它要复用发请求时那一份 proot 配置，得先把 envirJson 抽出来共用（下一批）"
 
-    override suspend fun run(command: String, cwd: String): Result<ShellResult> =
+    override suspend fun run(session: String, command: String, cwd: String): Result<ShellResult> =
         Result.failure(UnsupportedOperationException(unavailableReason()))
+
+    override suspend fun write(session: String, bytes: ByteArray): Int = 0
+
+    override suspend fun cancel(session: String): Boolean = false
 }
 
 /**
@@ -93,8 +122,12 @@ internal object HostShell : ShellSession {
         "这一档要按容器的目录找数据，但跑不了 rootfs 里的程序（宿主 sh 是 bionic 编的，" +
             "链 glibc 会 CANNOT LINK EXECUTABLE）。等容器终端接上之后再一起做"
 
-    override suspend fun run(command: String, cwd: String): Result<ShellResult> =
+    override suspend fun run(session: String, command: String, cwd: String): Result<ShellResult> =
         Result.failure(UnsupportedOperationException(unavailableReason()))
+
+    override suspend fun write(session: String, bytes: ByteArray): Int = 0
+
+    override suspend fun cancel(session: String): Boolean = false
 }
 
 /** 三档终端，按优先级排（容器可用就用容器，否则系统 shell）。 */

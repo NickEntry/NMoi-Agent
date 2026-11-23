@@ -201,10 +201,12 @@ pub extern "C" fn nmoi_tool_invoke_json(
 /// 与 `nmoi_tool_invoke_json("System-Shell", …)` 的区别只在"谁发起的"：
 /// 那条是模型发起的，要过能力开关与命令询问；这里锁住只会得到一个需要反复解锁的界面。
 ///
-/// 入参：`{"root":"<工作区绝对路径>","command":"…","timeout_ms":600000}`。
-/// `timeout_ms` 传 0 用默认（10 分钟）；要一直跑就写字符串 `"inf"`。
+/// 入参：`{"root":"…","command":"…","session":"t:1","timeout_ms":600000}`。
+/// - `session` 是**终端会话 id**（`t:<序号>`），用来登记可停的凭据；缺了就不登记，
+///   也就是说这一条停不掉（但超时照旧生效）。
+/// - `timeout_ms` 传 0 用默认（10 分钟）；要一直跑就写字符串 `"inf"`。
 ///
-/// 出参：`{exit_code, stdout, stderr, truncated, timed_out, killed_by_user, duration_ms}`，
+/// 出参：`{exit_code, stdout, stderr, truncated, timed_out, killed_by_user, duration_ms, changes}`，
 /// 与 `System-Shell` 的工具结果同形——界面那边不必分辨来路。
 ///
 /// # 改了的文件要说得出来（计划稿 §3.4）
@@ -232,6 +234,11 @@ pub extern "C" fn nmoi_terminal_run_json(config: *const c_char) -> *mut c_char {
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| FfiError::new("bad_argument", "缺 command"))?;
+        let session = value
+            .get("session")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
         let timeout = match value.get("timeout_ms") {
             Some(Value::String(text)) if text.eq_ignore_ascii_case("inf") => None,
             Some(Value::Number(number)) => number.as_u64().map(std::time::Duration::from_millis),
@@ -252,11 +259,24 @@ pub extern "C" fn nmoi_terminal_run_json(config: *const c_char) -> *mut c_char {
         let tracking = nmoi_core::settle::writes_maybe(command)
             .then(|| nmoi_core::settle::mark(&roots, nmoi_core::scanner::DEFAULT_LIMIT));
 
-        // 终端这一条**不挂 CallHandle**：界面上停一条命令走的是杀进程组那条路，
-        // 而这里连"这一条叫什么"都没有（终端不是模型的工具调用）。
-        // 超时仍然生效——那是最基本的兜底。
-        let result = nmoi_core::shell::terminal_run(command, cwd, timeout, None);
+        // 可停凭据（D397）：按终端会话 id 登记，`nmoi_terminal_cancel_json` 用它置标志。
+        // 每次调用换一个 `call_id`（`Instant` 微秒数），同一个会话里连跑两条不会互相顶掉。
+        let call_id = format!(
+            "term-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros())
+                .unwrap_or(0)
+        );
+        let handle =
+            session.map(|session| nmoi_core::kills::begin(session, &call_id, "Terminal", command));
+
+        let result = nmoi_core::shell::terminal_run(command, cwd, timeout, handle.as_ref());
         let mut out = result.map_err(|message| FfiError::new("shell", message))?;
+
+        // 凭据由 `Drop` 注销（`CallHandle` 的规矩）：这里不显式收，
+        // 否则两条路径各管一次注销，迟早有一处漏成"永远在跑"的灰行。
+        drop(handle);
 
         if let Some(before) = tracking {
             let after = nmoi_core::scanner::refresh(&roots, nmoi_core::scanner::DEFAULT_LIMIT);
@@ -276,7 +296,66 @@ pub extern "C" fn nmoi_terminal_run_json(config: *const c_char) -> *mut c_char {
         } else {
             out["changes"] = Value::Array(Vec::new());
         }
+        out["call_id"] = Value::String(call_id);
         Ok(out)
+    })
+}
+
+/// 往终端里正在跑的那条命令送一段字节（D397）。
+///
+/// 入参：`{"session":"t:1","data":"<base64>"}`。
+///
+/// 为什么是 base64 而不是直接给字符串：控制字节（`\x03` Ctrl+C、`\x1b` ESC）不是
+/// 合法 UTF-8，走字符串会被 JNI 那一层替换成 `?`。**字节原样过桥**是唯一不会出错的形状。
+///
+/// 出参：`{written: N}`。`0` 的三种情况（没有在跑的命令、stdin 已关、管道断了）都不算错误：
+/// 用户按一下键没反应，比弹一条红字更接近真相——那条命令可能刚好结束了。
+#[no_mangle]
+pub extern "C" fn nmoi_terminal_write_json(input: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let raw = read_str(input, "input")?;
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| FfiError::new("bad_argument", error.to_string()))?;
+        let session = value
+            .get("session")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| FfiError::new("bad_argument", "缺 session"))?;
+        let data = value
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FfiError::new("bad_argument", "缺 data（base64）"))?;
+        let bytes = nmoi_core::base64::decode(data)
+            .ok_or_else(|| FfiError::new("bad_argument", "data 不是合法 base64"))?;
+        let written = nmoi_core::kills::write_session_stdin(session, &bytes);
+        Ok(json!({ "written": written }))
+    })
+}
+
+/// 停掉终端里正在跑的那一条命令（D397）：`{"session":"t:1"}`。
+///
+/// 只置标志，杀进程由等待循环那一侧做（与 `nmoi_tool_cancel_json` 同一个分工）——
+/// 这样"是用户停的"与"是闹钟停的"才分得开，结果里 `killed_by_user` 与 `timed_out`
+/// 各说各的话。
+///
+/// `found:false` = 这个会话现在没有命令在跑。**不是错误**：用户可能点晚了一拍。
+#[no_mangle]
+pub extern "C" fn nmoi_terminal_cancel_json(input: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let raw = read_str(input, "input")?;
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| FfiError::new("bad_argument", error.to_string()))?;
+        let session = value
+            .get("session")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| FfiError::new("bad_argument", "缺 session"))?;
+        // 一个会话同一时刻只有一条在跑（界面那边一次只发一条），
+        // 所以"这个会话名下有没有在跑的"就等于"这一条在不在跑"。
+        let found = nmoi_core::kills::cancel_session(session);
+        Ok(json!({ "cancelled": found, "found": found }))
     })
 }
 

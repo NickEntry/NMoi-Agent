@@ -54,3 +54,31 @@ internal fun toolDisplayName(name: String): String = when (name) {
     "Speak" -> "文字转语音"
     else -> name
 }
+
+/**
+ * 这个工具要不要工作区（D401）。
+ *
+ * 用户 2026-11-24 明确要求把两拨分开：
+ * - **依赖工作区**的（读写文件、列目录、搜索、跑命令）→ 开关在「工作区」那一行的 ⚙ 里，
+ *   因为"换个工作区就是另一批文件"，它天然跟着工作区走；
+ * - **不依赖工作区**的（看图、改消息、语音）→ 开关在「工具」菜单的「本地工具」里。
+ *
+ * 判据必须与 core 的 `Capability::needs_workspace` 一致：那边是门控的真源，
+ * 这边只是决定"摆在哪个菜单里"。摆错的表现是"在工作区里关掉了一个跟工作区无关的工具"，
+ * 用户会以为它生效了，其实它压根不在那一批里。
+ */
+internal fun requiresWorkspace(name: String): Boolean = when (name) {
+    "read_file", "write_file", "edit_file", "list_dir", "find_files", "search" -> true
+    "System-Shell", "WorkSpace-EnvirShell" -> true
+    // `Session-Files` 读的是**别的会话**的 chat/tmp，不是工作区；但它要会话上下文，
+    // 与工作区同档（都是"有根才谈得上"），所以摆在工作区那一批里。
+    "Session-Files" -> true
+    // 看图读的是会话附件目录、改消息改的是库、语音不碰盘。
+    else -> false
+}
+
+/** 不依赖工作区的那一批（「本地工具」菜单里）。 */
+internal fun localTools(names: List<String>): List<String> = names.filter { !requiresWorkspace(it) }
+
+/** 依赖工作区的那一批（工作区那一行的 ⚙ 里）。 */
+internal fun workspaceTools(names: List<String>): List<String> = names.filter { requiresWorkspace(it) }

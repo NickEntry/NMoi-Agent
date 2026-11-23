@@ -1942,3 +1942,42 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_terminalRunJson<'loca
     });
     to_jstring(&mut env, text)
 }
+
+/// `NativeBridge.terminalWriteJson(config)`：往终端里正在跑的那条命令送字节（D397）。
+///
+/// `config` 是 `{"session":"t:1","data":"<base64>"}`——控制字节不是合法 UTF-8，
+/// 只能按 base64 过桥。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_terminalWriteJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::tools::nmoi_terminal_write_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.terminalCancelJson(config)`：停掉终端里正在跑的那一条（D397）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_terminalCancelJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let config = read_string(&mut env, &config);
+    let text = guarded(move || match config {
+        Some(config) => match c_string(config, "config") {
+            Ok(c_config) => take_json(crate::tools::nmoi_terminal_cancel_json(c_config.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

@@ -584,16 +584,11 @@ class MainActivity : ComponentActivity() {
                             // 切了助手要让聊天页顶部跟着换模型（D174）。
                             assistantKey = listReload,
                             externalReload = messageReload,
-                            onTerminal = {
-                                // 终端起点 = 这一条会话现在用的工作区（与工具根同一个判据）。
-                                val ws = com.nmoi.agent.ui.WorkspaceRepository.resolve(
-                                    applicationContext,
-                                    draftWorkspace ?: assistantList?.rows
-                                        ?.firstOrNull { it.id == activeAssistantId }
-                                        ?.workspaceId,
-                                )
-                                backStack = backStack + Route.Terminal(ws.id)
-                            },
+                            // 文件页 / 终端 / 环境：都从工具菜单进（D401），
+                            // 起点是菜单里点的那一个工作区。
+                            onOpenFiles = { id -> backStack = backStack + Route.WorkspaceFiles(id) },
+                            onOpenTerminal = { id -> backStack = backStack + Route.Terminal(id) },
+                            onOpenEnvir = { backStack = backStack + Route.Envir },
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
                                 if (route.sessionId != null) {
@@ -718,7 +713,8 @@ class MainActivity : ComponentActivity() {
                                 com.nmoi.agent.ui.WorkspaceRepository.resolve(context, route.workspaceId)
                             }
                             com.nmoi.agent.ui.Terminal.TerminalScreen(
-                                workspaceRoot = ws.dir,
+                                workspaceId = ws.id,
+                                workspacePath = ws.dir.absolutePath,
                                 onBack = { backStack = backStack.dropLast(1) },
                             )
                         }

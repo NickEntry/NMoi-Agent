@@ -84,6 +84,17 @@ internal object NativeBridge {
      */
     external fun terminalRunJson(config: String): String
 
+    /**
+     * 往终端里正在跑的那条命令送一段字节（D397）：`{"session":"t:1","data":"<base64>"}`。
+     *
+     * 控制字节（`\x03` Ctrl+C、`\x1b` Esc）不是合法 UTF-8，只能按 base64 过桥。
+     * 回 `{"written":N}`；`0` 表示没有在跑的命令或管道已断——**不是错误**。
+     */
+    external fun terminalWriteJson(config: String): String
+
+    /** 停掉终端里正在跑的那条命令（D397）：`{"session":"t:1"}` → `{"cancelled","found"}`。 */
+    external fun terminalCancelJson(config: String): String
+
     external fun versionsJson(handle: Long, message: String): String
 
     external fun switchVersionJson(handle: Long, message: String, versionNo: Long, view: String): String

@@ -701,9 +701,15 @@ fn execute(
     call: Option<&crate::kills::CallHandle>,
 ) -> Result<Completed, String> {
     let label = cmd.get_program().to_string_lossy().into_owned();
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // stdin（D397）：**只有挂了 CallHandle 的调用才接管道**——终端要往跑着的程序里
+    // 送控制字节。模型的 `System-Shell` 没有 handle，接 `/dev/null`：
+    // 让模型往一条命令里塞交互输入，结果是它卡在等输入上。
+    if call.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     #[cfg(unix)]
     {
@@ -718,13 +724,17 @@ fn execute(
         .spawn()
         .map_err(|error| format!("起不了命令（{label}）：{error}"))?;
 
-    let (stdout, stderr, out_rx, err_rx) = (
+    // stdin 交给调用方（终端），让它能在命令跑着的时候送字节进来。
+    if let Some(call) = call {
+        if let Some(stdin) = child.stdin.take() {
+            call.attach_stdin(stdin);
+        }
+    }
+
+    let (stdout, stderr) = (
         child.stdout.take().ok_or("拿不到 stdout")?,
         child.stderr.take().ok_or("拿不到 stderr")?,
-        None::<()>,
-        None::<()>,
     );
-    let _ = (out_rx, err_rx);
 
     let (out_tx, out_rx) = mpsc::channel();
     let (err_tx, err_rx) = mpsc::channel();

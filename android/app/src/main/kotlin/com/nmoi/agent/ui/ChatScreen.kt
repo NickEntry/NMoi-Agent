@@ -97,6 +97,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -105,6 +106,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
+import com.nmoi.agent.ui.Files.ArchivedMarker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -169,6 +171,12 @@ internal fun ChatScreen(
     defaultTitle: String = "新会话",
     /** 终端（D395）：工具面板右边那颗按钮。 */
     onTerminal: () -> Unit = {},
+    /** 从工具菜单里打开某个工作区的文件页（D401）。 */
+    onOpenFiles: (String) -> Unit = {},
+    /** 从工具菜单里打开某个工作区的终端（D401）。 */
+    onOpenTerminal: (String) -> Unit = {},
+    /** 从工具菜单里进隔离环境页（D401）。 */
+    onOpenEnvir: () -> Unit = {},
 ) {
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
@@ -268,6 +276,8 @@ internal fun ChatScreen(
     var filesPanel by remember { mutableStateOf(false) }
     // 预览页（D393）：从「对话文件」点进来的那一份。`root` 决定相对路径从哪儿算。
     var filesPreview by remember { mutableStateOf<Pair<java.io.File, com.nmoi.agent.ui.Files.FileRow>?>(null) }
+    // 归档原文（D398）：点「摘要化」进来的 `/archive/xxx.txt`。走同一套文件预览页。
+    var archivePreview by remember(sessionId) { mutableStateOf<String?>(null) }
     // 过程块展开/收起（D229）：**只在本次浏览会话内记忆**——切到别的会话再回来，
     // 恢复默认（最新两个 + 其余折叠）。所以键里带 sessionId，换会话就是一张新表。
     val openGroups = remember(sessionId) { mutableStateMapOf<String, Boolean>() }
@@ -1045,7 +1055,8 @@ internal fun ChatScreen(
     // 抽屉与页面栈的返回在 MainActivity 里；ChatScreen 后注册，所以内层先轮到它。
     val overlayOpen = confirmDelete != null || editingId != null || moreForId != null || shareOpen ||
         selecting || modelSheet || thinkingSheet || queueSheet || plusMenu || regenFailure != null ||
-        stopPrompt != null || toolsPanel || filesPanel || filesPreview != null
+        stopPrompt != null || toolsPanel || filesPanel || filesPreview != null ||
+            archivePreview != null
     BackHandler(enabled = overlayOpen) {
         when {
             // 三选一**必须处理**（D228）：它决定库里留下哪一版，返回键在这里什么也不做。
@@ -1057,6 +1068,7 @@ internal fun ChatScreen(
             plusMenu -> plusMenu = false
             queueSheet -> queueSheet = false
             toolsPanel -> toolsPanel = false
+            archivePreview != null -> archivePreview = null
             filesPreview != null -> filesPreview = null
             filesPanel -> filesPanel = false
             thinkingSheet -> thinkingSheet = false
@@ -2117,6 +2129,10 @@ internal fun ChatScreen(
                 target = target,
                 onCancel = { cancelCall(target.callId) },
                 onDismiss = { toolSheet = null },
+                onOpenArchive = { path ->
+                    toolSheet = null
+                    archivePreview = path
+                },
             )
         }
 
@@ -2207,6 +2223,9 @@ internal fun ChatScreen(
                 onDraft = onDraftWorkspace,
                 onDismiss = { toolsPanel = false },
                 onNotice = { notice = it },
+                onOpenFiles = { id -> onOpenFiles(id) },
+                onOpenTerminal = { id -> onOpenTerminal(id) },
+                onOpenEnvir = { onOpenEnvir() },
             )
         }
 
@@ -2231,6 +2250,26 @@ internal fun ChatScreen(
                 row = row,
                 onBack = { filesPreview = null },
             )
+        }
+
+        // 归档原文（D398）：同一套文件预览页，根是这个会话的 `archive/`。
+        archivePreview?.let { path ->
+            val sid = sessionId
+            if (sid == null) {
+                archivePreview = null
+            } else {
+                com.nmoi.agent.ui.Files.FilePreviewScreen(
+                    root = com.nmoi.agent.ui.ToolingRepository.sessionArchiveRoot(context, sid),
+                    row = com.nmoi.agent.ui.Files.FileRow(
+                        name = path.substringAfterLast('/'),
+                        path = path.removePrefix("/archive/"),
+                        isDir = false,
+                        sizeBytes = 0L,
+                        modifiedMs = 0L,
+                    ),
+                    onBack = { archivePreview = null },
+                )
+            }
         }
 
         if (shareOpen) {
@@ -5406,7 +5445,13 @@ private fun AudioResultRow(audio: AudioResult) {
  * 用户分不清自己点的是哪一条（2026-11-05 真机报的"两个调用粘一块了"）。
  */
 @Composable
-private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDismiss: () -> Unit) {
+private fun ToolDetailSheet(
+    target: ToolSheetTarget,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+    /** 点「摘要化」时交出归档路径（D398）。 */
+    onOpenArchive: ((String) -> Unit)? = null,
+) {
     val call = target.call
     val screen = LocalConfiguration.current.screenHeightDp
     val maxHeight = (screen * 0.5f).dp
@@ -5484,7 +5529,11 @@ private fun ToolDetailSheet(target: ToolSheetTarget, onCancel: () -> Unit, onDis
                         )
                     }
                 } else {
-                    ToolCallBlock(command = call, result = call)
+                    ToolCallBlock(
+                        command = call,
+                        result = call,
+                        onOpenArchive = onOpenArchive,
+                    )
                 }
             }
             if (target.running) {
@@ -5781,18 +5830,9 @@ private fun Composer(
                         onClick = onTools,
                         compact = true,
                     )
-                    IconActionButton(
-                        image = ActionIcons.Folder,
-                        description = "对话文件",
-                        onClick = onFiles,
-                        compact = true,
-                    )
-                    IconActionButton(
-                        image = ActionIcons.PanelLeft,
-                        description = "终端",
-                        onClick = onTerminal,
-                        compact = true,
-                    )
+                    // 「对话文件」与「终端」的入口在工具菜单里（D401）：
+                    // 用户 2026-11-24 明确"文件页和终端按钮都要在工具菜单里面"。
+                    // 这里不再摆第二颗——一个动作两个入口，改一处另一处就成了旧的。
                     Spacer(Modifier.weight(1f))
                     IconActionButton(
                         image = ActionIcons.Plus,
@@ -6104,7 +6144,12 @@ private fun NativeEditText(
  * 原样铺开之后人根本看不出哪段是命令、哪段是 stdout、哪段是报错。
  */
 @Composable
-private fun ToolCallBlock(command: ToolCallArg, result: ToolCallArg?) {
+private fun ToolCallBlock(
+    command: ToolCallArg,
+    result: ToolCallArg?,
+    /** 点「摘要化」时把归档路径交出去（D398）。`null` = 这一屏不接（导出预览等）。 */
+    onOpenArchive: ((String) -> Unit)? = null,
+) {
     val context = LocalContext.current
     val payload = result?.output?.let { text ->
         runCatching { JSONObject(text) }.getOrNull()?.takeIf { it.has("stdout") || it.has("stderr") }
@@ -6188,10 +6233,30 @@ private fun ToolCallBlock(command: ToolCallArg, result: ToolCallArg?) {
             )
         }
 
-        Row(modifier = Modifier.padding(top = 4.dp)) {
+        Row(
+            modifier = Modifier.padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             TabChip("stdout", selected = tab == 0) { picked = 0 }
             Spacer(Modifier.width(6.dp))
             TabChip("stderr", selected = tab == 1) { picked = 1 }
+            // 「摘要化」（D398）：这一段被换成了归档标记时，右边给一颗蓝字。
+            // 点它去看归档原文——那套页面就是工作区的文件预览，不是另做一份。
+            val archived = ArchivedMarker.parse(if (tab == 0) stdout else stderr)
+            if (archived != null) {
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = archived.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable(enabled = onOpenArchive != null) {
+                            onOpenArchive?.invoke(archived.path)
+                        }
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                )
+            }
         }
 
         val body = if (tab == 0) stdout else stderr
@@ -6778,13 +6843,19 @@ private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
  * 移出**不删文件**，也不改消息：下一轮不带它而已。
  */
 /**
- * 「工具」面板（D271）：**这一条会话**绑哪个工作区。
+ * 「工具」面板（D401）：照用户 2026-11-24 给的那张截图。
  *
- * 为什么入口在这里：工作区决定"这一轮的工具根在哪"，它跟工具是同一件事；
- * 而它又是**会话的属性**（不是全局设置），所以放在聊天页的工具按钮里，
- * 不放进设置页——放进设置页，用户改一次会以为全变了。
+ * 结构是**可展开收起的分组**（`本地工具` / `MCP服务器` / `工作区` 三组 + 三行固定入口）：
  *
- * 与助手那一份的关系：助手绑一个（默认），这条会话可以覆盖它。`null` = 跟助手。
+ * - **本地工具**：不依赖工作区的那一批（看图、改消息、语音）。用户原话：
+ *   "不依赖工作区的工具放在'工具'菜单里面就行了"。展开后一行一个开关，
+ *   **没有子菜单**（他明确说"子菜单的操作不太合适"）。
+ * - **工作区**：一行一个工作区，右边三颗小图标（⚙ 工具开关 / 📁 文件 / `>_` 终端）。
+ *   依赖工作区的工具在 ⚙ 里开关——"换个工作区就是另一批文件"，它天然跟着工作区走。
+ * - **工作目录 / 环境 / 权限**：三个固定入口。
+ *
+ * 为什么原来那个"这一轮的工具根"被并进来了：它本来就是工作区那一行的事，
+ * 单独一段只会让人以为"工作区"和"工具根"是两件事。
  */
 @Composable
 private fun ToolSheet(
@@ -6795,20 +6866,24 @@ private fun ToolSheet(
     onDraft: (String?) -> Unit,
     onDismiss: () -> Unit,
     onNotice: (String) -> Unit,
+    onOpenFiles: (String) -> Unit,
+    onOpenTerminal: (String) -> Unit,
+    onOpenEnvir: () -> Unit,
 ) {
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }
-    val scope = rememberCoroutineScope()
-    // `null` = 跟助手。**先当"读到了空"**，`loaded` 才决定要不要显示"读…"——
-    // 一上来就画"跟随助手"会让人以为这就是库里的答案。
+    // `null` = 跟助手。**先当"读到了空"**，`loaded` 才决定要不要显示"读…"。
     var bound by remember(sessionId) { mutableStateOf<String?>(null) }
     var loaded by remember(sessionId) { mutableStateOf(sessionId == null) }
-    // 逐个工具的开关（0.17e）：关掉的名字与注册表里的名字都**现读**。
-    var off by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
     var toolNames by remember { mutableStateOf<List<String>>(emptyList()) }
-    // 收起的分组（D344）：**存下来**。用户收起某一组通常是因为他不用那一组，
-    // 不是这一眼不想看；每次重开都展开，等于让他每次都再收一次。
-    var foldedGroups by remember { mutableStateOf(ToolingRepository.foldedGroups(context)) }
+    var off by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
+    // 三个分组的展开态（D344 的存法不变：收起过的组下次还是收起的）。
+    var folded by remember { mutableStateOf(ToolingRepository.foldedGroups(context)) }
+    var picking by remember(sessionId) { mutableStateOf(false) }
+    // 工作区那一行的 ⚙ 打开了哪个（`null` = 没开）。
+    var workspaceToolsFor by remember { mutableStateOf<com.nmoi.agent.ui.Workspace?>(null) }
+    val workspaces = remember { WorkspaceRepository.list(context) }
+
     LaunchedEffect(Unit) {
         toolNames = withContext(Dispatchers.IO) {
             NmoiFfi.toolNames().getOrNull()
@@ -6823,11 +6898,6 @@ private fun ToolSheet(
                 .orEmpty()
         }
     }
-    var picking by remember(sessionId) { mutableStateOf(false) }
-    val workspaces = remember { WorkspaceRepository.list(context) }
-    val assistantName = remember(assistantWorkspaceId) {
-        WorkspaceRepository.resolve(context, assistantWorkspaceId).name
-    }
     LaunchedEffect(sessionId) {
         val sid = sessionId ?: return@LaunchedEffect
         bound = withContext(Dispatchers.IO) {
@@ -6837,177 +6907,58 @@ private fun ToolSheet(
     }
     val shown = if (sessionId == null) draft else bound
     val current = shown?.let { id -> workspaces.firstOrNull { it.id == id } }
-    // 还没落库的会话：拨了先记着，落库那一刻才写进去。这一句是状态，不是解释。
     val pending = if (sessionId == null) "（还没落库）" else ""
-    val label = when {
+    val boundLabel = when {
         sessionId != null && !loaded -> "读…"
-        shown == null -> "跟随助手 · $assistantName$pending"
-        current == null -> "独立 · 那个工作区不在了"
-        else -> "独立 · ${current.name}$pending"
+        shown == null -> "跟随助手"
+        current == null -> "那个工作区不在了"
+        else -> current.name + pending
     }
+
+    fun toggleFold(title: String) {
+        val next = if (folded.contains(title)) folded - title else folded + title
+        folded = next
+        ToolingRepository.setFoldedGroups(context, next)
+    }
+
+    val local = localTools(toolNames)
+    val localOpen = local.count { !off.contains(it) }
+
     SheetFrame(title = "工具", onDismiss = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.5f).dp)
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.72f).dp)
                 .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
         ) {
-            if (!picking) {
-                // 逐个工具开关（0.17e）：关掉 = 这一轮**不声明**它。
-                // 清单从 native 的注册表读——在 Kotlin 里另列一份，迟早只改一份。
-                val names = toolNames
-                if (names.isNotEmpty()) {
-                    val open = names.count { !off.contains(it) }
-                    Text(
-                        text = "本地工具 $open/${names.size}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "关掉的不发给模型",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    toolGroups(names).forEach { group ->
-                        val folded = foldedGroups.contains(group.title)
-                        val groupOpen = group.names.count { !off.contains(it) }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 40.dp)
-                                .clickable {
-                                    val next = if (folded) {
-                                        foldedGroups - group.title
-                                    } else {
-                                        foldedGroups + group.title
-                                    }
-                                    foldedGroups = next
-                                    ToolingRepository.setFoldedGroups(context, next)
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = group.title,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                text = "$groupOpen/${group.names.size}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Icon(
-                                imageVector = if (folded) {
-                                    ActionIcons.ChevronRight
-                                } else {
-                                    ActionIcons.ChevronDown
-                                },
-                                contentDescription = if (folded) "展开「${group.title}」" else "收起「${group.title}」",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 6.dp).size(18.dp),
-                            )
-                        }
-                        if (folded) return@forEach
-                        group.names.forEach { name ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = toolDisplayName(name),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Switch(
-                                    checked = !off.contains(name),
-                                    onCheckedChange = { on ->
-                                        ToolingRepository.setToolOff(context, name, !on)
-                                        off = if (on) off - name else off + name
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp, bottom = 8.dp)
-                            .height(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant),
-                    )
-                }
-                Text(
-                    text = "这一轮的工具根",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 56.dp)
-                        .clickable(enabled = loaded) { picking = true }
-                        .padding(top = 4.dp),
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "该会话独立绑定工作区",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Icon(
-                        imageVector = ActionIcons.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-                Text(
-                    text = "换工作区不搬文件：老文件留在原处，新的写到新的那个。" +
-                        "绑了哪个，这一轮的读写与命令就落在哪个目录里。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = "原生命令 / 容器命令是**全局**开关，在 设置 → 工具与工作区 里改。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp),
-                )
-            } else {
+            if (picking) {
+                // 选工作区：与原来那段同一个判据（`null` = 跟助手）。
                 Text(
                     text = "这条会话用哪个工作区",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 )
                 WorkspaceChoice(
                     title = "跟随助手",
-                    note = "现在跟的是「$assistantName」；助手换了它就跟着换。",
+                    note = WorkspaceRepository.resolve(context, assistantWorkspaceId).name,
                     selected = shown == null,
                     onClick = {
                         if (sessionId == null) {
                             onDraft(null)
                             picking = false
-                            onNotice("还没落库，先记着：这条会话跟随助手")
                         } else {
-                            scope.launch {
-                                ConversationRepository.setWorkspace(databasePath, sessionId, null).fold(
-                                    onSuccess = {
-                                        bound = null
-                                        picking = false
-                                        onNotice("这条会话改回跟随助手：${assistantName}")
-                                    },
-                                    onFailure = { onNotice("改回跟随助手失败：${it.message}") },
-                                )
+                            kotlinx.coroutines.MainScope().launch {
+                                ConversationRepository.setWorkspace(databasePath, sessionId, null)
+                                    .fold(
+                                        onSuccess = {
+                                            bound = null
+                                            picking = false
+                                            onNotice("已改回跟随助手")
+                                        },
+                                        onFailure = { onNotice("绑定失败：${it.message}") },
+                                    )
                             }
                         }
                     },
@@ -7023,7 +6974,7 @@ private fun ToolSheet(
                                 picking = false
                                 onNotice("还没落库，先记着：这条会话绑「${workspace.name}」")
                             } else {
-                                scope.launch {
+                                kotlinx.coroutines.MainScope().launch {
                                     ConversationRepository.setWorkspace(databasePath, sessionId, workspace.id)
                                         .fold(
                                             onSuccess = {
@@ -7038,10 +6989,337 @@ private fun ToolSheet(
                         },
                     )
                 }
+                return@Column
             }
+
+            // ---- 本地工具（不依赖工作区）----
+            ToolGroupHeader(
+                title = "本地工具",
+                value = "$localOpen/${local.size}",
+                folded = folded.contains("本地工具"),
+                onToggle = { toggleFold("本地工具") },
+            )
+            if (!folded.contains("本地工具")) {
+                toolGroups(local).forEach { group ->
+                    Text(
+                        text = group.title,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 40.dp, top = 6.dp, bottom = 2.dp),
+                    )
+                    group.names.forEach { name ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = toolDisplayName(name),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f).padding(start = 40.dp),
+                            )
+                            androidx.compose.material3.Switch(
+                                checked = !off.contains(name),
+                                onCheckedChange = { on ->
+                                    ToolingRepository.setToolOff(context, name, !on)
+                                    off = if (on) off - name else off + name
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ---- MCP 服务器（这一批还没接，摆位置并说清）----
+            ToolGroupHeader(
+                title = "MCP服务器",
+                value = "0/0",
+                folded = true,
+                onToggle = { onNotice("MCP 服务器还没接（计划稿里排在终端之后）") },
+            )
+
+            // ---- 工作区 ----
+            ToolGroupHeader(
+                title = "工作区",
+                value = boundLabel,
+                folded = folded.contains("工作区"),
+                onToggle = { toggleFold("工作区") },
+            )
+            if (!folded.contains("工作区")) {
+                workspaces.forEach { workspace ->
+                    val active = shown == workspace.id || (shown == null && workspace.isDefault)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .clickable { picking = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = ActionIcons.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 40.dp).size(20.dp),
+                        )
+                        Text(
+                            text = workspace.name + if (workspace.isDefault) "（默认）" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f).padding(start = 12.dp),
+                        )
+                        if (active) {
+                            Text(
+                                text = "当前",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(end = 4.dp),
+                            )
+                        }
+                        // ⚙ 工具开关：依赖工作区的那一批在这里开和关。
+                        IconActionButton(
+                            image = ActionIcons.Wrench,
+                            description = "这个工作区的工具",
+                            onClick = { workspaceToolsFor = workspace },
+                            compact = true,
+                        )
+                        // 📁 文件
+                        IconActionButton(
+                            image = ActionIcons.Folder,
+                            description = "打开文件",
+                            onClick = {
+                                onDismiss()
+                                onOpenFiles(workspace.id)
+                            },
+                            compact = true,
+                        )
+                        // >_ 终端
+                        IconActionButton(
+                            image = ActionIcons.PanelLeft,
+                            description = "打开终端",
+                            onClick = {
+                                onDismiss()
+                                onOpenTerminal(workspace.id)
+                            },
+                            compact = true,
+                        )
+                    }
+                }
+            }
+
+            // ---- 三个固定入口 ----
+            ToolEntryRow(
+                title = "工作目录",
+                icon = ActionIcons.Folder,
+                value = current?.let { it.dir.absolutePath } ?: "/",
+                onClick = { picking = true },
+            )
+            ToolEntryRow(
+                title = "环境",
+                icon = ActionIcons.Cpu,
+                value = remember {
+                    when (EnvirRepository.installed(context)?.health) {
+                        null -> "未安装"
+                        EnvirRepository.Health.NeedsRepair -> "需修复"
+                        else -> "就绪"
+                    }
+                },
+                onClick = {
+                    onDismiss()
+                    onOpenEnvir()
+                },
+            )
+            ToolEntryRow(
+                title = "权限",
+                icon = ActionIcons.Ban,
+                value = "请求批准",
+                note = "工作区外文件访问、桌面命令和其他需要授权的工具将在执行前询问。",
+                onClick = { onNotice("权限策略在 设置 → 安全 里改") },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    // 工作区的 ⚙：依赖工作区的那一批工具。
+    workspaceToolsFor?.let { workspace ->
+        WorkspaceToolsSheet(
+            workspace = workspace,
+            names = workspaceTools(toolNames),
+            onDismiss = { workspaceToolsFor = null },
+            onNotice = onNotice,
+        )
+    }
+}
+
+/** 分组头：`>` / `v` + 标题 + 右侧计数。点整行展开收起。 */
+@Composable
+private fun ToolGroupHeader(
+    title: String,
+    value: String,
+    folded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(onClick = onToggle),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = if (folded) ActionIcons.ChevronRight else ActionIcons.ChevronDown,
+            contentDescription = if (folded) "展开「$title」" else "收起「$title」",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp).size(18.dp),
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f).padding(start = 10.dp),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(end = 14.dp),
+        )
+    }
+}
+
+/** 固定入口那一行：图标 + 标题 + 右侧值 + `>`。 */
+@Composable
+private fun ToolEntryRow(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    value: String,
+    note: String? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+        Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (note != null) {
+                Text(
+                    text = note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(end = 6.dp),
+        )
+        Text(
+            text = "›",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * 一个工作区的工具开关（D401）：**依赖工作区的那一批**在这里开和关。
+ *
+ * 与「本地工具」那一批分开是有意的（用户明确要求）：换个工作区就是另一批文件，
+ * 所以"能不能写文件"天然跟着工作区走；而"能不能看图"跟工作区无关。
+ */
+@Composable
+private fun WorkspaceToolsSheet(
+    workspace: com.nmoi.agent.ui.Workspace,
+    names: List<String>,
+    onDismiss: () -> Unit,
+    onNotice: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    var off by remember(workspace.id) {
+        mutableStateOf(ToolingRepository.workspaceToolsOff(context, workspace.id).toSet())
+    }
+    val globalOff = remember { ToolingRepository.toolsOff(context).toSet() }
+    SheetFrame(title = workspace.name, onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            Text(
+                text = "这个工作区能用哪些工具（与全局取并集：任何一级关掉就不声明）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            toolGroups(names).forEach { group ->
+                Text(
+                    text = group.title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                )
+                group.names.forEach { name ->
+                    val blocked = globalOff.contains(name)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = toolDisplayName(name),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = if (blocked) {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                            )
+                            if (blocked) {
+                                Text(
+                                    text = "全局关着：去 设置 → 工具与工作区 打开",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = !off.contains(name) && !blocked,
+                            enabled = !blocked,
+                            onCheckedChange = { on ->
+                                ToolingRepository.setWorkspaceToolOff(context, workspace.id, name, !on)
+                                off = if (on) off - name else off + name
+                                onNotice("${toolDisplayName(name)}：${if (on) "这个工作区声明" else "不声明"}")
+                            },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
         }
     }
 }
+
 
 /** 工作区选择里的一行：标题 + 一句说明 + 选中打勾。 */
 @Composable

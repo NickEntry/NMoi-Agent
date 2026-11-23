@@ -57,5 +57,16 @@ internal interface ShellSession {
 
     fun unavailableReason(): String?
 
-    suspend fun run(command: String, cwd: String): Result<ShellResult>
+    suspend fun run(session: String, command: String, cwd: String): Result<ShellResult>
+
+    /**
+     * 往**正在跑**的那条命令里送一段字节（D397）。
+     *
+     * 控制字节（`\x03` Ctrl+C、`\x1b` Esc）不是合法 UTF-8，所以走 base64 过桥。
+     * 返回实际写进去几个字节；`0` 表示没有在跑的命令、或者管道已经断了——**不是错误**。
+     */
+    suspend fun write(session: String, bytes: ByteArray): Int
+
+    /** 停掉这个会话里正在跑的那条命令。`false` = 没有在跑（点晚了一拍，不算错误）。 */
+    suspend fun cancel(session: String): Boolean
 }
