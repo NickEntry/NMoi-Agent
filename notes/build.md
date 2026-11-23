@@ -72,13 +72,15 @@ bash scripts/target_usage.sh --force     # 不管多大都清
 
 ```text
 路径      /workspace/NMoi-Agent-debug.apk
-字节      19,311,241
-sha256   37aacd999c73bd36b126375e331f9b48（前 32）
-commit   154eabb（D372 / D378–D391：文件变更跟踪 + 变更卡片）
-CI run   45072570525（七 job 全绿）
-schema   v21（messages.changes_json）
+字节      19,459,459
+sha256   8003e6c69845c540d5a7c9a8607daca2（前 32）
+commit   46d0716（D392：文件预览按类型分派 + 工作区文件页）
+CI run   45121958783（七 job 全绿）
+schema   v21（未动）
+JNI      70 个（.so 里 Java_* 数过，7 个 workspace* 全在）
 
-上一份      19,214,597 / 3f17f5ee27ad0de147cfc5b779822146 / 4fc38f8（run 45016559411，D377）
+上一份      19,311,241 / 37aacd999c73bd36b126375e331f9b48 / 154eabb（run 45072570525，D372）
+再上一份    19,214,597 / 3f17f5ee27ad0de147cfc5b779822146 / 4fc38f8（run 45016559411，D377）
 再上一份    19,214,221 / 80d4c8357c2fed4355da9576d41a3b29 / 65f999e（run 45014651018，D376）
 再上一份    19,215,233 / 602225ab5e4ba3d57d18c2347f60f1b1 / 82631fe（run 45009513814，D375）
 来源     gh run download <run> -n nmoi-debug-apk  → app-debug.apk
