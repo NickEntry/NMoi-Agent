@@ -101,6 +101,9 @@ private sealed interface Route {
     /** 工作区（D234）：列 / 新建 / 改名 / 删除。入口在「工具与工作区」里。 */
     data object Workspace : Route
 
+    /** 一个工作区的文件与工具（D392）：文件页签 / 工具页签。 */
+    data class WorkspaceFiles(val id: String) : Route
+
     /** 安全（0.17g）：两颗总开关 + 规则组（主项与子项）。入口在设置根页。 */
     data object Security : Route
 
@@ -694,7 +697,19 @@ class MainActivity : ComponentActivity() {
                         Route.Workspace -> WorkspaceScreen(
                             databasePath = databasePath,
                             onBack = { backStack = backStack.dropLast(1) },
+                            onOpenFiles = { id -> backStack = backStack + Route.WorkspaceFiles(id) },
                         )
+
+                        is Route.WorkspaceFiles -> {
+                            val ws = remember(route.id) {
+                                com.nmoi.agent.ui.WorkspaceRepository.resolve(context, route.id)
+                            }
+                            com.nmoi.agent.ui.Files.WorkspaceFilesScreen(
+                                root = ws.dir,
+                                title = ws.name,
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+                        }
 
                         Route.Assistant -> AssistantScreen(
                             databasePath = databasePath,
@@ -866,6 +881,7 @@ private fun waitsForData(route: Route): Boolean = when (route) {
 
 private fun routeKeyOf(route: Route): String = when (route) {
     is Route.Chat -> "chat:${route.sessionId ?: "new"}"
+    is Route.WorkspaceFiles -> "wsfiles:${route.id}"
     is Route.SettingsGroupRoute -> "group:${route.group.name}"
     is Route.AssistantEdit -> "assistant:${route.id}"
     is Route.MessageEdit -> "edit:${route.sessionId}:${route.messageId}"

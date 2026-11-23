@@ -51,6 +51,7 @@ import kotlinx.coroutines.withContext
 internal fun WorkspaceScreen(
     databasePath: String,
     onBack: () -> Unit,
+    onOpenFiles: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -128,7 +129,11 @@ internal fun WorkspaceScreen(
                 GroupCard {
                     rows.forEachIndexed { index, workspace ->
                         if (index > 0) RowDivider(14.dp)
-                        WorkspaceRow(workspace = workspace, onClick = { sheetFor = workspace })
+                        WorkspaceRow(
+                            workspace = workspace,
+                            onClick = { onOpenFiles(workspace.id) },
+                            onActions = { sheetFor = workspace },
+                        )
                     }
                 }
 
@@ -287,12 +292,16 @@ internal fun WorkspaceScreen(
 }
 
 @Composable
-private fun WorkspaceRow(workspace: Workspace, onClick: () -> Unit) {
+private fun WorkspaceRow(
+    workspace: Workspace,
+    onClick: () -> Unit,
+    onActions: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(start = 14.dp, end = 12.dp, top = 11.dp, bottom = 11.dp),
+            .padding(start = 14.dp, end = 4.dp, top = 11.dp, bottom = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -327,6 +336,12 @@ private fun WorkspaceRow(workspace: Workspace, onClick: () -> Unit) {
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
+        IconActionButton(
+            image = ActionIcons.Ellipsis,
+            description = "更多",
+            onClick = onActions,
+            compact = true,
+        )
         Text(
             text = "›",
             style = MaterialTheme.typography.titleMedium,

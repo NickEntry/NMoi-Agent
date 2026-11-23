@@ -242,6 +242,91 @@ impl Workspace {
         })
     }
 
+    /// 建目录（父目录一起建）。目录**已经存在**时返回 `AlreadyExists`，不是成功——
+    /// 界面上"新建文件夹"点了没反应，比报一句"已经有了"更让人困惑。
+    pub fn make_dir(&self, relative: &str) -> Result<WriteResult, WorkspaceError> {
+        let path = self.resolve(relative)?;
+        if path.exists() {
+            return Err(WorkspaceError::AlreadyExists {
+                path: relative.to_string(),
+            });
+        }
+        fs::create_dir_all(&path)?;
+        self.ensure_inside(&path)?;
+        Ok(WriteResult {
+            path: relative.to_string(),
+            bytes: 0,
+        })
+    }
+
+    /// 改名 / 移动。**只在根内**：`to` 越界与 `relative` 越界同样拒绝。
+    ///
+    /// 目标已存在时拒绝，不覆盖：改名撞上一个同名文件，覆盖掉的那一份没人能找回来。
+    pub fn rename_entry(&self, relative: &str, to: &str) -> Result<RenameResult, WorkspaceError> {
+        let from = self.resolve(relative)?;
+        if !from.exists() {
+            return Err(WorkspaceError::NotFound {
+                path: relative.to_string(),
+            });
+        }
+        self.ensure_inside(&from)?;
+        let target = self.resolve(to)?;
+        if target.exists() {
+            return Err(WorkspaceError::AlreadyExists {
+                path: to.to_string(),
+            });
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+            self.ensure_inside(parent)?;
+        }
+        fs::rename(&from, &target)?;
+        Ok(RenameResult {
+            from: relative.to_string(),
+            to: to.to_string(),
+        })
+    }
+
+    /// 删一个文件或一整棵目录。
+    ///
+    /// **不跟随符号链接**：目录里指向外面的链接删掉的是链接本身，不是它指向的东西。
+    /// 返回删掉的条目数，界面用它说"删了 N 项"——只说"已删除"，用户不知道有没有删干净。
+    pub fn remove_entry(&self, relative: &str) -> Result<RemoveResult, WorkspaceError> {
+        if relative.trim().is_empty() {
+            return Err(WorkspaceError::EmptyPath);
+        }
+        let path = self.resolve(relative)?;
+        let meta = fs::symlink_metadata(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => WorkspaceError::NotFound {
+                path: relative.to_string(),
+            },
+            _ => WorkspaceError::Io(e),
+        })?;
+        // 判的是**父目录**在不在根里，不是条目自己：条目是符号链接时，`canonicalize` 会跟到
+        // 目标上——指向外面就被拒，而"删掉这个链接"恰恰是安全的（删的是链接，不是它指的东西）。
+        // 父目录这一层挡住的是另一种：路径中间有一段是通到外面的链接。
+        let parent = path.parent().map(Path::to_path_buf);
+        match parent {
+            Some(parent) if parent.starts_with(&self.root) && parent != self.root => {
+                self.ensure_inside(&parent)?;
+            }
+            _ => {}
+        }
+        let is_dir = meta.is_dir();
+        let mut removed = 1usize;
+        if is_dir {
+            removed = count_tree(&path).max(1);
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+        Ok(RemoveResult {
+            path: relative.to_string(),
+            is_dir,
+            removed,
+        })
+    }
+
     pub fn write_file(&self, relative: &str, content: &str) -> Result<WriteResult, WorkspaceError> {
         let path = self.resolve(relative)?;
         if let Some(parent) = path.parent() {
@@ -464,12 +549,7 @@ impl Workspace {
         let path = self.resolve(relative)?;
         let meta = fs::metadata(&path)?;
         self.ensure_inside(&path)?;
-        let modified_ms = meta
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let modified_ms = modified_ms(&meta);
         Ok(FileStat {
             path: relative.to_string(),
             is_dir: meta.is_dir(),
@@ -569,6 +649,20 @@ pub struct EditFileResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameResult {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveResult {
+    pub path: String,
+    pub is_dir: bool,
+    /// 删掉的条目数（文件算 1，目录算它底下的全部条目，含子目录本身）。
+    pub removed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListOptions {
     pub max_entries: usize,
     pub depth: usize,
@@ -592,6 +686,8 @@ pub struct DirEntry {
     pub is_dir: bool,
     pub is_symlink: bool,
     pub size_bytes: u64,
+    /// 修改时间（毫秒，0 = 拿不到）。界面的「按修改时间排」用它。
+    pub modified_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -680,6 +776,8 @@ pub enum WorkspaceError {
     OutsideRoot { path: String },
     #[error("文件不存在: {path}")]
     NotFound { path: String },
+    #[error("已经存在: {path}")]
+    AlreadyExists { path: String },
     #[error("不是文件: {path}")]
     NotAFile { path: String },
     #[error("不是目录: {path}")]
@@ -696,6 +794,34 @@ pub enum WorkspaceError {
     EmptyPattern,
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// 修改时间（毫秒，拿不到给 0）。`stat` 与目录列表共用这一份：两处各算一次迟早对不上。
+fn modified_ms(meta: &fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 数一棵树里有几个条目（含子目录本身），**不跟随符号链接**。
+fn count_tree(root: &Path) -> usize {
+    let mut total = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            total += 1;
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push(entry.path());
+            }
+        }
+    }
+    total
 }
 
 fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
@@ -801,6 +927,7 @@ fn collect_entries(
             is_dir: meta.is_dir(),
             is_symlink,
             size_bytes: meta.len(),
+            modified_ms: modified_ms(&meta),
         });
         // 目录排在文件后面统一排序；深度递归不跟随符号链接，避免环。
         if meta.is_dir() && depth < options.depth && !is_symlink {
@@ -1113,6 +1240,100 @@ mod tests {
         ));
         let result = workspace.edit_file("dup.txt", "x", "y", true).unwrap();
         assert_eq!(result.replacements, 3);
+    }
+
+    #[test]
+    fn make_dir_creates_parents_and_refuses_existing() {
+        let (_dir, workspace) = fixture();
+        let made = workspace.make_dir("a/b/c").unwrap();
+        assert_eq!(made.path, "a/b/c");
+        assert!(workspace.root().join("a/b/c").is_dir());
+
+        // 第二次要拒绝：界面上"新建文件夹"点了没反应比报一句"已经有了"更让人困惑。
+        assert!(matches!(
+            workspace.make_dir("a/b/c"),
+            Err(WorkspaceError::AlreadyExists { .. })
+        ));
+        // 越界同样拒绝。
+        assert!(workspace.make_dir("../outside").is_err());
+    }
+
+    #[test]
+    fn rename_moves_and_refuses_to_overwrite() {
+        let (_dir, workspace) = fixture();
+        let moved = workspace
+            .rename_entry("README.md", "docs/README.md")
+            .unwrap();
+        assert_eq!(moved.to, "docs/README.md");
+        assert!(workspace.root().join("docs/README.md").is_file());
+        assert!(!workspace.root().join("README.md").exists());
+
+        // 撞上已有的文件不覆盖：覆盖掉的那一份没人能找回来。
+        workspace.write_file("a.txt", "a").unwrap();
+        workspace.write_file("b.txt", "b").unwrap();
+        assert!(matches!(
+            workspace.rename_entry("a.txt", "b.txt"),
+            Err(WorkspaceError::AlreadyExists { .. })
+        ));
+        let kept = workspace
+            .read_file("b.txt", &ReadOptions::default())
+            .unwrap();
+        assert_eq!(kept.content, "b");
+
+        assert!(workspace.rename_entry("nope.txt", "x.txt").is_err());
+        assert!(workspace.rename_entry("a.txt", "../x.txt").is_err());
+    }
+
+    #[test]
+    fn remove_file_and_tree_counts_entries() {
+        let (_dir, workspace) = fixture();
+        let one = workspace.remove_entry("README.md").unwrap();
+        assert!(!one.is_dir);
+        assert_eq!(one.removed, 1);
+        assert!(!workspace.root().join("README.md").exists());
+
+        // `src/` 里两个文件：数出来是 2，目录本身不计。
+        let tree = workspace.remove_entry("src").unwrap();
+        assert!(tree.is_dir);
+        assert_eq!(tree.removed, 2);
+        assert!(!workspace.root().join("src").exists());
+
+        // 空路径不许删（那等于删整棵树）。
+        assert!(matches!(
+            workspace.remove_entry(""),
+            Err(WorkspaceError::EmptyPath)
+        ));
+        assert!(workspace.remove_entry("nope").is_err());
+    }
+
+    #[test]
+    fn remove_does_not_follow_symlinks() {
+        let (dir, workspace) = fixture();
+        // 根外面放一个"重要的东西"，工作区里给一个指向它的链接。
+        let outside = dir.path().parent().unwrap().join("nmoi-outside.txt");
+        std::fs::write(&outside, "keep me").unwrap();
+        let link = workspace.root().join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(not(unix))]
+        return;
+
+        workspace.remove_entry("link.txt").unwrap();
+        assert!(!link.exists());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn list_reports_modified_time() {
+        let (_dir, workspace) = fixture();
+        let result = workspace.list_dir("", &ListOptions::default()).unwrap();
+        let readme = result
+            .entries
+            .iter()
+            .find(|entry| entry.name == "README.md")
+            .expect("README.md 应当在列表里");
+        assert!(readme.modified_ms > 0, "改过时间要给出来：{readme:?}");
     }
 
     #[test]

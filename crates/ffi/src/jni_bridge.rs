@@ -30,7 +30,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use jni::objects::{JObject, JString};
-use jni::sys::{jlong, jstring};
+use jni::sys::{jboolean, jlong, jstring};
 use jni::JNIEnv;
 
 /// 兜底信封。与 `json::emit` 里的那一条同形：返回**合法 JSON**，绝不返回 null。
@@ -1657,6 +1657,188 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_closeWorkspaceJson<'l
     handle: jlong,
 ) -> jstring {
     let text = guarded(|| take_json(crate::workspace::nmoi_workspace_close_json(handle as u64)));
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceListJson(handle, path, depth, max, includeHidden)`：列目录。
+///
+/// 界面上的工作区列表、文件预览页的目录、对话文件面板的「工作区」页签都走这一条——
+/// 三处共用一份实现，排序与隐藏规则才不会各写一套。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceListJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+    depth: jlong,
+    max_entries: jlong,
+    include_hidden: jboolean,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let text = guarded(move || match path {
+        Some(path) => match c_string(path, "path") {
+            Ok(c_path) => take_json(crate::workspace::nmoi_workspace_list_json(
+                handle as u64,
+                c_path.as_ptr(),
+                depth.max(0) as u64,
+                max_entries.max(0) as u64,
+                include_hidden as i32,
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceReadJson(handle, path, startLine, maxLines, forceFull)`：读一页文本。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceReadJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+    start_line: jlong,
+    max_lines: jlong,
+    force_full: jboolean,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let text = guarded(move || match path {
+        Some(path) => match c_string(path, "path") {
+            Ok(c_path) => take_json(crate::workspace::nmoi_workspace_read_json(
+                handle as u64,
+                c_path.as_ptr(),
+                start_line.max(0) as u64,
+                max_lines.max(0) as u64,
+                force_full as i32,
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceMkdirJson(handle, path)`：建目录。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceMkdirJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let text = guarded(move || match path {
+        Some(path) => match c_string(path, "path") {
+            Ok(c_path) => take_json(crate::workspace::nmoi_workspace_mkdir_json(
+                handle as u64,
+                c_path.as_ptr(),
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceRenameJson(handle, path, to)`：改名 / 移动。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceRenameJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+    to: JString<'local>,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let to = read_string(&mut env, &to);
+    let text = guarded(move || match (path, to) {
+        (Some(path), Some(to)) => match (c_string(path, "path"), c_string(to, "to")) {
+            (Ok(c_path), Ok(c_to)) => take_json(crate::workspace::nmoi_workspace_rename_json(
+                handle as u64,
+                c_path.as_ptr(),
+                c_to.as_ptr(),
+            )),
+            (Err(message), _) | (_, Err(message)) => {
+                take_json(crate::json::err_json("bad_argument", &message))
+            }
+        },
+        _ => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceDeleteJson(handle, path)`：删文件或整棵目录。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceDeleteJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let text = guarded(move || match path {
+        Some(path) => match c_string(path, "path") {
+            Ok(c_path) => take_json(crate::workspace::nmoi_workspace_delete_json(
+                handle as u64,
+                c_path.as_ptr(),
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceStatJson(handle, path)`：单个路径的大小与修改时间。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceStatJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let text = guarded(move || match path {
+        Some(path) => match c_string(path, "path") {
+            Ok(c_path) => take_json(crate::workspace::nmoi_workspace_stat_json(
+                handle as u64,
+                c_path.as_ptr(),
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `NativeBridge.workspaceWriteJson(handle, path, content)`：整篇写入（父目录会被创建）。
+///
+/// 界面上"新建一个空文件"也走这一条：空串是合法内容，不是"没给内容"。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_workspaceWriteJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    path: JString<'local>,
+    content: JString<'local>,
+) -> jstring {
+    let path = read_string(&mut env, &path);
+    let content = read_string(&mut env, &content);
+    let text = guarded(move || match (path, content) {
+        (Some(path), Some(content)) => match (c_string(path, "path"), c_string(content, "content"))
+        {
+            (Ok(c_path), Ok(c_content)) => take_json(crate::workspace::nmoi_workspace_write_json(
+                handle as u64,
+                c_path.as_ptr(),
+                c_content.as_ptr(),
+            )),
+            (Err(message), _) | (_, Err(message)) => {
+                take_json(crate::json::err_json("bad_argument", &message))
+            }
+        },
+        _ => bad_string(),
+    });
     to_jstring(&mut env, text)
 }
 

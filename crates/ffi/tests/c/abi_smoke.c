@@ -698,6 +698,47 @@ int main(void) {
                             "workspace_read(越界)");
         check(is_error(escape), "越界路径被拒", escape);
         nmoi_string_free(escape);
+
+        /* 写操作三件（D392）：建目录 / 改名 / 删除。 */
+        char *made = take(nmoi_workspace_mkdir_json(workspace_handle, "notes/deep"), "workspace_mkdir");
+        check(contains(made, "\"path\":\"notes/deep\""), "建目录回路径", made);
+        nmoi_string_free(made);
+
+        char *again = take_error(nmoi_workspace_mkdir_json(workspace_handle, "notes/deep"),
+                                 "workspace_mkdir(重复)");
+        check(is_error(again), "同一个目录建第二次要报错，不是静默成功", again);
+        nmoi_string_free(again);
+
+        char *wrote2 = take(nmoi_workspace_write_json(workspace_handle, "notes/a.txt", "alpha"),
+                            "workspace_write(新建)");
+        check(contains(wrote2, "\"bytes\":5"), "空目录里新建文件", wrote2);
+        nmoi_string_free(wrote2);
+
+        char *renamed = take(nmoi_workspace_rename_json(workspace_handle, "notes/a.txt", "notes/b.txt"),
+                             "workspace_rename");
+        check(contains(renamed, "\"to\":\"notes/b.txt\""), "改名回新路径", renamed);
+        nmoi_string_free(renamed);
+
+        char *clash = take_error(
+            nmoi_workspace_rename_json(workspace_handle, "notes/b.txt", "note.txt"),
+            "workspace_rename(撞名)");
+        check(is_error(clash), "改名撞上已有文件要拒绝，不覆盖", clash);
+        nmoi_string_free(clash);
+
+        char *kept = take(nmoi_workspace_read_json(workspace_handle, "note.txt", 0, 0, 0),
+                          "workspace_read(撞名之后)");
+        check(contains(kept, "BETA"), "撞名失败之后原文件没被动过", kept);
+        nmoi_string_free(kept);
+
+        char *gone = take(nmoi_workspace_delete_json(workspace_handle, "notes"), "workspace_delete");
+        check(contains(gone, "\"is_dir\":true"), "删目录要说它是目录", gone);
+        check(contains(gone, "\"removed\":2"), "删目录回删掉的条目数", gone);
+        nmoi_string_free(gone);
+
+        char *stat2 = take(nmoi_workspace_stat_json(workspace_handle, "note.txt"), "workspace_stat(改后)");
+        check(contains(stat2, "\"modified_ms\":"), "stat 要给修改时间", stat2);
+        check(contains(stat2, "\"modified_ms\":0,") == 0, "改过的文件不该是 0 毫秒", stat2);
+        nmoi_string_free(stat2);
     }
 
     /* ---- 5. 工具面 ---- */

@@ -189,6 +189,7 @@ pub extern "C" fn nmoi_workspace_list_json(
                         "is_dir": entry.is_dir,
                         "is_symlink": entry.is_symlink,
                         "size_bytes": entry.size_bytes,
+                        "modified_ms": entry.modified_ms,
                     })
                 })
                 .collect();
@@ -214,6 +215,51 @@ pub extern "C" fn nmoi_workspace_stat_json(handle: u64, rel: *const c_char) -> *
                 "is_file": stat.is_file,
                 "size_bytes": stat.size_bytes,
                 "modified_ms": stat.modified_ms,
+            }))
+        })
+    })
+}
+
+/// 建目录（父目录一起建）。已存在时回 `already_exists`，不是成功。
+#[no_mangle]
+pub extern "C" fn nmoi_workspace_mkdir_json(handle: u64, rel: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let rel = read_str(rel, "path")?;
+        with_workspace(handle, |workspace| {
+            let result = workspace.make_dir(rel).map_err(workspace_error)?;
+            Ok(json!({ "path": result.path }))
+        })
+    })
+}
+
+/// 改名 / 移动。目标已存在时拒绝（不覆盖）。
+#[no_mangle]
+pub extern "C" fn nmoi_workspace_rename_json(
+    handle: u64,
+    rel: *const c_char,
+    to: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let rel = read_str(rel, "path")?;
+        let to = read_str(to, "to")?;
+        with_workspace(handle, |workspace| {
+            let result = workspace.rename_entry(rel, to).map_err(workspace_error)?;
+            Ok(json!({ "from": result.from, "to": result.to }))
+        })
+    })
+}
+
+/// 删一个文件或一整棵目录（不跟随符号链接）。回删掉的条目数。
+#[no_mangle]
+pub extern "C" fn nmoi_workspace_delete_json(handle: u64, rel: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let rel = read_str(rel, "path")?;
+        with_workspace(handle, |workspace| {
+            let result = workspace.remove_entry(rel).map_err(workspace_error)?;
+            Ok(json!({
+                "path": result.path,
+                "is_dir": result.is_dir,
+                "removed": result.removed,
             }))
         })
     })

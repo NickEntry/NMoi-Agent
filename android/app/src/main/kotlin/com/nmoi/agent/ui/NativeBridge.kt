@@ -42,6 +42,39 @@ internal object NativeBridge {
     /** 解绑工作区。幂等。 */
     external fun closeWorkspaceJson(handle: Long): String
 
+    /** 列目录（D392）。`depth` / `maxEntries` 传 0 用默认；回 `{path, entries[], count}`。 */
+    external fun workspaceListJson(
+        handle: Long,
+        path: String,
+        depth: Long,
+        maxEntries: Long,
+        includeHidden: Boolean,
+    ): String
+
+    /** 读一页文本（D392）。`startLine` 是 1-based，传 0 用默认；`forceFull` 忽略行数上限。 */
+    external fun workspaceReadJson(
+        handle: Long,
+        path: String,
+        startLine: Long,
+        maxLines: Long,
+        forceFull: Boolean,
+    ): String
+
+    /** 单个路径的大小与修改时间（D392）。 */
+    external fun workspaceStatJson(handle: Long, path: String): String
+
+    /** 建目录（D392）。已存在时回 `already_exists`。 */
+    external fun workspaceMkdirJson(handle: Long, path: String): String
+
+    /** 改名 / 移动（D392）。目标已存在时拒绝。 */
+    external fun workspaceRenameJson(handle: Long, path: String, to: String): String
+
+    /** 删文件或整棵目录（D392），回 `{path, is_dir, removed}`。 */
+    external fun workspaceDeleteJson(handle: Long, path: String): String
+
+    /** 整篇写入（D392）。父目录会被创建。 */
+    external fun workspaceWriteJson(handle: Long, path: String, content: String): String
+
     external fun versionsJson(handle: Long, message: String): String
 
     external fun switchVersionJson(handle: Long, message: String, versionNo: Long, view: String): String

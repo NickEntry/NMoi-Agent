@@ -259,6 +259,15 @@ char *nmoi_workspace_list_json(uint64_t handle,
 /* 单路径元信息。 */
 char *nmoi_workspace_stat_json(uint64_t handle, const char *path);
 
+/* 建目录（父目录一起建）。已存在时回错误 `workspace`，不是静默成功。 */
+char *nmoi_workspace_mkdir_json(uint64_t handle, const char *path);
+
+/* 改名 / 移动。目标已存在时拒绝（不覆盖——覆盖掉的那一份找不回来）。 */
+char *nmoi_workspace_rename_json(uint64_t handle, const char *path, const char *to);
+
+/* 删一个文件或一整棵目录。不跟随符号链接。回 {path, is_dir, removed}。 */
+char *nmoi_workspace_delete_json(uint64_t handle, const char *path);
+
 /* ---- 工具 ---------------------------------------------------------------- */
 
 /* 全部工具名（不看策略）。 */
