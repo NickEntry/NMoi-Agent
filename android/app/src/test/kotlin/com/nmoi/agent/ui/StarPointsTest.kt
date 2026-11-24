@@ -81,6 +81,39 @@ class StarPointsTest {
         }
     }
 
+    /**
+     * 仪表盘规格（D405）：环数随档位不减，指针角随档位递增。
+     *
+     * 这两条是"图标跟着档位变"的判据——之前图标是个固定矢量，
+     * 调档位时只有底下那行文字在动。
+     */
+    @Test
+    fun gauge_follows_the_level() {
+        val order = listOf("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+        var lastRings = -1
+        var lastNeedle = -100f
+        for (wire in order) {
+            val spec = GaugeSpecs.of(wire)
+            assertTrue("$wire 的环数不该比前一档少", spec.rings >= lastRings)
+            // 指针角**不减**：max 与 ultra 同一角度（ultra 靠弧外那圈红点区分，
+            // 不是把针再往右推——推出去就指到弧外了）。
+            assertTrue("$wire 的指针角不该比前一档小", spec.needleDeg >= lastNeedle)
+            lastRings = spec.rings
+            lastNeedle = spec.needleDeg
+        }
+        // 关闭有斜杠、自动没有；ultra 多一圈红点
+        assertTrue(GaugeSpecs.of("off").slash)
+        assertTrue(!GaugeSpecs.of("auto").slash)
+        assertEquals(0, GaugeSpecs.of("auto").rings)
+        assertTrue(GaugeSpecs.of("ultra").dots)
+        // 认不出的 wire 按自动画，不假装是某一档
+        assertEquals(GaugeSpecs.of("auto"), GaugeSpecs.of("???"))
+
+        // 每一档都得长得不一样：否则调了档位图标不动
+        val shapes = order.map { GaugeSpecs.of(it) }
+        assertEquals("七个档位应有七种形状", order.size, shapes.toSet().size)
+    }
+
     /** 缩写规则：≤5 个字母写全名，超过取缩写。 */
     @Test
     fun short_name_rule() {

@@ -1,8 +1,8 @@
 package com.nmoi.agent.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,7 +28,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -128,29 +130,39 @@ internal fun LevelSlider(
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceBright),
             )
-            // 触摸层压在最上面：整条轨道都能点、能拖
+            // 触摸层压在最上面：整条轨道都能点、能拖。
+            //
+            // **一个 pointerInput 同时管点与拖**：两个识别器各挂一个 pointerInput 会抢事件
+            // （drag 要等 slop，期间 tap 收不到 up，表现是"点了没反应"）。
+            // 这里按下就先落格，拖动跟着走，松手再确认一次。
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(knob)
                     .pointerInput(count) {
-                        detectTapGestures { offset ->
-                            onPick(pickAt(with(density) { offset.x.toDp() }))
-                        }
-                    }
-                    .pointerInput(count) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { offset ->
-                                dragging = true
-                                local = pickAt(with(density) { offset.x.toDp() })
-                            },
-                            onDragEnd = {
-                                dragging = false
-                                onPick(local)
-                            },
-                            onDragCancel = { dragging = false },
-                        ) { change, _ ->
-                            local = pickAt(with(density) { change.position.x.toDp() })
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            dragging = true
+                            local = pickAt(with(density) { down.position.x.toDp() })
+                            down.consume()
+                            var moved = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: break
+                                if (change.changedToUpIgnoreConsumed()) {
+                                    change.consume()
+                                    break
+                                }
+                                if (change.positionChanged()) {
+                                    moved = true
+                                    local = pickAt(with(density) { change.position.x.toDp() })
+                                    change.consume()
+                                }
+                            }
+                            dragging = false
+                            // 点了（没拖动）也要落一次：按下即选，松手确认。
+                            onPick(local)
+                            if (moved) Unit
                         }
                     },
             )

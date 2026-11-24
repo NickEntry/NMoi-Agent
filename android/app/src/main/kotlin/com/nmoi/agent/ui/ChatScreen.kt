@@ -92,6 +92,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
@@ -5879,12 +5881,21 @@ private fun Composer(
                             modifier = Modifier.align(Alignment.Center),
                             size = 44.dp,
                         )
-                        IconActionButton(
-                            image = ActionIcons.Gauge,
-                            description = "思考强度：$thinkingLabel · 速度：$speedLabel",
-                            onClick = onThinking,
-                            compact = true,
-                        )
+                        // 图标本体跟着档位变（环数 = 档位，红针 = 强度）。
+                        // 之前这里是固定的 ActionIcons.Gauge，调档位时图标一直不动。
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onThinking() })
+                                }
+                                .semantics {
+                                    contentDescription = "思考强度：$thinkingLabel · 速度：$speedLabel"
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            ThinkingGauge(wire = thinkingWire, size = 22.dp)
+                        }
                         Text(
                             text = shortLevelName(thinkingWire),
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
@@ -6169,8 +6180,8 @@ private fun NativeEditText(
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION or EditorInfo.IME_ACTION_NONE
-                // 左右对称 16：原来是 16 / 12，光标和文字都偏右，看着像框没对齐。
-                setPadding(16, 22, 16, 18)
+                // 左右各 20：16 的时候文字还是贴边（用户 2026-11-24 给的截图里留白更大）。
+                setPadding(20, 22, 20, 18)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null

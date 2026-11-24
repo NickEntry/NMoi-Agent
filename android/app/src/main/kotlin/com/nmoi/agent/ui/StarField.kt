@@ -40,8 +40,9 @@ internal fun StarField(
 
     Canvas(modifier = modifier.size(size)) {
         val reach = max(4f, min(this.size.width, this.size.height) / 2f - 1.5f)
-        // 仪表盘视觉 22dp，半圆半径约 11dp，加 1dp 余量。
-        val hole = min(reach * 0.62f, (this.size.width * 22f / 44f) / 2f + 1f)
+        // 仪表盘视觉 22dp，半径 11dp，再加 1dp 余量。这个数要与 `ThinkingGauge`
+        // 的 size 对得上，否则星星会从仪表盘里透出来或者离得太远。
+        val hole = min(reach * 0.72f, 12f)
         val dots = StarSpecs.points(spec, reach, hole)
         val cx = this.size.width / 2f
         val cy = this.size.height / 2f

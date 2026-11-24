@@ -76,3 +76,40 @@ internal object StarSpecs {
 
 /** 一颗星：相对画布中心的偏移，加上它属于第几层（层号决定亮度与大小）。 */
 internal data class StarPoint(val x: Float, val y: Float, val ring: Int)
+
+/**
+ * 一个思考档位在仪表盘上长什么样。
+ *
+ * `rings` = 画几段环（0 = 只有一圈细弧），`needleDeg` = 红针偏角，
+ * `slash` = 关闭那道斜杠，`dots` = 弧外那圈红点（ultra）。
+ */
+internal data class GaugeSpec(
+    val rings: Int,
+    val needleDeg: Float,
+    val slash: Boolean = false,
+    val dots: Boolean = false,
+)
+
+internal object GaugeSpecs {
+
+    /**
+     * wire 值必须与 `crates/ffi/src/turn.rs` 的 `apply_thinking` 对表。
+     *
+     * 环数：`minimal` / `low` 一档，`medium` / `high` / `xhigh` 两档，`max` / `ultra` 三档。
+     * 指针从左往右：越强的档越靠右。这是"数环 + 看针"两个线索同时可用——
+     * 小尺寸时数环更快，看得清时针的角度更准。
+     */
+    fun of(wire: String): GaugeSpec = when (wire) {
+        "off" -> GaugeSpec(rings = 0, needleDeg = 0f, slash = true)
+        "auto" -> GaugeSpec(rings = 0, needleDeg = 0f)
+        "minimal" -> GaugeSpec(rings = 1, needleDeg = -38f)
+        "low" -> GaugeSpec(rings = 1, needleDeg = -20f)
+        "medium" -> GaugeSpec(rings = 2, needleDeg = 0f)
+        "high" -> GaugeSpec(rings = 2, needleDeg = 22f)
+        "xhigh" -> GaugeSpec(rings = 2, needleDeg = 38f)
+        "max" -> GaugeSpec(rings = 3, needleDeg = 52f)
+        "ultra" -> GaugeSpec(rings = 3, needleDeg = 52f, dots = true)
+        // 认不出的 wire 按"自动"画：画一个空仪表，不假装它是某一档。
+        else -> GaugeSpec(rings = 0, needleDeg = 0f)
+    }
+}
