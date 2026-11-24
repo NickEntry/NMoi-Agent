@@ -5792,10 +5792,10 @@ private fun Composer(
         Surface(
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            // 页边距（用户 2026-11-24 给的那张图）：左右各 8dp，比原来 12dp 贴边一点。
+            // 输入框本身的页边距：8 太贴屏幕边了，给 16。
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 8.dp, end = 8.dp),
+                .padding(start = 16.dp, end = 16.dp),
         ) {
             Column(modifier = Modifier.padding(top = 6.dp, bottom = 6.dp)) {
                 if (pending.isNotEmpty()) {
@@ -5854,12 +5854,11 @@ private fun Composer(
                     modifier = Modifier.fillMaxWidth(),
                     onReady = onEditTextReady,
                 )
-                // 图标热区 36dp、视觉 18dp 居中，所以热区里那 18dp 图形离热区左边
-                // 还有 (36-18)/2 = 9dp。文字内边距 40 减去这 9，热区起点给 31——
-                // 这样图标的**视觉**左边正好落在 40，与上面那行文字对齐。
-                // 只推文字不推图标的话，文字会比图标缩进一大截。
+                // 图标热区 36dp、视觉 18dp 居中，那 18dp 图形离热区左边还有
+                // (36-18)/2 = 9dp。要让图标的**视觉**左边落在 24，热区起点给 15。
+                // 文字那边是 48：比图标缩进更多（用户 2026-11-24 定的）。
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 31.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 15.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 六个里还剩五个没接：点一下把"差什么、等哪个阶段"写进上面那行提示。
@@ -5959,6 +5958,7 @@ private fun Composer(
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 与输入框外边距（16）对齐：这行字在框下面，比框还靠里会显得歪。
             modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp),
         )
     }
@@ -6186,9 +6186,8 @@ private fun NativeEditText(
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION or EditorInfo.IME_ACTION_NONE
-                // 左右各 40：24 还是窄。这个数要和下面那排图标的起点对齐——
-                // 只推文字不推图标，文字会缩进得比图标多一大截。
-                setPadding(40, 22, 40, 18)
+                // 左右各 48：文字要比下面那排图标缩进得更多（用户 2026-11-24 明确）。
+                setPadding(48, 22, 48, 18)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null
