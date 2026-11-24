@@ -4898,3 +4898,25 @@ C ABI 冒烟 357 → **362** 项。
 - 单测：`SpeedLevelsTest` 新增 `non_gpt_families_have_no_tiers_even_on_openai_ports`（四个家族 × 两个端口 + 空名字）、
   `GPT-5.6-turbo` 与 `Claude-Sonnet-5` 的大小写不敏感断言、`gemini` 端口 + gpt 名字不给。
   **先拿坏实现验过会红**（把 `forModel` 改回按端口判 → 3 条失败），才认这版绿。
+
+## D419 工具清单的"要不要工作区"改由原生给（2026-11-25）
+
+起因是 D401 那份手抄表。`ToolGroups.requiresWorkspace` 里写死了"哪些工具摆在工作区那一组"，
+而 core 的真源是 `Capability::needs_workspace`。两边对了一遍，漏了三个：
+
+```text
+View-Image            core=true  kotlin=false
+WorkSpace-EnvirShell  core=true  kotlin=false
+edit_unit             core=true  kotlin=false
+```
+
+表现是"在工作区里关掉了一个跟工作区无关的工具"——用户以为生效了，其实它压根不在那一批里。
+
+- `nmoi_tool_names_json` 多回一列 `workspace`（注册表按 `needs_workspace` 现算）。
+  界面不再自己判断，只解析：`ToolCatalog(names, workspace)`。
+- 缺那一列（老 `.so` 配新界面）时退化成"全部本地"，开关至少还在原处，不整块消失。
+- 工作区「工具」页签只列 `workspaceOnly`；计数文案从「本地工具 N/M」改成「工作区工具 N/M」
+  ——那一页列的一直是工作区那一批，文案写错比不写更糟。
+- 判据：ffi 侧 `tool_names_carry_the_workspace_flag_from_capabilities` 拿注册表自己再算一遍
+  逐条对上（**先把它改成回空数组验过会红**）；Kotlin 侧 `ToolGroupsTest` 三条
+  （缺列退化、工作区那批只出现在 workspaceOnly、陌生名字不丢）。
