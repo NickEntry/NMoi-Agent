@@ -99,6 +99,19 @@ internal fun SheetFrame(
     // 返回键先收这一层（D209）。以前只有点遮罩能关：真机上按返回会直接退到聊天页、
     // 再按一次退出应用，而面板还挂在上面——"这一层根本没被算进返回链"。
     BackHandler(enabled = true) { onDismiss() }
+    // **用 Dialog 而不是就地铺一层 Box**（D413）。
+    //
+    // 就地铺的话，宽度跟着父布局走：侧边栏里长出来的面板会被卡在侧边栏那么宽
+    // （截图里那个"重命名 / 详细信息 / 置顶…"的菜单只有半屏）。
+    // `Dialog` 以**窗口**为基准，所以无论从哪儿调用都是整屏宽，遮罩也盖住整屏。
+    // `usePlatformDefaultWidth = false` 是必须的：默认它会给窗口留一圈边距。
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
     Box(modifier = Modifier.fillMaxSize()) {
         // 遮罩：比抽屉那层淡，面板本身是"临时的一层"，不该看着像换了页面。
         Box(
@@ -140,6 +153,7 @@ internal fun SheetFrame(
                 }
             }
         }
+    }
     }
 }
 

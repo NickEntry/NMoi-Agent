@@ -330,6 +330,14 @@ internal fun ChatScreen(
     val databasePath = remember { File(context.filesDir, "nmoi.db").absolutePath }
     // 用哪一套端点 / 哪个模型归**助手**（D161）。这一屏只负责显示和切换它。
     var assistant by remember { mutableStateOf(AssistantEntry()) }
+    /**
+     * 助手那份配置**读到了没有**（D414）。
+     *
+     * `AssistantEntry()` 的默认值里 `thinking = "auto"`，所以第一帧必然先画出 auto，
+     * 等库读回来再跳成 `max`——用户看到的就是"闪一下"。图标这一类"跟着值变"的东西
+     * 在读到之前不画，比画一个错的再改要诚实。
+     */
+    var assistantReady by remember { mutableStateOf(false) }
     var choices by remember { mutableStateOf(listOf<Pair<ProviderEntry, ProviderModel>>()) }
     /**
      * 供应商 id → 名字。
@@ -464,7 +472,10 @@ internal fun ChatScreen(
     }
     LaunchedEffect(sessionId, reloadKey, assistantKey, externalReload) {
         withContext(Dispatchers.IO) {
-            AssistantRepository.current(databasePath).onSuccess { assistant = it }
+            AssistantRepository.current(databasePath).onSuccess {
+                assistant = it
+                assistantReady = true
+            }
             AssistantRepository.choices(databasePath).onSuccess { choices = it }
             ProviderRepository.list(databasePath).onSuccess { page ->
                 providerNames = page.rows.associate { it.id to it.name.ifBlank { it.id } }
@@ -1898,6 +1909,7 @@ internal fun ChatScreen(
                     speedLabel = speedLabel,
                     thinkingWire = assistant.thinking,
                     starSpec = speedStarSpec,
+                    thinkingReady = assistantReady,
                     onEditTextReady = { editTextRef.value = it },
                     onSend = sendTurn,
                     interrupts = interrupts,
@@ -5711,6 +5723,13 @@ private fun Composer(
     speedLabel: String = "跟随默认",
     /** 思考档位的 wire 值：图标底下那行英文缩写用它（`min` / `mid`）。 */
     thinkingWire: String = "auto",
+    /**
+     * 助手那份配置读到了没有（D414）：读到之前不画仪表盘与星图。
+     *
+     * 不这么做的话，第一帧画的是默认值（auto），库读回来才跳成真正的档位——
+     * 用户看到的是图标闪一下。
+     */
+    thinkingReady: Boolean = false,
     /** 图标底下那圈星（D402）：标准档是 [StarSpecs.NONE]。 */
     starSpec: StarSpec = StarSpecs.NONE,
     onEditTextReady: (EditText) -> Unit,
@@ -5879,11 +5898,13 @@ private fun Composer(
                     // 思考强度（D402）：仪表盘 + 底下的星图 + 英文档位名。
                     // 星图表达速度，名字是档位缩写——两个线索都在这一颗按钮上。
                     Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                        StarField(
-                            spec = starSpec,
-                            modifier = Modifier.align(Alignment.Center),
-                            size = 44.dp,
-                        )
+                        if (thinkingReady) {
+                            StarField(
+                                spec = starSpec,
+                                modifier = Modifier.align(Alignment.Center),
+                                size = 44.dp,
+                            )
+                        }
                         // 图标本体跟着档位变（环数 = 档位，红针 = 强度）。
                         // 之前这里是固定的 ActionIcons.Gauge，调档位时图标一直不动。
                         Box(
@@ -5897,11 +5918,27 @@ private fun Composer(
                                 },
                             contentAlignment = Alignment.Center,
                         ) {
-                            // 居中在画布内自己做（`ThinkingGauge` 里那个 lift），
-                            // 这里不再加偏移——两处各移一次会移过头。
-                            ThinkingGauge(wire = thinkingWire, size = 22.dp)
+                            // 读到之前画一个同尺寸的占位圈：位置不跳，也不显示错的档位。
+                            if (thinkingReady) {
+                                // 再上移 1dp（用户 2026-11-24 那张截图里还差一点）。
+                                ThinkingGauge(
+                                    wire = thinkingWire,
+                                    size = 22.dp,
+                                    modifier = Modifier.offset(y = (-1).dp),
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(androidx.compose.foundation.shape.CircleShape)
+                                        .background(
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                                .copy(alpha = 0.12f),
+                                        ),
+                                )
+                            }
                         }
-                        Text(
+                        if (thinkingReady) Text(
                             text = shortLevelName(thinkingWire),
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
                             fontWeight = FontWeight.Bold,
@@ -5909,7 +5946,7 @@ private fun Composer(
                             maxLines = 1,
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .offset(y = 9.dp),
+                                .offset(y = 8.dp),
                         )
                     }
                     IconActionButton(

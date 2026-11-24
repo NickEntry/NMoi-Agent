@@ -231,7 +231,11 @@ class MainActivity : ComponentActivity() {
                 }
                 Start.mark("代理接线", proxyFrom)
             }
-            SystemBarsForTheme(dark)
+            // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
+            // 声明在这里（而不是更下面）：状态栏压暗要读它。
+            var drawerOpen by remember { mutableStateOf(false) }
+            // 抽屉开着时状态栏也压暗（D415）：遮罩在 Compose 层，盖不到窗口那一块。
+            SystemBarsForTheme(dark, dim = if (drawerOpen) 0.60f else 0f)
             NMoiTheme(dark = dark) {
                 // 路由栈：返回 = 回上一级。子页面以后（模型详情、世界书编辑…）同样只需 push，
                 // 不用每页各写一个返回逻辑。根是聊天页，它不接管返回键。
@@ -256,7 +260,6 @@ class MainActivity : ComponentActivity() {
                     Start.mark("环境状态", from)
                 }
                 // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
-                var drawerOpen by remember { mutableStateOf(false) }
 
                 val nativeStatus = remember {
                     // 第一次碰 NativeBridge 就是 `System.loadLibrary`：算在启动账上（D359）。
