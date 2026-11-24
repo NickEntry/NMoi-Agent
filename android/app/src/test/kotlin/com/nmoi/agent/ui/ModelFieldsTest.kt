@@ -264,7 +264,10 @@ class ModelFieldsTest {
     @Test
     fun `支持的级别里不含关闭-关闭由允许关闭单独回答`() {
         assertTrue(Efforts.LEVELS.none { it.wire == "none" })
-        assertEquals(6, Efforts.LEVELS.size)
+        // 不写死数量：加了 ultra 之后这里是 7。写死数字的断言每加一档就假失败一次。
+        assertEquals(Efforts.ALL.size - 1, Efforts.LEVELS.size)
+        // 但顺序仍要从低到高，且 ultra 在最后。
+        assertEquals("ultra", Efforts.LEVELS.last().wire)
         // 但 normalize 仍然认 none：老数据可能存着它。
         assertEquals(listOf("none", "low"), Efforts.normalize(listOf("low", "none")))
     }
