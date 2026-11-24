@@ -348,6 +348,8 @@ internal object TurnRepository {
                     // core 那边"没这一段"= 不声明这个工具。
                     .also { row -> VoiceRepository.turnJson(context)?.let { row.put("voice", it) } }
                     .put("thinking", assistant.thinking)
+                    // 速度（D402）：空 = 一个字段都不注。写进去的 wire 值由 FFI 按端口再判一次。
+                    .put("speed", assistant.speed)
                     .also { row ->
                         envir?.let { row.put("envir", envirJson(context, it, sessionId)) }
                     }

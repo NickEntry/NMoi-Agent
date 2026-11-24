@@ -134,6 +134,8 @@ pub enum ThinkingEffort {
     #[serde(rename = "xhigh")]
     XHigh,
     Max,
+    /// 顶档之上：模型自己拉子 AGENT 并行推理（gpt-5.6 / gpt-6 家族才认）。
+    Ultra,
 }
 
 impl ThinkingEffort {
@@ -147,6 +149,7 @@ impl ThinkingEffort {
             ThinkingEffort::High => "high",
             ThinkingEffort::XHigh => "xhigh",
             ThinkingEffort::Max => "max",
+            ThinkingEffort::Ultra => "ultra",
         }
     }
 
@@ -159,6 +162,7 @@ impl ThinkingEffort {
             "high" => Some(ThinkingEffort::High),
             "xhigh" | "extra_high" => Some(ThinkingEffort::XHigh),
             "max" | "maximum" => Some(ThinkingEffort::Max),
+            "ultra" => Some(ThinkingEffort::Ultra),
             _ => None,
         }
     }
@@ -173,6 +177,7 @@ impl ThinkingEffort {
             ThinkingEffort::High => 4,
             ThinkingEffort::XHigh => 5,
             ThinkingEffort::Max => 6,
+            ThinkingEffort::Ultra => 7,
         }
     }
 
@@ -309,9 +314,10 @@ impl ThinkingSetting {
                         ThinkingEffort::None | ThinkingEffort::Minimal => "minimal",
                         ThinkingEffort::Low => "low",
                         ThinkingEffort::Medium => "medium",
-                        ThinkingEffort::High | ThinkingEffort::XHigh | ThinkingEffort::Max => {
-                            "high"
-                        }
+                        ThinkingEffort::High
+                        | ThinkingEffort::XHigh
+                        | ThinkingEffort::Max
+                        | ThinkingEffort::Ultra => "high",
                     };
                     config.insert("thinkingLevel".into(), Value::String(level.into()));
                 }
@@ -397,6 +403,160 @@ pub fn remove_path(value: &mut Value, path: &str) -> bool {
     {
         Some(child) => remove_path(child, &parts.collect::<Vec<_>>().join(".")),
         None => false,
+    }
+}
+
+/// 速度档位（D402）：同一档思考强度下，"多快出字"是另一根轴。
+///
+/// 两家的字段名不一样，所以这里只表达"要哪一档"，写进哪个键由 [`SpeedField`] 决定：
+/// OpenAI 系是 `service_tier`（`flex` / `default` / `priority` / `ultrafast`），
+/// Anthropic 系是 `speed`（`standard` / `fast`）。
+///
+/// **`Default` 不是"没设置"**：它明确要求常规容量。真"不设置"是 `None`（`ThinkingSetting`
+/// 那一层不发这个键），两者在账单上是同一档，但在"用户有没有表过态"上不是同一件事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedTier {
+    /// 更便宜、排队更靠后（OpenAI `flex`，约 0.5×）。
+    Flex,
+    /// 常规容量（OpenAI `default` / Anthropic `standard`，1.0×）。
+    Standard,
+    /// 优先排队（OpenAI `priority` 或 `fast`，约 2×）。
+    Priority,
+    /// 比优先再上一档，按端点单独计价（OpenAI `ultrafast`）。
+    Ultrafast,
+    /// Anthropic 的快速模式：出字最多快 2.5 倍，价约 2×。
+    Fast,
+}
+
+impl SpeedTier {
+    /// 这一档在 **OpenAI 系** wire 上写什么（`service_tier` 的取值）。
+    ///
+    /// `Fast` 在这一族里是 `priority` 的同义词（第三方网关文档明确写了两种拼法等价），
+    /// 所以折成 `priority`，不发明第五个值。
+    pub fn service_tier(self) -> &'static str {
+        match self {
+            SpeedTier::Flex => "flex",
+            SpeedTier::Standard => "default",
+            SpeedTier::Priority | SpeedTier::Fast => "priority",
+            SpeedTier::Ultrafast => "ultrafast",
+        }
+    }
+
+    /// 这一档在 **Anthropic 系** wire 上写什么（`speed` 的取值）。
+    ///
+    /// `Flex` / `Ultrafast` 在 Anthropic 那边没有对应物：返回 `None` 表示**这一档不发**，
+    /// 由调用方在界面上就不列它，而不是发一个对方不认识的词。
+    pub fn anthropic_speed(self) -> Option<&'static str> {
+        match self {
+            SpeedTier::Standard => Some("standard"),
+            SpeedTier::Priority | SpeedTier::Fast => Some("fast"),
+            SpeedTier::Flex | SpeedTier::Ultrafast => None,
+        }
+    }
+
+    /// 价格倍率（相对标准档）。`None` = 按端点单独计价，没有一个通用倍数。
+    pub fn multiplier(self) -> Option<f32> {
+        match self {
+            SpeedTier::Flex => Some(0.5),
+            SpeedTier::Standard => Some(1.0),
+            SpeedTier::Priority | SpeedTier::Fast => Some(2.0),
+            SpeedTier::Ultrafast => None,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "flex" | "cheap" | "slow" => Some(SpeedTier::Flex),
+            "default" | "standard" | "auto" | "normal" => Some(SpeedTier::Standard),
+            "priority" | "fast_tier" => Some(SpeedTier::Priority),
+            "ultrafast" => Some(SpeedTier::Ultrafast),
+            "fast" | "turbo" | "highspeed" | "prime" => Some(SpeedTier::Fast),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SpeedTier::Flex => "flex",
+            SpeedTier::Standard => "standard",
+            SpeedTier::Priority => "priority",
+            SpeedTier::Ultrafast => "ultrafast",
+            SpeedTier::Fast => "fast",
+        }
+    }
+}
+
+/// 速度这一档注到哪个字段族。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedField {
+    /// 不注任何速度字段。
+    #[default]
+    None,
+    /// `service_tier: "flex" | "default" | "priority" | "ultrafast"`
+    ServiceTier,
+    /// `speed: "standard" | "fast"`
+    AnthropicSpeed,
+}
+
+/// 一次请求的速度设置：字段族 + 档位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SpeedSetting {
+    pub field: SpeedField,
+    pub tier: Option<SpeedTier>,
+}
+
+impl SpeedSetting {
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    pub fn new(field: SpeedField, tier: SpeedTier) -> Self {
+        Self {
+            field,
+            tier: Some(tier),
+        }
+    }
+
+    /// 把速度设置写进请求体。写不进去（字段族与档位对不上）时**什么都不写**，
+    /// 由 `unsupported()` 回答"为什么"，而不是悄悄发一个对方不认识的键。
+    pub fn apply(&self, body: &mut Value) -> bool {
+        let Some(tier) = self.tier else {
+            return false;
+        };
+        let Some(object) = body.as_object_mut() else {
+            return false;
+        };
+        match self.field {
+            SpeedField::None => false,
+            SpeedField::ServiceTier => {
+                object.insert(
+                    "service_tier".into(),
+                    Value::String(tier.service_tier().into()),
+                );
+                true
+            }
+            SpeedField::AnthropicSpeed => match tier.anthropic_speed() {
+                Some(speed) => {
+                    object.insert("speed".into(), Value::String(speed.into()));
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
+    /// 这一档在这个字段族上写不出去时的原因（界面上要能说清"为什么这一档灰着"）。
+    pub fn unsupported(&self) -> Option<String> {
+        let tier = self.tier?;
+        if self.field == SpeedField::AnthropicSpeed && tier.anthropic_speed().is_none() {
+            return Some(format!(
+                "Anthropic 只有 standard / fast 两档，`{}` 没有对应值",
+                tier.as_str()
+            ));
+        }
+        None
     }
 }
 
@@ -605,5 +765,84 @@ mod tests {
             .chat_url("m"),
             "https://api.openai.com/v1/chat/completions"
         );
+    }
+    /// `ultra` 是 gpt-5.6 / gpt-6 家族才有的顶档：它得能被解析、能排到 max 之后。
+    #[test]
+    fn ultra_sits_above_max() {
+        assert_eq!(ThinkingEffort::parse("ultra"), Some(ThinkingEffort::Ultra));
+        assert_eq!(ThinkingEffort::Ultra.as_str(), "ultra");
+        assert!(ThinkingEffort::Ultra.rank() > ThinkingEffort::Max.rank());
+        // 排序要把它排在最后，否则滑块上会插在中间
+        let sorted = ThinkingEffort::sorted(vec![
+            ThinkingEffort::Ultra,
+            ThinkingEffort::Low,
+            ThinkingEffort::Max,
+        ]);
+        assert_eq!(
+            sorted,
+            vec![
+                ThinkingEffort::Low,
+                ThinkingEffort::Max,
+                ThinkingEffort::Ultra
+            ]
+        );
+    }
+
+    /// 速度档：两家 wire 名不同，写不出去时要能说清原因。
+    #[test]
+    fn speed_tiers_write_the_right_field() {
+        // OpenAI 系：service_tier，`fast` 折成 `priority`（网关文档说两种拼法等价）
+        let mut body = json!({"model": "m"});
+        assert!(SpeedSetting::new(SpeedField::ServiceTier, SpeedTier::Flex).apply(&mut body));
+        assert_eq!(body["service_tier"], json!("flex"));
+
+        let mut body = json!({"model": "m"});
+        SpeedSetting::new(SpeedField::ServiceTier, SpeedTier::Fast).apply(&mut body);
+        assert_eq!(body["service_tier"], json!("priority"));
+
+        // Anthropic 系：speed，只有 standard / fast
+        let mut body = json!({"model": "m"});
+        assert!(SpeedSetting::new(SpeedField::AnthropicSpeed, SpeedTier::Fast).apply(&mut body));
+        assert_eq!(body["speed"], json!("fast"));
+
+        let mut body = json!({"model": "m"});
+        SpeedSetting::new(SpeedField::AnthropicSpeed, SpeedTier::Standard).apply(&mut body);
+        assert_eq!(body["speed"], json!("standard"));
+    }
+
+    /// Anthropic 没有 flex / ultrafast：不发，并且 `unsupported` 要给出原因。
+    #[test]
+    fn anthropic_has_no_flex_or_ultrafast() {
+        for tier in [SpeedTier::Flex, SpeedTier::Ultrafast] {
+            let setting = SpeedSetting::new(SpeedField::AnthropicSpeed, tier);
+            let mut body = json!({"model": "m"});
+            assert!(!setting.apply(&mut body), "{tier:?} 不该写进去");
+            assert!(body.get("speed").is_none(), "{tier:?} 不该留字段");
+            assert!(setting.unsupported().is_some(), "{tier:?} 要说清原因");
+        }
+        // 标准档没有 unsupported
+        assert!(
+            SpeedSetting::new(SpeedField::AnthropicSpeed, SpeedTier::Standard)
+                .unsupported()
+                .is_none()
+        );
+    }
+
+    /// 倍率：ultrafast 按端点计价，没有通用倍数。
+    #[test]
+    fn speed_multipliers_are_known_where_they_exist() {
+        assert_eq!(SpeedTier::Flex.multiplier(), Some(0.5));
+        assert_eq!(SpeedTier::Standard.multiplier(), Some(1.0));
+        assert_eq!(SpeedTier::Priority.multiplier(), Some(2.0));
+        assert_eq!(SpeedTier::Fast.multiplier(), Some(2.0));
+        assert_eq!(SpeedTier::Ultrafast.multiplier(), None);
+    }
+
+    /// 没设速度时一个字段都不写（老行为不变）。
+    #[test]
+    fn no_speed_setting_writes_nothing() {
+        let mut body = json!({"model": "m"});
+        assert!(!SpeedSetting::disabled().apply(&mut body));
+        assert_eq!(body, json!({"model": "m"}));
     }
 }

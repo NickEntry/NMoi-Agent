@@ -449,10 +449,17 @@ private fun RolePromptSheet(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            ThinkingChips(levels = levels, selected = thinking) { wire ->
-                thinking = wire
-                AppSettings.setRoleThinking(context, role.key, wire)
-            }
+            // 滑块（D402）：档位是有序的，"往右更强"一眼看得出来；胶囊得逐个读。
+            LevelSlider(
+                labels = levels.map { shortLevelName(it.first) },
+                index = levels.indexOfFirst { it.first == thinking }.coerceAtLeast(0),
+                onPick = { at ->
+                    levels.getOrNull(at)?.let { (wire, _) ->
+                        thinking = wire
+                        AppSettings.setRoleThinking(context, role.key, wire)
+                    }
+                },
+            )
             if (unsupported) {
                 Text(
                     text = "现在是「${thinkingShort(thinking)}」，这个模型不支持",

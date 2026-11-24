@@ -18,8 +18,14 @@ internal data class AssistantEntry(
     /** 覆盖模型上的默认参数；`null` = 用模型自己那份。 */
     val temperature: Double? = null,
     val maxTokens: Int? = null,
-    /** 思考强度（D162）：`auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。 */
+    /** 思考强度（D162）：`auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`。 */
     val thinking: String = "auto",
+    /**
+     * 速度档位（D402）：`""`（跟随默认）/ `flex` / `standard` / `priority` / `ultrafast` / `fast`。
+     *
+     * 与 [thinking] 是两根轴。空 = 一个字段都不注（老行为不变）。
+     */
+    val speed: String = "",
     val subAgent: SubAgentSpec = SubAgentSpec(),
     /** 逐字输出。关掉之后正文不边写边画，收尾一次出现。 */
     val stream: Boolean = true,
@@ -213,6 +219,7 @@ internal object AssistantRepository {
                 .put("provider_id", entry.providerId)
                 .put("model_id", entry.modelId)
                 .put("thinking", entry.thinking)
+                .put("speed", entry.speed)
                 .put(
                     "sub_agent",
                     JSONObject()
@@ -361,6 +368,7 @@ internal object AssistantRepository {
             },
             maxTokens = safe.optInt("max_tokens", 0).takeIf { it > 0 },
             thinking = safe.optString("thinking", "auto").ifBlank { "auto" },
+            speed = safe.optString("speed", "").trim().lowercase(),
             subAgent = parseSubAgent(safe.optJSONObject("sub_agent")),
             stream = safe.optBoolean("stream", true),
             workspaceId = safe.optString("workspace_id", WorkspaceRepository.DEFAULT_ID)

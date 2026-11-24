@@ -36,7 +36,10 @@ use nmoi_core::budget::{Budget, CompressAction, CompressionTrigger, TriggerPolic
 use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::Role;
 use nmoi_core::policy::{AssistantPolicy, WorkspaceBinding};
-use nmoi_core::provider::{ProviderConfig, ProviderKind, ThinkingEffort, ThinkingField};
+use nmoi_core::provider::{
+    ProviderConfig, ProviderKind, SpeedField, SpeedSetting, SpeedTier, ThinkingEffort,
+    ThinkingField,
+};
 use nmoi_core::runtime::ChatRequest;
 use nmoi_core::session::{
     regenerate_turn, run_session_turn_with_attachments, SessionConfig, SessionError, SessionTurn,
@@ -298,8 +301,10 @@ struct TurnInput {
     /// 语音现状（0.17c）：选中的 TTS / ASR 与唱歌能不能用。
     /// **不传 = 没配或总开关关着**，`Voice-Caps` 不声明。
     voice: Option<nmoi_core::voicecaps::VoiceCaps>,
-    /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
+    /// 思考强度：`auto`（不注字段）/ `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`。
     thinking: Option<String>,
+    /// 速度档位（D402）：`flex` / `standard` / `priority` / `ultrafast` / `fast`。空 = 不发。
+    speed: Option<String>,
     /// 隔离环境的坐标（D172）。给了这一块 = 这一轮可以用 `WorkSpace-EnvirShell`。
     /// 五个路径全是**宿主机**上的绝对路径，由调用方（Kotlin）现取现传。
     envir: Option<EnvirSpec>,
@@ -638,6 +643,7 @@ fn parse_config(text: &str) -> FfiResult<TurnInput> {
             Some(_) => Some(PathBuf::from(envir_path(&root, "skills_root")?)),
         },
         thinking: optional_str(&root, "thinking")?.filter(|text| !text.trim().is_empty()),
+        speed: optional_str(&root, "speed")?.filter(|text| !text.trim().is_empty()),
         envir: parse_envir(&root)?,
         system,
         sub_agents,
@@ -789,7 +795,7 @@ fn parse_thinking_efforts(root: &Value) -> FfiResult<Vec<ThinkingEffort>> {
             bad(
                 &format!("thinking_efforts[{index}]"),
                 &format!(
-                    "只能是 none / minimal / low / medium / high / xhigh / max，收到 `{text}`"
+                    "只能是 none / minimal / low / medium / high / xhigh / max / ultra，收到 `{text}`"
                 ),
             )
         })?;
@@ -1069,7 +1075,7 @@ fn apply_thinking(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequ
     let effort = ThinkingEffort::parse(&level).ok_or_else(|| {
         FfiError::new(
             "bad_argument",
-            format!("thinking 只能是 auto / off / minimal / low / medium / high / xhigh / max，收到 `{level}`"),
+            format!("thinking 只能是 auto / off / minimal / low / medium / high / xhigh / max / ultra，收到 `{level}`"),
         )
     })?;
     if !input.thinking_efforts.is_empty() && !input.thinking_efforts.contains(&effort) {
@@ -1097,6 +1103,63 @@ fn apply_thinking(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequ
         effort: Some(effort),
         ..ThinkingSetting::default()
     }))
+}
+
+/// 速度字段族（D402）：两家字段名不同，按**端口类型 + 模型名**两段判。
+///
+/// 为什么还要看模型名：Claude 经常挂在 OpenAI 兼容中转后面（`base_url` 指向中转、
+/// `kind` 是 `openai_compatible`）。只看端口的话，给 Claude 发的是 `service_tier`，
+/// 对方不认，用户看到的是"选了 fast 没反应"。模型名里带 `claude` 就按 Anthropic 写，
+/// 这条判据比端口更贴近"对面到底是谁"。
+fn speed_field_for(kind: ProviderKind, model: &str) -> SpeedField {
+    let family = model.to_ascii_lowercase();
+    if family.contains("claude") || kind == ProviderKind::Anthropic {
+        return SpeedField::AnthropicSpeed;
+    }
+    match kind {
+        ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => SpeedField::ServiceTier,
+        // Gemini 没有对应概念：不发明一个字段，界面上那一排整条隐藏。
+        ProviderKind::Gemini => SpeedField::None,
+        ProviderKind::Anthropic => SpeedField::AnthropicSpeed,
+    }
+}
+
+/// 速度档位（D402）。空 / `auto` = 一个字段都不注（老行为）。
+///
+/// 三条判据：
+/// 1. 档位不认识 → 报错点名（静默忽略等于"选了没反应"）；
+/// 2. 字段族是 `None`（Gemini 这类）→ **报错说清没有这个轴**，不是静默丢弃；
+/// 3. 档位在这个字段族上没有对应值（Anthropic 的 flex）→ 报错，并把可选档列出来。
+fn apply_speed(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequest> {
+    let Some(raw) = input
+        .speed
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && !text.eq_ignore_ascii_case("auto"))
+    else {
+        return Ok(request);
+    };
+    let field = speed_field_for(input.provider_kind, &request.model);
+    if field == SpeedField::None {
+        return Err(FfiError::new(
+            "bad_argument",
+            format!(
+                "`{}` 这个端口没有速度档位（只有 OpenAI 系的 service_tier 与 Anthropic 的 speed）",
+                input.provider_kind.as_str()
+            ),
+        ));
+    }
+    let tier = SpeedTier::parse(raw).ok_or_else(|| {
+        FfiError::new(
+            "bad_argument",
+            format!("speed 只能是 flex / standard / priority / ultrafast / fast，收到 `{raw}`"),
+        )
+    })?;
+    let setting = SpeedSetting::new(field, tier);
+    if let Some(reason) = setting.unsupported() {
+        return Err(FfiError::new("bad_argument", reason));
+    }
+    Ok(request.speed(setting))
 }
 
 fn parse_str_list(root: &Value, key: &str) -> Result<Vec<String>, crate::json::FfiError> {
@@ -1390,6 +1453,7 @@ pub extern "C" fn nmoi_turn_run_json(config: *const c_char) -> *mut c_char {
         // 思考档位**总是**走一遍：助手页的档位、模型的默认档位、方言与允许关闭
         // 都在 apply_thinking 里合起来判定（省掉这一步 = 那些格子只是摆设）。
         request = apply_thinking(request, &input)?;
+        request = apply_speed(request, &input)?;
 
         // 校准按模型取：换模型就是另一套口径（D95 的键里有模型）。
         let calibrations = storage
@@ -1764,6 +1828,7 @@ pub extern "C" fn nmoi_turn_regen_json(config: *const c_char) -> *mut c_char {
         // 思考档位**总是**走一遍：助手页的档位、模型的默认档位、方言与允许关闭
         // 都在 apply_thinking 里合起来判定（省掉这一步 = 那些格子只是摆设）。
         request = apply_thinking(request, &input)?;
+        request = apply_speed(request, &input)?;
 
         let calibrations = storage
             .calibrations(&input.model, input.now_ms)
@@ -2006,7 +2071,7 @@ fn thinking_setting(
         bad(
             "thinking",
             &format!(
-                "只能是 auto / off / minimal / low / medium / high / xhigh / max，收到 `{level}`"
+                "只能是 auto / off / minimal / low / medium / high / xhigh / max / ultra，收到 `{level}`"
             ),
         )
     })?;

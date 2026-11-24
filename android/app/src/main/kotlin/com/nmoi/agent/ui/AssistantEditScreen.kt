@@ -82,6 +82,8 @@ internal fun AssistantEditScreen(
     var subModelId by remember(assistantId) { mutableStateOf("") }
 
     var thinking by remember(assistantId) { mutableStateOf("auto") }
+    /** 速度档位（D402）：空 = 跟随默认。与思考强度是两根轴。 */
+    var speed by remember(assistantId) { mutableStateOf("") }
     /** 这个助手用哪几册世界书（D314 起默认空集：一册都不带）。 */
     var books by remember(assistantId) { mutableStateOf(listOf<String>()) }
     var temperature by remember(assistantId) { mutableStateOf("") }
@@ -161,6 +163,7 @@ internal fun AssistantEditScreen(
         subProviderId = loaded.subAgent.providerId
         subModelId = loaded.subAgent.modelId
         thinking = loaded.thinking
+        speed = loaded.speed
         books = loaded.lorebooks
         temperature = numberText(loaded.temperature) ?: ""
         maxOutput = loaded.maxTokens?.toString().orEmpty()
@@ -175,6 +178,7 @@ internal fun AssistantEditScreen(
         stream = streamOn,
         workspaceId = workspaceId,
         thinking = thinking,
+        speed = speed,
         lorebooks = books,
         temperature = temperature.trim().toDoubleOrNull()?.takeIf { it >= 0.0 },
         maxTokens = maxOutput.trim().toIntOrNull()?.takeIf { it > 0 },
@@ -235,7 +239,7 @@ internal fun AssistantEditScreen(
     }
 
     LaunchedEffect(
-        name, streamOn, workspaceId, thinking, books, temperature, maxOutput,
+        name, streamOn, workspaceId, thinking, speed, books, temperature, maxOutput,
         subEnabled, subId, subDescription, subSession, subProviderId, subModelId, loadedOnce,
     ) {
         val base = entry ?: return@LaunchedEffect
@@ -349,7 +353,39 @@ internal fun AssistantEditScreen(
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
-                    ThinkingChips(levels = ownLevels, selected = thinking) { thinking = it }
+                    LevelSlider(
+                        labels = ownLevels.map { shortLevelName(it.first) },
+                        index = ownLevels.indexOfFirst { it.first == thinking }.coerceAtLeast(0),
+                        onPick = { at -> ownLevels.getOrNull(at)?.let { thinking = it.first } },
+                    )
+                    // 速度（D402）：与聊天页那一份是同一个字段，档位按这个助手的模型现算。
+                    val speedChoices = SpeedLevels.forModel(
+                        choices.firstOrNull { it.first.id == entry?.providerId }?.first?.kind.orEmpty(),
+                        entry?.modelId.orEmpty(),
+                    )
+                    if (speedChoices.isNotEmpty()) {
+                        Text(
+                            text = "速度档位",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(top = 14.dp),
+                        )
+                        Text(
+                            text = SpeedLevels.label(speedChoices.first()) + " → " +
+                                SpeedLevels.label(speedChoices.last()) +
+                                "（空 = 跟随默认）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        LevelSlider(
+                            labels = listOf("auto") + speedChoices.map { it.en },
+                            index = SpeedLevels.parse(speed)?.let { speedChoices.indexOf(it) + 1 } ?: 0,
+                            onPick = { at ->
+                                speed = if (at <= 0) "" else speedChoices.getOrNull(at - 1)?.wire.orEmpty()
+                            },
+                        )
+                    }
                     if (thinkingUnsupported) {
                         Text(
                             text = "现在是「${thinkingShort(thinking)}」，这个模型不支持",

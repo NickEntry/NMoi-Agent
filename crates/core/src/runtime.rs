@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use crate::agent::Cancellation;
 use crate::budget::Usage;
 use crate::message::{Message, Role};
-use crate::provider::{ProviderConfig, ProviderKind, ThinkingSetting};
+use crate::provider::{ProviderConfig, ProviderKind, SpeedSetting, ThinkingSetting};
 use crate::retry::{wait, Attempt, Decision, Entropy, GiveUpReason, RetryPolicy, WaitOutcome};
 use crate::sse::{SseError, SseReader};
 use crate::stream::{Completion, FinishReason, StreamEvent, StreamParseError, StreamParser};
@@ -118,6 +118,8 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
     pub thinking: ThinkingSetting,
+    /// 速度档位（D402）：与思考强度是两根轴。默认不发。
+    pub speed: SpeedSetting,
     /// 期望的回复形态。`chat()` 只吃 `true`，`complete()` 只吃 `false`——
     /// 模式由方法决定，不由这个字段偷偷决定。
     pub stream: bool,
@@ -144,6 +146,7 @@ impl ChatRequest {
             model: model.into(),
             messages: Vec::new(),
             thinking: ThinkingSetting::disabled(),
+            speed: SpeedSetting::disabled(),
             stream: true,
             max_tokens: None,
             temperature: None,
@@ -217,6 +220,12 @@ impl ChatRequest {
 
     pub fn thinking(mut self, thinking: ThinkingSetting) -> Self {
         self.thinking = thinking;
+        self
+    }
+
+    /// 速度档位（D402）。与 `thinking` 是两根轴：一个决定想多深，一个决定出字多快。
+    pub fn speed(mut self, speed: SpeedSetting) -> Self {
+        self.speed = speed;
         self
     }
 
@@ -1000,6 +1009,10 @@ pub fn build_body(request: &ChatRequest) -> Result<Value, ChatError> {
         ProviderKind::Gemini => gemini_body(request, &wire)?,
     };
     request.thinking.apply(&mut body);
+    // 速度（D402）：写不进去时**不改请求**，也不静默吞掉——`unsupported` 留给界面说原因。
+    // 顺序放在 overrides 之前：用户自己在「自定义 Body」里写了 `service_tier` 时，
+    // 他那份优先（`overrides.apply` 在最后）。
+    request.speed.apply(&mut body);
     Ok(request.provider.overrides.apply(body))
 }
 

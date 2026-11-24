@@ -258,6 +258,7 @@ internal object Efforts {
         Kind("high", "高"),
         Kind("xhigh", "极高"),
         Kind("max", "最大"),
+        Kind("ultra", "极限"),
     )
 
     /**

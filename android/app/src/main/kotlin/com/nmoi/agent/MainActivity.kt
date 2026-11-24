@@ -104,6 +104,14 @@ private sealed interface Route {
     /** 一个工作区的文件与工具（D392）：文件页签 / 工具页签。 */
     data class WorkspaceFiles(val id: String) : Route
 
+    /**
+     * 某个工作区的设置页（D403）：从聊天页工具菜单那一行的 ⚙ 直接进。
+     *
+     * 路径是「设置 → 工具与工作区 → 工作区 → 这一个」，所以返回链上要有那两层：
+     * 点返回先回「工作区」列表，再回「工具与工作区」，最后才是聊天页。
+     */
+    data class WorkspaceSettings(val id: String) : Route
+
     /** 终端（D395）：命令回显式，起点是工作区。 */
     data class Terminal(val workspaceId: String) : Route
 
@@ -589,6 +597,12 @@ class MainActivity : ComponentActivity() {
                             onOpenFiles = { id -> backStack = backStack + Route.WorkspaceFiles(id) },
                             onOpenTerminal = { id -> backStack = backStack + Route.Terminal(id) },
                             onOpenEnvir = { backStack = backStack + Route.Envir },
+                            onOpenWorkspaceSettings = { id ->
+                                backStack = backStack +
+                                    Route.SettingsGroupRoute(SettingsGroup.Tools) +
+                                    Route.Workspace +
+                                    Route.WorkspaceSettings(id)
+                            },
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
                                 if (route.sessionId != null) {
@@ -715,6 +729,18 @@ class MainActivity : ComponentActivity() {
                             com.nmoi.agent.ui.Terminal.TerminalScreen(
                                 workspaceId = ws.id,
                                 workspacePath = ws.dir.absolutePath,
+                                onBack = { backStack = backStack.dropLast(1) },
+                            )
+                        }
+
+                        is Route.WorkspaceSettings -> {
+                            val ws = remember(route.id) {
+                                com.nmoi.agent.ui.WorkspaceRepository.resolve(context, route.id)
+                            }
+                            com.nmoi.agent.ui.Files.WorkspaceFilesScreen(
+                                root = ws.dir,
+                                workspaceId = ws.id,
+                                title = ws.name,
                                 onBack = { backStack = backStack.dropLast(1) },
                             )
                         }
@@ -902,6 +928,7 @@ private fun waitsForData(route: Route): Boolean = when (route) {
 private fun routeKeyOf(route: Route): String = when (route) {
     is Route.Chat -> "chat:${route.sessionId ?: "new"}"
     is Route.WorkspaceFiles -> "wsfiles:${route.id}"
+    is Route.WorkspaceSettings -> "wsset:${route.id}"
     is Route.Terminal -> "terminal:${route.workspaceId}"
     is Route.SettingsGroupRoute -> "group:${route.group.name}"
     is Route.AssistantEdit -> "assistant:${route.id}"

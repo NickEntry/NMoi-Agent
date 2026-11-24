@@ -14,22 +14,49 @@ import androidx.compose.runtime.setValue
  * 所以会话活在一个**进程级**对象里，不跟着页面走：页面重建、返回上一级、
  * 甚至切到别的页面再回来，`lines` 都还在。只有"关掉这个会话"才清。
  */
-internal data class TerminalSession(
+internal class TerminalSession(
     /** 稳定的 id（`t:<序号>`）。**改名字不改 id**——命令的登记按 id 走。 */
     val id: String,
-    var title: String,
+    title: String,
     val workspaceId: String,
     val workspacePath: String,
     val label: String,
     /** 已经画出来的行。跨页面保留，所以它在会话里而不是页面里。 */
-    val lines: MutableList<TerminalLine>,
+    lines: List<TerminalLine>,
     /** 历史（上下键）。 */
-    val history: MutableList<String>,
+    history: List<String>,
     /** 现在有没有一条命令在跑。 */
-    var busy: Boolean,
+    busy: Boolean,
     /** 上一个命令用的档位（切档位时更新）。 */
-    var shellLabel: String,
-)
+    shellLabel: String,
+) {
+    /**
+     * 这四个字段都必须是 Compose 的**可观察状态**。
+     *
+     * 以前它们是普通 `var` 与普通 `MutableList`：命令跑完、行追加进去了，
+     * 但组合根本不知道——表现就是"页面经常不刷新，要退出再进才看见输出"。
+     * 换成 `mutableStateOf` 与 `SnapshotStateList` 之后，改一下界面就跟着变。
+     */
+    var title by mutableStateOf(title)
+    var lines by mutableStateOf(lines)
+    var history by mutableStateOf(history)
+    var busy by mutableStateOf(busy)
+    var shellLabel by mutableStateOf(shellLabel)
+
+    /** 追加一行。**换一个新的 list 引用**，否则 `mutableStateOf` 认不出变化。 */
+    fun append(line: TerminalLine) {
+        lines = lines + line
+    }
+
+    /** 整段替换（清屏用）。 */
+    fun replaceLines(next: List<TerminalLine>) {
+        lines = next
+    }
+
+    fun appendHistory(command: String) {
+        history = history + command
+    }
+}
 
 /**
  * 终端会话表（D399）：进程级，页面只读它。
@@ -74,8 +101,8 @@ internal object TerminalSessions {
             workspaceId = workspaceId,
             workspacePath = workspacePath,
             label = label,
-            lines = mutableListOf(),
-            history = mutableListOf(),
+            lines = emptyList(),
+            history = emptyList(),
             busy = false,
             shellLabel = shellLabel,
         )

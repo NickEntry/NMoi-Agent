@@ -177,6 +177,8 @@ internal fun ChatScreen(
     onOpenTerminal: (String) -> Unit = {},
     /** 从工具菜单里进隔离环境页（D401）。 */
     onOpenEnvir: () -> Unit = {},
+    /** 从工具菜单的工作区那一行进「设置 → 工具与工作区 → 工作区 → 这一个」（D403）。 */
+    onOpenWorkspaceSettings: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
@@ -513,11 +515,38 @@ internal fun ChatScreen(
             }
         }
     }
+    /**
+     * 速度那几档（D402）：**按模型与端口现算**，不是一张固定表。
+     *
+     * GPT 四档、Claude 两档、Gemini 空表（整条隐藏）。空表时这一排不出现——
+     * 不给假开关。
+     */
+    val speedChoices = remember(assistant.providerId, assistant.modelId) {
+        val kind = choices
+            .firstOrNull { it.first.id == assistant.providerId }
+            ?.first?.kind
+            .orEmpty()
+        SpeedLevels.forModel(kind, assistant.modelId)
+    }
     val thinkingLabel = remember(assistant.thinking, thinkingLevels) {
         val known = THINKING_LEVELS.firstOrNull { it.first == assistant.thinking }?.second
             ?: assistant.thinking
         val supported = thinkingLevels.any { it.first == assistant.thinking }
         if (supported) known else "$known（这个模型不支持）"
+    }
+    /** 速度的显示名：空 = 跟随默认。 */
+    val speedLabel = remember(assistant.speed, speedChoices) {
+        val tier = SpeedLevels.parse(assistant.speed)
+        when {
+            assistant.speed.isBlank() -> "跟随默认"
+            tier == null -> assistant.speed
+            speedChoices.isNotEmpty() && tier !in speedChoices -> "${SpeedLevels.label(tier)}（这个模型没有）"
+            else -> SpeedLevels.label(tier)
+        }
+    }
+    /** 图标底下那圈星：标准档不画。 */
+    val speedStarSpec = remember(assistant.speed) {
+        SpeedLevels.parse(assistant.speed)?.let { StarSpecs.of(it) } ?: StarSpecs.NONE
     }
     // 顶部这一行是**显示**，不是选择器（用户 2026-10-31）：一轮里用哪个模型由这一页决定，
     // 而模型条还兼着"当前用的是谁"的说明作用。格式「模型名称 (模型提供商)」——
@@ -1864,6 +1893,9 @@ internal fun ChatScreen(
                     onModel = { modelSheet = true },
                     onThinking = { thinkingSheet = true },
                     thinkingLabel = thinkingLabel,
+                    speedLabel = speedLabel,
+                    thinkingWire = assistant.thinking,
+                    starSpec = speedStarSpec,
                     onEditTextReady = { editTextRef.value = it },
                     onSend = sendTurn,
                     interrupts = interrupts,
@@ -2188,29 +2220,42 @@ internal fun ChatScreen(
         }
 
         if (thinkingSheet) {
-            MenuSheet(
-                title = "思考强度",
-                items = thinkingLevels.map { (wire, label) ->
-                    SheetItem(
-                        label = if (wire == assistant.thinking) "$label（当前）" else label,
-                        icon = ActionIcons.Gauge,
-                        hint = null,
-                        onClick = {
-                            thinkingSheet = false
-                            scope.launch {
-                                val next = assistant.copy(thinking = wire)
-                                AssistantRepository.save(databasePath, next).fold(
-                                    onSuccess = {
-                                        assistant = next
-                                        notice = "思考强度：$label（下一轮开始生效）"
-                                    },
-                                    onFailure = { notice = "保存失败：${it.message}" },
-                                )
-                            }
-                        },
-                    )
+            ThinkingSpeedSheet(
+                levels = thinkingLevels,
+                selected = assistant.thinking,
+                speedLevels = speedChoices,
+                speedSelected = assistant.speed,
+                onThinking = { wire ->
+                    scope.launch {
+                        val next = assistant.copy(thinking = wire)
+                        AssistantRepository.save(databasePath, next).fold(
+                            onSuccess = {
+                                assistant = next
+                                val label = thinkingLevels.firstOrNull { it.first == wire }?.second
+                                    ?: wire
+                                notice = "思考强度：$label（下一轮开始生效）"
+                            },
+                            onFailure = { notice = "保存失败：${it.message}" },
+                        )
+                    }
                 },
-                onHint = { notice = it },
+                onSpeed = { wire ->
+                    scope.launch {
+                        val next = assistant.copy(speed = wire)
+                        AssistantRepository.save(databasePath, next).fold(
+                            onSuccess = {
+                                assistant = next
+                                val tier = SpeedLevels.parse(wire)
+                                notice = if (tier == null) {
+                                    "速度：跟随默认（下一轮开始生效）"
+                                } else {
+                                    "速度：${SpeedLevels.label(tier)}（下一轮开始生效）"
+                                }
+                            },
+                            onFailure = { notice = "保存失败：${it.message}" },
+                        )
+                    }
+                },
                 onDismiss = { thinkingSheet = false },
             )
         }
@@ -2226,6 +2271,7 @@ internal fun ChatScreen(
                 onOpenFiles = { id -> onOpenFiles(id) },
                 onOpenTerminal = { id -> onOpenTerminal(id) },
                 onOpenEnvir = { onOpenEnvir() },
+                onOpenWorkspaceSettings = { id -> onOpenWorkspaceSettings(id) },
             )
         }
 
@@ -5659,6 +5705,12 @@ private fun Composer(
     onModel: () -> Unit,
     onThinking: () -> Unit,
     thinkingLabel: String,
+    /** 速度那一档的显示名（D402）：`跟随默认` / `priority (优先)`。 */
+    speedLabel: String = "跟随默认",
+    /** 思考档位的 wire 值：图标底下那行英文缩写用它（`min` / `mid`）。 */
+    thinkingWire: String = "auto",
+    /** 图标底下那圈星（D402）：标准档是 [StarSpecs.NONE]。 */
+    starSpec: StarSpec = StarSpecs.NONE,
     onEditTextReady: (EditText) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -5738,9 +5790,10 @@ private fun Composer(
         Surface(
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            // 页边距（用户 2026-11-24 给的那张图）：左右各 8dp，比原来 12dp 贴边一点。
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp),
+                .padding(start = 8.dp, end = 8.dp),
         ) {
             Column(modifier = Modifier.padding(top = 6.dp, bottom = 6.dp)) {
                 if (pending.isNotEmpty()) {
@@ -5818,12 +5871,31 @@ private fun Composer(
                         onClick = { onHint("网络搜索待接：工具层（P7）") },
                         compact = true,
                     )
-                    IconActionButton(
-                        image = ActionIcons.Gauge,
-                        description = "思考强度：$thinkingLabel",
-                        onClick = onThinking,
-                        compact = true,
-                    )
+                    // 思考强度（D402）：仪表盘 + 底下的星图 + 英文档位名。
+                    // 星图表达速度，名字是档位缩写——两个线索都在这一颗按钮上。
+                    Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                        StarField(
+                            spec = starSpec,
+                            modifier = Modifier.align(Alignment.Center),
+                            size = 44.dp,
+                        )
+                        IconActionButton(
+                            image = ActionIcons.Gauge,
+                            description = "思考强度：$thinkingLabel · 速度：$speedLabel",
+                            onClick = onThinking,
+                            compact = true,
+                        )
+                        Text(
+                            text = shortLevelName(thinkingWire),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .offset(y = 10.dp),
+                        )
+                    }
                     IconActionButton(
                         image = ActionIcons.Wrench,
                         description = "工具",
@@ -6097,7 +6169,8 @@ private fun NativeEditText(
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION or EditorInfo.IME_ACTION_NONE
-                setPadding(16, 22, 12, 18)
+                // 左右对称 16：原来是 16 / 12，光标和文字都偏右，看着像框没对齐。
+                setPadding(16, 22, 16, 18)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null
@@ -6377,11 +6450,110 @@ private fun ModelBar(label: String, percent: Int?, onClick: () -> Unit) {
 internal val THINKING_LEVELS = listOf(
     "auto" to "自动（不注字段）",
     "off" to "关闭",
+    "minimal" to "最低",
     "low" to "低",
     "medium" to "中",
     "high" to "高",
+    "xhigh" to "极高",
     "max" to "最大",
+    "ultra" to "极限",
 )
+
+/**
+ * 思考强度 + 速度（D402）：**两根滑块**，上思考、下速度。
+ *
+ * # 为什么从"一排胶囊"改成滑块
+ *
+ * 胶囊一排放到 9 档就挤成两行，而档位是**有序**的——滑块上"往右更强"这件事
+ * 一眼看得出来，胶囊得逐个读。用户 2026-11-24 给的参考图也是滑块。
+ *
+ * # 速度那一排是**现算**的，不是固定四格
+ *
+ * GPT 写 `service_tier`（四档），Claude 写 `speed`（两档），Gemini 没有这个轴。
+ * 所以档位表由 `SpeedLevels.forModel` 现算：空表时整条不出现——不给假开关，
+ * 也不把四格里灰掉两格（那会让人以为那两档将来会有）。
+ *
+ * # 大字与小字
+ *
+ * 两个滑块各有自己的大字（`max (最大)` / `priority (优先)`）与一行说明。
+ * 速度那行字号低一档：它是副轴，不该抢主标题。
+ */
+@Composable
+private fun ThinkingSpeedSheet(
+    levels: List<Pair<String, String>>,
+    selected: String,
+    speedLevels: List<SpeedTier>,
+    speedSelected: String,
+    onThinking: (String) -> Unit,
+    onSpeed: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // 思考滑块：`levels` 是 (wire, 长说明)，滑块底下用缩写。
+    val thinkingIndex = levels.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+    val thinkingTier = levels.getOrNull(thinkingIndex)
+
+    // 速度滑块：空 = 跟随默认，所以它比档位表多一格在最左。
+    val speedLabels = remember(speedLevels) { listOf("auto") + speedLevels.map { it.en } }
+    val speedIndex = remember(speedSelected, speedLevels) {
+        if (speedSelected.isBlank()) {
+            0
+        } else {
+            val at = speedLevels.indexOfFirst { it.wire == speedSelected }
+            if (at < 0) 0 else at + 1
+        }
+    }
+    val pickedTier = if (speedIndex <= 0) null else speedLevels.getOrNull(speedIndex - 1)
+
+    SheetFrame(title = "思考强度", onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp)
+                .padding(bottom = 8.dp),
+        ) {
+            // ---- 思考强度 ----
+            Spacer(Modifier.height(6.dp))
+            LevelHeadline(
+                title = thinkingTier?.let { "${it.first} (${thinkingShort(it.first)})" }
+                    ?: selected,
+                note = thinkingTier?.second,
+            )
+            Spacer(Modifier.height(10.dp))
+            LevelSlider(
+                labels = levels.map { shortLevelName(it.first) },
+                index = thinkingIndex,
+                onPick = { at -> levels.getOrNull(at)?.let { onThinking(it.first) } },
+            )
+
+            // ---- 速度档位（没有这个轴就整条不出现）----
+            if (speedLevels.isNotEmpty()) {
+                Spacer(Modifier.height(22.dp))
+                LevelHeadline(
+                    title = pickedTier?.let { SpeedLevels.label(it) } ?: "auto (跟随默认)",
+                    note = pickedTier?.let { "${it.multiplierLabel()} · ${it.note}" }
+                        ?: "一个字段都不注，用模型或供应商的默认档",
+                    small = true,
+                    color = pickedTier?.let { androidx.compose.ui.graphics.Color(it.tint) },
+                )
+                Spacer(Modifier.height(8.dp))
+                LevelSlider(
+                    labels = speedLabels,
+                    index = speedIndex,
+                    onPick = { at ->
+                        onSpeed(if (at <= 0) "" else speedLevels.getOrNull(at - 1)?.wire.orEmpty())
+                    },
+                    activeColor = pickedTier?.let { androidx.compose.ui.graphics.Color(it.tint) },
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "改完下一轮生效。速度决定出字快慢与价格，思考决定想多深——两根轴互不影响。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 /**
  * 一条消息的思考块（D162）。折叠起来只占一行，点开看全文。
@@ -6842,22 +7014,6 @@ private fun parseContextImages(info: JSONObject): List<ContextImageRow> {
  * 能做的三件事：看（缩略图 / 格式 / 大小 / 附件 id）、移出一张、清空。
  * 移出**不删文件**，也不改消息：下一轮不带它而已。
  */
-/**
- * 「工具」面板（D401）：照用户 2026-11-24 给的那张截图。
- *
- * 结构是**可展开收起的分组**（`本地工具` / `MCP服务器` / `工作区` 三组 + 三行固定入口）：
- *
- * - **本地工具**：不依赖工作区的那一批（看图、改消息、语音）。用户原话：
- *   "不依赖工作区的工具放在'工具'菜单里面就行了"。展开后一行一个开关，
- *   **没有子菜单**（他明确说"子菜单的操作不太合适"）。
- * - **工作区**：一行一个工作区，右边三颗小图标（⚙ 工具开关 / 📁 文件 / `>_` 终端）。
- *   依赖工作区的工具在 ⚙ 里开关——"换个工作区就是另一批文件"，它天然跟着工作区走。
- * - **工作目录 / 环境 / 权限**：三个固定入口。
- *
- * 为什么原来那个"这一轮的工具根"被并进来了：它本来就是工作区那一行的事，
- * 单独一段只会让人以为"工作区"和"工具根"是两件事。
- */
-@Composable
 private fun ToolSheet(
     sessionId: String?,
     assistantWorkspaceId: String?,
@@ -6869,6 +7025,8 @@ private fun ToolSheet(
     onOpenFiles: (String) -> Unit,
     onOpenTerminal: (String) -> Unit,
     onOpenEnvir: () -> Unit,
+    /** 进「设置 → 工具与工作区 → 工作区 → 这一个」（D403）。 */
+    onOpenWorkspaceSettings: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }
@@ -6880,8 +7038,7 @@ private fun ToolSheet(
     // 三个分组的展开态（D344 的存法不变：收起过的组下次还是收起的）。
     var folded by remember { mutableStateOf(ToolingRepository.foldedGroups(context)) }
     var picking by remember(sessionId) { mutableStateOf(false) }
-    // 工作区那一行的 ⚙ 打开了哪个（`null` = 没开）。
-    var workspaceToolsFor by remember { mutableStateOf<com.nmoi.agent.ui.Workspace?>(null) }
+    var workspaceMenuFor by remember { mutableStateOf<com.nmoi.agent.ui.Workspace?>(null) }
     val workspaces = remember { WorkspaceRepository.list(context) }
 
     LaunchedEffect(Unit) {
@@ -6923,6 +7080,17 @@ private fun ToolSheet(
 
     val local = localTools(toolNames)
     val localOpen = local.count { !off.contains(it) }
+    // 有没有真的绑着一个工作区。
+    //
+    // 判据是"两级都没表态"，**不是**"目录在不在"：`resolve` 总会退回默认工作区
+    // （那是给工具用的兜底），拿 `isDirectory` 判断永远是 true——那样"未绑定"
+    // 那一版界面就永远不出现。
+    //
+    // 会话这一级（`shown`）与助手那一级（`assistantWorkspaceId`）都为空 = 没绑。
+    val resolved = remember(shown, assistantWorkspaceId) {
+        WorkspaceRepository.resolve(context, shown ?: assistantWorkspaceId)
+    }
+    val hasWorkspace = !shown.isNullOrBlank() || !assistantWorkspaceId.isNullOrBlank()
 
     SheetFrame(title = "工具", onDismiss = onDismiss) {
         Column(
@@ -7005,7 +7173,7 @@ private fun ToolSheet(
                         text = group.title,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 40.dp, top = 6.dp, bottom = 2.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     )
                     group.names.forEach { name ->
                         Row(
@@ -7015,8 +7183,8 @@ private fun ToolSheet(
                             Text(
                                 text = toolDisplayName(name),
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f).padding(start = 40.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                             )
                             androidx.compose.material3.Switch(
                                 checked = !off.contains(name),
@@ -7030,15 +7198,27 @@ private fun ToolSheet(
                 }
             }
 
-            // ---- MCP 服务器（这一批还没接，摆位置并说清）----
+            // ---- MCP 服务器 ----
+            // **空的分组也要能展开收起**（用户 2026-11-24：MCP 那个点了没反应）。
+            // 展开后没有条目时写一句"还没有配置"，不摆一个点了不动的空壳。
             ToolGroupHeader(
                 title = "MCP服务器",
                 value = "0/0",
-                folded = true,
-                onToggle = { onNotice("MCP 服务器还没接（计划稿里排在终端之后）") },
+                folded = folded.contains("MCP服务器"),
+                onToggle = { toggleFold("MCP服务器") },
             )
+            if (!folded.contains("MCP服务器")) {
+                Text(
+                    text = "还没有配置 MCP 服务器。这一批还没接（计划稿里排在终端之后）。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+            }
 
             // ---- 工作区 ----
+            // 展开后是四项（有工作区）：工作区那一行 / 工作目录 / 环境 / 权限；
+            // 没绑工作区时只有两项：绑定工作区 / 权限。收起时四项一起收。
             ToolGroupHeader(
                 title = "工作区",
                 value = boundLabel,
@@ -7046,111 +7226,150 @@ private fun ToolSheet(
                 onToggle = { toggleFold("工作区") },
             )
             if (!folded.contains("工作区")) {
-                workspaces.forEach { workspace ->
-                    val active = shown == workspace.id || (shown == null && workspace.isDefault)
+                if (hasWorkspace) {
+                    // 一行：名字 + 三颗图标。**点行本身**弹「切换 / 解除绑定」，
+                    // 三颗图标各自管一件事（用户 2026-11-24 明确分开）。
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 52.dp)
-                            .clickable { picking = true },
+                            .clickable { workspaceMenuFor = resolved },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
                             imageVector = ActionIcons.Folder,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 40.dp).size(20.dp),
+                            modifier = Modifier.padding(start = 12.dp).size(20.dp),
                         )
                         Text(
-                            text = workspace.name + if (workspace.isDefault) "（默认）" else "",
+                            text = resolved.name,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f).padding(start = 12.dp),
                         )
-                        if (active) {
-                            Text(
-                                text = "当前",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(end = 4.dp),
-                            )
-                        }
-                        // ⚙ 工具开关：依赖工作区的那一批在这里开和关。
+                        // ⚙ 直接进「设置 → 工具与工作区 → 工作区 → 这一个」。
                         IconActionButton(
                             image = ActionIcons.Wrench,
-                            description = "这个工作区的工具",
-                            onClick = { workspaceToolsFor = workspace },
+                            description = "这个工作区的设置",
+                            onClick = {
+                                onDismiss()
+                                onOpenWorkspaceSettings(resolved.id)
+                            },
                             compact = true,
                         )
-                        // 📁 文件
                         IconActionButton(
                             image = ActionIcons.Folder,
                             description = "打开文件",
                             onClick = {
                                 onDismiss()
-                                onOpenFiles(workspace.id)
+                                onOpenFiles(resolved.id)
                             },
                             compact = true,
                         )
-                        // >_ 终端
                         IconActionButton(
                             image = ActionIcons.PanelLeft,
                             description = "打开终端",
                             onClick = {
                                 onDismiss()
-                                onOpenTerminal(workspace.id)
+                                onOpenTerminal(resolved.id)
                             },
                             compact = true,
                         )
                     }
+                } else {
+                    // 没绑工作区：只有「绑定工作区」这一行（点了选一个已有的）。
+                    ToolEntryRow(
+                        title = "绑定工作区",
+                        icon = ActionIcons.Plus,
+                        value = "",
+                        onClick = { picking = true },
+                    )
                 }
-            }
 
-            // ---- 三个固定入口 ----
-            ToolEntryRow(
-                title = "工作目录",
-                icon = ActionIcons.Folder,
-                value = current?.let { it.dir.absolutePath } ?: "/",
-                onClick = { picking = true },
-            )
-            ToolEntryRow(
-                title = "环境",
-                icon = ActionIcons.Cpu,
-                value = remember {
-                    when (EnvirRepository.installed(context)?.health) {
-                        null -> "未安装"
-                        EnvirRepository.Health.NeedsRepair -> "需修复"
-                        else -> "就绪"
-                    }
-                },
-                onClick = {
-                    onDismiss()
-                    onOpenEnvir()
-                },
-            )
-            ToolEntryRow(
-                title = "权限",
-                icon = ActionIcons.Ban,
-                value = "请求批准",
-                note = "工作区外文件访问、桌面命令和其他需要授权的工具将在执行前询问。",
-                onClick = { onNotice("权限策略在 设置 → 安全 里改") },
-            )
+                ToolEntryRow(
+                    title = "工作目录",
+                    icon = ActionIcons.Folder,
+                    value = resolved.dir.absolutePath,
+                    onClick = { picking = true },
+                )
+                ToolEntryRow(
+                    title = "环境",
+                    icon = ActionIcons.Cpu,
+                    value = remember {
+                        when (EnvirRepository.installed(context)?.health) {
+                            null -> "未安装"
+                            EnvirRepository.Health.NeedsRepair -> "需修复"
+                            else -> "就绪"
+                        }
+                    },
+                    onClick = {
+                        onDismiss()
+                        onOpenEnvir()
+                    },
+                )
+                ToolEntryRow(
+                    title = "权限",
+                    icon = ActionIcons.Ban,
+                    value = "请求批准",
+                    note = "工作区外文件访问、桌面命令和其他需要授权的工具将在执行前询问。",
+                    onClick = { onNotice("权限策略在 设置 → 安全 里改") },
+                )
+            }
             Spacer(Modifier.height(8.dp))
         }
     }
 
-    // 工作区的 ⚙：依赖工作区的那一批工具。
-    workspaceToolsFor?.let { workspace ->
-        WorkspaceToolsSheet(
-            workspace = workspace,
-            names = workspaceTools(toolNames),
-            onDismiss = { workspaceToolsFor = null },
-            onNotice = onNotice,
+    // 点工作区那一行：切换 / 解除绑定。
+    workspaceMenuFor?.let { workspace ->
+        MenuSheet(
+            title = workspace.name,
+            items = listOf(
+                SheetItem(
+                    label = "切换工作区",
+                    icon = ActionIcons.Folder,
+                    onClick = {
+                        workspaceMenuFor = null
+                        picking = true
+                    },
+                ),
+                SheetItem(
+                    label = "解除绑定",
+                    icon = ActionIcons.Close,
+                    hint = if (sessionId == null) "这条会话还没落库，没有绑定可解" else null,
+                    onClick = if (sessionId == null) {
+                        null
+                    } else {
+                        {
+                            workspaceMenuFor = null
+                            kotlinx.coroutines.MainScope().launch {
+                                ConversationRepository.setWorkspace(databasePath, sessionId, null)
+                                    .fold(
+                                        onSuccess = {
+                                            bound = null
+                                            onNotice("已解除绑定，改回跟随助手")
+                                        },
+                                        onFailure = { onNotice("解除失败：${it.message}") },
+                                    )
+                            }
+                        }
+                    },
+                ),
+            ),
+            onHint = onNotice,
+            onDismiss = { workspaceMenuFor = null },
         )
     }
 }
 
-/** 分组头：`>` / `v` + 标题 + 右侧计数。点整行展开收起。 */
+/**
+ * 分组头：`>` / `v` + 标题 + 右侧计数。点整行展开收起。
+ *
+ * 标题用灰字（用户 2026-11-24）：它是"这一组的名字"，不是可点的动作；
+ * 用正文色会和下面那些条目混成一片，看不出层级。
+ */
 @Composable
 private fun ToolGroupHeader(
     title: String,
@@ -7169,13 +7388,13 @@ private fun ToolGroupHeader(
             imageVector = if (folded) ActionIcons.ChevronRight else ActionIcons.ChevronDown,
             contentDescription = if (folded) "展开「$title」" else "收起「$title」",
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 12.dp).size(18.dp),
+            modifier = Modifier.padding(start = 8.dp).size(18.dp),
         )
         Text(
             text = title,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f).padding(start = 10.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f).padding(start = 8.dp),
         )
         Text(
             text = value,
@@ -7215,7 +7434,7 @@ private fun ToolEntryRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (note != null) {
                 Text(

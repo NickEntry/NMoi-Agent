@@ -104,7 +104,7 @@ internal fun TerminalScreen(
     // 首屏给一行提示符。
     LaunchedEffect(activeId) {
         if (session.lines.isEmpty()) {
-            session.lines += TerminalLine.Prompt(shell.label, workspacePath)
+            session.append(TerminalLine.Prompt(shell.label, workspacePath))
         }
     }
 
@@ -170,37 +170,38 @@ internal fun TerminalScreen(
         if (command.isEmpty() || session.busy) return
         val blocked = ShellRules.blockedReason(command)
         if (blocked != null) {
-            session.lines += TerminalLine.Command(command)
-            session.lines += TerminalLine.Notice(blocked)
+            session.append(TerminalLine.Command(command))
+            session.append(TerminalLine.Notice(blocked))
             draft = ""
             return
         }
-        session.lines += TerminalLine.Command(command)
+        session.append(TerminalLine.Command(command))
         draft = ""
         historyIndex = -1
-        val next = ShellRules.pushHistory(session.history.toList(), command)
-        session.history.clear()
-        session.history.addAll(next)
+        val next = ShellRules.pushHistory(session.history, command)
+        session.history = next
         TerminalPrefs.setHistory(context, next)
         session.busy = true
         scope.launch {
             shell.run(session.id, command, workspacePath).fold(
                 onSuccess = { result ->
                     if (result.stdout.isNotEmpty()) {
-                        session.lines += TerminalLine.Output(result.stdout.trimEnd('\n'))
+                        session.append(TerminalLine.Output(result.stdout.trimEnd('\n')))
                     }
                     if (result.stderr.isNotEmpty()) {
-                        session.lines += TerminalLine.Error(result.stderr.trimEnd('\n'))
+                        session.append(TerminalLine.Error(result.stderr.trimEnd('\n')))
                     }
-                    if (result.isEmpty) session.lines += TerminalLine.Notice("（没有输出）")
-                    session.lines += TerminalLine.Notice(result.summary())
+                    if (result.isEmpty) session.append(TerminalLine.Notice("（没有输出）"))
+                    session.append(TerminalLine.Notice(result.summary()))
                     if (result.changes.isNotEmpty()) {
-                        session.lines += TerminalLine.Notice(
-                            "改了 ${result.changes.size} 个文件：" + result.changes.joinToString("、"),
+                        session.append(
+                            TerminalLine.Notice(
+                                "改了 ${result.changes.size} 个文件：" + result.changes.joinToString("、"),
+                            ),
                         )
                     }
                 },
-                onFailure = { session.lines += TerminalLine.Error(it.message ?: "跑不起来") },
+                onFailure = { session.append(TerminalLine.Error(it.message ?: "跑不起来")) },
             )
             session.busy = false
             TerminalNotifications.sync(context)
@@ -336,12 +337,19 @@ internal fun TerminalScreen(
                 )
             }
 
+            // 终端正文 + 输入行：**输入行贴在正文底部**（像 Termux 那样在终端里敲），
+            // 不是压在屏幕最下面的另一条。键栏在它下面，键盘弹起时正文让位。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+            ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 items(session.lines.size) { index ->
@@ -349,21 +357,11 @@ internal fun TerminalScreen(
                 }
             }
 
-            // 底栏两排键（D397）：照 Termux 那张图，列数与按键可配。
-            val (rows, columns) = TerminalPrefs.layout(context)
-            KeyPad(
-                rows = rows,
-                columns = columns,
-                modifiers = modifiers,
-                onPress = ::press,
-                onLongPressEmpty = { keysSheet = true },
-            )
-
             // 输入行
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 8.dp, bottom = 8.dp, top = 2.dp),
+                    .padding(start = 16.dp, end = 8.dp, bottom = 6.dp, top = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -438,6 +436,17 @@ internal fun TerminalScreen(
                     )
                 }
             }
+            }
+
+            // 底栏两排键（D397）：照 Termux 那张图，列数与按键可配。
+            val (rows, columns) = TerminalPrefs.layout(context)
+            KeyPad(
+                rows = rows,
+                columns = columns,
+                modifiers = modifiers,
+                onPress = ::press,
+                onLongPressEmpty = { keysSheet = true },
+            )
         }
     }
 
@@ -461,8 +470,7 @@ internal fun TerminalScreen(
                         icon = ActionIcons.RotateCcw,
                         onClick = {
                             sessionSheet = false
-                            session.lines.clear()
-                            session.lines += TerminalLine.Prompt(shell.label, workspacePath)
+                            session.replaceLines(listOf(TerminalLine.Prompt(shell.label, workspacePath)))
                         },
                     ),
                 )
@@ -490,7 +498,7 @@ internal fun TerminalScreen(
                                 {
                                     sessionSheet = false
                                     session.shellLabel = candidate.label
-                                    session.lines += TerminalLine.Notice("已切到「${candidate.label}」")
+                                    session.append(TerminalLine.Notice("已切到「${candidate.label}」"))
                                 }
                             },
                         ),
