@@ -13,11 +13,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -30,23 +31,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nmoi.agent.ui.ActionIcons
 import com.nmoi.agent.ui.BackButton
-import com.nmoi.agent.ui.ChipButton
+import com.nmoi.agent.ui.BlurOnLeaveApp
+import com.nmoi.agent.ui.OnImeHidden
 import com.nmoi.agent.ui.IconActionButton
 import com.nmoi.agent.ui.MenuSheet
-import com.nmoi.agent.ui.SheetFrame
 import com.nmoi.agent.ui.SheetItem
 import kotlinx.coroutines.launch
-import java.io.File
 
 /**
  * 终端（D395 / D397 / D399）：**命令回显式**，不是真 PTY。
@@ -89,6 +94,28 @@ internal fun TerminalScreen(
 
     var draft by remember(activeId) { mutableStateOf("") }
     var historyIndex by remember(activeId) { mutableStateOf(-1) }
+    // 键盘只在"点过终端"之后出现（D417）：跟 Termux 一样，点一下正文就呼出，
+    // 敲的字直接长在提示符后面，没有另起一行的输入框。
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    // 焦点落到那一行之后才叫键盘：`requestFocus` 是异步生效的，
+    // 同一帧里叫 `show()` 有一半机型不认（点了没反应）。
+    LaunchedEffect(focused) {
+        if (focused) {
+            keyboard?.show()
+            // 键盘一弹起来正文区会变矮，输入行可能被挤出屏幕：滚到底再敲。
+            listState.animateScrollToItem(session.lines.size)
+        }
+    }
+    // 切后台 / 手势退到桌面时放掉焦点：回来那一刻系统不会再自己把键盘弹起来。
+    BlurOnLeaveApp {
+        focusManager.clearFocus()
+        keyboard?.hide()
+    }
+    // 用户自己把键盘按回去了：焦点跟着掉，否则下次点任意地方它又冒出来。
+    OnImeHidden { focusManager.clearFocus() }
     var notice by remember(activeId) { mutableStateOf<String?>(null) }
     // 修饰键选中态（D397）：按下变选中，再按一个字母组合发送。
     var modifiers by remember(activeId) { mutableStateOf<Set<TerminalKey>>(emptySet()) }
@@ -120,49 +147,6 @@ internal fun TerminalScreen(
             val written = shell.write(session.id, bytes)
             if (written == 0) notice = "这条命令已经不再读了（可能刚结束）"
         }
-    }
-
-    /** 按一颗键（D397）。 */
-    fun press(key: TerminalKey) {
-        if (key.isModifier) {
-            modifiers = if (modifiers.contains(key)) modifiers - key else modifiers + key
-            return
-        }
-        if (key.isLocal) {
-            when (key) {
-                TerminalKey.Copy -> {
-                    val text = session.lines.joinToString("\n") { it.plain() }
-                    val clipboard = context
-                        .getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                        as android.content.ClipboardManager
-                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("终端", text))
-                    notice = "已复制 ${text.length} 个字符"
-                }
-
-                TerminalKey.Paste -> {
-                    val clipboard = context
-                        .getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                        as android.content.ClipboardManager
-                    val text = clipboard.primaryClip
-                        ?.takeIf { it.itemCount > 0 }
-                        ?.getItemAt(0)
-                        ?.coerceToText(context)
-                        ?.toString()
-                        .orEmpty()
-                    if (text.isEmpty()) {
-                        notice = "剪贴板是空的"
-                    } else {
-                        draft += text.replace("\n", " ")
-                        notice = "已粘贴 ${text.length} 个字符"
-                    }
-                }
-
-                else -> Unit
-            }
-            return
-        }
-        send(TerminalKeys.bytesFor(key, modifiers))
-        modifiers = TerminalKeys.afterSend(modifiers)
     }
 
     fun submit() {
@@ -208,9 +192,93 @@ internal fun TerminalScreen(
         }
     }
 
+    /** 上下键翻历史。返回 null = 已经到头，草稿不动。 */
+    fun historyStep(delta: Int): String? {
+        val list = session.history
+        if (list.isEmpty()) return null
+        val from = if (historyIndex < 0) {
+            if (delta < 0) list.size else return null
+        } else {
+            historyIndex + delta
+        }
+        if (from < 0 || from >= list.size) return null
+        historyIndex = from
+        return list[from]
+    }
+
+    /** 按一颗键（D397 / D417）。 */
+    fun press(key: TerminalKey) {
+        if (key.isModifier) {
+            modifiers = if (modifiers.contains(key)) modifiers - key else modifiers + key
+            return
+        }
+        if (key.isLocal) {
+            when (key) {
+                TerminalKey.Copy -> {
+                    val text = session.lines.joinToString("\n") { it.plain() }
+                    val clipboard = context
+                        .getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("终端", text))
+                    notice = "已复制 ${text.length} 个字符"
+                }
+
+                TerminalKey.Paste -> {
+                    val clipboard = context
+                        .getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    val text = clipboard.primaryClip
+                        ?.takeIf { it.itemCount > 0 }
+                        ?.getItemAt(0)
+                        ?.coerceToText(context)
+                        ?.toString()
+                        .orEmpty()
+                    if (text.isEmpty()) {
+                        notice = "剪贴板是空的"
+                    } else {
+                        draft += text.replace("\n", " ")
+                        notice = "已粘贴 ${text.length} 个字符"
+                    }
+                }
+
+                else -> Unit
+            }
+            return
+        }
+        // 没有命令在跑的时候，回车与上下键是**这一层**的动作，不是往管道里写字节
+        // （D417）：这个终端是一行一条命令，没有 PTY 收这些字节，发过去只会得到
+        // "没有接收方"。回车 = 跑这一条，上下 = 翻历史。
+        if (!session.busy && modifiers.isEmpty()) {
+            when (key) {
+                TerminalKey.Enter -> {
+                    submit()
+                    return
+                }
+
+                TerminalKey.Up -> {
+                    val next = historyStep(-1)
+                    if (next != null) draft = next
+                    return
+                }
+
+                TerminalKey.Down -> {
+                    val next = historyStep(1)
+                    if (next != null) draft = next
+                    return
+                }
+
+                else -> Unit
+            }
+        }
+        send(TerminalKeys.bytesFor(key, modifiers))
+        modifiers = TerminalKeys.afterSend(modifiers)
+    }
+
+    // 滚到**输入行**（D417）：列表最后一项是输入行，所以目标下标是 `lines.size`，
+    // 不是 `lines.lastIndex`——差一就停在最后一行输出上，敲字的地方还在屏幕外。
     LaunchedEffect(session.lines.size) {
         if (session.lines.isNotEmpty() && !listState.canScrollForward) {
-            listState.animateScrollToItem(session.lines.lastIndex)
+            listState.animateScrollToItem(session.lines.size)
         }
     }
 
@@ -337,105 +405,96 @@ internal fun TerminalScreen(
                 )
             }
 
-            // 终端正文 + 输入行：**输入行贴在正文底部**（像 Termux 那样在终端里敲），
-            // 不是压在屏幕最下面的另一条。键栏在它下面，键盘弹起时正文让位。
+            // 终端正文（D417）：**输入就长在正文最后一行**，没有另外一条输入框。
+            //
+            // 手势照 Termux：点正文任意位置就呼出键盘，敲的字直接接在提示符后面；
+            // 回车 = 跑这一条。原来那一条独立的输入行（下面还挂一颗 ↑ 按钮）已经去掉——
+            // 它把"在终端里打字"变成了"往一个表单里填字"，手感是两回事。
+            val mono = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+            )
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(MaterialTheme.colorScheme.surfaceContainerLowest),
-            ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                items(session.lines.size) { index ->
-                    TerminalRow(session.lines[index])
-                }
-            }
-
-            // 输入行
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 8.dp, bottom = 6.dp, top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "$ ",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                BasicTextField(
-                    value = draft,
-                    onValueChange = { input ->
-                        // 修饰键选中时敲进来的第一个字符要**当组合键发出去**，
-                        // 不进输入框（D397）。不是单个字母就取消选中、什么都不做。
-                        if (modifiers.isNotEmpty()) {
-                            if (TerminalKeys.isSingleLetter(input)) {
-                                send(TerminalKeys.bytesForLetter(input[0], modifiers))
-                                modifiers = TerminalKeys.afterSend(modifiers)
-                            } else {
-                                modifiers = emptySet()
-                                notice = "组合键只接单个字母，已取消"
-                            }
-                            return@BasicTextField
-                        }
-                        draft = input
-                        historyIndex = -1
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                focusRequester.requestFocus()
+                                keyboard?.show()
+                            },
+                        )
                     },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    modifier = Modifier.weight(1f).padding(vertical = 10.dp),
-                    decorationBox = { inner ->
-                        Box {
-                            if (draft.isEmpty()) {
-                                Text(
-                                    text = if (session.busy) "等这一条跑完…" else "敲一条命令",
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 13.sp,
-                                    ),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            inner()
+            ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    items(session.lines.size) { index ->
+                        TerminalRow(session.lines[index])
+                    }
+                    // 最后一行就是输入行：提示符 + 草稿 + 光标。
+                    item(key = "input") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(text = "$ ", style = mono, color = MaterialTheme.colorScheme.primary)
+                            BasicTextField(
+                                value = draft,
+                                onValueChange = { input ->
+                                    // 修饰键选中时敲进来的第一个字符**当组合键发出去**，
+                                    // 不进这一行（D397）。不是单个字母就取消选中、什么都不发。
+                                    if (modifiers.isNotEmpty()) {
+                                        if (TerminalKeys.isSingleLetter(input)) {
+                                            send(TerminalKeys.bytesForLetter(input[0], modifiers))
+                                            modifiers = TerminalKeys.afterSend(modifiers)
+                                        } else {
+                                            modifiers = emptySet()
+                                            notice = "组合键只接单个字母，已取消"
+                                        }
+                                        return@BasicTextField
+                                    }
+                                    draft = input
+                                    historyIndex = -1
+                                },
+                                singleLine = true,
+                                textStyle = mono.copy(color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        submit()
+                                        keyboard?.show()
+                                    },
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .focusRequester(focusRequester)
+                                    .onFocusChanged { focused = it.isFocused },
+                                decorationBox = { inner ->
+                                    Box {
+                                        if (draft.isEmpty() && !focused) {
+                                            Text(
+                                                text = if (session.busy) {
+                                                    "等这一条跑完…"
+                                                } else {
+                                                    "点一下这里敲命令"
+                                                },
+                                                style = mono,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        inner()
+                                    }
+                                },
+                            )
                         }
-                    },
-                )
-                IconActionButton(
-                    image = ActionIcons.ArrowUp,
-                    description = "运行",
-                    enabled = draft.isNotBlank() && !session.busy,
-                    onClick = { submit() },
-                    compact = true,
-                )
-                // 跑着的时候那颗变成「停」（Ctrl+C 的真身）。
-                if (session.busy) {
-                    IconActionButton(
-                        image = ActionIcons.Square,
-                        description = "停掉这一条",
-                        onClick = {
-                            scope.launch {
-                                val stopped = shell.cancel(session.id)
-                                notice = if (stopped) "已停下这一条" else "它刚好自己结束了"
-                            }
-                        },
-                        compact = true,
-                    )
+                    }
                 }
-            }
             }
 
             // 底栏两排键（D397）：照 Termux 那张图，列数与按键可配。
@@ -599,6 +658,8 @@ private fun KeyPad(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp)
+            // 最下面一排键往上抬一点（D417）：全面屏四角是圆角，贴着底边会被切掉一角。
+            .padding(bottom = 6.dp)
             .pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPressEmpty() }) },
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

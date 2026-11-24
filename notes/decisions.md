@@ -4848,3 +4848,53 @@ C ABI 冒烟 357 → **362** 项。
   "覆盖过半的阈值两侧"。
 - 判据：Kotlin 单测 108；`check_page_background` / `check_page_margins` 都过；
   真机待验——**这一条只能真机**（状态栏是窗口层的，截图之外没别的办法看）。
+
+## D417 终端手感 + 键盘焦点 + 圆角安全区（2026-11-25）
+
+用户 2026-11-25（原话）：
+「终端界面是这种终端窗口界面点击就可以呼出键盘的，直接在界面输入的，原生终端输入这样的」
+「终端不要你底下那个输入框，要跟 termux 操作手感一致的那种」
+「手势返回或者切换后台离开应用界面后让输入失焦，这个时候切回来不应该自动弹出键盘」
+「如果直接收起键盘也能做失焦处理就更好了」
+「聊天页输入框最底部应该抬高一点点，然后这些贴着底部的弹出窗口也是……屏幕四个角是圆角」
+
+- **终端去掉独立输入行**：原来正文下面一条 `Row`（`$ ` + `BasicTextField` + ↑ 按钮）整块删掉，
+  输入改成 LazyColumn 的**最后一项**：`$ ` + 草稿 + 光标，跟正文同一列等宽字体。
+  手感差别就在这一处——原来的形状是"往表单里填字"，现在是"在终端里打字"。
+- **点正文呼出键盘**：整块正文区挂 `detectTapGestures { focusRequester.requestFocus() }`，
+  `LaunchedEffect(focused)` 里再 `keyboard.show()`。分两步是因为 `requestFocus` 异步生效，
+  同一帧调 `show()` 有一半机型不认（点了没反应）。
+- **回车 = 跑这一条**（`ImeAction.Done`），跑完重新 `show()` 把键盘留住；
+  没有命令在跑时，键栏的 `↵` 与 `↑`/`↓` 也走这一层（跑这一条 / 翻历史），
+  不再往管道里写字节——这个终端一行一条命令，没有 PTY 收那些字节，发过去只会得到"没有接收方"。
+- **自动滚到输入行**：目标下标从 `lines.lastIndex` 改成 `lines.size`。差一就停在最后一行输出上，
+  敲字的地方还在屏幕外；键盘弹起来时也补滚一次。
+- **离开应用就失焦**（`ui/ImePolicy.kt`）：`BlurOnLeaveApp` 监听 `ON_STOP`，清焦点 + `hide()`。
+  不放的话回来那一刻系统按"上一帧还有焦点"把键盘重新弹起来，用户什么都没点。
+  `OnImeHidden` 用 `WindowInsets.ime` 从有到无判"用户自己把键盘按回去了"，那时也清焦点；
+  只在"确实看见过键盘"时才触发，否则首次组合就会白抢一次焦点。
+- **底部让开圆角**：`SheetFrame` 的面板层 `windowInsetsPadding(navigationBars ∪ ime) + padding(bottom = 8)`；
+  抽屉内容加 `navigationBarsPadding()`；输入岛下面那行提示从 `bottom = 10` 抬到 `16`。
+  四角是圆角的全面屏上，贴边画的内容会被切掉一角。
+- **`PageHost` 的 insets 改成 `systemBars ∪ ime`**：edge-to-edge 之后窗口不再为键盘缩小，
+  只留 `systemBarsPadding` 的话键盘弹起时输入框压在键盘底下。取并集不是相加。
+- 本机：kotlinc 全量只剩 9 条 `R`；Kotlin 单测 **109**（SpeedLevels 10 条里有 3 条是本轮新增的判据）。
+  真机 **V180**。
+
+## D418 速度档位只认模型名（2026-11-25）
+
+用户 2026-11-25：「匹配好像出了问题吗，只有名字带 GPT 或者 Claude 才应该有速度档位（不区分大小写）」。
+
+- **判据改成模型名**：含 `gpt` → 四档（`service_tier`）；含 `claude` → 两档（`speed`）；
+  其余（DeepSeek / Gemini / Qwen / GLM…）→ **空表**，整条隐藏。
+  截图里的 `custom:test1/deepseek-ai/DeepSeek-V4.1-Flash-101…` 挂在 OpenAI 兼容端口上，
+  旧逻辑按端口给了四档——选了对面也不认。
+- **端口只在两种别扭组合上收口**：名字是 gpt 但端口是 Anthropic / Gemini 时不给
+  （对面不收 `service_tier`）。claude 挂在 OpenAI 兼容中转后面仍按 `speed` 写，这条不变。
+- **FFI 侧同样按名字判**（`speed_field_for`），并且**没有档位时不报错、什么都不注**：
+  这条路径是"先在 gpt 上选了 flex，后来换成 deepseek"，他换模型的意思是继续聊，不是"这一轮别发了"。
+  档位在这个字段族上没有对应值（Anthropic 的 flex）同样降级为"不注"，只有"档位名不认识"才报错——
+  那说明界面自己发错了。
+- 单测：`SpeedLevelsTest` 新增 `non_gpt_families_have_no_tiers_even_on_openai_ports`（四个家族 × 两个端口 + 空名字）、
+  `GPT-5.6-turbo` 与 `Claude-Sonnet-5` 的大小写不敏感断言、`gemini` 端口 + gpt 名字不给。
+  **先拿坏实现验过会红**（把 `forModel` 改回按端口判 → 3 条失败），才认这版绿。

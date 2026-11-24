@@ -23,12 +23,37 @@ class SpeedLevelsTest {
         )
         // Responses 端口同一套
         assertEquals(tiers, SpeedLevels.forModel(SpeedLevels.KIND_RESPONSES, "gpt-6-sol"))
+        // 名字大小写不敏感：中转上常见 `GPT-5.6`
+        assertEquals(tiers, SpeedLevels.forModel(SpeedLevels.KIND_OPENAI, "GPT-5.6-turbo"))
+    }
+
+    /**
+     * 别的家族挂在 OpenAI 兼容端口上时**没有速度档位**。
+     *
+     * 判据是模型名，不是端口：中转上多数是 DeepSeek / Qwen / Gemini 这类，
+     * 它们没有 `service_tier`。按端口列档位的话用户会选一个发不出去的档。
+     */
+    @Test
+    fun non_gpt_families_have_no_tiers_even_on_openai_ports() {
+        for (model in listOf("deepseek-v4.1-flash", "qwen3-max", "gemini-3-pro", "glm-5")) {
+            assertTrue(model, SpeedLevels.forModel(SpeedLevels.KIND_OPENAI, model).isEmpty())
+            assertTrue(model, SpeedLevels.forModel(SpeedLevels.KIND_RESPONSES, model).isEmpty())
+            assertEquals(
+                model,
+                SpeedField.None,
+                SpeedLevels.fieldFor(SpeedLevels.KIND_OPENAI, model),
+            )
+        }
+        // 空模型名同理：没读到模型之前不摆档位
+        assertTrue(SpeedLevels.forModel(SpeedLevels.KIND_OPENAI, "").isEmpty())
     }
 
     @Test
     fun claude_lists_only_two_tiers() {
         val tiers = SpeedLevels.forModel(SpeedLevels.KIND_ANTHROPIC, "claude-opus-5-5")
         assertEquals(listOf(SpeedTier.Standard, SpeedTier.Fast), tiers)
+        // 名字大小写不敏感
+        assertEquals(tiers, SpeedLevels.forModel(SpeedLevels.KIND_OPENAI, "Claude-Sonnet-5"))
     }
 
     /**
@@ -52,6 +77,8 @@ class SpeedLevelsTest {
             SpeedField.None,
             SpeedLevels.fieldFor(SpeedLevels.KIND_GEMINI, "gemini-3-pro"),
         )
+        // 端口是 Gemini、名字却是 gpt：也不给（对面不是 OpenAI）
+        assertTrue(SpeedLevels.forModel(SpeedLevels.KIND_GEMINI, "gpt-5.6-sol").isEmpty())
     }
 
     @Test

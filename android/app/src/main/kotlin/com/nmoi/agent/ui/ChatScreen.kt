@@ -547,13 +547,16 @@ internal fun ChatScreen(
         val supported = thinkingLevels.any { it.first == assistant.thinking }
         if (supported) known else "$known（这个模型不支持）"
     }
-    /** 速度的显示名：空 = 跟随默认。 */
+    /** 速度的显示名：空 = 跟随默认；这个模型没有这根轴时也按"跟随默认"显示。 */
     val speedLabel = remember(assistant.speed, speedChoices) {
         val tier = SpeedLevels.parse(assistant.speed)
         when {
+            // 模型没有速度档位：库里可能还留着上一个模型的档位，但这一轮根本不发，
+            // 显示它只会让人以为"选了 flex"。
+            speedChoices.isEmpty() -> "跟随默认"
             assistant.speed.isBlank() -> "跟随默认"
             tier == null -> assistant.speed
-            speedChoices.isNotEmpty() && tier !in speedChoices -> "${SpeedLevels.label(tier)}（这个模型没有）"
+            tier !in speedChoices -> "${SpeedLevels.label(tier)}（这个模型没有）"
             else -> SpeedLevels.label(tier)
         }
     }
@@ -595,6 +598,20 @@ internal fun ChatScreen(
             }
         }
     }
+    // 离开应用（切后台 / 手势退回桌面）时把输入框的焦点放掉（D417）：
+    // 不放的话回来那一刻系统按"上一帧还有焦点"把键盘重新弹起来，
+    // 用户什么都没点，键盘先自己冒出来盖住半屏。
+    val hideIme = {
+        editTextRef.value?.let { field ->
+            field.clearFocus()
+            context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(field.windowToken, 0)
+        }
+        Unit
+    }
+    BlurOnLeaveApp(hideIme)
+    // 用户自己把键盘按回去：焦点跟着掉，否则下一次点屏幕它又自己冒出来。
+    OnImeHidden { editTextRef.value?.clearFocus() }
 
     // 边收边画（0.15ah）：等的时候每 ~100 ms 问一次 `turn_busy`。
     //
@@ -5996,7 +6013,8 @@ private fun Composer(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             // 与输入框外边距（16）对齐：这行字在框下面，比框还靠里会显得歪。
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 10.dp),
+            // 底边再抬到 16（D417）：全面屏四角是圆角，贴边太近会被切掉一角。
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 16.dp),
         )
     }
 }

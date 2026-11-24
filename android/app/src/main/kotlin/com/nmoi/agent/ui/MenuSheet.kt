@@ -5,6 +5,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -125,7 +130,18 @@ internal fun SheetFrame(
                 ),
         )
 
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                // 让开导航栏与键盘，再往上抬一点（D417）：
+                // 全面屏四角是圆角，贴着底边画的内容会被切掉一角；
+                // 面板里有输入框（重命名、新建文件）时，键盘一弹起来不能把它盖住。
+                .windowInsetsPadding(
+                    WindowInsets.navigationBars.union(WindowInsets.ime),
+                )
+                .padding(bottom = 8.dp),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
             Surface(
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -513,7 +514,13 @@ private fun DrawerPanel(
     // 抽屉底色铺到状态栏下面（D416），内容让开：`statusBarsPadding` 一次，
     // 下面那些 `top = 44.dp` 的硬编码就换成真实高度——44 是猜的，
     // 刘海屏 / 挖孔屏上对不上。
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+    // 底边同样让开导航栏（D417）：抽屉贴底那一行按钮在全面屏上会被圆角切掉一角。
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+    ) {
         if (selecting) {
             // 选择时整块顶栏只回答一件事：勾了几条、还能不能全选、怎么退出去。
             // 用户块与搜索在这一层没有用处，留着只会把"已选 N 项"挤成一行小字。

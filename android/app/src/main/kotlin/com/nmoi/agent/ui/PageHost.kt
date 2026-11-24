@@ -6,7 +6,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.background
@@ -131,16 +135,17 @@ internal fun PageHost(
         if (!laidOut) stuck = true
     }
 
-    // 页面内容统一让开状态栏与导航栏（D416）。
+    // 页面内容统一让开状态栏、导航栏与输入法（D416 / D417）。
     //
     // 窗口开了 edge-to-edge 之后，`fillMaxSize()` 会一直画到状态栏下面——
     // 每个页面各自加 insets 的话，34 个页面漏一个就顶上去一个。加在这一层加一次。
-    // **底色仍然铺满**：`Surface(color = background)` 在页面里，它在 insets 之内，
-    // 所以状态栏那一块显示的是窗口底色（由 `applySystemBars` 给），抽屉打开时
-    // 左边那半由抽屉自己铺的白盖住。
+    //
+    // **输入法要一起并进来**：edge-to-edge 之后窗口不再为键盘缩小，
+    // 只留 `systemBarsPadding` 的话，键盘弹起时输入框就压在键盘底下——
+    // 敲字的时候看不见自己敲的是什么。取并集（不是相加）：键盘开着时它自己就含了导航栏那一段。
     val probe = Modifier
         .fillMaxSize()
-        .systemBarsPadding()
+        .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
         .onGloballyPositioned { laidOut = true }
 
     if (!preview) {

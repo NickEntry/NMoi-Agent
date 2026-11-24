@@ -83,39 +83,49 @@ internal object SpeedLevels {
     const val KIND_GEMINI = "gemini"
 
     /**
-     * 这个模型该列哪几档。**判据只有两条**：
+     * 这个模型该列哪几档。**判据是模型名**（不分大小写），端口只在两种别扭组合上收口：
      *
-     * 1. 模型名含 `claude` 或端口是 Anthropic → `standard` / `fast`；
-     * 2. OpenAI 兼容 / Responses 端口 → `flex` / `default` / `priority` / `ultrafast`；
-     * 3. 其余（Gemini 等）→ **空表**，界面上整条隐藏，不给假开关。
+     * 1. 名字含 `gpt` → `flex` / `default` / `priority` / `ultrafast`（挂在 Anthropic 端口上不给：对面不收这个字段）；
+     * 2. 名字含 `claude` → `standard` / `fast`；
+     * 3. 其余（DeepSeek / Gemini / Qwen…）→ **空表**，界面上整条隐藏，不给假开关。
      *
-     * 为什么模型名优先于端口：Claude 经常挂在 OpenAI 兼容中转后面，只看端口的话
-     * 给 Claude 发的是 `service_tier`，对方不认，用户看到的是"选了 fast 没反应"。
+     * 为什么不按端口列：中转上挂着的多数是别的家族，它们没有 `service_tier` 这个概念。
+     * 按端口列档位，用户看到的是"deepseek 也能选 flex"——选了没反应，比不摆更糟。
      */
-    fun forModel(providerKind: String, modelId: String): List<SpeedTier> {
-        val family = modelId.lowercase()
-        if (family.contains("claude") || providerKind == KIND_ANTHROPIC) {
-            return listOf(SpeedTier.Standard, SpeedTier.Fast)
-        }
-        return when (providerKind) {
-            KIND_OPENAI, KIND_RESPONSES ->
+    fun forModel(providerKind: String, modelId: String): List<SpeedTier> =
+        when (familyOf(modelId, providerKind)) {
+            Family.Gpt ->
                 listOf(SpeedTier.Flex, SpeedTier.Standard, SpeedTier.Priority, SpeedTier.Ultrafast)
 
-            else -> emptyList()
+            Family.Claude -> listOf(SpeedTier.Standard, SpeedTier.Fast)
+            Family.Other -> emptyList()
+        }
+
+    /** 与 [forModel] 配套：这一族写进哪个字段。 */
+    fun fieldFor(providerKind: String, modelId: String): SpeedField =
+        when (familyOf(modelId, providerKind)) {
+            Family.Gpt -> SpeedField.ServiceTier
+            Family.Claude -> SpeedField.AnthropicSpeed
+            Family.Other -> SpeedField.None
+        }
+
+    /** 名字属于哪一族。空名字算"还不知道"，按没有档位处理。 */
+    private fun familyOf(modelId: String, providerKind: String): Family {
+        val name = modelId.lowercase()
+        return when {
+            // 名字是 GPT 家族、端口却不像 OpenAI（Anthropic / Gemini）：对面不收 `service_tier`，
+            // 给了也是白给。按"没有档位"处理，不摆一个发不出去的开关。
+            name.contains("gpt") -> when (providerKind) {
+                KIND_OPENAI, KIND_RESPONSES -> Family.Gpt
+                else -> Family.Other
+            }
+
+            name.contains("claude") -> Family.Claude
+            else -> Family.Other
         }
     }
 
-    /** 与 [forModel] 配套：这一族写进哪个字段。 */
-    fun fieldFor(providerKind: String, modelId: String): SpeedField {
-        val family = modelId.lowercase()
-        if (family.contains("claude") || providerKind == KIND_ANTHROPIC) {
-            return SpeedField.AnthropicSpeed
-        }
-        return when (providerKind) {
-            KIND_OPENAI, KIND_RESPONSES -> SpeedField.ServiceTier
-            else -> SpeedField.None
-        }
-    }
+    private enum class Family { Gpt, Claude, Other }
 
     fun parse(wire: String): SpeedTier? =
         SpeedTier.entries.firstOrNull { it.wire == wire.trim().lowercase() }

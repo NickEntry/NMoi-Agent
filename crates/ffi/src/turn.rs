@@ -1105,31 +1105,35 @@ fn apply_thinking(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequ
     }))
 }
 
-/// 速度字段族（D402）：两家字段名不同，按**端口类型 + 模型名**两段判。
+/// 速度字段族（D402）：**按模型名判**，端口只决定字段写在哪。
 ///
-/// 为什么还要看模型名：Claude 经常挂在 OpenAI 兼容中转后面（`base_url` 指向中转、
-/// `kind` 是 `openai_compatible`）。只看端口的话，给 Claude 发的是 `service_tier`，
-/// 对方不认，用户看到的是"选了 fast 没反应"。模型名里带 `claude` 就按 Anthropic 写，
-/// 这条判据比端口更贴近"对面到底是谁"。
+/// 名字含 `gpt` → `service_tier`（挂在 Anthropic 端口上就什么都不写）；
+/// 名字含 `claude` → `speed`；其余家族（DeepSeek / Gemini / Qwen…）→ `None`。
+///
+/// 为什么不再"OpenAI 兼容端口就给 service_tier"：中转上挂的多是别的家族，
+/// 它们没有这个字段。按端口判，用户选了一档、对面不认，表现就是"选了没反应"。
 fn speed_field_for(kind: ProviderKind, model: &str) -> SpeedField {
     let family = model.to_ascii_lowercase();
-    if family.contains("claude") || kind == ProviderKind::Anthropic {
+    if family.contains("claude") {
         return SpeedField::AnthropicSpeed;
     }
-    match kind {
-        ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => SpeedField::ServiceTier,
-        // Gemini 没有对应概念：不发明一个字段，界面上那一排整条隐藏。
-        ProviderKind::Gemini => SpeedField::None,
-        ProviderKind::Anthropic => SpeedField::AnthropicSpeed,
+    if family.contains("gpt") {
+        return match kind {
+            ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => {
+                SpeedField::ServiceTier
+            }
+            _ => SpeedField::None,
+        };
     }
+    SpeedField::None
 }
 
-/// 速度档位（D402）。空 / `auto` = 一个字段都不注（老行为）。
+/// 速度档位（D402 / D418）。空 / `auto` = 一个字段都不注（老行为）。
 ///
-/// 三条判据：
-/// 1. 档位不认识 → 报错点名（静默忽略等于"选了没反应"）；
-/// 2. 字段族是 `None`（Gemini 这类）→ **报错说清没有这个轴**，不是静默丢弃；
-/// 3. 档位在这个字段族上没有对应值（Anthropic 的 flex）→ 报错，并把可选档列出来。
+/// 判据：
+/// 1. 档位不认识 → 报错点名（静默忽略等于"选了没反应"，而这是界面自己发错了）；
+/// 2. 这个模型没有这根轴、或者档位在这个字段族上没有对应值 → **什么都不注，照常发**。
+///    这两条都是"换了模型、旧设置还留着"的路径，不该让整轮请求失败。
 fn apply_speed(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequest> {
     let Some(raw) = input
         .speed
@@ -1141,13 +1145,7 @@ fn apply_speed(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequest
     };
     let field = speed_field_for(input.provider_kind, &request.model);
     if field == SpeedField::None {
-        return Err(FfiError::new(
-            "bad_argument",
-            format!(
-                "`{}` 这个端口没有速度档位（只有 OpenAI 系的 service_tier 与 Anthropic 的 speed）",
-                input.provider_kind.as_str()
-            ),
-        ));
+        return Ok(request);
     }
     let tier = SpeedTier::parse(raw).ok_or_else(|| {
         FfiError::new(
@@ -1156,8 +1154,8 @@ fn apply_speed(request: ChatRequest, input: &TurnInput) -> FfiResult<ChatRequest
         )
     })?;
     let setting = SpeedSetting::new(field, tier);
-    if let Some(reason) = setting.unsupported() {
-        return Err(FfiError::new("bad_argument", reason));
+    if setting.unsupported().is_some() {
+        return Ok(request);
     }
     Ok(request.speed(setting))
 }

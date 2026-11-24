@@ -59,4 +59,4 @@ internal const val LIGHT_BACKGROUND = 0xFFF7F7FA.toInt()
 
 /** 与主题里的 `surface` 对齐（浅色主题近白、深色主题近黑）。 */
 private const val LIGHT_SURFACE = 0xFFFFFFFF.toInt()
-private const val DARK_SURFACE = 0xFF141419.toInt()
+private const val DARK_SURFACE = 0xFF14141A.toInt()
