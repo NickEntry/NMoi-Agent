@@ -47,6 +47,7 @@ import com.nmoi.agent.ui.ActionIcons
 import com.nmoi.agent.ui.NmoiFfi
 import com.nmoi.agent.ui.ToolingRepository
 import com.nmoi.agent.ui.toolDisplayName
+import com.nmoi.agent.ui.parseToolCatalog
 import com.nmoi.agent.ui.toolGroups
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -298,6 +299,8 @@ private data class NameTarget(
 @Composable
 private fun WorkspaceToolsTab(workspaceId: String, notice: (String) -> Unit) {
     val context = LocalContext.current
+    // 只列**这个工作区真的能关**的那些（D419）：`workspace` 那一列由原生按
+    // `Capability::needs_workspace` 算，不再在 Kotlin 里抄一份。
     var names by remember { mutableStateOf<List<String>>(emptyList()) }
     var off by remember(workspaceId) {
         mutableStateOf(ToolingRepository.workspaceToolsOff(context, workspaceId).toSet())
@@ -308,16 +311,7 @@ private fun WorkspaceToolsTab(workspaceId: String, notice: (String) -> Unit) {
 
     LaunchedEffect(workspaceId) {
         names = withContext(Dispatchers.IO) {
-            NmoiFfi.toolNames().getOrNull()
-                ?.optJSONArray("names")
-                ?.let { array ->
-                    buildList {
-                        for (index in 0 until array.length()) {
-                            array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
-                        }
-                    }
-                }
-                .orEmpty()
+            parseToolCatalog(NmoiFfi.toolNames().getOrNull()).workspaceOnly
         }
         globalOff = ToolingRepository.toolsOff(context).toSet()
         loading = false
@@ -343,7 +337,7 @@ private fun WorkspaceToolsTab(workspaceId: String, notice: (String) -> Unit) {
             modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
         )
         Text(
-            text = "本地工具 $open/${names.size} · 关掉的不发给模型（与全局那一份取并集）",
+            text = "工作区工具 $open/${names.size} · 关掉的不发给模型（与全局那一份取并集）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),

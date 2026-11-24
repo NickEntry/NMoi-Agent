@@ -48,4 +48,36 @@ class ToolGroupsTest {
     fun 空串不占一行() {
         assertEquals(emptyList<ToolGroup>(), toolGroups(listOf("", " ")))
     }
+
+    /** 清单缺 `workspace` 那一列（老 `.so` 配新界面）：按"全部本地"退，不炸。 */
+    @Test
+    fun 清单缺工作区那一列时全部算本地() {
+        val catalog = parseToolCatalog(null)
+        assertEquals(emptyList<String>(), catalog.names)
+        assertEquals(emptyList<String>(), catalog.local)
+        assertEquals(emptyList<String>(), catalog.workspaceOnly)
+    }
+
+    /** 两份清单进来，分好组：工作区那一批只出现在 `workspaceOnly` 里。 */
+    @Test
+    fun 工作区那一批只出现在工作区清单里() {
+        val catalog = toolCatalog(
+            names = listOf("read_file", "View-Image", "Voice-Caps", "read_file", " "),
+            workspace = listOf("read_file"),
+        )
+        assertEquals(listOf("read_file", "View-Image", "Voice-Caps"), catalog.names)
+        assertEquals(listOf("View-Image", "Voice-Caps"), catalog.local)
+        assertEquals(listOf("read_file"), catalog.workspaceOnly)
+    }
+
+    /** 原生列了一个界面没见过的名字：照样按"要工作区"处理，不丢。 */
+    @Test
+    fun 工作区清单里的陌生名字不丢() {
+        val catalog = toolCatalog(
+            names = listOf("read_file", "brand_new"),
+            workspace = listOf("brand_new"),
+        )
+        assertEquals(listOf("brand_new"), catalog.workspaceOnly)
+        assertEquals(listOf("read_file"), catalog.local)
+    }
 }

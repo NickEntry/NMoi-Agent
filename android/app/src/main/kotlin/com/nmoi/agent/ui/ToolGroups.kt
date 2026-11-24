@@ -56,29 +56,46 @@ internal fun toolDisplayName(name: String): String = when (name) {
 }
 
 /**
- * 这个工具要不要工作区（D401）。
+ * 工具清单 + 每个工具要不要工作区（D419）。
  *
- * 用户 2026-11-24 明确要求把两拨分开：
- * - **依赖工作区**的（读写文件、列目录、搜索、跑命令）→ 开关在「工作区」那一行的 ⚙ 里，
- *   因为"换个工作区就是另一批文件"，它天然跟着工作区走；
- * - **不依赖工作区**的（看图、改消息、语音）→ 开关在「工具」菜单的「本地工具」里。
- *
- * 判据必须与 core 的 `Capability::needs_workspace` 一致：那边是门控的真源，
- * 这边只是决定"摆在哪个菜单里"。摆错的表现是"在工作区里关掉了一个跟工作区无关的工具"，
- * 用户会以为它生效了，其实它压根不在那一批里。
+ * `workspace` 那一列由**原生注册表**算（`Capability::needs_workspace`），这里只负责解析。
+ * 以前 Kotlin 自己抄了一份 when 表，抄漏了三个（`View-Image` / `WorkSpace-EnvirShell` /
+ * `edit_unit`）——表现是"在工作区里关掉了一个跟工作区无关的工具"，用户以为生效了，
+ * 其实它压根不在那一批里。
  */
-internal fun requiresWorkspace(name: String): Boolean = when (name) {
-    "read_file", "write_file", "edit_file", "list_dir", "find_files", "search" -> true
-    "System-Shell", "WorkSpace-EnvirShell" -> true
-    // `Session-Files` 读的是**别的会话**的 chat/tmp，不是工作区；但它要会话上下文，
-    // 与工作区同档（都是"有根才谈得上"），所以摆在工作区那一批里。
-    "Session-Files" -> true
-    // 看图读的是会话附件目录、改消息改的是库、语音不碰盘。
-    else -> false
+internal data class ToolCatalog(
+    val names: List<String>,
+    /** 需要工作区的那一批（来自 core 的能力判定，不是这里猜的）。 */
+    val workspace: Set<String>,
+) {
+    /** 不依赖工作区的那一批（「本地工具」菜单里）。 */
+    val local: List<String> get() = names.filter { it !in workspace }
+
+    /** 依赖工作区的那一批（工作区那一行的 ⚙ 里）。 */
+    val workspaceOnly: List<String> get() = names.filter { it in workspace }
 }
 
-/** 不依赖工作区的那一批（「本地工具」菜单里）。 */
-internal fun localTools(names: List<String>): List<String> = names.filter { !requiresWorkspace(it) }
+/** 纯逻辑那一半：两份清单进来，去空去重再分。单测打这里。 */
+internal fun toolCatalog(names: List<String>, workspace: List<String>): ToolCatalog =
+    ToolCatalog(
+        names = names.filter { it.isNotBlank() }.distinct(),
+        workspace = workspace.filter { it.isNotBlank() }.toSet(),
+    )
 
-/** 依赖工作区的那一批（工作区那一行的 ⚙ 里）。 */
-internal fun workspaceTools(names: List<String>): List<String> = names.filter { requiresWorkspace(it) }
+/**
+ * 从 `toolNamesJson` 的返回里解析。
+ *
+ * 缺 `workspace` 那一列时按"全部本地"退：老版本 `.so` 配新界面时，开关至少还在原处，
+ * 不会整块消失。
+ */
+internal fun parseToolCatalog(json: org.json.JSONObject?): ToolCatalog {
+    fun read(key: String): List<String> {
+        val array = json?.optJSONArray(key) ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+        }
+    }
+    return toolCatalog(names = read("names"), workspace = read("workspace"))
+}

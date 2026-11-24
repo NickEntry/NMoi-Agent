@@ -53,12 +53,31 @@ fn outcome_json(outcome: ToolOutcome) -> Value {
     }
 }
 
-/// 全部工具名（不看策略）。
+/// 全部工具名（不看策略），外加"哪些要工作区"。
+///
+/// `workspace` 那一列由注册表自己算（`Capability::needs_workspace`）：界面按它决定
+/// 一个开关摆在「本地工具」还是「工作区」那一组。**不在 Kotlin 里另抄一份**——
+/// 抄一份的下场是新增工具时只改一边，表现是"在工作区里关掉了一个跟工作区无关的工具"，
+/// 用户以为生效了，其实它压根不在那一批里（D419）。
 #[no_mangle]
 pub extern "C" fn nmoi_tool_names_json() -> *mut c_char {
     run_json(|| {
         let registry = ToolRegistry::workspace_defaults();
-        Ok(json!({ "names": registry.names(), "count": registry.len() }))
+        let workspace: Vec<&str> = registry
+            .names()
+            .into_iter()
+            .filter(|name| {
+                registry
+                    .capability_of(name)
+                    .map(|capability| capability.needs_workspace())
+                    .unwrap_or(false)
+            })
+            .collect();
+        Ok(json!({
+            "names": registry.names(),
+            "count": registry.len(),
+            "workspace": workspace,
+        }))
     })
 }
 
@@ -372,6 +391,51 @@ mod tests {
             .into_owned();
         unsafe { drop(CString::from_raw(pointer)) };
         serde_json::from_str(&text).expect("必须是合法 JSON")
+    }
+
+    /// 工具名那一份要带 `workspace` 一列（D419）：界面按它决定开关摆哪一组。
+    ///
+    /// 判据不能只验"有没有这一列"——拿注册表自己再算一遍逐条对上，
+    /// 否则这一列写成常量也能过。
+    #[test]
+    fn tool_names_carry_the_workspace_flag_from_capabilities() {
+        let value = read(nmoi_tool_names_json());
+        assert_eq!(value["ok"], json!(true), "{value}");
+        let names: Vec<String> = value["names"]
+            .as_array()
+            .expect("names 必须是数组")
+            .iter()
+            .map(|item| item.as_str().unwrap().to_string())
+            .collect();
+        let flagged: Vec<String> = value["workspace"]
+            .as_array()
+            .expect("workspace 必须是数组")
+            .iter()
+            .map(|item| item.as_str().unwrap().to_string())
+            .collect();
+
+        let registry = ToolRegistry::workspace_defaults();
+        let expected: Vec<String> = registry
+            .names()
+            .into_iter()
+            .filter(|name| {
+                registry
+                    .capability_of(name)
+                    .map(|capability| capability.needs_workspace())
+                    .unwrap_or(false)
+            })
+            .map(str::to_string)
+            .collect();
+        assert_eq!(expected, flagged, "workspace 那一列要与能力判定逐条一致");
+        assert!(names.contains(&"read_file".to_string()), "{names:?}");
+        assert!(
+            flagged.iter().any(|name| name == "read_file"),
+            "{flagged:?}"
+        );
+        assert!(
+            !flagged.iter().any(|name| name == "Voice-Caps"),
+            "{flagged:?}"
+        );
     }
 
     /// 关一条正在跑的调用：`found:true` + `cancelled:true`，且标志真的置上了。

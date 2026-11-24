@@ -7112,7 +7112,8 @@ private fun ToolSheet(
     // `null` = 跟助手。**先当"读到了空"**，`loaded` 才决定要不要显示"读…"。
     var bound by remember(sessionId) { mutableStateOf<String?>(null) }
     var loaded by remember(sessionId) { mutableStateOf(sessionId == null) }
-    var toolNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    // 工具清单 + 哪些要工作区：一次读，两处都用（D419）。要工作区那一列由原生算。
+    var catalog by remember { mutableStateOf(ToolCatalog(emptyList(), emptySet())) }
     var off by remember { mutableStateOf(ToolingRepository.toolsOff(context).toSet()) }
     // 三个分组的展开态（D344 的存法不变：收起过的组下次还是收起的）。
     var folded by remember { mutableStateOf(ToolingRepository.foldedGroups(context)) }
@@ -7121,17 +7122,8 @@ private fun ToolSheet(
     val workspaces = remember { WorkspaceRepository.list(context) }
 
     LaunchedEffect(Unit) {
-        toolNames = withContext(Dispatchers.IO) {
-            NmoiFfi.toolNames().getOrNull()
-                ?.optJSONArray("names")
-                ?.let { array ->
-                    buildList {
-                        for (index in 0 until array.length()) {
-                            array.optString(index).takeIf { it.isNotBlank() }?.let { add(it) }
-                        }
-                    }
-                }
-                .orEmpty()
+        catalog = withContext(Dispatchers.IO) {
+            parseToolCatalog(NmoiFfi.toolNames().getOrNull())
         }
     }
     LaunchedEffect(sessionId) {
@@ -7157,7 +7149,7 @@ private fun ToolSheet(
         ToolingRepository.setFoldedGroups(context, next)
     }
 
-    val local = localTools(toolNames)
+    val local = catalog.local
     val localOpen = local.count { !off.contains(it) }
     // 有没有真的绑着一个工作区。
     //
