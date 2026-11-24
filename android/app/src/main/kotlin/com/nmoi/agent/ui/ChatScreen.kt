@@ -5855,10 +5855,10 @@ private fun Composer(
                     onReady = onEditTextReady,
                 )
                 // 图标热区 36dp、视觉 18dp 居中，那 18dp 图形离热区左边还有
-                // (36-18)/2 = 9dp。要让图标的**视觉**左边落在 24，热区起点给 15。
-                // 文字那边是 48：比图标缩进更多（用户 2026-11-24 定的）。
+                // (36-18)/2 = 9dp。要让图标的**视觉**左边落在 20，热区起点给 11。
+                // 文字那边是 60：比图标缩进更多（用户 2026-11-24 定的）。
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 15.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 六个里还剩五个没接：点一下把"差什么、等哪个阶段"写进上面那行提示。
@@ -6186,8 +6186,9 @@ private fun NativeEditText(
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION or EditorInfo.IME_ACTION_NONE
-                // 左右各 48：文字要比下面那排图标缩进得更多（用户 2026-11-24 明确）。
-                setPadding(48, 22, 48, 18)
+                // 左右各 60：48 还是窄（用户 2026-11-24 第二次提"还窄"）。
+                // 这个数只影响文字，与下面那排图标的 20 是两件事。
+                setPadding(60, 22, 60, 18)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null
