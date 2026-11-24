@@ -114,6 +114,25 @@ class StarPointsTest {
         assertEquals("七个档位应有七种形状", order.size, shapes.toSet().size)
     }
 
+    /**
+     * 仪表盘在画布里的视觉中线要落在 12（24 格坐标的中线）。
+     *
+     * 用户 2026-11-24 那张截图里，这颗图标比相邻几颗低一截——底座线在 y=16，
+     * 图形占 6.6…16，重心偏下。`LIFT_UNITS` 就是修这件事的那个数。
+     */
+    @Test
+    fun gauge_sits_on_the_canvas_center() {
+        for (wire in listOf("auto", "off", "minimal", "medium", "high", "max", "ultra")) {
+            val spec = GaugeSpecs.of(wire)
+            val (top, bottom) = GaugeSpecs.extent(spec)
+            val center = (top + bottom) / 2f - GaugeSpecs.liftUnits(spec)
+            assertTrue(
+                "$wire 的视觉中线应正好落在 12，实际 $center",
+                kotlin.math.abs(center - 12f) < 1e-4f,
+            )
+        }
+    }
+
     /** 缩写规则：≤5 个字母写全名，超过取缩写。 */
     @Test
     fun short_name_rule() {

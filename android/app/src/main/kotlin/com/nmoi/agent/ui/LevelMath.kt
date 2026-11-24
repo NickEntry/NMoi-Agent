@@ -93,6 +93,34 @@ internal data class GaugeSpec(
 internal object GaugeSpecs {
 
     /**
+     * 这个形状的图形在 24 格坐标里占多高（`top` … `bottom`）。
+     *
+     * 三种形状不一样高：`off` 的弧从 6.6 起、`auto` 的细弧从 10 起、
+     * 带环的从 `16 - 9`（外环半径 9）起。所以**不能用一个统一的上移量**——
+     * 那样有的档居中、有的档偏一截。
+     */
+    fun extent(spec: GaugeSpec): Pair<Float, Float> {
+        val bottom = 16f
+        val top = when {
+            spec.slash -> 6.6f
+            spec.rings == 0 -> 10f
+            else -> bottom - 9f
+        }
+        return top to bottom
+    }
+
+    /**
+     * 这个形状该上移多少格，才能让它的视觉中线落在画布中线（12）上。
+     *
+     * 返回值可以是负的（那种形状本身偏上，要下移）。单测
+     * `gauge_sits_on_the_canvas_center` 盯着每种形状落点。
+     */
+    fun liftUnits(spec: GaugeSpec): Float {
+        val (top, bottom) = extent(spec)
+        return (top + bottom) / 2f - 12f
+    }
+
+    /**
      * wire 值必须与 `crates/ffi/src/turn.rs` 的 `apply_thinking` 对表。
      *
      * 环数：`minimal` / `low` 一档，`medium` / `high` / `xhigh` 两档，`max` / `ultra` 三档。

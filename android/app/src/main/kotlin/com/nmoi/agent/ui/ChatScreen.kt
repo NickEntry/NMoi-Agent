@@ -5894,6 +5894,8 @@ private fun Composer(
                                 },
                             contentAlignment = Alignment.Center,
                         ) {
+                            // 居中在画布内自己做（`ThinkingGauge` 里那个 lift），
+                            // 这里不再加偏移——两处各移一次会移过头。
                             ThinkingGauge(wire = thinkingWire, size = 22.dp)
                         }
                         Text(
@@ -5904,7 +5906,7 @@ private fun Composer(
                             maxLines = 1,
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .offset(y = 10.dp),
+                                .offset(y = 9.dp),
                         )
                     }
                     IconActionButton(

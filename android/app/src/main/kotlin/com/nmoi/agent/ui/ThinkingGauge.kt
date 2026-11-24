@@ -54,9 +54,12 @@ internal fun ThinkingGauge(
     Canvas(modifier = modifier.size(size)) {
         // 画布按 24 格设计，实际尺寸等比缩。
         val unit = this.size.width / 24f
-        fun p(x: Float, y: Float) = Offset(x * unit, y * unit)
+        // 按这个形状自己的高度居中：三种形状（斜杠 / 细弧 / 带环）不一样高，
+        // 用一个统一的上移量会让有的档居中、有的档偏一截。
+        val lift = GaugeSpecs.liftUnits(spec) * unit
+        fun p(x: Float, y: Float) = Offset(x * unit, y * unit - lift)
         val cx = 12f * unit
-        val cy = 16f * unit
+        val cy = 16f * unit - lift
 
         // 底座
         drawLine(
@@ -74,7 +77,7 @@ internal fun ThinkingGauge(
                 startAngle = 180f,
                 sweepAngle = 180f,
                 useCenter = false,
-                topLeft = p(3.6f, 6.6f),
+                topLeft = Offset(3.6f * unit, 6.6f * unit - lift),
                 size = Size(16.8f * unit, 16.8f * unit),
                 style = Stroke(width = 1.75f * unit, cap = StrokeCap.Round),
             )
@@ -95,7 +98,7 @@ internal fun ThinkingGauge(
                 startAngle = 180f,
                 sweepAngle = 180f,
                 useCenter = false,
-                topLeft = p(6f, 10f),
+                topLeft = Offset(6f * unit, 10f * unit - lift),
                 size = Size(12f * unit, 12f * unit),
                 style = Stroke(width = 1.75f * unit, cap = StrokeCap.Round),
             )
