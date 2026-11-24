@@ -180,7 +180,7 @@ internal fun ChatScreen(
     /** 从工具菜单里进隔离环境页（D401）。 */
     onOpenEnvir: () -> Unit = {},
     /** 从工具菜单的工作区那一行进「设置 → 工具与工作区 → 工作区 → 这一个」（D403）。 */
-    onOpenWorkspaceSettings: (String) -> Unit = {},
+    onOpenWorkspacePage: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     // 草稿按会话存（0.15b）：切走再切回来，那半句还在。空白会话也有自己的桶。
@@ -2273,7 +2273,7 @@ internal fun ChatScreen(
                 onOpenFiles = { id -> onOpenFiles(id) },
                 onOpenTerminal = { id -> onOpenTerminal(id) },
                 onOpenEnvir = { onOpenEnvir() },
-                onOpenWorkspaceSettings = { id -> onOpenWorkspaceSettings(id) },
+                onOpenWorkspacePage = { id -> onOpenWorkspacePage(id) },
             )
         }
 
@@ -7045,7 +7045,7 @@ private fun ToolSheet(
     onOpenTerminal: (String) -> Unit,
     onOpenEnvir: () -> Unit,
     /** 进「设置 → 工具与工作区 → 工作区 → 这一个」（D403）。 */
-    onOpenWorkspaceSettings: (String) -> Unit = {},
+    onOpenWorkspacePage: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val databasePath = remember(context) { ProviderRepository.databasePath(context) }
@@ -7275,7 +7275,7 @@ private fun ToolSheet(
                             description = "这个工作区的设置",
                             onClick = {
                                 onDismiss()
-                                onOpenWorkspaceSettings(resolved.id)
+                                onOpenWorkspacePage(resolved.id)
                             },
                             compact = true,
                         )

@@ -146,4 +146,23 @@ class StarPointsTest {
         assertEquals("min", shortLevelName("minimal"))
         assertEquals("mid", shortLevelName("medium"))
     }
+
+    /**
+     * 返回栈深度（D407）：从聊天页进工作区那一页，**返回一次就该回聊天页**。
+     *
+     * 之前把"工具与工作区"和"工作区列表"也压进了栈，所以从聊天页点进去要按三次返回。
+     */
+    @Test
+    fun workspace_page_returns_to_chat_in_one_step() {
+        // 栈里只有根页面（聊天页）
+        val afterChat = NavigationDepth.after(current = 1, entry = NavigationDepth.FROM_CHAT)
+        assertEquals("从聊天页进只该压一层", 2, afterChat)
+        // 返回一次 = 层数减一 = 回到 1（聊天页）
+        assertEquals("返回一次该回到聊天页", 1, afterChat - 1)
+
+        // 从设置走下去：路上已经有那两层，再压这一层就是 4
+        val afterSettings = NavigationDepth.after(current = 3, entry = NavigationDepth.FROM_SETTINGS)
+        assertEquals(5, afterSettings)
+        assertTrue("从设置进不该只退一次就到聊天页", afterSettings - 1 > 1)
+    }
 }

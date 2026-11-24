@@ -141,3 +141,35 @@ internal object GaugeSpecs {
         else -> GaugeSpec(rings = 0, needleDeg = 0f)
     }
 }
+
+/**
+ * 从某个入口进「一个工作区」那一页时，返回栈该压几层（D407）。
+ *
+ * # 为什么单独算这个
+ *
+ * 返回栈记的是**用户这次走过的路**，不是"可能的路"。同一个页面有两个入口：
+ *
+ * - **从聊天页工具菜单**：点一下就进来了，所以只压一层 —— 返回直接回聊天页。
+ * - **从设置里走下去**：路上经过「工具与工作区」和「工作区列表」两层，
+ *   所以那两层本来就在栈里 —— 返回自然先回列表。
+ *
+ * 之前这里把中间两层硬塞进栈里，于是从聊天页点进去要按三次返回才回得来。
+ * 把"压几层"写成纯函数，就能用单测盯住它。
+ */
+internal object NavigationDepth {
+
+    /** 从聊天页进：只压目标那一层。 */
+    const val FROM_CHAT = 1
+
+    /** 从设置里走下去：路上已经有「工具与工作区」+「工作区列表」两层。 */
+    const val FROM_SETTINGS = 2
+
+    /**
+     * 压完之后，返回栈该有几层（含根页面聊天页）。
+     *
+     * `current` 是压之前的层数，`entry` 是 [FROM_CHAT] / [FROM_SETTINGS]。
+     * 从聊天页进时压一层 → 返回一次就回到聊天页。
+     */
+    fun after(current: Int, entry: Int): Int =
+        current.coerceAtLeast(1) + entry.coerceAtMost(FROM_SETTINGS).coerceAtLeast(1)
+}

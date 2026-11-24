@@ -101,16 +101,18 @@ private sealed interface Route {
     /** 工作区（D234）：列 / 新建 / 改名 / 删除。入口在「工具与工作区」里。 */
     data object Workspace : Route
 
-    /** 一个工作区的文件与工具（D392）：文件页签 / 工具页签。 */
-    data class WorkspaceFiles(val id: String) : Route
-
     /**
-     * 某个工作区的设置页（D403）：从聊天页工具菜单那一行的 ⚙ 直接进。
+     * 一个工作区的文件与工具（D392）：文件页签 / 工具页签。
      *
-     * 路径是「设置 → 工具与工作区 → 工作区 → 这一个」，所以返回链上要有那两层：
-     * 点返回先回「工作区」列表，再回「工具与工作区」，最后才是聊天页。
+     * **一个页面、两个入口**：设置 → 工具与工作区 → 工作区 → 这一个，
+     * 以及聊天页工具菜单那一行的 ⚙。两条路打开的是同一屏，所以只留一个路由——
+     * 两个路由指同一个页面，返回栈会变得说不清（同一屏在栈上有两个名字）。
+     *
+     * 返回去哪由**进来时压了几层**决定，不由这个路由决定：
+     * 从设置进来，栈里本来就有中间两层，返回自然回工作区列表；
+     * 从聊天页进来只压一层，返回直接回聊天页。
      */
-    data class WorkspaceSettings(val id: String) : Route
+    data class WorkspaceFiles(val id: String) : Route
 
     /** 终端（D395）：命令回显式，起点是工作区。 */
     data class Terminal(val workspaceId: String) : Route
@@ -597,11 +599,14 @@ class MainActivity : ComponentActivity() {
                             onOpenFiles = { id -> backStack = backStack + Route.WorkspaceFiles(id) },
                             onOpenTerminal = { id -> backStack = backStack + Route.Terminal(id) },
                             onOpenEnvir = { backStack = backStack + Route.Envir },
-                            onOpenWorkspaceSettings = { id ->
-                                backStack = backStack +
-                                    Route.SettingsGroupRoute(SettingsGroup.Tools) +
-                                    Route.Workspace +
-                                    Route.WorkspaceSettings(id)
+                            // 从聊天页进工作区那一页：**只压一层**。
+                            //
+                            // 之前这里塞了三层（工具与工作区 → 工作区列表 → 工作区），
+                            // 于是从聊天页点进去要按三次返回才回得来。中间那两层是
+                            // "从设置页走下去"的路径，不是用户这次走过的路径——
+                            // 返回栈记的是走过的路，不是可能的路。
+                            onOpenWorkspacePage = { id ->
+                                backStack = backStack + Route.WorkspaceFiles(id)
                             },
                             onNewChat = {
                                 // 已经是空白会话就不用再开一个：那只是把用户刚打的字清掉。
@@ -729,18 +734,6 @@ class MainActivity : ComponentActivity() {
                             com.nmoi.agent.ui.Terminal.TerminalScreen(
                                 workspaceId = ws.id,
                                 workspacePath = ws.dir.absolutePath,
-                                onBack = { backStack = backStack.dropLast(1) },
-                            )
-                        }
-
-                        is Route.WorkspaceSettings -> {
-                            val ws = remember(route.id) {
-                                com.nmoi.agent.ui.WorkspaceRepository.resolve(context, route.id)
-                            }
-                            com.nmoi.agent.ui.Files.WorkspaceFilesScreen(
-                                root = ws.dir,
-                                workspaceId = ws.id,
-                                title = ws.name,
                                 onBack = { backStack = backStack.dropLast(1) },
                             )
                         }
@@ -928,7 +921,6 @@ private fun waitsForData(route: Route): Boolean = when (route) {
 private fun routeKeyOf(route: Route): String = when (route) {
     is Route.Chat -> "chat:${route.sessionId ?: "new"}"
     is Route.WorkspaceFiles -> "wsfiles:${route.id}"
-    is Route.WorkspaceSettings -> "wsset:${route.id}"
     is Route.Terminal -> "terminal:${route.workspaceId}"
     is Route.SettingsGroupRoute -> "group:${route.group.name}"
     is Route.AssistantEdit -> "assistant:${route.id}"
