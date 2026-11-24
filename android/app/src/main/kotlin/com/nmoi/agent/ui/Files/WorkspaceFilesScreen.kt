@@ -96,7 +96,8 @@ internal fun WorkspaceFilesScreen(
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 8.dp),
+                // 与 `FileBrowser` 的 12dp 页边距对齐：同一页两套边距，文字会看着歪。
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 BackButton(onBack = onBack)
@@ -123,7 +124,7 @@ internal fun WorkspaceFilesScreen(
                 right = "工具",
                 rightSelected = tab == WorkspaceTab.Tools,
                 onPick = { tab = if (it) WorkspaceTab.Tools else WorkspaceTab.Files },
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
 
             val note = notice

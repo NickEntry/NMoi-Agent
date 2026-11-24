@@ -76,6 +76,9 @@ internal fun VoiceScreen(onBack: () -> Unit) {
         asrSelected = VoiceRepository.selected(context, VoiceRepository.Direction.Asr)
     }
 
+    // 根节点要自己铺底色：别处都是 `Surface(color = background)` 起头，
+    // 这一页原来只有一个裸 `Column`，于是整页透出底下那一层（看着像"背景透明了"）。
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 8.dp),
@@ -302,6 +305,7 @@ internal fun VoiceScreen(onBack: () -> Unit) {
                 )
             }
         }
+    }
     }
 
     notice?.let { text ->

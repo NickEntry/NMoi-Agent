@@ -6182,8 +6182,8 @@ private fun NativeEditText(
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION or EditorInfo.IME_ACTION_NONE
-                // 左右各 20：16 的时候文字还是贴边（用户 2026-11-24 给的截图里留白更大）。
-                setPadding(20, 22, 20, 18)
+                // 左右各 24：20 还是偏窄（用户 2026-11-24 又提了一次）。
+                setPadding(24, 22, 24, 18)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // 光标跟着主题走；不设的话某些 ROM 上是纯黑，深色底看不见。
                     textCursorDrawable = null

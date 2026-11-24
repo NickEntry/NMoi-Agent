@@ -156,6 +156,10 @@ jobs:
       # 红条被一整块不透明底色盖住——真机上是"能点，但是空白"，编译期看不出来。
       - name: 左滑删除顺序对账
         run: python3 scripts/check_swipe_row.py
+      # 页面底色（D408）：根节点只写裸 `Column` 时整页会透出底下那一层，
+      # 真机上是"背景透明了"，编译期看不出来——VoiceScreen 踩过。
+      - name: 页面底色对账
+        run: python3 scripts/check_page_background.py
       # 固定签名（D170）：有 secret 就解到 $RUNNER_TEMP（不进工作树、不进 artifact），
       # 没有就什么都不做——构建会退回 AGP 的 debug 签名，那种包只能本机随手试。
       - name: 解出签名材料

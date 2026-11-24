@@ -93,7 +93,9 @@ internal fun FileBrowser(
         FileListing.sorted(rows.filter { FileListing.visible(it, showHidden) }, order)
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    // 页边距加在这一层：两个入口（工具菜单 / 设置）用的是同一个 `FileBrowser`，
+    // 加一次两边都对。行本身不再各自缩进——那样会缩两遍。
+    Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         FileToolbar(
             title = if (current.isEmpty()) "工作区" else current,
             summary = FileListing.summary(shown),
@@ -143,7 +145,7 @@ private fun FileToolbar(
     onCreate: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (canGoUp) {
@@ -154,7 +156,7 @@ private fun FileToolbar(
                 compact = true,
             )
         }
-        Column(modifier = Modifier.weight(1f).padding(start = if (canGoUp) 2.dp else 8.dp)) {
+        Column(modifier = Modifier.weight(1f).padding(start = if (canGoUp) 2.dp else 4.dp)) {
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyMedium,
@@ -196,7 +198,7 @@ private fun FileRowItem(row: FileRow, onClick: () -> Unit, onActions: () -> Unit
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(start = 14.dp, end = 6.dp, top = 9.dp, bottom = 9.dp),
+            .padding(start = 2.dp, end = 2.dp, top = 9.dp, bottom = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
