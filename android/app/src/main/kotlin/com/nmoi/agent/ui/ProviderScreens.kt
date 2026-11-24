@@ -1104,7 +1104,7 @@ private fun GroupCard(
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp),
     ) {
         Column { content() }
     }

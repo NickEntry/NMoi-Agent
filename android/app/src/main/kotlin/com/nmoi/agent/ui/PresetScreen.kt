@@ -92,7 +92,7 @@ internal fun PresetScreen(
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
             )
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -104,7 +104,7 @@ internal fun PresetScreen(
                         text = "包里没有预设：`assets/presets/` 下缺文件（这不是坏事，只是没内容可注入）",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
                     )
                 }
             }
@@ -283,7 +283,7 @@ internal fun PresetEditScreen(
                     text = line,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
                 )
             }
             if (reason != null) {
@@ -291,7 +291,7 @@ internal fun PresetEditScreen(
                     text = reason,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                 )
             }
 
@@ -303,7 +303,7 @@ internal fun PresetEditScreen(
                         text = shown.summary.ifBlank { "（没有说明）" },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     )
                     shown.entries.forEach { entry ->
                         EntryCard(

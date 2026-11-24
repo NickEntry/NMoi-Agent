@@ -141,7 +141,7 @@ internal fun AssistantScreen(
                     text = "每个助手有自己的会话列表和模型配置。模型在聊天页顶部换，改的是当前助手那一份。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
                 )
 
                 val page = list
@@ -253,7 +253,7 @@ internal fun AssistantScreen(
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     )
                 }
                 Spacer(Modifier.height(24.dp))

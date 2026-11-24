@@ -322,7 +322,7 @@ private fun GroupCard(content: @Composable () -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
     ) {
         Column { content() }
     }
@@ -469,7 +469,7 @@ private fun DialogChip(label: String, primary: Boolean = false, onClick: () -> U
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
     }
 }

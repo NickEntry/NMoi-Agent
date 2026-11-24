@@ -653,7 +653,7 @@ private fun GroupCard(content: @Composable () -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
     ) {
         Column { content() }
     }

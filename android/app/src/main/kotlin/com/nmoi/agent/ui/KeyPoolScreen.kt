@@ -391,7 +391,7 @@ private fun KeySheet(
     var label by remember { mutableStateOf(key.label) }
 
     SheetFrame(title = if (key.value.isBlank()) "加一把 key" else "改这一把", onDismiss = onDismiss) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 24.dp)) {
             Text(
                 text = "key",
                 style = MaterialTheme.typography.labelSmall,

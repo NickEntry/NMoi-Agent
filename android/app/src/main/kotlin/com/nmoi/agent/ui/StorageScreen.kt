@@ -154,7 +154,7 @@ internal fun StorageScreen(onBack: () -> Unit) {
                 // 按会话分组（D217）：用户找图时先想起的是"哪个会话里的那张"。
                 // 每组一行小标题（标题 · N 张 · 大小），下面才是条目。
                 val grouped = rows.groupBy { it.conversation }
-                LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 24.dp)) {
                     grouped.forEach { (_, itemsInGroup) ->
                         item(key = "group:${itemsInGroup.first().conversation}") {
                             Row(

@@ -129,7 +129,7 @@ internal fun LogChannelScreen(kind: LogKind, onBack: () -> Unit) {
                     "（超了自动丢最旧的，保留最新一半）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
             )
             Text(
                 text = "文件：files/logs/${kind.fileName}" +
@@ -140,7 +140,7 @@ internal fun LogChannelScreen(kind: LogKind, onBack: () -> Unit) {
                 } else {
                     MaterialTheme.colorScheme.error
                 },
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier.padding(horizontal = 24.dp),
             )
             if (kind.pendingProducer != null) {
                 Text(
@@ -206,7 +206,7 @@ internal fun LogChannelScreen(kind: LogKind, onBack: () -> Unit) {
                     text = note,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
                 )
             }
 

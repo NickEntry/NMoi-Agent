@@ -63,7 +63,7 @@ internal fun AppearanceScreen(
                 // ---- 主题（D120）----
                 SectionLabel("主题")
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     ThemeMode.entries.forEach { mode ->
@@ -81,19 +81,19 @@ internal fun AppearanceScreen(
                     text = "切完部分桌面要过几秒才刷新，必要时重启桌面。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
                 )
                 if (warning != null) {
                     Text(
                         text = warning,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     )
                 }
 
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     IconPlate.entries.forEach { plate ->
@@ -108,7 +108,7 @@ internal fun AppearanceScreen(
                 // 网格固定两列、高度自撑：图标只有 4 个，不需要滚动容器，
                 // 用 LazyVerticalGrid 会被套进外层 verticalScroll 里（两者都无限高），所以换成手排。
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     IconDesign.entries.chunked(2).forEach { pair ->
@@ -135,12 +135,12 @@ internal fun AppearanceScreen(
                         "换掉之后旧文件会被清掉。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp),
                 )
                 // ---- 自定义主题：只留位（D121）----
                 SectionLabel("自定义主题")
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     // 三个色块只是"将来能改成什么样"的示意，不是当前配色；
@@ -165,7 +165,7 @@ private fun SectionLabel(text: String) {
         text = text,
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 6.dp),
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 6.dp),
     )
 }
 

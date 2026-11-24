@@ -310,7 +310,7 @@ internal fun LicenseDocScreen(doc: LicenseDoc, onBack: () -> Unit) {
                                 text = "下面是 Markdown 原文，没有渲染——渲染器还没接，不做假渲染。",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
                             )
                         }
                     }
@@ -322,7 +322,7 @@ internal fun LicenseDocScreen(doc: LicenseDoc, onBack: () -> Unit) {
                             fontSize = 12.sp,
                             lineHeight = 17.sp,
                             color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
                         )
                     }
                 }

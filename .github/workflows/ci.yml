@@ -160,6 +160,10 @@ jobs:
       # 真机上是"背景透明了"，编译期看不出来——VoiceScreen 踩过。
       - name: 页面底色对账
         run: python3 scripts/check_page_background.py
+      # 页边距（D412）：设置各子页要跟设置首页一样是 24dp。散成 12/16/24 三套时，
+      # 翻页会看到内容左右跳动——编译能过，只有来回翻才看得出来。
+      - name: 页边距对账
+        run: python3 scripts/check_page_margins.py
       # 固定签名（D170）：有 secret 就解到 $RUNNER_TEMP（不进工作树、不进 artifact），
       # 没有就什么都不做——构建会退回 AGP 的 debug 签名，那种包只能本机随手试。
       - name: 解出签名材料

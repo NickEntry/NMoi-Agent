@@ -179,7 +179,7 @@ internal fun MessageEditScreen(
                 onValueChange = { text = it },
                 revealLine = errorLine,
                 enabled = loaded && !busy,
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp),
             )
 
             notice?.let { line ->

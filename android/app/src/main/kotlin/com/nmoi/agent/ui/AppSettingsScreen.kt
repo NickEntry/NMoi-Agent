@@ -720,7 +720,7 @@ internal fun AppSettingsScreen(
                         text = line,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                     )
                 }
                 Spacer(Modifier.height(24.dp))
@@ -816,7 +816,7 @@ internal fun SettingsCard(
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp),
     ) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) { content() }
     }

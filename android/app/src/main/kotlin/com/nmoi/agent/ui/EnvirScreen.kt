@@ -536,7 +536,7 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                 }
 
                 if (running || phaseText.isNotEmpty()) {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp)) {
                         Text(
                             text = phaseText,
                             style = MaterialTheme.typography.labelSmall,
@@ -561,7 +561,7 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                         else -> "覆盖安装"
                     },
                     enabled = !running,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
                 ) {
                     start(overlay = installed != null)
                 }
@@ -582,7 +582,7 @@ internal fun EnvirScreen(onBack: () -> Unit) {
                         text = line,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
                     )
                 }
 
@@ -659,7 +659,7 @@ private fun GroupCard(content: @Composable () -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
     ) {
         Column { content() }
     }

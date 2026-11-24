@@ -280,7 +280,7 @@ internal fun ProxyScreen(onBack: () -> Unit) {
                     }
                 }
 
-                Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Row(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
                     SettingChip("保存并应用", selected = true) {
                         scope.launch {
                             ProxyRepository.save(context, config, password).fold(
@@ -295,7 +295,7 @@ internal fun ProxyScreen(onBack: () -> Unit) {
                     }
                 }
 
-                Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Row(modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)) {
                     SettingChip("移除容器垫片", selected = false) {
                         scope.launch {
                             ProxyContainer.removeShim(context).fold(
@@ -311,7 +311,7 @@ internal fun ProxyScreen(onBack: () -> Unit) {
                         text = line,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                     )
                 }
                 Spacer(Modifier.height(24.dp))

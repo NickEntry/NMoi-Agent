@@ -86,7 +86,7 @@ internal fun DebugScreen(
                     } else {
                         MaterialTheme.colorScheme.error
                     },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                 )
                 Text(
                     text = if (nativeStatus.ok) {
@@ -96,7 +96,7 @@ internal fun DebugScreen(
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp),
                 )
 
                 Text(

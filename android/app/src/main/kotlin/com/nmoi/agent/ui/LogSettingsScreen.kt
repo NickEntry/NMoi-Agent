@@ -102,7 +102,7 @@ internal fun LogSettingsScreen(onBack: () -> Unit) {
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 4.dp),
                     )
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         NLog.LIMIT_CHOICES_MB.forEach { megabytes ->
@@ -135,7 +135,7 @@ internal fun LogSettingsScreen(onBack: () -> Unit) {
                         text = note,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
                     )
                 }
             }
