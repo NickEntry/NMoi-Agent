@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Arrangement
@@ -346,6 +347,9 @@ internal fun ConversationDrawer(
                     ),
             )
         }
+        // 抽屉**画到状态栏下面**（D416）：这样状态栏左半是抽屉的白、右半是聊天页的暗，
+        // 两半各自跟着下面的内容走——而不是整条状态栏一个颜色。
+        // 代价是内容要自己让开状态栏（`DrawerPanel` 里那个 `statusBarsPadding`）。
         Surface(
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier
@@ -506,7 +510,10 @@ private fun DrawerPanel(
     // 浮层是这一层的**兄弟**，不是 Column 的孩子：放进 Column 里，
     // `fillMaxSize` 只拿到剩余高度（遮罩只盖下半屏），还会把带 `weight(1f)` 的列表挤成 0 高。
     Box(modifier = Modifier.fillMaxSize()) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    // 抽屉底色铺到状态栏下面（D416），内容让开：`statusBarsPadding` 一次，
+    // 下面那些 `top = 44.dp` 的硬编码就换成真实高度——44 是猜的，
+    // 刘海屏 / 挖孔屏上对不上。
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         if (selecting) {
             // 选择时整块顶栏只回答一件事：勾了几条、还能不能全选、怎么退出去。
             // 用户块与搜索在这一层没有用处，留着只会把"已选 N 项"挤成一行小字。
@@ -519,12 +526,12 @@ private fun DrawerPanel(
                     selecting = false
                     selectedIds = emptySet()
                 },
-                topPadding = 44.dp,
+                topPadding = 0.dp,
             )
         } else {
             // —— 顶部：用户块（头像 + 名字上排 / 问候语下排）——
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 44.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 DrawerAvatar(label = "我", size = 40.dp, mine = true)
@@ -1103,20 +1110,30 @@ private fun ConfirmSheet(
 /** 居中的小卡片（抽屉里这几层共用）。 */
 @Composable
 private fun OverlayCardBox(onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(onClick = onDismiss),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) { content() }
+    // 与 `SheetFrame` 同一个理由（D413 / D416）：就地铺一层的话宽度跟着父布局走，
+    // 从侧边栏里长出来的确认卡会被卡在侧边栏那么宽。`Dialog` 以窗口为基准。
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.32f))
+                    .clickable(onClick = onDismiss),
+            )
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) { content() }
+                }
             }
         }
     }

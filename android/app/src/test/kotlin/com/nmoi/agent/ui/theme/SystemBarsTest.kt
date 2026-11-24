@@ -72,6 +72,48 @@ class SystemBarsTest {
     }
 
     /**
+     * 状态栏那一块按"最不利的那一半"算（D416）。
+     *
+     * 抽屉拉出来时左边那半是抽屉的白，所以浅色主题下图标必须转深色；
+     * 抽屉收起来之后按页面底色算。
+     */
+    @Test
+    fun drawer_open_makes_the_status_bar_light() {
+        // 浅色主题 + 抽屉打开：按抽屉的白算 → 浅底 → 深色图标
+        val open = statusBarBackdrop(dark = false, drawerCoverage = 1f, dim = 0.60f)
+        assertTrue("抽屉打开时该按浅底算（深色图标）", isLight(open))
+
+        // 浅色主题 + 抽屉关：按页面底色算 → 也是浅的
+        val closed = statusBarBackdrop(dark = false, drawerCoverage = 0f, dim = 0f)
+        assertTrue(isLight(closed))
+    }
+
+    /** 深色主题：抽屉打开时按抽屉的深色算，图标转浅色。 */
+    @Test
+    fun drawer_open_on_dark_theme_wants_light_icons() {
+        val open = statusBarBackdrop(dark = true, drawerCoverage = 1f, dim = 0.60f)
+        assertFalse("深色主题 + 抽屉：白图标", isLight(open))
+        val closed = statusBarBackdrop(dark = true, drawerCoverage = 0f, dim = 0f)
+        assertFalse(isLight(closed))
+    }
+
+    /**
+     * 抽屉没盖到一半时仍按页面底色算：这时候状态栏大部分是页面那一块。
+     *
+     * 阈值 0.5 是"过半"的意思，两侧各试一次。
+     */
+    @Test
+    fun coverage_threshold_decides_which_half_wins() {
+        val mostlyPage = statusBarBackdrop(dark = false, drawerCoverage = 0.49f, dim = 0.3f)
+        val mostlyDrawer = statusBarBackdrop(dark = false, drawerCoverage = 0.5f, dim = 0.3f)
+        // 0.49 走页面底色（被压暗过），0.5 走抽屉的白——后者更亮
+        assertTrue(
+            "过半之后应该按抽屉的白算，比压暗过的页面底色更亮",
+            luma(mostlyDrawer) > luma(mostlyPage),
+        )
+    }
+
+    /**
      * 纯色底也要判对：用平均亮度会在纯蓝上判错（蓝的视觉亮度很低，但 R/G/B 平均不低）。
      */
     @Test

@@ -31,13 +31,17 @@ import androidx.core.view.WindowCompat
  * 两处都要调：`onCreate` 一次（第一帧之前，否则会闪一下白图标/亮底色），
  * 主题运行中切换时再调一次（[SystemBarsForTheme]）。
  */
-internal fun applySystemBars(window: Window, dark: Boolean, dim: Float = 0f) {
-    val base = if (dark) DARK_BACKGROUND else LIGHT_BACKGROUND
-    // 抽屉/浮层把内容压暗时，状态栏也要跟着暗（D415）。
-    //
-    // 不跟的话，会出现"侧边栏拉出来背景变暗了、状态栏还是亮的"——那一块在窗口层，
-    // Compose 画的遮罩盖不到它，只能自己算一个压暗后的颜色给窗口。
-    val background = dimBackground(base, dim)
+internal fun applySystemBars(
+    window: Window,
+    dark: Boolean,
+    dim: Float = 0f,
+    /** 抽屉盖住了屏幕多少（0 = 没开，1 = 全屏）。 */
+    drawerCoverage: Float = 0f,
+) {
+    // edge-to-edge 之后状态栏那一块是**应用自己画的**（D416）：
+    // 左边可能是抽屉的白、右边是页面的暗。窗口底色只是"没被盖住那部分"的兜底，
+    // 图标深浅按 `statusBarBackdrop` 算出来的那一块定。
+    val background = statusBarBackdrop(dark, drawerCoverage, dim)
     window.setBackgroundDrawable(ColorDrawable(background))
     window.statusBarColor = background
     // 导航栏保持透明：手势条下面就是窗口底色，三键导航时也是同一个颜色。
@@ -54,19 +58,15 @@ internal fun applySystemBars(window: Window, dark: Boolean, dim: Float = 0f) {
     controller.isAppearanceLightNavigationBars = light
 }
 
-/** 与 `values/colors.xml` 里的两个值保持一致（那边给冷启动那一帧用）。 */
-private const val DARK_BACKGROUND = 0xFF101014.toInt()
-private const val LIGHT_BACKGROUND = 0xFFF7F7FA.toInt()
-
 /** 主题变化时重设系统栏。[dark] 是应用当前用深色还是浅色。 */
 @Composable
-internal fun SystemBarsForTheme(dark: Boolean, dim: Float = 0f) {
+internal fun SystemBarsForTheme(dark: Boolean, dim: Float = 0f, drawerCoverage: Float = 0f) {
     val view = LocalView.current
     val activity = LocalContext.current.findActivity()
     // view 进 key：换窗口（如旋转重建）时要重新设置一次。
-    // `dim` 进 key：抽屉开合要跟着改状态栏底色。
-    LaunchedEffect(dark, dim, view, activity) {
-        activity?.window?.let { applySystemBars(it, dark, dim) }
+    // `dim` / `drawerCoverage` 进 key：抽屉开合要跟着改状态栏底色与图标深浅。
+    LaunchedEffect(dark, dim, drawerCoverage, view, activity) {
+        activity?.window?.let { applySystemBars(it, dark, dim, drawerCoverage) }
     }
 }
 

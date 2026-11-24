@@ -35,3 +35,28 @@ internal fun dimBackground(color: Int, dim: Float): Int {
     return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
 }
 
+/**
+ * 状态栏那一块实际是什么颜色（D416）。
+ *
+ * edge-to-edge 之后，状态栏那块区域是**应用自己画的**：左边可能是抽屉的白，
+ * 右边是页面的暗。图标只有一个开关，所以只能按"最不利的那一半"来定——
+ * 抽屉占了大半个屏时按抽屉的底色算，否则按页面底色算。
+ *
+ * 返回压暗之后的窗口底色（抽屉没开时给窗口铺的那个）。
+ */
+internal fun statusBarBackdrop(dark: Boolean, drawerCoverage: Float, dim: Float): Int {
+    // 抽屉拉出来时它自己铺的是 `surface`（浅色主题近白、深色主题近黑），
+    // 覆盖超过一半屏之后，状态栏左半基本就是它。
+    if (drawerCoverage >= 0.5f) {
+        return if (dark) DARK_SURFACE else LIGHT_SURFACE
+    }
+    return dimBackground(if (dark) DARK_BACKGROUND else LIGHT_BACKGROUND, dim)
+}
+
+/** 与 `values/colors.xml` 里的两个值保持一致（那边给冷启动那一帧用）。 */
+internal const val DARK_BACKGROUND = 0xFF101014.toInt()
+internal const val LIGHT_BACKGROUND = 0xFFF7F7FA.toInt()
+
+/** 与主题里的 `surface` 对齐（浅色主题近白、深色主题近黑）。 */
+private const val LIGHT_SURFACE = 0xFFFFFFFF.toInt()
+private const val DARK_SURFACE = 0xFF141419.toInt()

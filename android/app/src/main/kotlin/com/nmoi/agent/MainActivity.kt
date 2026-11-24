@@ -188,6 +188,9 @@ class MainActivity : ComponentActivity() {
         NLog.init(this)
         // 窗口底色 + 状态栏底色 + 系统栏图标深浅：这三件必须在第一帧之前一次做完，
         // 否则冷启动会先闪一帧错色（浅色主题闪黑、深色主题闪白图标）。
+        // **edge-to-edge**（D416）：状态栏那块区域要由应用自己画，才能做到
+        // "抽屉那半是白的、聊天页那半是暗的"。不开的话那一块永远是一整条窗口底色。
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         applySystemBars(window, dark = ThemeStore.isDarkNow(this))
         // alias 启动时 componentName 是那个 alias，不是 MainActivity。
         // 这条日志同时回答两件事：入口是不是别名、现在生效的是哪一个图标。
@@ -234,8 +237,16 @@ class MainActivity : ComponentActivity() {
             // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
             // 声明在这里（而不是更下面）：状态栏压暗要读它。
             var drawerOpen by remember { mutableStateOf(false) }
-            // 抽屉开着时状态栏也压暗（D415）：遮罩在 Compose 层，盖不到窗口那一块。
-            SystemBarsForTheme(dark, dim = if (drawerOpen) 0.60f else 0f)
+            // 状态栏那一块（D416）：edge-to-edge 之后它是应用自己画的。
+            // 抽屉开着时左边那半是抽屉的白，所以图标要按"白底用深色图标"来定——
+            // 这就是之前"状态栏和背景不适合"的根源：那时按主题算，浅色主题下拉出抽屉，
+            // 底色暗了图标还是深色。
+            SystemBarsForTheme(
+                dark = dark,
+                dim = if (drawerOpen) 0.60f else 0f,
+                // 抽屉宽 300dp 上下，屏幕普遍 390dp 宽 → 覆盖过半，按抽屉底色算。
+                drawerCoverage = if (drawerOpen) 1f else 0f,
+            )
             NMoiTheme(dark = dark) {
                 // 路由栈：返回 = 回上一级。子页面以后（模型详情、世界书编辑…）同样只需 push，
                 // 不用每页各写一个返回逻辑。根是聊天页，它不接管返回键。

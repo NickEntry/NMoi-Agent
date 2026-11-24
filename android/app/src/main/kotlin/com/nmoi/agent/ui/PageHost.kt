@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.background
@@ -130,12 +131,26 @@ internal fun PageHost(
         if (!laidOut) stuck = true
     }
 
+    // 页面内容统一让开状态栏与导航栏（D416）。
+    //
+    // 窗口开了 edge-to-edge 之后，`fillMaxSize()` 会一直画到状态栏下面——
+    // 每个页面各自加 insets 的话，34 个页面漏一个就顶上去一个。加在这一层加一次。
+    // **底色仍然铺满**：`Surface(color = background)` 在页面里，它在 insets 之内，
+    // 所以状态栏那一块显示的是窗口底色（由 `applySystemBars` 给），抽屉打开时
+    // 左边那半由抽屉自己铺的白盖住。
     val probe = Modifier
         .fillMaxSize()
+        .systemBarsPadding()
         .onGloballyPositioned { laidOut = true }
 
     if (!preview) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        // 外框铺页面底色：`probe` 让开状态栏之后，那一圈由这一层盖住——
+        // 不然会透出窗口底色，深色主题下看着像"状态栏比页面亮一截"。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+        ) {
             key(pageKey, attempt) {
                 Box(modifier = probe) {
                     content()
