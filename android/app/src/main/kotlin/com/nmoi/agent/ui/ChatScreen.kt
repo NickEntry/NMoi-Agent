@@ -1036,20 +1036,10 @@ internal fun ChatScreen(
         }
     }
 
-    // **临时探针**：用"工具编辑"这条路改一版，专门用来验红/蓝到底怎么来的（D148）。
-    // 真正的工具编辑要等 `core::edit::apply_edit` 桥出 FFI，那之前先用它把颜色造出来。
-    val toolEditProbe: (ChatMessage, Long) -> Unit = { message, versionNo ->
-        val marked = message.content + "\n\n（这一版是工具改的）"
-        scope.launch {
-            ChatRepository.toolEditVersion(databasePath, message.id, versionNo, marked).fold(
-                onSuccess = {
-                    reloadKey += 1
-                    notice = "工具改完了（这一版应当变红/蓝）"
-                },
-                onFailure = { notice = "工具编辑失败：${it.message}" },
-            )
-        }
-    }
+    // 这里原来有一支「用工具改这一版（临时探针）」。它验的是 `message_versions` 里那两份正文
+    // 的颜色，而不是"工具改一条消息"这件事——工具改消息早就是真的了（`apply_unit_edits`，
+    // 一次事务写这条消息的所有块）。用户 2026-11-26 要求把那一条从菜单里去掉：留着它等于
+    // 让人以为"工具改消息"还没接。
 
     val deleteVersion: (String, Long) -> Unit = { id, versionNo ->
         // 先记下"界面想删哪一版"，再看仓储那边回的 count/active：两行对不上就能定位。
@@ -2590,7 +2580,6 @@ internal fun ChatScreen(
                             ?: sheetMessage.content
                         editingId = sheetMessage.id
                     },
-                    onToolEdit = { toolEditProbe(sheetMessage, sheetActive.toLong()) },
                     onOpenEditor = {
                         moreForId = null
                         // 整页编辑器要的是**消息 id**（它进页再现读库，铁律①）。
@@ -2613,6 +2602,7 @@ internal fun ChatScreen(
                 ),
                 onHint = { notice = it },
                 onDismiss = { moreForId = null },
+                compact = true,
             )
         }
     }
@@ -6089,7 +6079,6 @@ private fun messageSheetItems(
     onSelectOnly: () -> Unit,
     onSaveVersion: () -> Unit,
     onEdit: () -> Unit,
-    onToolEdit: () -> Unit,
     onOpenEditor: () -> Unit,
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
@@ -6109,22 +6098,20 @@ private fun messageSheetItems(
             icon = ActionIcons.Pencil,
             onClick = onEdit,
         ),
-        // D177：增强编辑 = **用户手动改块**（正文 / 思考 / 工具参数），整页编辑、点保存落库。
-        // 模型改消息走工具调用（`edit_unit`，0.14y 叫 `edit_message`；这一轮结束时生效），不在这张表里。
+        // D177：增强编辑 = **用户手动改整条消息的块**（正文 / 思考 / 工具参数），整页编辑、点保存落库。
+        // 模型改消息走工具调用（`edit_unit`，0.14y 叫 `edit_message`），不在这张表里。
+        //
+        // 「整条消息」这四个字是用户 2026-11-26 定的：一次编辑的范围就是**屏幕上那一个红框**
+        // （工具块 + 正文），不是框里那段正文。所以标签与页面标题都写"整条消息"，
+        // 别让"编辑消息"看起来像"编辑正文"的另一种叫法。
         //
         // 入口走 `onEditMessage`（MainActivity 那边 push `Route.MessageEdit`）。
         // 以前这里接的是旧的"问模型改"弹窗：那个入口在 0.14x 之后就没有意义了，
         // 而且它让整页编辑器**在真机上一个入口都没有**（2026-10-29 找出来的）。
         SheetItem(
-            label = "编辑消息（正文 / 思考 / 工具参数）",
+            label = "编辑整条消息（正文 / 思考 / 工具参数）",
             icon = ActionIcons.Wrench,
             onClick = onOpenEditor,
-        ),
-        // 临时探针：走"工具编辑"那条路，把 `edited_by_tool` 置上，用来验红/蓝（D148）。
-        SheetItem(
-            label = "用工具改这一版（临时探针）",
-            icon = ActionIcons.Pencil,
-            onClick = onToolEdit,
         ),
         SheetItem(
             label = "分享",

@@ -143,3 +143,119 @@ fn unit_edit_refuses_a_block_that_is_not_there_through_the_envelope() {
 
     take(nmoi_ffi::storage::nmoi_storage_close_json(handle));
 }
+
+/// `{"edits":[…]}` 这条形状（2026-11-26）：一次改**两条消息**，一个信封。
+///
+/// 界面上「编辑整条消息」走的就是它。这一条钉的是信封：`edits` 收进来、
+/// `messages` 回出去、两条都真的改了。形状对不上的话，界面上"点了保存什么都没变"。
+#[test]
+fn turn_edit_shape_touches_two_messages_at_once() {
+    let (handle, session, first, _dir) = seed();
+    let session_c = c(&session);
+    let role = c("assistant");
+    let body = c("第二条的正文");
+    let appended = take(nmoi_ffi::storage::nmoi_storage_append_text_json(
+        handle,
+        session_c.as_ptr(),
+        role.as_ptr(),
+        body.as_ptr(),
+        1_700_000_000_001,
+    ));
+    let second = format!("{session}:{}", appended["seq"].as_u64().unwrap());
+
+    let spec = c(&json!({
+        "edits": [
+            { "message_id": first, "ops": [
+                { "action": "set", "block": "output", "content": "第一条改过" }
+            ]},
+            { "message_id": second, "ops": [
+                { "action": "set", "block": "output", "content": "第二条改过" }
+            ]}
+        ]
+    })
+    .to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        spec.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(true), "{applied}");
+    assert_eq!(applied["written"], json!(2), "{applied}");
+    let messages: Vec<String> = applied["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(messages, vec![first.clone(), second.clone()], "{applied}");
+
+    // 库里两条都变了（不是"回了 ok 但只写了一条"）。
+    let limit = 50;
+    let units = take(nmoi_ffi::storage::nmoi_storage_load_units_json(
+        handle,
+        session_c.as_ptr(),
+        limit,
+    ));
+    let text = units.to_string();
+    assert!(text.contains("第一条改过"), "{text}");
+    assert!(text.contains("第二条改过"), "{text}");
+}
+
+/// `edits` 里有一条解析不出来：整批拒，**一条都不写**。
+#[test]
+fn turn_edit_refuses_the_whole_batch_when_one_message_is_bad() {
+    let (handle, _session, first, _dir) = seed();
+    let spec = c(&json!({
+        "edits": [
+            { "message_id": first, "ops": [
+                { "action": "set", "block": "output", "content": "本来能改" }
+            ]},
+            { "message_id": "不是消息 id", "ops": [
+                { "action": "set", "block": "output", "content": "x" }
+            ]}
+        ]
+    })
+    .to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        spec.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(false), "{applied}");
+    // 信封的形状是 `{"error":{"kind","message"}}`（D55）；坏 id 由 `parse_message` 判成 `id`。
+    assert_eq!(applied["error"]["kind"], json!("id"), "{applied}");
+    assert!(
+        applied["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("不是消息 id"),
+        "{applied}"
+    );
+}
+
+/// 同一条消息在 `edits` 里出现两遍：拒，并说清是哪一组。
+#[test]
+fn turn_edit_refuses_the_same_message_twice() {
+    let (handle, _session, first, _dir) = seed();
+    let spec = c(&json!({
+        "edits": [
+            { "message_id": first, "ops": [
+                { "action": "set", "block": "output", "content": "一" }
+            ]},
+            { "message_id": first, "ops": [
+                { "action": "set", "block": "output", "content": "二" }
+            ]}
+        ]
+    })
+    .to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        spec.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(false), "{applied}");
+    assert!(
+        applied["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("写了一遍"),
+        "{applied}"
+    );
+}

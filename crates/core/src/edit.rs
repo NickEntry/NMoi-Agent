@@ -357,6 +357,39 @@ pub fn block_label(block: BlockSelector) -> String {
     }
 }
 
+/// 一条消息里的一块：`(第几段, 块选择器)`。
+///
+/// 为什么要有它（2026-11-26）：折行（D258）之后**一轮回答是几条消息**（每轮一条），
+/// 而用户在界面上看到的是一个整体（工具卡 + 正文），他长按那条正文点「编辑」时，
+/// 想改的是**屏幕上那一片**。以前编辑只落在那一条消息上，于是红框里两段工具、
+/// 一段思考全都改不到——"编辑整条消息"名不副实。
+///
+/// 界面上有 id，直接按消息分组（`Storage::apply_turn_edits`）；
+/// 模型看不见 id，只能按"这一轮里的第几条"定位，于是 `round` 那一栏是给它的。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOp {
+    /// 这一轮里的第几条消息（0 起）。`None` = 按块找（见 `edit::resolve_op_round`）。
+    pub round: Option<usize>,
+    pub op: BlockOp,
+}
+
+impl TurnOp {
+    pub fn on(op: BlockOp) -> Self {
+        Self { round: None, op }
+    }
+
+    pub fn at(round: usize, op: BlockOp) -> Self {
+        Self {
+            round: Some(round),
+            op,
+        }
+    }
+
+    pub fn block(&self) -> BlockSelector {
+        self.op.block()
+    }
+}
+
 /// 一次调用里的一个动作。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockOp {
@@ -462,6 +495,74 @@ pub fn part_of(block: &BlockSelector, message: &Message) -> Option<String> {
             .map(|call| call.part.clone()),
         BlockSelector::Part { id, .. } => Some(id.clone()),
         _ => None,
+    }
+}
+
+/// 一项动作落到"这一轮里的哪一条消息"。
+///
+/// 模型看不见 id（id 不随请求发出去），只看得见内容，所以它指位置用的是
+/// `round`（这一轮里的第几条）。不带 `round` 时按块找——老形状必须一字不差地工作：
+///
+/// - 工具块：**带工具调用的那一条**（一轮里只可能有一条，否则它就不是一轮）；
+/// - 正文 / 思考：锚点那条（0.15f 起"一轮一条消息"的假设，也是老行为的原样）。
+///
+/// 判据是"这一轮"= 锚点往前到**最后一条用户消息**之后。用户在界面上看到的那一片
+/// （红框）正好是这个范围，所以两边说的是同一个东西。
+pub fn resolve_op_round(
+    history: &[Message],
+    anchor: &MessageId,
+    op: &crate::edit::TurnOp,
+) -> Result<MessageId, String> {
+    let at = history
+        .iter()
+        .position(|message| &message.id == anchor)
+        .ok_or_else(|| format!("这次会话里没有消息 {anchor}"))?;
+    // 这一轮的范围：往前找到最后一条用户消息之后。
+    let mut start = at;
+    while start > 0 && history[start - 1].role != Role::User {
+        start -= 1;
+    }
+    let mut end = at + 1;
+    while end < history.len() && history[end].role != Role::User {
+        end += 1;
+    }
+    let round: &[Message] = &history[start..end];
+    if round.is_empty() {
+        return Err(format!("消息 {anchor} 这一轮是空的"));
+    }
+
+    if let Some(index) = op.round {
+        return round
+            .get(index)
+            .map(|message| message.id.clone())
+            .ok_or_else(|| {
+                format!(
+                    "这一轮只有 {} 条消息（0 起），没有第 {index} 条",
+                    round.len()
+                )
+            });
+    }
+
+    // 不带 round：按块找。工具块只可能长在带调用的那一条上。
+    if op.block().tool_index().is_some() {
+        return round
+            .iter()
+            .find(|message| !message.tool_calls().is_empty())
+            .map(|message| message.id.clone())
+            .ok_or_else(|| format!("消息 {anchor} 这一轮里没有任何工具调用，改不了工具块"));
+    }
+    Ok(anchor.clone())
+}
+
+/// 提示行里那句"（哪几条消息）"：一条就写它，几条就写范围。
+pub(crate) fn describe_targets(targets: &[(MessageId, usize)]) -> String {
+    let mut seqs: Vec<u64> = targets.iter().map(|(id, _)| id.seq()).collect();
+    seqs.sort_unstable();
+    seqs.dedup();
+    match seqs.as_slice() {
+        [one] => format!("消息 #{one}"),
+        [first, .., last] => format!("消息 #{first}–#{last}（{} 条）", seqs.len()),
+        [] => "没有消息".to_string(),
     }
 }
 
@@ -1203,5 +1304,160 @@ mod tests {
         );
         assert_eq!(BlockSelector::ToolResult { index: 3 }.tool_index(), Some(3));
         assert_eq!(BlockSelector::Output.tool_index(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-11-26：编辑要能横跨这一轮里的几条消息
+    // -----------------------------------------------------------------------
+
+    /// 造一轮：一条用户消息 + 工具那条 + 正文那条。
+    fn round_with_tools() -> Vec<Message> {
+        let session = SessionId::new();
+        let user = Message::text(
+            MessageId::new(session, 1),
+            Role::User,
+            SourceTag::History,
+            "跑一下",
+            1,
+            0,
+            LogicalClock::new(1),
+        );
+        let mut call = Message::tool_call_message(
+            MessageId::new(session, 2),
+            vec![OutgoingToolCall::new("call_a", "System-Shell", "{}")],
+            4,
+            0,
+            LogicalClock::new(2),
+        );
+        call.set_tool_output("call_a", "done", crate::message::ToolStatus::Ok);
+        call.set_reasoning(Some("先跑一下".to_string()));
+        let text = Message::text(
+            MessageId::new(session, 3),
+            Role::Assistant,
+            SourceTag::History,
+            "跑完了",
+            2,
+            0,
+            LogicalClock::new(3),
+        );
+        vec![user, call, text]
+    }
+
+    /// 带 `round` 的那一项落在这一轮的另一条消息上——这是"编辑整条消息"的核心。
+    ///
+    /// 判据：`round=1` 的正文改到第 3 条（seq 3），锚点那条（seq 2）一个字不动。
+    #[test]
+    fn an_op_with_round_lands_on_another_message_of_the_same_round() {
+        let history = round_with_tools();
+        let anchor = history[1].id.clone();
+        let op = TurnOp::at(
+            1,
+            BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "改过的正文".into(),
+            },
+        );
+        let target = resolve_op_round(&history, &anchor, &op).unwrap();
+        assert_eq!(
+            target, history[2].id,
+            "round=1 是这一轮的第二条（正文那条）"
+        );
+        assert_ne!(target, anchor, "锚点那条不该被改");
+    }
+
+    /// 不带 `round` 的老形状：正文仍然落在锚点那条上（0.15f 的行为一字不差）。
+    #[test]
+    fn an_op_without_round_keeps_the_old_target() {
+        let history = round_with_tools();
+        let anchor = history[1].id.clone();
+        let op = TurnOp::on(BlockOp::Set {
+            block: BlockSelector::Output,
+            content: "x".into(),
+        });
+        assert_eq!(resolve_op_round(&history, &anchor, &op).unwrap(), anchor);
+    }
+
+    /// 不带 `round` 的工具块：落到**带调用的那一条**，而不是锚点。
+    ///
+    /// 为什么必须这样：用户点正文那条进编辑器时，工具卡不在那条上；
+    /// 按锚点找就会报"这条消息没有第 0 个工具调用"，而屏幕上明明看得见那张卡。
+    #[test]
+    fn a_tool_op_without_round_finds_the_message_that_has_the_calls() {
+        let history = round_with_tools();
+        let anchor = history[2].id.clone();
+        let op = TurnOp::on(BlockOp::Set {
+            block: BlockSelector::ToolCall { index: 0 },
+            content: r#"{"command":"ls"}"#.into(),
+        });
+        assert_eq!(
+            resolve_op_round(&history, &anchor, &op).unwrap(),
+            history[1].id
+        );
+    }
+
+    /// `round` 越界要报出来，不能静默落空。
+    #[test]
+    fn a_round_beyond_the_turn_is_refused() {
+        let history = round_with_tools();
+        let anchor = history[1].id.clone();
+        let op = TurnOp::at(
+            9,
+            BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "x".into(),
+            },
+        );
+        let error = resolve_op_round(&history, &anchor, &op).unwrap_err();
+        assert!(error.contains("只有 2 条消息"), "{error}");
+    }
+
+    /// 这一轮的边界是**最后一条用户消息**：它之后的都算这一轮，之前的都不算。
+    #[test]
+    fn the_round_stops_at_the_previous_user_message() {
+        let mut history = round_with_tools();
+        // 再加一条用户消息 + 一条回答：锚点落在最后那一轮里，不该看到前面那三条。
+        let session = history[0].id.session();
+        history.push(Message::text(
+            MessageId::new(session, 4),
+            Role::User,
+            SourceTag::History,
+            "再说一句",
+            1,
+            0,
+            LogicalClock::new(4),
+        ));
+        history.push(Message::text(
+            MessageId::new(session, 5),
+            Role::Assistant,
+            SourceTag::History,
+            "回一句",
+            1,
+            0,
+            LogicalClock::new(5),
+        ));
+        let anchor = history[4].id.clone();
+        let op = TurnOp::at(
+            0,
+            BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "x".into(),
+            },
+        );
+        assert_eq!(
+            resolve_op_round(&history, &anchor, &op).unwrap(),
+            history[4].id,
+            "round=0 是这一轮的第一条（就是它自己），不是整条会话的第一条"
+        );
+        let beyond = TurnOp::at(
+            2,
+            BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "x".into(),
+            },
+        );
+        assert!(
+            resolve_op_round(&history, &anchor, &beyond).is_err(),
+            "这一轮只有一条，round=2 必须报错"
+        );
     }
 }

@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::edit::{BlockOp, BlockSelector, MAX_BLOCK_BYTES};
+use crate::edit::{BlockOp, BlockSelector, TurnOp, MAX_BLOCK_BYTES};
 use crate::ids::{MessageId, SessionId};
 use crate::message::{Message, Role};
 use crate::policy::{AssistantPolicy, Capability, DenyReason};
@@ -1708,7 +1708,9 @@ pub fn parse_edit_message(args: &Value) -> Result<EditCall, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditUnitCall {
     pub target: String,
-    pub ops: Vec<BlockOp>,
+    /// 每一项可以带 `round`（这一轮的第几条消息）。不带就按块找——
+    /// 老形状（0.14y / 0.15f）没有这一栏，行为必须一字不差。
+    pub ops: Vec<TurnOp>,
 }
 
 /// 模型给的参数 → 一组块级动作。
@@ -1724,7 +1726,7 @@ pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
             ops: call
                 .edits
                 .into_iter()
-                .map(|(block, content)| BlockOp::Set { block, content })
+                .map(|(block, content)| TurnOp::on(BlockOp::Set { block, content }))
                 .collect(),
         });
     }
@@ -1753,7 +1755,7 @@ pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
         ));
     }
 
-    let mut ops: Vec<BlockOp> = Vec::with_capacity(items.len());
+    let mut ops: Vec<TurnOp> = Vec::with_capacity(items.len());
     for (position, item) in items.iter().enumerate() {
         let which = position + 1;
         let action = item
@@ -1814,6 +1816,11 @@ pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
             }
         };
 
+        let round = item
+            .get("round")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize);
+
         let op = match action {
             "set" => {
                 let content = item
@@ -1858,16 +1865,66 @@ pub fn parse_edit_unit(args: &Value) -> Result<EditUnitCall, String> {
         };
 
         // set 与 delete 同一块也算重复：一个块在一次调用里只能有一个结果。
-        if ops.iter().any(|existing| existing.block() == block) {
+        // 重复的判据带上 `round`：同一轮里两条消息各有"正文"是正常的，
+        // 那是两个块，不是一个块写了两遍。
+        if ops
+            .iter()
+            .any(|existing| existing.round == round && existing.block() == block)
+        {
             return Err(format!(
                 "同一次调用里把「{}」写了两遍：落库按顺序来，后一次会把前一次盖掉",
                 crate::edit::block_label(block)
             ));
         }
-        ops.push(op);
+        ops.push(TurnOp { round, op });
     }
 
     Ok(EditUnitCall { target, ops })
+}
+
+/// 一次编辑横跨几条消息（2026-11-26）：界面上的「编辑整条消息」用它。
+///
+/// 形状：`{"edits":[{"message_id":"<具体 id>","ops":[…]}…]}`。
+/// 每组走的还是 [`parse_edit_unit`] 那一份解析——界面能改的东西和模型能改的东西不该长成两套。
+///
+/// 为什么界面需要多条：折行（D258）之后一轮回答是几条消息（每轮一条），
+/// 而屏幕上那一片（工具卡 + 思考 + 正文）跨着好几条。只改一条的话，
+/// 用户看到的红框里有三块内容，编辑器却只能改到其中一块。
+pub fn parse_turn_edits(args: &Value) -> Result<Vec<(String, Vec<BlockOp>)>, String> {
+    let items = args
+        .get("edits")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "缺少数组参数 `edits`（每一项 {message_id, ops}）".to_string())?;
+    if items.is_empty() {
+        return Err("`edits` 是空的：要改就指明改哪条消息的哪几块".into());
+    }
+    let mut groups: Vec<(String, Vec<BlockOp>)> = Vec::with_capacity(items.len());
+    let mut total = 0usize;
+    for (position, item) in items.iter().enumerate() {
+        let which = position + 1;
+        let call = parse_edit_unit(item)
+            .map_err(|message| format!("第 {which} 组（message_id 那一项）：{message}"))?;
+        total += call.ops.len();
+        if groups.iter().any(|(target, _)| target == &call.target) {
+            return Err(format!(
+                "第 {which} 组又把消息 {} 写了一遍：同一条消息在一次编辑里只能有一组动作",
+                call.target
+            ));
+        }
+        if call.ops.iter().any(|op| op.round.is_some()) {
+            return Err(format!(
+                "第 {which} 组带了 `round`：那个轴属于 `edit_unit`（一轮里第几条消息），\
+                 这一层每条消息已经各给了一组，不必再指"
+            ));
+        }
+        groups.push((call.target, call.ops.into_iter().map(|op| op.op).collect()));
+    }
+    if total > MAX_EDITS_PER_CALL {
+        return Err(format!(
+            "一次最多改 {MAX_EDITS_PER_CALL} 块，这次给了 {total} 块"
+        ));
+    }
+    Ok(groups)
 }
 
 /// `message_id` → 具体一条消息。
@@ -1955,6 +2012,12 @@ impl Tool for EditUnitTool {
                                 "type": "integer",
                                 "description": "block=tool / tool_result 时必填，第几个工具调用（0 起）"
                             },
+                            "round": {
+                                "type": "integer",
+                                "description": "这一块在目标那一轮里的第几条消息（0 起）。\
+                                    一轮回答常常是几条消息（工具那条、正文那条），不写就按块找：\
+                                    工具块只在带工具的那条上，正文按顺序第一条"
+                            },
                             "content": {
                                 "type": "string",
                                 "description": "action=set 时的新内容；thinking 给空串表示删掉这一块"
@@ -1989,48 +2052,64 @@ impl Tool for EditUnitTool {
             Ok(id) => id,
             Err(message) => return ToolOutcome::failed(message),
         };
-        let Some(message) = history.iter().find(|message| message.id == message_id) else {
+        let Some(anchor) = history.iter().find(|message| message.id == message_id) else {
             return ToolOutcome::failed(format!("这次会话里没有消息 {message_id}"));
         };
-        if message.locked {
+        if anchor.locked {
             return ToolOutcome::failed(format!(
                 "消息 {message_id} 被用户锁定，内容不能改（压缩不受影响）"
             ));
         }
 
-        let call_count = message.tool_calls().len();
+        // 每一项落到"这一轮里的哪一条消息"上。**先全部解析完再动**：一半解析成功、
+        // 一半失败时不该报"已排队 3 项"。
+        let mut targets: Vec<(MessageId, usize)> = Vec::with_capacity(call.ops.len());
         for op in &call.ops {
+            let target = match crate::edit::resolve_op_round(history, &message_id, op) {
+                Ok(target) => target,
+                Err(message) => return ToolOutcome::failed(message),
+            };
+            let Some(message) = history.iter().find(|message| message.id == target) else {
+                return ToolOutcome::failed(format!("这次会话里没有消息 {target}"));
+            };
+            if message.locked {
+                return ToolOutcome::failed(format!(
+                    "消息 {target} 被用户锁定，内容不能改（压缩不受影响）"
+                ));
+            }
             let block = op.block();
             // 正文没有"删掉"这一说：删了这条消息就是空壳。
-            if op.is_delete() && block == BlockSelector::Output && message.role != Role::Tool {
+            if op.op.is_delete() && block == BlockSelector::Output && message.role != Role::Tool {
                 return ToolOutcome::failed(
                     "正文不能删（删掉正文等于把这条消息变成空壳）：要换内容就用 action=set",
                 );
             }
-            let Some(index) = block.tool_index() else {
-                continue;
-            };
-            if index >= call_count {
-                return ToolOutcome::failed(format!(
-                    "消息 {message_id} 只有 {call_count} 个工具调用（0 起），没有第 {index} 个；\
-                     工具块不能新增"
-                ));
+            let call_count = message.tool_calls().len();
+            if let Some(index) = block.tool_index() {
+                if index >= call_count {
+                    return ToolOutcome::failed(format!(
+                        "消息 {target} 只有 {call_count} 个工具调用（0 起），没有第 {index} 个；\
+                         工具块不能新增"
+                    ));
+                }
+                // 结果在不在：还没有结果就是这一轮没跑完，改完也发不出去。
+                if !message.tool_calls()[index].status.is_finished() {
+                    return ToolOutcome::failed(format!(
+                        "第 {index} 个工具调用还没有结果：单元没闭合，改不了（先让那一轮跑完）"
+                    ));
+                }
             }
-            // 结果在不在：还没有结果就是这一轮没跑完，改完也发不出去。
-            if !message.tool_calls()[index].status.is_finished() {
-                return ToolOutcome::failed(format!(
-                    "第 {index} 个工具调用还没有结果：单元没闭合，改不了（先让那一轮跑完）"
-                ));
-            }
+            targets.push((target, op.round.unwrap_or(usize::MAX)));
         }
 
         let mut text = format!(
-            "已排队 {} 项改动，这一轮结束时落库（消息 {message_id}）：\n",
-            call.ops.len()
+            "已排队 {} 项改动，这一轮结束时落库（{}）：\n",
+            call.ops.len(),
+            crate::edit::describe_targets(&targets)
         );
-        for op in &call.ops {
+        for (op, (target, _)) in call.ops.iter().zip(targets.iter()) {
             let block = op.block();
-            let what = match op {
+            let what = match &op.op {
                 BlockOp::Delete { .. } => "删掉这一块".to_string(),
                 BlockOp::Set { content, .. } => {
                     if block == BlockSelector::Thinking && content.trim().is_empty() {
@@ -2041,8 +2120,9 @@ impl Tool for EditUnitTool {
                 }
             };
             text.push_str(&format!(
-                "- {}：{}\n",
+                "- {}（消息 {}）：{}\n",
                 crate::edit::block_label(block),
+                target.seq(),
                 what
             ));
         }

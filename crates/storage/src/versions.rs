@@ -607,6 +607,39 @@ fn shown_text(raw: &str, edited: Option<&str>, view: VersionView) -> String {
     }
 }
 
+/// 就地改块之后，把**当前版**的快照对齐到消息现状（D259 那条「一版 = 这条消息全部块」）。
+///
+/// 为什么要有它：正文改写会走 `tooledit_message`（红色那份），而**工具块 / 思考块的改**
+/// 以前只写 `message_parts`、不动版本。后果藏得很深——切到别的版本再切回来，
+/// `apply_version` 拿 `parts_json` 铺块，刚改的工具参数就被旧快照顶回去了。
+/// 用户在界面上看到的是"我改过，过了一会儿它自己变回来了"。
+///
+/// 没有版本行的消息直接跳过：这时"切版本"根本不成立（`version_count = 0`，界面上也没有 `n/n`），
+/// 凭空造一版反而是伪造历史。
+pub(crate) fn sync_active_snapshot(
+    tx: &Transaction<'_>,
+    message_id: &str,
+) -> Result<(), StorageError> {
+    let active: Option<i64> = tx
+        .query_row(
+            "SELECT version_active FROM messages WHERE id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(active) = active.filter(|no| *no > 0) else {
+        return Ok(());
+    };
+    let parts = crate::parts::snapshot_of(tx, message_id)?;
+    let reasoning = crate::parts::reasoning_of(tx, message_id)?;
+    tx.execute(
+        "UPDATE message_versions SET parts_json = ?1, reasoning = ?2
+         WHERE message_id = ?3 AND version_no = ?4",
+        params![parts, reasoning, message_id, active],
+    )?;
+    Ok(())
+}
+
 /// 一条消息还没记过版本时，把它现在的正文落成第 1 版。
 ///
 /// 为什么放在写入路径里、而不是要求调用方先 seed：真机上「编辑」「工具编辑」对**绝大多数

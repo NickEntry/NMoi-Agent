@@ -437,10 +437,11 @@ internal object ChatRepository {
     }
 
     /**
-     * **工具编辑**某一版（临时探针，D148）。
+     * 把某一版标成"被工具改过"（D148）：`n/n` 变蓝/红。
      *
-     * 跟 [editVersion] 的区别：这条会置 `edited_by_tool`，也就是让 `n/n` 变蓝/红。
-     * `editVersion` 是用户手改，只写用户编辑层，不改变颜色。
+     * 跟 [editVersion] 的区别：那条是用户手改，不改变颜色。
+     * 界面上暂时没有入口（2026-11-26 删掉了验颜色的临时探针）；
+     * 改消息内容走 [applyTurnEdits]。
      */
     suspend fun toolEditVersion(
         databasePath: String,
@@ -487,6 +488,24 @@ internal object ChatRepository {
         NmoiFfi.applyUnitEdits(handle, spec)
             .onSuccess { NLog.i("Edit", "单元编辑 ok：${ops.length()} 项") }
             .onFailure { NLog.w("Edit", "单元编辑失败：${it.message}") }
+    }
+
+    /**
+     * **一次编辑横跨几条消息**（2026-11-26）：界面上「编辑整条消息」走这条。
+     *
+     * `edits` 的每一项是 `{"message_id":"<具体 id>","ops":[…]}`，`ops` 与 [applyUnitEdits]
+     * 同一套词。为什么不是循环调 [applyUnitEdits]：那会变成 N 个事务，
+     * 第 2 条失败时第 1 条已经落库了——界面上看到的是"改了一半"。
+     * 一个事务里几条一起写，才谈得上"要么全改、要么全不改"。
+     */
+    suspend fun applyTurnEdits(
+        databasePath: String,
+        edits: org.json.JSONArray,
+    ): Result<JSONObject> = withHandle(databasePath) { handle ->
+        val spec = JSONObject().put("edits", edits)
+        NmoiFfi.applyUnitEdits(handle, spec)
+            .onSuccess { NLog.i("Edit", "整轮编辑 ok：${edits.length()} 条消息") }
+            .onFailure { NLog.w("Edit", "整轮编辑失败：${it.message}") }
     }
 
     /**

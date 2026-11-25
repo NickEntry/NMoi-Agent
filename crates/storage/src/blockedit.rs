@@ -66,150 +66,292 @@ impl Storage {
         message_id: &MessageId,
         ops: &[BlockOp],
     ) -> Result<UnitEditOutcome, StorageError> {
-        let (unit_text, session_text): (String, String) = self
-            .conn
-            .query_row(
-                "SELECT unit_id, conv_id FROM messages WHERE id = ?1",
-                [message_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(|_| {
-                StorageError::Inconsistent(format!("消息 {message_id} 不存在，没法编辑"))
-            })?;
-        let session = session_text
-            .parse::<SessionId>()
-            .map_err(|error| StorageError::Inconsistent(format!("会话 id 不合法：{error}")))?;
-        let unit_id = unit_text
-            .parse::<UnitId>()
-            .map_err(|error| StorageError::Inconsistent(format!("单元 id 不合法：{error}")))?;
+        self.apply_turn_edits(&[(message_id.clone(), ops.to_vec())])
+    }
+
+    /// **一次编辑横跨几条消息**（2026-11-26）：界面上的「编辑整条消息」要改的是屏幕上那一片——
+    /// 折行（D258）之后一轮回答是几条消息，红框里有工具卡、思考、正文，它们不在同一条上。
+    ///
+    /// 仍然是一个事务：几条消息里只要有一条写不进去，整批回滚。理由与单条那条一样，
+    /// 只是范围大了——"改了三段、只落了两段"在界面上看起来就像它自己改回去了一半。
+    ///
+    /// `groups` 里每条消息各算一份计划，全部算完才动库；同一条消息出现两次是调用方的错，
+    /// 直接拒（两份计划各写一半，后一份会把前一份盖掉）。
+    pub fn apply_turn_edits(
+        &mut self,
+        groups: &[(MessageId, Vec<BlockOp>)],
+    ) -> Result<UnitEditOutcome, StorageError> {
+        if groups.is_empty() {
+            return Err(StorageError::Inconsistent("没有给任何改动".into()));
+        }
+        let mut seen: Vec<&MessageId> = Vec::new();
+        for (id, _) in groups {
+            if seen.contains(&id) {
+                return Err(StorageError::Inconsistent(format!(
+                    "同一条消息 {id} 在一次编辑里出现了两遍"
+                )));
+            }
+            seen.push(id);
+        }
+
+        // 1) 每条消息各自算一份计划（**不动库**）。会话必须一致：跨会话的编辑没有意义，
+        //    而且 undo 日志是按会话记的。
+        // 单元在**开事务之前**读出来：`load_unit` 借的是 `&self`，而 `transaction()`
+        // 拿的是 `&mut self`——两个借不能同时活着。顺带也把"读"和"写"分开，
+        // 计划阶段一次读完，事务里只剩写。
+        struct Step {
+            message: MessageId,
+            unit: nmoi_core::message::AtomicUnit,
+            plan: nmoi_core::edit::UnitPlan,
+        }
+        let mut steps: Vec<Step> = Vec::with_capacity(groups.len());
+        let mut session: Option<SessionId> = None;
+        let mut total_ops = 0usize;
+        for (message_id, ops) in groups {
+            let (unit_text, session_text): (String, String) = self
+                .conn
+                .query_row(
+                    "SELECT unit_id, conv_id FROM messages WHERE id = ?1",
+                    [message_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| {
+                    StorageError::Inconsistent(format!("消息 {message_id} 不存在，没法编辑"))
+                })?;
+            let this_session = session_text
+                .parse::<SessionId>()
+                .map_err(|error| StorageError::Inconsistent(format!("会话 id 不合法：{error}")))?;
+            match session {
+                Some(known) if known != this_session => {
+                    return Err(StorageError::Inconsistent(format!(
+                        "一次编辑不能横跨两个会话（{known} / {this_session}）"
+                    )))
+                }
+                Some(_) => {}
+                None => session = Some(this_session),
+            }
+            let unit_id = unit_text
+                .parse::<UnitId>()
+                .map_err(|error| StorageError::Inconsistent(format!("单元 id 不合法：{error}")))?;
+            let unit = self.load_unit(&unit_id)?;
+            let plan = plan_ops(&unit, message_id, ops)
+                .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
+            total_ops += plan.ops.len();
+            steps.push(Step {
+                message: message_id.clone(),
+                unit,
+                plan,
+            });
+        }
+        let session = session.expect("groups 非空，上面一定填过会话");
 
         // 上限在**动库之前**查：改到一半才发现超了，库里已经多了半批。
         let used = self.undo_count(session)?;
-        if used + ops.len() > MAX_OPS_PER_SESSION {
+        if used + total_ops > MAX_OPS_PER_SESSION {
             return Err(StorageError::Inconsistent(format!(
                 "这个会话已经改过 {used} 处（上限 {MAX_OPS_PER_SESSION} 处）：再改就先让用户确认"
             )));
         }
 
-        let unit = self.load_unit(&unit_id)?;
-        let plan = plan_ops(&unit, message_id, ops)
-            .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
-
-        let mut outcome = UnitEditOutcome {
-            unchanged: plan.unchanged.clone(),
-            ..Default::default()
-        };
+        let mut outcome = UnitEditOutcome::default();
+        for step in &steps {
+            outcome
+                .unchanged
+                .extend(step.plan.unchanged.iter().cloned());
+        }
         // 全部是"和原文一样"：不算错误，但没有任何东西要写。
-        if plan.ops.is_empty() && plan.remove_parts.is_empty() {
+        if steps
+            .iter()
+            .all(|step| step.plan.ops.is_empty() && step.plan.remove_parts.is_empty())
+        {
             return Ok(outcome);
         }
 
         let at = crate::validate::now_ms();
         let tx = self.conn.transaction()?;
 
-        // 1) 按消息分组：同一条消息上的几块一次写完，避免同一行在一个事务里被写两遍。
-        //    要删块的不进这一组（它们在第 4 步按 part id 摘）。
-        let mut groups: Vec<(MessageId, Vec<&PlannedOp>)> = Vec::new();
-        for op in &plan.ops {
-            if op.after.is_none() {
-                continue;
-            }
-            match groups.iter_mut().find(|(id, _)| id == &op.message) {
-                Some((_, list)) => list.push(op),
-                None => groups.push((op.message.clone(), vec![op])),
-            }
-        }
+        for step in &steps {
+            let id = &step.message;
+            let plan = &step.plan;
+            let unit = &step.unit;
+            let unit_id = &unit.id;
 
-        for (id, list) in &groups {
-            let mut message = unit
-                .messages
-                .iter()
-                .find(|message| &message.id == id)
-                .cloned()
-                .ok_or_else(|| StorageError::Inconsistent(format!("消息 {id} 不在单元里")))?;
-            let tokens_before = message.tokens;
-            let mut red: Option<String> = None;
+            // 2) 按消息分组：同一条消息上的几块一次写完，避免同一行在一个事务里被写两遍。
+            //    要删块的不进这一组（它们在第 4 步按 part id 摘）。
+            let list: Vec<&PlannedOp> = plan.ops.iter().filter(|op| op.after.is_some()).collect();
+            if !list.is_empty() {
+                let mut message = unit
+                    .messages
+                    .iter()
+                    .find(|message| &message.id == id)
+                    .cloned()
+                    .ok_or_else(|| StorageError::Inconsistent(format!("消息 {id} 不在单元里")))?;
+                let tokens_before = message.tokens;
+                let mut red: Option<String> = None;
 
-            for op in list {
-                match (&op.block, op.after.as_deref()) {
-                    (BlockSelector::Output, Some(text)) => {
-                        message.set_text(text);
-                        if op.red {
-                            red = Some(text.to_string());
+                for op in &list {
+                    match (&op.block, op.after.as_deref()) {
+                        (BlockSelector::Output, Some(text)) => {
+                            message.set_text(text);
+                            if op.red {
+                                red = Some(text.to_string());
+                            }
                         }
-                    }
-                    (BlockSelector::Thinking, Some(text)) => {
-                        message.set_reasoning(Some(text.to_string()));
-                    }
-                    (BlockSelector::Thinking, None) => message.set_reasoning(None),
-                    (BlockSelector::ToolCall { index }, Some(text)) => {
-                        if !message.set_tool_argument(*index, text) {
+                        (BlockSelector::Thinking, Some(text)) => {
+                            message.set_reasoning(Some(text.to_string()));
+                        }
+                        (BlockSelector::Thinking, None) => message.set_reasoning(None),
+                        (BlockSelector::ToolCall { index }, Some(text)) => {
+                            if !message.set_tool_argument(*index, text) {
+                                return Err(StorageError::Inconsistent(format!(
+                                    "消息 {id} 没有第 {index} 个工具调用"
+                                )));
+                            }
+                        }
+                        (BlockSelector::ToolResult { .. }, Some(text)) => {
+                            message.set_text(text);
+                        }
+                        (BlockSelector::Part { id: part, output }, Some(text)) => {
+                            if !message.set_part_field(part, *output, text) {
+                                return Err(StorageError::Inconsistent(format!(
+                                    "消息 {id} 里没有 `{part}` 这一块（或者它没有输出）"
+                                )));
+                            }
+                        }
+                        (_, None) => {
                             return Err(StorageError::Inconsistent(format!(
-                                "消息 {id} 没有第 {index} 个工具调用"
-                            )));
+                                "「{}」是删除，不该走改列这条路",
+                                op.label
+                            )))
                         }
-                    }
-                    (BlockSelector::ToolResult { .. }, Some(text)) => {
-                        message.set_text(text);
-                    }
-                    (BlockSelector::Part { id, output }, Some(text)) => {
-                        if !message.set_part_field(id, *output, text) {
-                            return Err(StorageError::Inconsistent(format!(
-                                "消息 {id} 里没有 `{id}` 这一块（或者它没有输出）"
-                            )));
-                        }
-                    }
-                    (_, None) => {
-                        return Err(StorageError::Inconsistent(format!(
-                            "「{}」是删除，不该走改列这条路",
-                            op.label
-                        )))
                     }
                 }
-            }
-            message.revision = message.revision.saturating_add(1);
-            message.tokens = message_tokens(&message);
+                message.revision = message.revision.saturating_add(1);
+                message.tokens = message_tokens(&message);
 
-            // 2) 落红：**先**按原文 seed 第 1 版，再写 `tooledit_message`，
-            //    最后才更新 `messages.content`。顺序反了原文就没了（seed 读的就是 content）。
-            if let Some(text) = &red {
-                crate::versions::seed_first_version(&tx, &id.to_string())?;
-                let (count, active): (i64, i64) = tx.query_row(
-                    "SELECT version_count, version_active FROM messages WHERE id = ?1",
-                    [id.to_string()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                // 落红：**先**按原文 seed 第 1 版，再写 `tooledit_message`，
+                // 最后才更新 `messages.content`。顺序反了原文就没了（seed 读的就是 content）。
+                if let Some(text) = &red {
+                    crate::versions::seed_first_version(&tx, &id.to_string())?;
+                    let (count, active): (i64, i64) = tx.query_row(
+                        "SELECT version_count, version_active FROM messages WHERE id = ?1",
+                        [id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    if count == 0 || active == 0 {
+                        return Err(StorageError::Inconsistent(format!(
+                            "消息 {id} 的版本账本没建起来，正文不能落红"
+                        )));
+                    }
+                    tx.execute(
+                        "UPDATE message_versions
+                         SET tooledit_message = ?1, edited_by_tool = 1, active_view = 'edited'
+                         WHERE message_id = ?2 AND version_no = ?3",
+                        params![text, id.to_string(), active],
+                    )?;
+                }
+
+                let changed = tx.execute(
+                    "UPDATE messages SET tokens = ?1, revision = ?2 WHERE id = ?3 AND conv_id = ?4",
+                    params![
+                        message.tokens,
+                        message.revision,
+                        id.to_string(),
+                        session.to_string(),
+                    ],
                 )?;
-                if count == 0 || active == 0 {
+                if changed == 0 {
                     return Err(StorageError::Inconsistent(format!(
-                        "消息 {id} 的版本账本没建起来，正文不能落红"
+                        "消息 {id} 不存在或不属于会话 {session}"
                     )));
                 }
-                tx.execute(
-                    "UPDATE message_versions
-                     SET tooledit_message = ?1, edited_by_tool = 1, active_view = 'edited'
-                     WHERE message_id = ?2 AND version_no = ?3",
-                    params![text, id.to_string(), active],
-                )?;
+                crate::parts::write_parts(&tx, &message)?;
+                // 改过的块要进当前版的快照（D259）：只写 `message_parts` 的话，
+                // 切一次版本再切回来，刚改的工具参数会被旧快照顶回去。
+                crate::versions::sync_active_snapshot(&tx, &id.to_string())?;
+
+                // 3) 审计（`edits` 表）与 undo 日志：一块一行。
+                for op in &list {
+                    tx.execute(
+                        "INSERT INTO edits(id, conv_id, unit_id, message_id, block, before_hash,
+                                           after_hash, tokens_before, tokens_after, revision, at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        params![
+                            Uuid::now_v7().to_string(),
+                            session.to_string(),
+                            unit_id.to_string(),
+                            id.to_string(),
+                            op.label,
+                            op.before_hash,
+                            op.after_hash,
+                            tokens_before,
+                            message.tokens,
+                            message.revision,
+                            at,
+                        ],
+                    )?;
+                    write_undo(&tx, session, unit_id, op, at)?;
+                    outcome.blocks.push(op.label.clone());
+                }
+                outcome.written += list.len();
             }
 
-            let changed = tx.execute(
-                "UPDATE messages SET tokens = ?1, revision = ?2 WHERE id = ?3 AND conv_id = ?4",
-                params![
-                    message.tokens,
-                    message.revision,
-                    id.to_string(),
-                    session.to_string(),
-                ],
-            )?;
-            if changed == 0 {
-                return Err(StorageError::Inconsistent(format!(
-                    "消息 {id} 不存在或不属于会话 {session}"
-                )));
+            // 4) 删块：把 part 从消息里摘掉（同一块只摘一次）。
+            //    以前工具对是两条消息，删的是行；现在调用与结果在同一块里，删的是块。
+            let mut parts: Vec<String> = Vec::new();
+            for op in plan.ops.iter().filter(|op| op.after.is_none()) {
+                let message = unit
+                    .messages
+                    .iter()
+                    .find(|message| message.id == op.message)
+                    .ok_or_else(|| {
+                        StorageError::Inconsistent(format!("消息 {} 不在单元里", op.message))
+                    })?;
+                let Some(part) = nmoi_core::edit::part_of(&op.block, message) else {
+                    continue;
+                };
+                if !parts.contains(&part) {
+                    parts.push(part);
+                }
             }
-            crate::parts::write_parts(&tx, &message)?;
-
-            // 3) 审计（`edits` 表）与 undo 日志：一块一行。
-            for op in list {
+            if !parts.is_empty() {
+                let mut message = unit
+                    .messages
+                    .iter()
+                    .find(|message| &message.id == id)
+                    .cloned()
+                    .ok_or_else(|| StorageError::Inconsistent(format!("消息 {id} 不在单元里")))?;
+                message.remove_parts(&parts);
+                outcome.removed += parts.len();
+                // 摘空了就是一条空壳：整行删掉，不留"没有块的消息"（`Message::validate` 也拒）。
+                if message.parts().is_empty() {
+                    tx.execute(
+                        "DELETE FROM message_versions WHERE message_id = ?1",
+                        [id.to_string()],
+                    )?;
+                    tx.execute("DELETE FROM edits WHERE message_id = ?1", [id.to_string()])?;
+                    tx.execute(
+                        "DELETE FROM messages WHERE id = ?1 AND conv_id = ?2",
+                        params![id.to_string(), session.to_string()],
+                    )?;
+                } else {
+                    message.revision = message.revision.saturating_add(1);
+                    message.tokens = message_tokens(&message);
+                    tx.execute(
+                        "UPDATE messages SET tokens = ?1, revision = ?2
+                          WHERE id = ?3 AND conv_id = ?4",
+                        params![
+                            message.tokens,
+                            message.revision,
+                            id.to_string(),
+                            session.to_string(),
+                        ],
+                    )?;
+                    crate::parts::write_parts(&tx, &message)?;
+                    crate::versions::sync_active_snapshot(&tx, &id.to_string())?;
+                }
+            }
+            for op in plan.ops.iter().filter(|op| op.after.is_none()) {
                 tx.execute(
                     "INSERT INTO edits(id, conv_id, unit_id, message_id, block, before_hash,
                                        after_hash, tokens_before, tokens_after, revision, at)
@@ -218,106 +360,24 @@ impl Storage {
                         Uuid::now_v7().to_string(),
                         session.to_string(),
                         unit_id.to_string(),
-                        id.to_string(),
+                        op.message.to_string(),
                         op.label,
                         op.before_hash,
                         op.after_hash,
-                        tokens_before,
-                        message.tokens,
-                        message.revision,
+                        message_tokens(
+                            unit.messages
+                                .iter()
+                                .find(|message| message.id == op.message)
+                                .expect("上面已经确认过这条消息存在")
+                        ),
+                        0i64,
+                        0u32,
                         at,
                     ],
                 )?;
-                write_undo(&tx, session, &unit_id, op, at)?;
+                write_undo(&tx, session, unit_id, op, at)?;
                 outcome.blocks.push(op.label.clone());
             }
-            outcome.written += list.len();
-        }
-
-        // 4) 删块：把 part 从消息里摘掉（同一块只摘一次）。
-        //    以前工具对是两条消息，删的是行；现在调用与结果在同一块里，删的是块。
-        let mut removals: Vec<(MessageId, Vec<String>)> = Vec::new();
-        for op in plan.ops.iter().filter(|op| op.after.is_none()) {
-            let message = unit
-                .messages
-                .iter()
-                .find(|message| message.id == op.message)
-                .ok_or_else(|| {
-                    StorageError::Inconsistent(format!("消息 {} 不在单元里", op.message))
-                })?;
-            let Some(part) = nmoi_core::edit::part_of(&op.block, message) else {
-                continue;
-            };
-            match removals.iter_mut().find(|(id, _)| id == &op.message) {
-                Some((_, list)) => {
-                    if !list.contains(&part) {
-                        list.push(part);
-                    }
-                }
-                None => removals.push((op.message.clone(), vec![part])),
-            }
-        }
-        for (id, parts) in &removals {
-            let mut message = unit
-                .messages
-                .iter()
-                .find(|message| &message.id == id)
-                .cloned()
-                .ok_or_else(|| StorageError::Inconsistent(format!("消息 {id} 不在单元里")))?;
-            message.remove_parts(parts);
-            outcome.removed += parts.len();
-            // 摘空了就是一条空壳：整行删掉，不留"没有块的消息"（`Message::validate` 也拒）。
-            if message.parts().is_empty() {
-                tx.execute(
-                    "DELETE FROM message_versions WHERE message_id = ?1",
-                    [id.to_string()],
-                )?;
-                tx.execute("DELETE FROM edits WHERE message_id = ?1", [id.to_string()])?;
-                tx.execute(
-                    "DELETE FROM messages WHERE id = ?1 AND conv_id = ?2",
-                    params![id.to_string(), session.to_string()],
-                )?;
-                continue;
-            }
-            message.revision = message.revision.saturating_add(1);
-            message.tokens = message_tokens(&message);
-            tx.execute(
-                "UPDATE messages SET tokens = ?1, revision = ?2 WHERE id = ?3 AND conv_id = ?4",
-                params![
-                    message.tokens,
-                    message.revision,
-                    id.to_string(),
-                    session.to_string(),
-                ],
-            )?;
-            crate::parts::write_parts(&tx, &message)?;
-        }
-        for op in plan.ops.iter().filter(|op| op.after.is_none()) {
-            tx.execute(
-                "INSERT INTO edits(id, conv_id, unit_id, message_id, block, before_hash,
-                                   after_hash, tokens_before, tokens_after, revision, at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    Uuid::now_v7().to_string(),
-                    session.to_string(),
-                    unit_id.to_string(),
-                    op.message.to_string(),
-                    op.label,
-                    op.before_hash,
-                    op.after_hash,
-                    message_tokens(
-                        unit.messages
-                            .iter()
-                            .find(|message| message.id == op.message)
-                            .expect("上面已经确认过这条消息存在")
-                    ),
-                    0i64,
-                    0u32,
-                    at,
-                ],
-            )?;
-            write_undo(&tx, session, &unit_id, op, at)?;
-            outcome.blocks.push(op.label.clone());
         }
 
         tx.commit()?;

@@ -5101,3 +5101,62 @@ D401 那条「没做（下一批）」的收尾。原来 `put_file_attachment` �
 
 设计写在 `notes/design/storage-tree-plan.md`，六条判据都在里面。
 这一条只记决策本身：**页面形状跟着"这一项是什么东西"走，不跟着"数据从哪来"走。**
+
+## D428 「编辑整条消息」= 这一轮的所有消息；菜单压成紧凑两列（2026-11-26）
+
+用户给了两张图：红框框住的是**工具卡 + 思考 + 正文**整片，蓝框只有正文那一段。
+判据很直白——**红框里有什么，编辑器里就得有什么**。而现在只改得到正文。
+
+**根因**：折行（D258）之后一轮回答在库里是**几条消息**（每轮一条：工具那轮、正文那轮…），
+而 `MessageEditScreen` 只读了锚点那一条。所以红框里另外几条的正文与工具参数
+在编辑器里根本不存在。这不是"渲染范围错了"，是**编辑的范围错了**。
+
+**改法**（一层一层往下）：
+
+1. `storage::apply_turn_edits(&[(MessageId, Vec<BlockOp>)])`：一次编辑横跨几条消息，
+   **一个事务**。几条消息里有一条写不进去就整批回滚——分开写的话第 2 条失败时
+   第 1 条已经落库，界面上看起来像"它自己改回去了一半"。
+   `apply_unit_edits` 变成它的一层壳（一条消息 = 一组）。
+2. `core::edit::resolve_op_round(history, anchor, op)`：一项动作落到这一轮里的哪一条。
+   模型看不见 id，所以它指位置用 `round`（这一轮的第几条）；不带 `round` 时按块找
+   （工具块落在带调用的那条上，正文落在锚点上）——**老形状一字不差**。
+   边界是"最后一条用户消息"，与屏幕上红框的范围一致。
+3. FFI `nmoi_storage_apply_unit_edits_json` 收两种形状：`{message_id, ops}`（旧）
+   与 `{edits:[{message_id, ops}…]}`（新）。符号没变，JNI 不用加。
+4. 编辑器文档升 **v3**：每一段外面套 `<nmoi:message id="…">`。段 id 是保存时的定位手段，
+   **不靠顺序猜**；段数不许变（多一段少一段就不知道该写回哪一条）。
+   v1 / v2 照旧读作"一条消息"——草稿里存的就是它。
+5. 页面标题与菜单项都改成「编辑整条消息」，页头写一行"整轮 N 条消息：正文 · 思考 · 运行命令 #0 · 正文"，
+   用户不用先往下翻才知道工具块也在里面。
+
+**顺带修掉一个藏得很深的**：改工具块 / 思考块只写 `message_parts`、不动版本快照。
+切一次版本再切回来，`apply_version` 拿 `parts_json` 铺块，刚改的工具参数被旧快照顶回去。
+现在改完立刻 `versions::sync_active_snapshot` 对齐当前版（没有版本行的消息跳过——
+凭空造一版是伪造历史）。
+
+**模型侧同一个 bug**：`edit_unit` 的 `target` 只能指一条消息，所以模型也没法改
+"这一轮里另一条上的工具块"。现在 `ops[]` 每一项可以带 `round`，
+`apply_pending_edits` 按目标消息分组、一次事务写下去。工具回给模型的那句话
+会写清"（消息 #2–#3）"，别让它以为只改了一条。
+
+**菜单压成紧凑档**（同一轮的第二件事）：消息「更多」有九到十项，52dp 一路排下去必然
+超出一屏，「删除这条消息」得滑一下才看得见——而那一项最该被一眼看见。
+`MenuSheet(compact = true)`：行高 44、图标 18、**字少的相邻两项两列并排**
+（判据只有"念出来多长"，8 字以内；带 `value` / `trailing` 的不并排，那两样一挤就被截掉）。
+别的面板（会话 / 助手 / 文件）项数没这么密，保持原样——一排两个长句子反而更难读。
+
+**「用工具改这一版（临时探针）」删掉**：它验的是 `message_versions` 里两份正文的颜色，
+而"工具改消息"早就是真的了（`apply_unit_edits` 一次事务写这条消息的所有块）。
+留着它等于让人以为这个功能还没接。
+
+**判据**（都红过再绿）：
+- `edit::an_op_with_round_lands_on_another_message_of_the_same_round`（`round=1` 落在正文那条上）
+- `edit::a_tool_op_without_round_finds_the_message_that_has_the_calls`（点正文进来也能改工具块）
+- `edit::the_round_stops_at_the_previous_user_message`（边界不串到上一轮）
+- `storage::one_edit_can_touch_two_messages_of_the_same_round`
+- `storage::a_failing_message_rolls_back_the_whole_round`（半批落库会当场红）
+- `storage::the_same_message_twice_in_one_edit_is_refused`
+- `ffi::turn_edit_shape_touches_two_messages_at_once` / `…_refuses_the_whole_batch…` / `…_refuses_the_same_message_twice`
+- `MessageEditRoundTest`：**先把 `turnAround` 退回旧行为跑了一次**，
+  `expected:<[s:2, s:3]> but was:<[s:3]>` 当场红（那正是用户报的那个），再还原。
+- `MessageEditDocTest`：v3 两段往返、段 id 重复被拒、段外有字带行号、v2 读作一条。

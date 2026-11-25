@@ -309,10 +309,18 @@ pub trait HistoryStore {
         message_id: &MessageId,
         ops: &[BlockOp],
     ) -> Result<UnitEditResult, String> {
-        let _ = ops;
-        Err(format!(
-            "这个历史实现不支持单元级编辑，消息 {message_id} 没有改动"
-        ))
+        self.apply_turn_edits(&[(message_id.clone(), ops.to_vec())])
+    }
+
+    /// **一次编辑横跨几条消息**（2026-11-26）：界面上的「编辑整条消息」和模型的
+    /// 带 `round` 的 `edit_unit` 都走这一条。一条事务里几条一起写，
+    /// 有一条写不进去就整批不动——分开写的话，第 2 条失败时第 1 条已经落库了。
+    fn apply_turn_edits(
+        &mut self,
+        groups: &[(MessageId, Vec<BlockOp>)],
+    ) -> Result<UnitEditResult, String> {
+        let _ = groups;
+        Err("这个历史实现不支持整轮编辑：没有落库".to_string())
     }
 }
 
@@ -1947,9 +1955,36 @@ fn apply_pending_edits<S: HistoryStore>(
                 continue;
             }
         };
-        // 一次调用一组动作：整批一个事务（改 / 删 / 落红 / undo 一起）。
+        // 一次调用一组动作：**整批一个事务**（改 / 删 / 落红 / undo 一起）。
+        //
+        // 2026-11-26 起一项可以带 `round`，落在这一轮的另一条消息上。所以先把动作按
+        // 目标消息分组，再一次写下去——仍然是同一个事务，几条消息里有一条写不进去就全回滚。
+        // 循环调 `apply_unit_edits` 会是 N 个事务，第 2 条失败时第 1 条已经落库了。
+        let mut groups: Vec<(MessageId, Vec<BlockOp>)> = Vec::new();
+        let mut resolved = true;
+        for op in &call.ops {
+            match crate::edit::resolve_op_round(history, &message_id, op) {
+                Ok(target) => match groups.iter_mut().find(|(id, _)| id == &target) {
+                    Some((_, list)) => list.push(op.op.clone()),
+                    None => groups.push((target, vec![op.op.clone()])),
+                },
+                Err(message) => {
+                    reports.push(EditReport {
+                        target: message_id.to_string(),
+                        block: "?".into(),
+                        ok: false,
+                        message,
+                    });
+                    resolved = false;
+                    break;
+                }
+            }
+        }
+        if !resolved {
+            continue;
+        }
         // 失败也只有一个 report——把"整批没写"拆成三条没写，界面会以为改了三处里的三处都出事了。
-        match store.apply_unit_edits(&message_id, &call.ops) {
+        match store.apply_turn_edits(&groups) {
             Ok(outcome) => {
                 for block in &outcome.blocks {
                     reports.push(EditReport {
@@ -3859,24 +3894,36 @@ mod tests {
         }
 
         /// 0.15f：`edit_unit` 在收尾时走这一条。这里只记账，真落库由 `crates/storage` 的测试盯。
+        ///
+        /// 2026-11-26 起收尾那条路走的是 `apply_turn_edits`（一项可以落在这一轮的另一条消息上），
+        /// 所以记账逻辑写在那一份里，单条这条只是转一下——两份各写一遍，迟早只改一份。
         fn apply_unit_edits(
             &mut self,
             message_id: &MessageId,
             ops: &[BlockOp],
         ) -> Result<UnitEditResult, String> {
+            self.apply_turn_edits(&[(message_id.clone(), ops.to_vec())])
+        }
+
+        fn apply_turn_edits(
+            &mut self,
+            groups: &[(MessageId, Vec<BlockOp>)],
+        ) -> Result<UnitEditResult, String> {
             let mut blocks = Vec::new();
-            for op in ops {
-                match op {
-                    BlockOp::Set { block, content } => {
-                        self.applied.lock().unwrap().push((
-                            message_id.clone(),
-                            block.clone(),
-                            content.clone(),
-                        ));
-                        blocks.push(crate::edit::block_label(block.clone()));
-                    }
-                    BlockOp::Delete { block } => {
-                        blocks.push(crate::edit::block_label(block.clone()));
+            for (message_id, ops) in groups {
+                for op in ops {
+                    match op {
+                        BlockOp::Set { block, content } => {
+                            self.applied.lock().unwrap().push((
+                                message_id.clone(),
+                                block.clone(),
+                                content.clone(),
+                            ));
+                            blocks.push(crate::edit::block_label(block.clone()));
+                        }
+                        BlockOp::Delete { block } => {
+                            blocks.push(crate::edit::block_label(block.clone()));
+                        }
                     }
                 }
             }

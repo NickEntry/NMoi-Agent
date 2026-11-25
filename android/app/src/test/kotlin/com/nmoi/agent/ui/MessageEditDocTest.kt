@@ -284,4 +284,97 @@ class MessageEditDocTest {
         assertTrue(error.reason.contains("开头必须是"))
         assertEquals(1, error.line)
     }
+
+    // -----------------------------------------------------------------------
+    // v3：一整轮（几条消息）—— 2026-11-26
+    // -----------------------------------------------------------------------
+
+    private fun round(id: String, output: String, tools: List<EditToolBlock> = emptyList()) =
+        EditRound(
+            messageId = id,
+            doc = EditDocument(output = output, thinking = null, tools = tools),
+        )
+
+    /** 两段消息来回一趟：id 与内容都还在，顺序不动。 */
+    @Test
+    fun turn_round_trips_two_messages() {
+        val turn = EditTurn(
+            listOf(
+                round(
+                    "s:2",
+                    "（这一段没有正文）",
+                    listOf(
+                        EditToolBlock(
+                            index = 0,
+                            part = "p1",
+                            name = "System-Shell",
+                            input = """{"command":"ls"}""",
+                            stdout = "a.txt",
+                            stderr = null,
+                        ),
+                    ),
+                ),
+                round("s:3", "跑完了"),
+            ),
+        )
+        val text = serializeEditTurn(turn)
+        assertTrue(text, text.contains("""v="3""""))
+        assertTrue(text, text.contains("""<nmoi:message id="s:2">"""))
+        assertTrue(text, text.contains("""<nmoi:message id="s:3">"""))
+        assertEquals(turn, parseEditTurn(text))
+    }
+
+    /** 段 id 是保存时的定位手段：两段同 id 必须拒（不然会写两遍同一条）。 */
+    @Test
+    fun duplicate_message_segments_are_refused() {
+        val text = """
+            [□{<nmoi-edit v="3">
+            <nmoi:message id="s:2">
+            <nmoi:output>一</nmoi:output>
+            </nmoi:message>
+            <nmoi:message id="s:2">
+            <nmoi:output>二</nmoi:output>
+            </nmoi:message>
+            </nmoi-edit>}□]
+        """.trimIndent()
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
+        assertTrue(error.message, error.message.orEmpty().contains("出现了两段"))
+    }
+
+    /** v3 里一段都没有（手抖删光了）：说清是"一段都没有"，不是"正文是空的"。 */
+    @Test
+    fun an_empty_turn_says_so() {
+        val text = """
+            [□{<nmoi-edit v="3">
+            </nmoi-edit>}□]
+        """.trimIndent()
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
+        assertTrue(error.message, error.message.orEmpty().contains("一段消息都没有"))
+    }
+
+    /** v3 里块外有字（多半是少写了一个结束标签）：带行号报出来。 */
+    @Test
+    fun text_between_segments_is_refused() {
+        val text = """
+            [□{<nmoi-edit v="3">
+            <nmoi:message id="s:2">
+            <nmoi:output>一</nmoi:output>
+            </nmoi:message>
+            这句话在段外面
+            </nmoi-edit>}□]
+        """.trimIndent()
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
+        assertEquals(5, error.line)
+        assertTrue(error.reason.contains("每一段都要以"))
+    }
+
+    /** 老形状（v1 / v2）读出来是"一条消息"，id 为空，由调用方补。 */
+    @Test
+    fun a_v2_document_is_a_single_segment() {
+        val text = serializeEditDocument(doc(thinking = null))
+        val turn = parseEditTurn(text)
+        assertEquals(1, turn.rounds.size)
+        assertEquals("", turn.rounds[0].messageId)
+        assertEquals(doc(thinking = null).output, turn.rounds[0].doc.output)
+    }
 }

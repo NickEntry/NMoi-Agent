@@ -1457,14 +1457,22 @@ const MAX_BLOCK_BYTES: usize = nmoi_core::edit::MAX_BLOCK_BYTES;
 /// 解析本身在 core（`BlockSelector::parse`）：模型的 `edit_message` 用的是同一份。
 /// 单元级编辑（0.15f / D188）：一次改几块，正文落红、思考 / 工具块就地改。
 ///
-/// 入参：`handle` / `spec` —— `{"message_id":"<具体 id>","ops":[…]}`。
+/// 入参：`handle` / `spec` —— `{"message_id":"<具体 id>","ops":[…]}`，
+/// **或者** `{"edits":[{"message_id":…,"ops":[…]},…]}`（2026-11-26）。
+///
+/// 两种形状收在一个入口里，是因为它们做的事完全一样，只是范围不同：
+/// 后者一次横跨几条消息，用于「编辑整条消息」——折行之后一轮回答是几条消息，
+/// 而屏幕上那一片（工具卡 + 思考 + 正文）跨着好几条。前者是模型 `edit_unit` 的旧形状，
+/// 界面上原来那条路也用它，不能因为加了新形状就断掉。
+///
 /// `ops` 的形状与模型的 `edit_unit` 工具**走同一份解析**（`parse_edit_unit`）：
 /// 界面能做的事和模型能做的事不该长成两种。
 ///
 /// 只收具体 id：这一层没有会话历史，`last_assistant` 这类别名解不出目标。
 /// 界面点的是哪一条，它自己知道。
 ///
-/// 出参：`{message, written, removed, blocks:[…], unchanged:[…]}`
+/// 出参：`{message, written, removed, blocks:[…], unchanged:[…]}`。
+/// 多条时 `message` 是第一条（其余在 `messages` 里，界面上只用得到提示行）。
 #[no_mangle]
 pub extern "C" fn nmoi_storage_apply_unit_edits_json(
     handle: u64,
@@ -1474,15 +1482,34 @@ pub extern "C" fn nmoi_storage_apply_unit_edits_json(
         let spec_text = read_str(spec, "spec")?;
         let value: Value = serde_json::from_str(spec_text)
             .map_err(|error| FfiError::new("bad_argument", format!("spec 不是 JSON：{error}")))?;
-        let call = nmoi_core::tools::parse_edit_unit(&value)
-            .map_err(|message| FfiError::new("bad_argument", message))?;
-        let message_id = parse_message(&call.target)?;
+        // 两种形状：`edits`（多条）与 `ops`（单条）。`edits` 优先——它更具体。
+        let groups = if value.get("edits").is_some() {
+            nmoi_core::tools::parse_turn_edits(&value)
+                .map_err(|message| FfiError::new("bad_argument", message))?
+        } else {
+            let call = nmoi_core::tools::parse_edit_unit(&value)
+                .map_err(|message| FfiError::new("bad_argument", message))?;
+            vec![(call.target, call.ops.into_iter().map(|op| op.op).collect())]
+        };
+        // 全部先解析成具体 id：有一条解析不出来就整批拒绝（不猜别名）。
+        let mut resolved: Vec<(nmoi_core::ids::MessageId, Vec<nmoi_core::edit::BlockOp>)> =
+            Vec::with_capacity(groups.len());
+        for (target, ops) in groups {
+            let message_id = parse_message(&target)?;
+            resolved.push((message_id, ops));
+        }
+        let first = resolved
+            .first()
+            .map(|(id, _)| id.to_string())
+            .unwrap_or_default();
         with_storage(handle, |storage| {
-            let outcome = storage
-                .apply_unit_edits(&message_id, &call.ops)
-                .map_err(storage_error)?;
+            let outcome = storage.apply_turn_edits(&resolved).map_err(storage_error)?;
             Ok(json!({
-                "message": message_id.to_string(),
+                "message": first,
+                "messages": resolved
+                    .iter()
+                    .map(|(id, _)| id.to_string())
+                    .collect::<Vec<_>>(),
                 "written": outcome.written,
                 "removed": outcome.removed,
                 "blocks": outcome.blocks,

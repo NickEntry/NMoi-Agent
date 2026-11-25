@@ -27,7 +27,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
@@ -64,17 +66,128 @@ internal fun MenuSheet(
     items: List<SheetItem>,
     onHint: (String) -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * 紧凑档（消息「更多」那张）：行高 52 → 44，**字少的项两列并排**。
+     *
+     * 为什么要这一档：消息那张有九到十项，52dp 一路排下去必然超出一屏，用户得滑一下
+     * 才看得到「删除这条消息」——而那一项是最该被一眼看见的。两列之后它进了五到六行。
+     * 别的面板（会话 / 助手 / 文件）项数没这么密，保持原样，免得一排两个长句子反而更难读。
+     */
+    compact: Boolean = false,
 ) {
     SheetFrame(title = title, onDismiss = onDismiss) {
         Column(
             modifier = Modifier
-                .heightIn(max = 420.dp)
-                .verticalScroll(rememberScrollState()),
+                .heightIn(max = if (compact) 560.dp else 420.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = if (compact) 8.dp else 0.dp),
         ) {
-            items.forEach { item ->
-                SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
+            if (!compact) {
+                items.forEach { item ->
+                    SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
+                }
+            } else {
+                compactRows(items).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        row.forEach { item ->
+                            CompactRow(
+                                item = item,
+                                modifier = Modifier.weight(1f),
+                                onHint = onHint,
+                                onDismiss = onDismiss,
+                            )
+                        }
+                        // 单列那一行只占一格：补一个空权重，免得它自己撑满整行看起来像两列错位。
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
             }
         }
+    }
+}
+
+/**
+ * 两列排行的规则：**相邻的两项都短，才并排**。
+ *
+ * 判据只看"这一行念出来多长"（[shortEnough]），不看有没有图标——图标都是 18dp，
+ * 不影响宽度。带 `value` / `trailing` 的项不并排：那两样一挤就被截掉，
+ * 而它们恰好是"2/13"这种不能读错的数。
+ */
+private fun compactRows(items: List<SheetItem>): List<List<SheetItem>> {
+    val rows = mutableListOf<List<SheetItem>>()
+    var index = 0
+    while (index < items.size) {
+        val item = items[index]
+        val next = items.getOrNull(index + 1)
+        if (next != null && shortEnough(item) && shortEnough(next)) {
+            rows += listOf(item, next)
+            index += 2
+        } else {
+            rows += listOf(item)
+            index += 1
+        }
+    }
+    return rows
+}
+
+/** 短到什么程度可以两列并排：8 个字以内（一个汉字按一个字算）。 */
+private fun shortEnough(item: SheetItem): Boolean =
+    item.value == null && item.trailing == null && item.label.length <= 8
+
+/**
+ * 紧凑行：44dp、图标 18、正文 15。
+ *
+ * 触达下限仍是 44（iOS 44 / Android 48 那一档），只是把它从"每行 52 的呼吸"压到"刚好够点"。
+ */
+@Composable
+private fun CompactRow(
+    item: SheetItem,
+    modifier: Modifier,
+    onHint: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val usable = item.onClick != null || item.hint != null
+    Row(
+        modifier = modifier
+            .heightIn(min = 44.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable {
+                when {
+                    item.onClick != null -> {
+                        onDismiss()
+                        item.onClick.invoke()
+                    }
+
+                    item.hint != null -> {
+                        onDismiss()
+                        onHint(item.hint)
+                    }
+                }
+            }
+            .padding(start = 10.dp, end = 8.dp)
+            .alpha(if (usable) 1f else 0.42f),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val icon = item.icon
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+        Text(
+            text = item.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

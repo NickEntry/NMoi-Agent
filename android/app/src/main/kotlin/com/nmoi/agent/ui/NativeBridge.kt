@@ -124,7 +124,13 @@ internal object NativeBridge {
 
     external fun editVersionJson(handle: Long, message: String, versionNo: Long, text: String): String
 
-    /** 工具编辑（临时探针）：会置 `edited_by_tool`，数字变蓝/红（D148）。 */
+    /**
+     * 把某一版标成"被工具改过"（置 `edited_by_tool`，`n/n` 变蓝/红，D148）。
+     *
+     * 2026-11-26 起界面上没有入口了：验颜色的那个临时探针已从菜单里删掉，
+     * 而"工具改消息"本身走 `applyUnitEditsJson`。保留这一层是因为它是 C ABI 与 JNI 的
+     * 既有符号（删掉要动两个 ABI），而且以后重新生成那一轮会用到同一种标记。
+     */
     external fun toolEditVersionJson(handle: Long, message: String, versionNo: Long, text: String): String
 
     /**

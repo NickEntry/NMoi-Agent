@@ -219,7 +219,7 @@ internal object NmoiFfi {
         NativeBridge.editVersionJson(handle, message, versionNo, text)
     }
 
-    /** 工具编辑（临时探针）：会置 `edited_by_tool`，于是数字变蓝/红（D148）。 */
+    /** 把某一版标成"被工具改过"（D148）。界面上暂时没有入口，见 [NativeBridge.toolEditVersionJson]。 */
     suspend fun toolEditVersion(
         handle: Long,
         message: String,
