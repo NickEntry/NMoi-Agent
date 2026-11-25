@@ -141,13 +141,28 @@ internal fun MessageEditScreen(
         val failed = try {
             before.turn.docs.zip(parsed.docs).forEachIndexed { position, (was, now) ->
                 val ops = opsBetween(was, now)
+                val tools = toolsBetween(was, now)
+                if (ops.isEmpty() && tools == null) return@forEachIndexed
+                val entry = JSONObject().put("message_id", ids[position])
                 if (ops.isNotEmpty()) {
                     val array = JSONArray()
                     ops.forEach { array.put(it.toJson()) }
-                    edits.put(
-                        JSONObject().put("message_id", ids[position]).put("ops", array),
-                    )
+                    entry.put("ops", array)
                 }
+                // 工具清单**整份**给：可以多一条、少一条、改名。不给 = 不动。
+                tools?.let { list ->
+                    val array = JSONArray()
+                    list.forEach { tool ->
+                        array.put(
+                            JSONObject()
+                                .put("name", tool.name)
+                                .put("arguments", tool.input)
+                                .put("output", tool.result()),
+                        )
+                    }
+                    entry.put("tools", array)
+                }
+                edits.put(entry)
             }
             null
         } catch (error: EditDocException) {

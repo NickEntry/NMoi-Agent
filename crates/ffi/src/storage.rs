@@ -1455,6 +1455,51 @@ const MAX_BLOCK_BYTES: usize = nmoi_core::edit::MAX_BLOCK_BYTES;
 /// 而"点思考卡结果正文变了"这种故障在界面上看着像灵异事件。
 ///
 /// 解析本身在 core（`BlockSelector::parse`）：模型的 `edit_message` 用的是同一份。
+/// `tools` 那一栏：`[{"name","arguments","output"},…]`。**整份替换**，顺序即顺序。
+///
+/// 参数会原样发给上游，所以必须是 JSON 对象——坏了下一次请求直接 400（D158 同一条理由）。
+/// `output` 可以空（一条刚加进去、还没结果的调用），但那样它会以 `ok` 落库：
+/// 历史里不该有"进行中"的调用（D258 的"只存结束"）。
+fn parse_tool_specs(slot: &Value) -> Result<Vec<nmoi_core::edit::ToolSpec>, FfiError> {
+    let list = slot.as_array().ok_or_else(|| {
+        FfiError::new(
+            "bad_argument",
+            "`tools` 必须是数组（整份替换，空数组 = 全删）",
+        )
+    })?;
+    let mut out = Vec::with_capacity(list.len());
+    for (position, item) in list.iter().enumerate() {
+        let which = position + 1;
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                FfiError::new("bad_argument", format!("第 {which} 个工具缺少 `name`"))
+            })?;
+        let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("");
+        if !arguments.trim().is_empty() {
+            let parsed = serde_json::from_str::<Value>(arguments)
+                .ok()
+                .is_some_and(|value| value.is_object());
+            if !parsed {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!("第 {which} 个工具（{name}）的参数不是 JSON 对象"),
+                ));
+            }
+        }
+        let output = item.get("output").and_then(Value::as_str).unwrap_or("");
+        out.push(nmoi_core::edit::ToolSpec {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            output: output.to_string(),
+        });
+    }
+    Ok(out)
+}
+
 /// 单元级编辑（0.15f / D188）：一次改几块，正文落红、思考 / 工具块就地改。
 ///
 /// 入参：`handle` / `spec` —— `{"message_id":"<具体 id>","ops":[…]}`，
@@ -1483,24 +1528,73 @@ pub extern "C" fn nmoi_storage_apply_unit_edits_json(
         let value: Value = serde_json::from_str(spec_text)
             .map_err(|error| FfiError::new("bad_argument", format!("spec 不是 JSON：{error}")))?;
         // 两种形状：`edits`（多条）与 `ops`（单条）。`edits` 优先——它更具体。
-        let groups = if value.get("edits").is_some() {
-            nmoi_core::tools::parse_turn_edits(&value)
-                .map_err(|message| FfiError::new("bad_argument", message))?
-        } else {
-            let call = nmoi_core::tools::parse_edit_unit(&value)
-                .map_err(|message| FfiError::new("bad_argument", message))?;
-            vec![(call.target, call.ops.into_iter().map(|op| op.op).collect())]
+        // 两种形状：`edits`（多条）与 `message_id + ops`（单条）。每条还能带**整份工具清单**
+        // （`tools`，可以增删改名）。`tools` 缺席 = 不动工具块——当成空数组就会
+        // "改一次正文把工具卡全清掉"，所以 `None` 与 `Some(vec![])` 必须分开。
+        let mut resolved: Vec<nmoi_core::edit::TurnEdit> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        let entries: Vec<&Value> = match value.get("edits").and_then(Value::as_array) {
+            Some(list) => {
+                if list.is_empty() {
+                    return Err(FfiError::new(
+                        "bad_argument",
+                        "`edits` 是空的：要改就指明改哪条消息的哪几块",
+                    ));
+                }
+                list.iter().collect()
+            }
+            None => vec![&value],
         };
-        // 全部先解析成具体 id：有一条解析不出来就整批拒绝（不猜别名）。
-        let mut resolved: Vec<(nmoi_core::ids::MessageId, Vec<nmoi_core::edit::BlockOp>)> =
-            Vec::with_capacity(groups.len());
-        for (target, ops) in groups {
-            let message_id = parse_message(&target)?;
-            resolved.push((message_id, ops));
+        for (position, entry) in entries.into_iter().enumerate() {
+            let which = position + 1;
+            let target = entry
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| {
+                    FfiError::new("bad_argument", format!("第 {which} 组缺少 `message_id`"))
+                })?;
+            if seen.iter().any(|known| known == target) {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!(
+                        "第 {which} 组又把消息 {target} 写了一遍：一次编辑里每条消息只能有一组"
+                    ),
+                ));
+            }
+            seen.push(target.to_string());
+            let message_id = parse_message(target)?;
+
+            // `ops` 可以缺席——只换工具清单的那种编辑本来就没有块级动作。
+            let ops = match entry.get("ops") {
+                None => Vec::new(),
+                Some(_) => nmoi_core::tools::parse_edit_unit(entry)
+                    .map_err(|message| FfiError::new("bad_argument", message))?
+                    .ops
+                    .into_iter()
+                    .map(|op| op.op)
+                    .collect(),
+            };
+            let tools = match entry.get("tools") {
+                None => None,
+                Some(slot) => Some(parse_tool_specs(slot)?),
+            };
+            if ops.is_empty() && tools.is_none() {
+                return Err(FfiError::new(
+                    "bad_argument",
+                    format!("第 {which} 组既没有 `ops` 也没有 `tools`：没有东西要改"),
+                ));
+            }
+            resolved.push(nmoi_core::edit::TurnEdit {
+                message: message_id,
+                ops,
+                tools,
+            });
         }
         let first = resolved
             .first()
-            .map(|(id, _)| id.to_string())
+            .map(|edit| edit.message.to_string())
             .unwrap_or_default();
         with_storage(handle, |storage| {
             let outcome = storage.apply_turn_edits(&resolved).map_err(storage_error)?;
@@ -1508,7 +1602,7 @@ pub extern "C" fn nmoi_storage_apply_unit_edits_json(
                 "message": first,
                 "messages": resolved
                     .iter()
-                    .map(|(id, _)| id.to_string())
+                    .map(|edit| edit.message.to_string())
                     .collect::<Vec<_>>(),
                 "written": outcome.written,
                 "removed": outcome.removed,

@@ -390,6 +390,43 @@ impl TurnOp {
     }
 }
 
+/// 一条工具调用的三样东西：名字、参数、结果。
+///
+/// 为什么工具块要单独一条路（2026-11-26）：块级动作（`BlockOp`）只能"改这一块的某个字段"，
+/// 表达不了"多一条调用""少一条""换个名字"。而用户说得很清楚——**工具块能增删是设计，
+/// 不是限制**。一条消息里的工具清单本来就可以整份重写。
+///
+/// `call_id` 不在这里：它是配对用的内部编号，按**位置**沿用旧的，多出来的现生成。
+/// 让用户/模型去写一串 uuid 只会写错。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub arguments: String,
+    pub output: String,
+}
+
+/// 一条消息上要写的东西：块级动作 +（可选）**整份**工具清单。
+///
+/// `tools = None` 表示"不动工具块"；`Some(vec![])` 表示"全删掉"。
+/// 两者必须分开——`None` 当成空数组的话，改一次正文就会把工具卡全清掉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnEdit {
+    pub message: MessageId,
+    pub ops: Vec<BlockOp>,
+    pub tools: Option<Vec<ToolSpec>>,
+}
+
+impl TurnEdit {
+    /// 只改块，不动工具清单（模型那条路就是这么用的）。
+    pub fn blocks(message: MessageId, ops: Vec<BlockOp>) -> Self {
+        Self {
+            message,
+            ops,
+            tools: None,
+        }
+    }
+}
+
 /// 一次调用里的一个动作。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockOp {
@@ -781,7 +818,7 @@ pub fn message_tokens(message: &Message) -> u32 {
     total
 }
 
-fn digest(text: &str) -> String {
+pub fn digest(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     let digest = hasher.finalize();

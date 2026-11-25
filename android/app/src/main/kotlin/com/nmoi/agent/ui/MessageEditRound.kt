@@ -123,30 +123,27 @@ internal fun opsBetween(before: EditDocument, after: EditDocument): List<EditOp>
         }
     }
 
-    if (after.tools.size != before.tools.size) {
-        throw EditDocException(
-            0,
-            "工具块不能增删：这一条有 ${before.tools.size} 个工具调用，框里有 ${after.tools.size} 个。\n" +
-                "一条调用必须和它的结果配对，凭空多一条会让下一轮请求直接 400。",
-        )
-    }
-
-    after.tools.forEachIndexed { index, tool ->
-        val was = before.tools[index]
-        if (tool.name != was.name) {
-            throw EditDocException(
-                0,
-                "工具名不能改（第 ${index + 1} 个：${was.name} → ${tool.name}）：名字决定这一块怎么解释。",
-            )
-        }
-        if (tool.input != was.input) {
-            ops += EditOp(block = "tool", index = index, content = tool.input)
-        }
-        if (tool.result() != was.result()) {
-            ops += EditOp(block = "tool_result", index = index, content = tool.result())
-        }
-    }
     return ops
+}
+
+/**
+ * 工具清单要不要写回去：**整份**比（条数、名字、参数、结果、顺序）。
+ *
+ * 为什么单独一条路（2026-11-26）：块级动作只能"改第 i 个调用的参数/结果"，
+ * 表达不了"多一条""少一条""换个名字"。而这三件事本来就是允许的——
+ * 那是我们的设计限制，不是不能做的操作。所以工具块整份替换，text/thinking 仍走块级动作。
+ *
+ * 返回 `null` = 一点没变，别写。
+ */
+internal fun toolsBetween(before: EditDocument, after: EditDocument): List<EditToolBlock>? {
+    if (before.tools.size == after.tools.size &&
+        before.tools.zip(after.tools).all { (was, now) ->
+            was.name == now.name && was.input == now.input && was.result() == now.result()
+        }
+    ) {
+        return null
+    }
+    return after.tools
 }
 
 /**

@@ -7,7 +7,7 @@
 //! 4. **每会话上限**：到 50 处就拒绝，别让模型把历史改成筛子。
 
 use nmoi_core::clock::LogicalClock;
-use nmoi_core::edit::{BlockOp, BlockSelector};
+use nmoi_core::edit::{BlockOp, BlockSelector, ToolSpec, TurnEdit};
 use nmoi_core::ids::{MessageId, SessionId};
 use nmoi_core::message::{AtomicUnit, Message, OutgoingToolCall, Role};
 use nmoi_core::source::SourceTag;
@@ -332,14 +332,14 @@ fn one_edit_can_touch_two_messages_of_the_same_round() {
 
     let outcome = storage
         .apply_turn_edits(&[
-            (
+            TurnEdit::blocks(
                 call_id.clone(),
                 vec![BlockOp::Set {
                     block: BlockSelector::ToolCall { index: 0 },
                     content: "{\"command\":\"ls -la\"}".into(),
                 }],
             ),
-            (
+            TurnEdit::blocks(
                 text_id.clone(),
                 vec![BlockOp::Set {
                     block: BlockSelector::Output,
@@ -374,14 +374,14 @@ fn a_failing_message_rolls_back_the_whole_round() {
     let (session, call_id, text_id) = seed_round(&mut storage);
 
     let result = storage.apply_turn_edits(&[
-        (
+        TurnEdit::blocks(
             call_id.clone(),
             vec![BlockOp::Set {
                 block: BlockSelector::Output,
                 content: "这一条本来能改".into(),
             }],
         ),
-        (
+        TurnEdit::blocks(
             text_id.clone(),
             vec![BlockOp::Set {
                 block: BlockSelector::Part {
@@ -412,14 +412,14 @@ fn the_same_message_twice_in_one_edit_is_refused() {
     let (_session, _call_id, text_id) = seed_round(&mut storage);
 
     let result = storage.apply_turn_edits(&[
-        (
+        TurnEdit::blocks(
             text_id.clone(),
             vec![BlockOp::Set {
                 block: BlockSelector::Output,
                 content: "一".into(),
             }],
         ),
-        (
+        TurnEdit::blocks(
             text_id,
             vec![BlockOp::Set {
                 block: BlockSelector::Output,
@@ -429,4 +429,197 @@ fn the_same_message_twice_in_one_edit_is_refused() {
     ]);
     let error = result.unwrap_err().to_string();
     assert!(error.contains("出现了两遍"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-26：工具块可以增删改名（用户定的：那是我们的设计，不是不能做的操作）
+// ---------------------------------------------------------------------------
+
+/// 加一条工具调用：先落库、再把工具清单从 1 条换成 2 条。
+///
+/// 判据：库里真的两条，`call_id` 各不相同，第 0 条沿用了原来的编号。
+#[test]
+fn a_tool_call_can_be_added() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let (session, call_id, _text) = seed_round(&mut storage);
+    let before = all_messages(&storage, session);
+    let first_call = before[0].tool_calls()[0].call_id.clone();
+
+    let outcome = storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: Vec::new(),
+            tools: Some(vec![
+                ToolSpec {
+                    name: "System-Shell".into(),
+                    arguments: "{\"command\":\"ls\"}".into(),
+                    output: "a.txt".into(),
+                },
+                ToolSpec {
+                    name: "Read-File".into(),
+                    arguments: "{\"path\":\"b.txt\"}".into(),
+                    output: "内容".into(),
+                },
+            ]),
+        }])
+        .unwrap();
+    assert_eq!(outcome.written, 1, "新增算一处改动：{outcome:?}");
+
+    let after = all_messages(&storage, session);
+    let calls = after[0].tool_calls();
+    assert_eq!(calls.len(), 2, "两条调用都得在");
+    assert_eq!(calls[0].call_id, first_call, "第 0 条沿用原来的编号");
+    assert_ne!(calls[1].call_id, first_call, "新的一条要有自己的编号");
+    assert_eq!(calls[1].name, "Read-File");
+    assert_eq!(calls[1].output, "内容");
+    // 一条 undo 记录：删掉它要能还原成一条。
+    assert_eq!(storage.undo_log(session).unwrap().len(), 1);
+}
+
+/// 删掉一条：清单从 2 条换成 1 条，剩下那条的编号不变。
+#[test]
+fn a_tool_call_can_be_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let (session, call_id, _text) = seed_round(&mut storage);
+    // 先加到两条。
+    storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: Vec::new(),
+            tools: Some(vec![
+                ToolSpec {
+                    name: "System-Shell".into(),
+                    arguments: "{}".into(),
+                    output: "a".into(),
+                },
+                ToolSpec {
+                    name: "Read-File".into(),
+                    arguments: "{}".into(),
+                    output: "b".into(),
+                },
+            ]),
+        }])
+        .unwrap();
+    let keep = all_messages(&storage, session)[0].tool_calls()[1]
+        .call_id
+        .clone();
+
+    storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: Vec::new(),
+            tools: Some(vec![ToolSpec {
+                name: "Read-File".into(),
+                arguments: "{}".into(),
+                output: "b".into(),
+            }]),
+        }])
+        .unwrap();
+
+    let messages = all_messages(&storage, session);
+    let calls = messages[0].tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "Read-File");
+    // **编号按位置沿用**，所以删掉第 0 条之后，留下的那条会拿到第 0 个位置的编号
+    // （`keep` 那一条被挤到了上面）。这不影响配对——结果就长在同一个块里——
+    // 只影响"这条调用曾经是谁"，而那件事历史里本来也没记。
+    assert_ne!(
+        calls[0].call_id, keep,
+        "位置匹配：删掉第一条之后编号会被顶上来的那条沿用"
+    );
+    assert!(!calls[0].call_id.is_empty());
+}
+
+/// 改名：同一条调用，名字换了，编号与结果都还在。
+#[test]
+fn a_tool_call_can_be_renamed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let (session, call_id, _text) = seed_round(&mut storage);
+    let before = all_messages(&storage, session)[0].tool_calls()[0]
+        .call_id
+        .clone();
+
+    storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: Vec::new(),
+            tools: Some(vec![ToolSpec {
+                name: "Bash".into(),
+                arguments: "{\"command\":\"ls\"}".into(),
+                output: "a.txt".into(),
+            }]),
+        }])
+        .unwrap();
+
+    let messages = all_messages(&storage, session);
+    let calls = messages[0].tool_calls();
+    assert_eq!(calls[0].name, "Bash");
+    assert_eq!(calls[0].call_id, before, "改名不动编号");
+    assert_eq!(calls[0].output, "a.txt");
+}
+
+/// 全删：`Some(vec![])` 与 `None` 是两件事——后者不动工具块。
+#[test]
+fn an_empty_tool_list_removes_them_all_but_none_keeps_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let (session, call_id, _text) = seed_round(&mut storage);
+
+    // `None`：只改正文，工具块原样。
+    storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: vec![BlockOp::Set {
+                block: BlockSelector::Output,
+                content: "改了正文".into(),
+            }],
+            tools: None,
+        }])
+        .unwrap();
+    assert_eq!(all_messages(&storage, session)[0].tool_calls().len(), 1);
+
+    // `Some(vec![])`：全删。
+    storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: Vec::new(),
+            tools: Some(Vec::new()),
+        }])
+        .unwrap();
+    assert!(
+        all_messages(&storage, session)[0].tool_calls().is_empty(),
+        "空清单 = 全删"
+    );
+}
+
+/// 参数不是 JSON 对象：FFI 那一层就拒（这里验 core 不会悄悄写进去）。
+/// 真正的入口在 `crates/ffi/tests/unit_edit_abi.rs`，这一条只钉住"库不动"。
+#[test]
+fn a_tool_rewrite_keeps_the_body_and_thinking() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut storage = ready(&dir.path().join("nmoi.db"));
+    let (session, call_id, _text) = seed_round(&mut storage);
+
+    storage
+        .apply_turn_edits(&[TurnEdit {
+            message: call_id.clone(),
+            ops: vec![BlockOp::Set {
+                block: BlockSelector::Thinking,
+                content: "补一段思考".into(),
+            }],
+            tools: Some(vec![ToolSpec {
+                name: "System-Shell".into(),
+                arguments: "{\"command\":\"pwd\"}".into(),
+                output: "/root".into(),
+            }]),
+        }])
+        .unwrap();
+
+    let message = &all_messages(&storage, session)[0];
+    assert_eq!(message.reasoning().as_deref(), Some("补一段思考"));
+    assert_eq!(message.tool_calls()[0].arguments, "{\"command\":\"pwd\"}");
+    assert_eq!(message.tool_calls()[0].output, "/root");
 }

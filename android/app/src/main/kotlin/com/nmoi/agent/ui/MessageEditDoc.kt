@@ -27,8 +27,9 @@ package com.nmoi.agent.ui
  *    除了证明"这是我们生成的"，什么事都不干——用户从来不会手打它们。
  * 2. **没有消息 id**。段与段之间就是一行 `---`，第几段写回第几条消息：段数对不上就整页不写
  *    （见 [MessageEditScreen]）。一串 uuid 摆在正文里，读的人只会问"这是啥"。
- * 3. **工具块不带 part**。它按**出现顺序**对应第 0、1、2 个调用——工具块不能增删，
- *    所以顺序就是身份。`part="p1"` 那 11 个字符一个信息都不多给。
+ * 3. **工具块不带 part**。它按**出现顺序**对应第 0、1、2 个调用；**可以增删改名**
+ *    （2026-11-26 用户定的：那是我们的设计，不是不能做的操作），
+ *    保存时按位置沿用旧的调用编号，多出来的现生成。`part="p1"` 那 11 个字符一个信息都不多给。
  * 4. **没有 stderr 那一栏**。库里只有一份结果原文（D258），第二栏永远是空的。
  *
  * 三层防护，别删任何一层：
@@ -169,12 +170,6 @@ private fun writeBlocks(out: StringBuilder, doc: EditDocument) {
     }
 
     doc.tools.forEachIndexed { position, tool ->
-        if (tool.index != position) {
-            throw EditDocException(
-                0,
-                "工具块序号要从 0 连续排：第 ${position + 1} 个是 #${tool.index}",
-            )
-        }
         if (tool.name.isBlank()) {
             throw EditDocException(0, "第 ${position + 1} 个工具块没有名字")
         }

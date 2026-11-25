@@ -28,7 +28,7 @@ use crate::budget::{
 };
 use crate::clock::LogicalClock;
 use crate::divider::ContextWindow;
-use crate::edit::{BlockOp, BlockSelector, EditOutcome};
+use crate::edit::{BlockOp, BlockSelector, EditOutcome, TurnEdit};
 use crate::ids::{MessageId, SessionId, UnitId};
 use crate::message::{AtomicUnit, Message, Role, ToolStatus};
 use crate::policy::AssistantPolicy;
@@ -309,17 +309,17 @@ pub trait HistoryStore {
         message_id: &MessageId,
         ops: &[BlockOp],
     ) -> Result<UnitEditResult, String> {
-        self.apply_turn_edits(&[(message_id.clone(), ops.to_vec())])
+        self.apply_turn_edits(&[TurnEdit::blocks(message_id.clone(), ops.to_vec())])
     }
 
     /// **一次编辑横跨几条消息**（2026-11-26）：界面上的「编辑整条消息」和模型的
     /// 带 `round` 的 `edit_unit` 都走这一条。一条事务里几条一起写，
     /// 有一条写不进去就整批不动——分开写的话，第 2 条失败时第 1 条已经落库了。
-    fn apply_turn_edits(
-        &mut self,
-        groups: &[(MessageId, Vec<BlockOp>)],
-    ) -> Result<UnitEditResult, String> {
-        let _ = groups;
+    ///
+    /// 每一条还能带**整份工具清单**（`TurnEdit::tools`）：工具块可以增删改名
+    /// （2026-11-26 用户定的），那件事块级动作表达不了。
+    fn apply_turn_edits(&mut self, edits: &[TurnEdit]) -> Result<UnitEditResult, String> {
+        let _ = edits;
         Err("这个历史实现不支持整轮编辑：没有落库".to_string())
     }
 }
@@ -1983,8 +1983,12 @@ fn apply_pending_edits<S: HistoryStore>(
         if !resolved {
             continue;
         }
+        let edits: Vec<TurnEdit> = groups
+            .into_iter()
+            .map(|(message, ops)| TurnEdit::blocks(message, ops))
+            .collect();
         // 失败也只有一个 report——把"整批没写"拆成三条没写，界面会以为改了三处里的三处都出事了。
-        match store.apply_turn_edits(&groups) {
+        match store.apply_turn_edits(&edits) {
             Ok(outcome) => {
                 for block in &outcome.blocks {
                     reports.push(EditReport {
@@ -3902,15 +3906,17 @@ mod tests {
             message_id: &MessageId,
             ops: &[BlockOp],
         ) -> Result<UnitEditResult, String> {
-            self.apply_turn_edits(&[(message_id.clone(), ops.to_vec())])
+            self.apply_turn_edits(&[TurnEdit::blocks(message_id.clone(), ops.to_vec())])
         }
 
-        fn apply_turn_edits(
-            &mut self,
-            groups: &[(MessageId, Vec<BlockOp>)],
-        ) -> Result<UnitEditResult, String> {
+        fn apply_turn_edits(&mut self, edits: &[TurnEdit]) -> Result<UnitEditResult, String> {
             let mut blocks = Vec::new();
-            for (message_id, ops) in groups {
+            for TurnEdit {
+                message: message_id,
+                ops,
+                ..
+            } in edits
+            {
                 for op in ops {
                     match op {
                         BlockOp::Set { block, content } => {

@@ -172,48 +172,68 @@ class MessageEditRoundTest {
         assertEquals("新", ops.single().content)
     }
 
-    /** 工具参数改了：按**序号**定位（工具块不能增删，序号就是身份）。 */
+    /** 工具参数改了：走工具清单（那一栏就是清单里的 `arguments`），不产生块级动作。 */
     @Test
-    fun a_tool_argument_change_targets_the_index() {
-        val ops = opsBetween(
-            doc(tools = listOf(block())),
-            doc(tools = listOf(block(input = """{"command":"ls -la"}"""))),
-        )
-        assertEquals(1, ops.size)
-        assertEquals("tool", ops.single().block)
-        assertEquals(0, ops.single().index)
+    fun a_tool_argument_change_carries_the_arg_in_the_tool_list() {
+        val before = doc(tools = listOf(block()))
+        val after = doc(tools = listOf(block(input = """{"command":"ls -la"}""")))
+        assertEquals(0, opsBetween(before, after).size)
+        assertEquals("""{"command":"ls -la"}""", toolsBetween(before, after)!!.single().input)
     }
 
-    /** 工具结果改了：同一块、`tool_result` 那一栏。 */
+    /** 工具结果改了：清单里那一栏是 `stdout`。 */
     @Test
-    fun a_tool_result_change_targets_the_result_slot() {
-        val ops = opsBetween(
-            doc(tools = listOf(block())),
-            doc(tools = listOf(block(stdout = "b.txt"))),
-        )
-        assertEquals(1, ops.size)
-        assertEquals("tool_result", ops.single().block)
+    fun a_tool_result_change_carries_the_result_in_the_tool_list() {
+        val before = doc(tools = listOf(block()))
+        val after = doc(tools = listOf(block(stdout = "b.txt")))
+        assertEquals(0, opsBetween(before, after).size)
+        assertEquals("b.txt", toolsBetween(before, after)!!.single().result())
     }
 
-    /** 删掉一整块工具：说清"不能增删"，不是静默少写一块。 */
+    // ---------------------------------------------------------------------
+    // 工具块可以增删改名（2026-11-26 用户定的：那是我们的设计，不是不能做的操作）
+    // ---------------------------------------------------------------------
+
+    /** 少了一条：块级动作里什么都不产生，工具清单整份交出去。 */
     @Test
-    fun removing_a_tool_block_is_refused() {
-        val error = assertThrows(EditDocException::class.java) {
-            opsBetween(doc(tools = listOf(block())), doc(tools = emptyList()))
-        }
-        assertTrue(error.message, error.message.orEmpty().contains("不能增删"))
+    fun removing_a_tool_block_goes_through_the_tool_list() {
+        val before = doc(tools = listOf(block(index = 0), block(index = 1, name = "Read-File")))
+        val after = doc(tools = listOf(block(index = 0)))
+        assertEquals(0, opsBetween(before, after).size)
+        assertEquals(1, toolsBetween(before, after)!!.size)
     }
 
-    /** 改工具名：拒。名字决定这一块怎么解释。 */
+    /** 多了一条：同上，整份清单交出去。 */
     @Test
-    fun renaming_a_tool_is_refused() {
-        val error = assertThrows(EditDocException::class.java) {
-            opsBetween(
-                doc(tools = listOf(block(name = "System-Shell"))),
-                doc(tools = listOf(block(name = "read_file"))),
-            )
-        }
-        assertTrue(error.message, error.message.orEmpty().contains("工具名不能改"))
+    fun adding_a_tool_block_goes_through_the_tool_list() {
+        val before = doc(tools = listOf(block()))
+        val after = doc(tools = listOf(block(), block(index = 1, name = "Read-File")))
+        assertEquals(0, opsBetween(before, after).size)
+        assertEquals(2, toolsBetween(before, after)!!.size)
+    }
+
+    /** 改名：也走清单（块级动作表达不了名字）。 */
+    @Test
+    fun renaming_a_tool_goes_through_the_tool_list() {
+        val before = doc(tools = listOf(block(name = "System-Shell")))
+        val after = doc(tools = listOf(block(name = "Bash")))
+        assertEquals(0, opsBetween(before, after).size)
+        assertEquals("Bash", toolsBetween(before, after)!!.single().name)
+    }
+
+    /** 工具清单一点没变：交 `null`，别把没动的东西写一遍。 */
+    @Test
+    fun an_unchanged_tool_list_is_not_written() {
+        val same = doc(tools = listOf(block(), block(index = 1, name = "Read-File")))
+        assertNull(toolsBetween(same, same))
+    }
+
+    /** 只改了参数（名字与条数都没动）：清单要交出去（参数就是清单里的一栏）。 */
+    @Test
+    fun a_changed_argument_also_goes_through_the_tool_list() {
+        val before = doc(tools = listOf(block(input = """{"command":"ls"}""")))
+        val after = doc(tools = listOf(block(input = """{"command":"ls -la"}""")))
+        assertEquals("""{"command":"ls -la"}""", toolsBetween(before, after)!!.single().input)
     }
 
     /** 把正文删空：core 会当成空壳拒掉，这里先说清楚。 */
@@ -225,15 +245,13 @@ class MessageEditRoundTest {
         assertTrue(error.message, error.message.orEmpty().contains("不能删空"))
     }
 
-    /** 纯工具那一轮（正文本来就空）改工具参数：只出一条 tool op，不掺一条空正文。 */
+    /** 纯工具那一轮（正文本来就空）改工具参数：块级动作一条都不产生，只交工具清单。 */
     @Test
     fun a_tool_only_round_does_not_write_an_empty_body_op() {
-        val ops = opsBetween(
-            doc(output = "", tools = listOf(block())),
-            doc(output = "", tools = listOf(block(input = """{"command":"pwd"}"""))),
-        )
-        assertEquals(1, ops.size)
-        assertEquals("tool", ops.single().block)
+        val before = doc(output = "", tools = listOf(block()))
+        val after = doc(output = "", tools = listOf(block(input = """{"command":"pwd"}""")))
+        assertEquals(0, opsBetween(before, after).size)
+        assertEquals(1, toolsBetween(before, after)!!.size)
     }
 
     /** 两个思考块接起来之后和一块不同：写一条 thinking op。 */

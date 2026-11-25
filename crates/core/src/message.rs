@@ -749,6 +749,118 @@ impl Message {
         self.parts = parts;
     }
 
+    /// **整份换掉工具块**（2026-11-26）：可以多一条、少一条、换个名字。
+    ///
+    /// `specs[i] = (name, arguments, output)`，顺序就是它们在这一条消息里的顺序。
+    ///
+    /// - `part` / `call_id` **按位置沿用旧的**：第 0 条还是第 0 条，第 1 条还是第 1 条。
+    ///   多出来的现生成（`p` 取当前最大号 +1，不复用；`call_id` 是 uuid）。
+    ///   让调用方去编这两个号，迟早会撞。
+    /// - 新的那些一律 `Ok`：一条还没跑完的调用不该出现在历史里（D258 的"只存结束"）。
+    /// - 位置：插在**第一个工具块原来的地方**；原来没有工具块就追加在末尾。
+    ///
+    /// 返回审计行 `(中文块名, 改之前, 改之后)`：新增与删除各算一行，改了的按三栏分开算。
+    /// **没变的行不返回**——`edits` 表里一条"改了但内容一样"的记录只会让人以为写错了。
+    pub fn replace_tools(
+        &mut self,
+        specs: &[(String, String, String)],
+    ) -> Vec<(String, String, String)> {
+        let old: Vec<ToolPart> = self
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Tool(tool) => Some(tool.clone()),
+                _ => None,
+            })
+            .collect();
+        let at = self
+            .parts
+            .iter()
+            .position(|part| matches!(part, Part::Tool(_)));
+
+        let mut rows: Vec<(String, String, String)> = Vec::new();
+        let mut fresh: Vec<Part> = Vec::with_capacity(specs.len());
+        for (index, (name, arguments, output)) in specs.iter().enumerate() {
+            match old.get(index) {
+                Some(was) => {
+                    if was.name != *name {
+                        rows.push((
+                            format!("工具名 #{}", index + 1),
+                            was.name.clone(),
+                            name.clone(),
+                        ));
+                    }
+                    if was.arguments != *arguments {
+                        rows.push((
+                            format!("工具参数 #{}", index + 1),
+                            was.arguments.clone(),
+                            arguments.clone(),
+                        ));
+                    }
+                    if was.output != *output {
+                        rows.push((
+                            format!("工具结果 #{}", index + 1),
+                            was.output.clone(),
+                            output.clone(),
+                        ));
+                    }
+                    fresh.push(Part::Tool(ToolPart {
+                        part: was.part.clone(),
+                        call_id: was.call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                        output: output.clone(),
+                        status: if output.is_empty() {
+                            was.status
+                        } else {
+                            ToolStatus::Ok
+                        },
+                    }));
+                }
+                None => {
+                    rows.push((
+                        format!("新增工具 #{}", index + 1),
+                        String::new(),
+                        format!("{name} {arguments}"),
+                    ));
+                    let part = self.next_part_id();
+                    fresh.push(Part::Tool(ToolPart {
+                        part,
+                        call_id: format!("call_{}", uuid::Uuid::now_v7()),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                        output: output.clone(),
+                        status: ToolStatus::Ok,
+                    }));
+                }
+            }
+        }
+        for (index, gone) in old.iter().enumerate().skip(specs.len()) {
+            rows.push((
+                format!("删掉工具 #{}", index + 1),
+                format!("{} {}", gone.name, gone.arguments),
+                String::new(),
+            ));
+        }
+
+        // 重排：非工具块保持原顺序，工具块整批换到"第一个工具块原来的位置"。
+        let mut parts: Vec<Part> = self
+            .parts
+            .iter()
+            .filter(|part| !matches!(part, Part::Tool(_)))
+            .cloned()
+            .collect();
+        match at {
+            Some(position) => {
+                let position = position.min(parts.len());
+                parts.splice(position..position, fresh);
+            }
+            None => parts.extend(fresh),
+        }
+        self.parts = parts;
+        rows
+    }
+
     /// 换掉正文：有 `Text` 块就改第一块，没有就补一块；空串等于把这一块去掉。
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();

@@ -66,7 +66,10 @@ impl Storage {
         message_id: &MessageId,
         ops: &[BlockOp],
     ) -> Result<UnitEditOutcome, StorageError> {
-        self.apply_turn_edits(&[(message_id.clone(), ops.to_vec())])
+        self.apply_turn_edits(&[nmoi_core::edit::TurnEdit::blocks(
+            message_id.clone(),
+            ops.to_vec(),
+        )])
     }
 
     /// **一次编辑横跨几条消息**（2026-11-26）：界面上的「编辑整条消息」要改的是屏幕上那一片——
@@ -79,13 +82,13 @@ impl Storage {
     /// 直接拒（两份计划各写一半，后一份会把前一份盖掉）。
     pub fn apply_turn_edits(
         &mut self,
-        groups: &[(MessageId, Vec<BlockOp>)],
+        edits: &[nmoi_core::edit::TurnEdit],
     ) -> Result<UnitEditOutcome, StorageError> {
-        if groups.is_empty() {
+        if edits.is_empty() {
             return Err(StorageError::Inconsistent("没有给任何改动".into()));
         }
         let mut seen: Vec<&MessageId> = Vec::new();
-        for (id, _) in groups {
+        for nmoi_core::edit::TurnEdit { message: id, .. } in edits {
             if seen.contains(&id) {
                 return Err(StorageError::Inconsistent(format!(
                     "同一条消息 {id} 在一次编辑里出现了两遍"
@@ -103,11 +106,18 @@ impl Storage {
             message: MessageId,
             unit: nmoi_core::message::AtomicUnit,
             plan: nmoi_core::edit::UnitPlan,
+            /// `Some` = 这条消息的工具块**整份换掉**（可以增删改名）。
+            tools: Option<Vec<nmoi_core::edit::ToolSpec>>,
         }
-        let mut steps: Vec<Step> = Vec::with_capacity(groups.len());
+        let mut steps: Vec<Step> = Vec::with_capacity(edits.len());
         let mut session: Option<SessionId> = None;
         let mut total_ops = 0usize;
-        for (message_id, ops) in groups {
+        for nmoi_core::edit::TurnEdit {
+            message: message_id,
+            ops,
+            tools,
+        } in edits
+        {
             let (unit_text, session_text): (String, String) = self
                 .conn
                 .query_row(
@@ -134,13 +144,25 @@ impl Storage {
                 .parse::<UnitId>()
                 .map_err(|error| StorageError::Inconsistent(format!("单元 id 不合法：{error}")))?;
             let unit = self.load_unit(&unit_id)?;
-            let plan = plan_ops(&unit, message_id, ops)
-                .map_err(|error| StorageError::Inconsistent(error.to_string()))?;
+            // 只改工具清单时 `ops` 是空的——`plan_ops` 会把空动作当成错误（"没有给任何改动"），
+            // 而这一趟确实有活要干。所以空动作 + 有工具清单时直接给一份空计划。
+            let plan = if ops.is_empty() && tools.is_some() {
+                nmoi_core::edit::UnitPlan {
+                    unit: unit.id.clone(),
+                    ops: Vec::new(),
+                    unchanged: Vec::new(),
+                    remove_parts: Vec::new(),
+                }
+            } else {
+                plan_ops(&unit, message_id, ops)
+                    .map_err(|error| StorageError::Inconsistent(error.to_string()))?
+            };
             total_ops += plan.ops.len();
             steps.push(Step {
                 message: message_id.clone(),
                 unit,
                 plan,
+                tools: tools.clone(),
             });
         }
         let session = session.expect("groups 非空，上面一定填过会话");
@@ -160,10 +182,9 @@ impl Storage {
                 .extend(step.plan.unchanged.iter().cloned());
         }
         // 全部是"和原文一样"：不算错误，但没有任何东西要写。
-        if steps
-            .iter()
-            .all(|step| step.plan.ops.is_empty() && step.plan.remove_parts.is_empty())
-        {
+        if steps.iter().all(|step| {
+            step.plan.ops.is_empty() && step.plan.remove_parts.is_empty() && step.tools.is_none()
+        }) {
             return Ok(outcome);
         }
 
@@ -179,7 +200,7 @@ impl Storage {
             // 2) 按消息分组：同一条消息上的几块一次写完，避免同一行在一个事务里被写两遍。
             //    要删块的不进这一组（它们在第 4 步按 part id 摘）。
             let list: Vec<&PlannedOp> = plan.ops.iter().filter(|op| op.after.is_some()).collect();
-            if !list.is_empty() {
+            if !list.is_empty() || step.tools.is_some() {
                 let mut message = unit
                     .messages
                     .iter()
@@ -226,6 +247,25 @@ impl Storage {
                         }
                     }
                 }
+                // 工具块**整份重写**（2026-11-26）：可以多一条、少一条、改名。
+                // 与块动作落在同一条消息、同一个事务里——分开写就会出现"正文改了、工具没改"的半批。
+                let tool_rows: Vec<(String, String, String)> = match &step.tools {
+                    Some(specs) => {
+                        let list: Vec<(String, String, String)> = specs
+                            .iter()
+                            .map(|spec| {
+                                (
+                                    spec.name.clone(),
+                                    spec.arguments.clone(),
+                                    spec.output.clone(),
+                                )
+                            })
+                            .collect();
+                        message.replace_tools(&list)
+                    }
+                    None => Vec::new(),
+                };
+
                 message.revision = message.revision.saturating_add(1);
                 message.tokens = message_tokens(&message);
 
@@ -294,6 +334,42 @@ impl Storage {
                     outcome.blocks.push(op.label.clone());
                 }
                 outcome.written += list.len();
+
+                // 工具清单的审计行：与块动作同一张表、同一条事务。
+                for (label, before, after) in &tool_rows {
+                    let row = PlannedOp {
+                        message: id.clone(),
+                        // 这一行只是账，`block` 用不到；标签由 `label` 决定。
+                        block: BlockSelector::Output,
+                        label: label.clone(),
+                        before: before.clone(),
+                        after: Some(after.clone()),
+                        before_hash: nmoi_core::edit::digest(before),
+                        after_hash: nmoi_core::edit::digest(after),
+                        red: false,
+                    };
+                    tx.execute(
+                        "INSERT INTO edits(id, conv_id, unit_id, message_id, block, before_hash,
+                                           after_hash, tokens_before, tokens_after, revision, at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        params![
+                            Uuid::now_v7().to_string(),
+                            session.to_string(),
+                            unit_id.to_string(),
+                            id.to_string(),
+                            row.label,
+                            row.before_hash,
+                            row.after_hash,
+                            tokens_before,
+                            message.tokens,
+                            message.revision,
+                            at,
+                        ],
+                    )?;
+                    write_undo(&tx, session, unit_id, &row, at)?;
+                    outcome.blocks.push(row.label.clone());
+                    outcome.written += 1;
+                }
             }
 
             // 4) 删块：把 part 从消息里摘掉（同一块只摘一次）。

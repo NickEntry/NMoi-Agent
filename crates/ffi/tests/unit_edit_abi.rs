@@ -259,3 +259,91 @@ fn turn_edit_refuses_the_same_message_twice() {
         "{applied}"
     );
 }
+
+/// `tools` 那一栏（2026-11-26）：工具块可以**增删改名**。
+///
+/// 这一条钉的是信封：`tools` 收进来、`ops` 可以缺席、写完库真的有两条。
+#[test]
+fn the_tool_list_can_be_replaced_through_the_envelope() {
+    let (handle, session, message, _dir) = seed();
+    let session_c = c(&session);
+    // 先给它一条工具块（库里原来只有正文）。
+    let first = c(&json!({
+        "message_id": message,
+        "tools": [{ "name": "System-Shell", "arguments": "{\"command\":\"ls\"}", "output": "a.txt" }]
+    })
+    .to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        first.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(true), "{applied}");
+    assert_eq!(applied["written"], json!(1), "{applied}");
+
+    // 再换成两条（加一条），`ops` 这一栏整个不给。
+    let second = c(&json!({
+        "message_id": message,
+        "tools": [
+            { "name": "System-Shell", "arguments": "{\"command\":\"ls\"}", "output": "a.txt" },
+            { "name": "Read-File", "arguments": "{\"path\":\"b.txt\"}", "output": "内容" }
+        ]
+    })
+    .to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        second.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(true), "{applied}");
+    assert_eq!(applied["written"], json!(1), "新增算一处：{applied}");
+
+    let units = take(nmoi_ffi::storage::nmoi_storage_load_units_json(
+        handle,
+        session_c.as_ptr(),
+        50,
+    ));
+    let text = units.to_string();
+    assert!(text.contains("Read-File"), "{text}");
+    assert!(text.contains("a.txt"), "第一条还在：{text}");
+}
+
+/// 参数不是 JSON 对象：当场拒，库不动（它会原样发给上游，坏了下一次请求 400）。
+#[test]
+fn a_tool_with_broken_arguments_is_refused() {
+    let (handle, _session, message, _dir) = seed();
+    let spec = c(&json!({
+        "message_id": message,
+        "tools": [{ "name": "System-Shell", "arguments": "不是 json", "output": "" }]
+    })
+    .to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        spec.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(false), "{applied}");
+    assert!(
+        applied["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("不是 JSON 对象"),
+        "{applied}"
+    );
+}
+
+/// 既没有 `ops` 也没有 `tools`：拒，别写一条空事务。
+#[test]
+fn an_edit_with_nothing_to_do_is_refused() {
+    let (handle, _session, message, _dir) = seed();
+    let spec = c(&json!({ "message_id": message }).to_string());
+    let applied = take(nmoi_ffi::storage::nmoi_storage_apply_unit_edits_json(
+        handle,
+        spec.as_ptr(),
+    ));
+    assert_eq!(applied["ok"], Value::Bool(false), "{applied}");
+    assert!(
+        applied["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("没有东西要改"),
+        "{applied}"
+    );
+}
