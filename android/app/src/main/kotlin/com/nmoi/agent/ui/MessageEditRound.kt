@@ -17,14 +17,24 @@ import org.json.JSONObject
  *
  * 这个文件不 import 任何 Android / Compose 类：单测要能在本机用 kotlinc + junit 跑。
  */
-internal fun turnAround(units: List<ChatUnit>, messageId: String): EditTurn? {
+
+/** 读出来的一轮：文档 + 每段对应哪条消息（按下标对齐，保存时按它写回）。 */
+internal data class LoadedTurn(
+    val turn: EditTurn,
+    val messageIds: List<String>,
+)
+
+internal fun turnAround(units: List<ChatUnit>, messageId: String): LoadedTurn? {
     val flat = units.flatMap { it.messages }
     val at = flat.indexOfFirst { it.id == messageId }
     if (at < 0) return null
     val target = flat[at]
     // 用户消息自成一段：改他那句话，不牵扯它引发的回答。
     if (target.isUser) {
-        return EditTurn(listOf(EditRound(target.id, buildEditDocument(target))))
+        return LoadedTurn(
+            turn = EditTurn(listOf(buildEditDocument(target))),
+            messageIds = listOf(target.id),
+        )
     }
     // 往前找这一轮的开头：最后一条用户消息之后的第一条。
     var start = at
@@ -32,11 +42,16 @@ internal fun turnAround(units: List<ChatUnit>, messageId: String): EditTurn? {
     val rounds = flat.subList(start, flat.size)
         .takeWhile { !it.isUser }
         .filter { it.content.isNotBlank() || it.reasoning != null || it.toolArgs.isNotEmpty() }
-        .map { EditRound(it.id, buildEditDocument(it)) }
     if (rounds.isEmpty()) {
-        return EditTurn(listOf(EditRound(target.id, buildEditDocument(target))))
+        return LoadedTurn(
+            turn = EditTurn(listOf(buildEditDocument(target))),
+            messageIds = listOf(target.id),
+        )
     }
-    return EditTurn(rounds)
+    return LoadedTurn(
+        turn = EditTurn(rounds.map { buildEditDocument(it) }),
+        messageIds = rounds.map { it.id },
+    )
 }
 
 /**
@@ -49,59 +64,38 @@ internal fun buildEditDocument(message: ChatMessage): EditDocument {
     val tools = message.toolArgs.mapIndexed { index, call ->
         EditToolBlock(
             index = index,
-            part = call.part.ifEmpty { null },
             name = call.name,
             input = call.arguments,
-            // 库里只有一份结果原文，先放在 stdout 这一栏；stderr 留空。
-            stdout = call.output,
-            stderr = null,
+            // 库里只有一份结果原文（D258），没有第二栏。
+            stdout = call.output.ifEmpty { null },
         )
     }
     return EditDocument(
-        // 纯工具那一轮没有正文：空正文会让序列化拒绝（"正文是空的"），
-        // 而它本来就是允许没有正文的（工具调用那一轮）。所以留一句占位，
-        // 让用户看见"这一段没有正文"而不是被挡住。
-        output = message.content.ifBlank { NO_OUTPUT_PLACEHOLDER },
-        thinking = message.reasoning,
+        // 纯工具那一轮本来就没有正文：空正文是允许的（只要它有工具块）。
+        output = message.content,
+        thinkings = listOfNotNull(message.reasoning?.takeIf { it.isNotEmpty() }),
         tools = tools,
     )
 }
-
-/** 纯工具那一轮的正文占位：它不是内容，保存时不能当成"用户写了一句这个"。 */
-internal const val NO_OUTPUT_PLACEHOLDER = "（这一段没有正文）"
 
 /**
  * 一块要写回去的动作。**纯数据**，不带 JSON：本机单测跑不了 `org.json`
  * （android.jar 里那是个 `Stub!`），而这一段的判据全在"哪几块真的变了"上，
  * 不该因为一个序列化库就跑不了测试。转 JSON 在 [MessageEditScreen] 那一层做。
  */
-internal sealed interface EditOp {
-    val block: String
-    val content: String
-
-    /** 按 part id 定位（工具块）：`{"block":"part","id":"p1","output":…}`。 */
-    data class OnPart(
-        val part: String,
-        override val content: String,
-        /** `true` = 改的是结果那一栏。 */
-        val output: Boolean,
-    ) : EditOp {
-        override val block: String get() = "part"
-    }
-
-    /** 按序号定位（老文档 / 正文 / 思考）：`{"block":"tool","index":0,…}`。 */
-    data class OnIndex(
-        override val block: String,
-        val index: Int,
-        override val content: String,
-    ) : EditOp
-}
+internal data class EditOp(
+    /** `output` / `thinking` / `tool` / `tool_result`。 */
+    val block: String,
+    /** `block=tool` / `tool_result` 时是第几个调用；其余给 0。 */
+    val index: Int,
+    val content: String,
+)
 
 /**
  * 两份文档之间**真的变了**的那几块。
  *
  * 这里抛 [EditDocException] 的三件事都是"界面上不该允许"的，必须说清而不是静默忽略：
- * 工具块增删（配对会断）、改工具名（决定这一块怎么解释）、把结果安到别的调用上。
+ * 工具块增删（配对会断）、改工具名（决定这一块怎么解释）、把正文删空。
  *
  * 只有真的变了的块才产生一条：没改的不该留下一条审计，也不该让"改了 3 处"
  * 跟实际写进去的对不上。
@@ -109,28 +103,31 @@ internal sealed interface EditOp {
 internal fun opsBetween(before: EditDocument, after: EditDocument): List<EditOp> {
     val ops = mutableListOf<EditOp>()
 
-    // 占位正文（纯工具那一轮）不算内容：用户没动它，就不该因为"空 vs 占位"写一条。
-    // 反过来，用户把占位行删掉也不该写一条"把正文设成空串"——core 会当成空壳拒掉。
-    val beforeText = before.output.takeIf { it != NO_OUTPUT_PLACEHOLDER } ?: ""
-    val afterText = after.output.takeIf { it != NO_OUTPUT_PLACEHOLDER } ?: ""
-    if (afterText != beforeText && afterText.isNotEmpty()) {
-        ops += EditOp.OnIndex(block = "output", index = 0, content = afterText)
+    // 思考块：库里只有一个字符串，多块按顺序接起来（[EditDocument.thinking]）。
+    // 整段删掉与清空内容都等于"删掉这一块"（D184），不必逼用户留一对空标签。
+    if (after.thinking != before.thinking) {
+        ops += EditOp(block = "thinking", index = 0, content = after.thinking.orEmpty())
     }
 
-    // 思考块：整段删掉与清空内容都等于"删掉这一块"（D184），不必逼用户留一对空标签。
-    if (after.thinking != before.thinking) {
-        ops += EditOp.OnIndex(
-            block = "thinking",
-            index = 0,
-            content = after.thinking.orEmpty(),
-        )
+    // 正文：空串在 core 那边等于"把这条消息变成空壳"，会被拒。
+    // 纯工具那一轮本来就没有正文，所以"空 → 空"不产生动作；"有 → 空"要说清楚。
+    if (after.output != before.output) {
+        if (after.output.isBlank() && before.output.isNotBlank()) {
+            throw EditDocException(
+                0,
+                "正文不能删空（删掉正文等于把这条消息变成空壳）：要换内容就直接改写这一段。",
+            )
+        }
+        if (after.output.isNotEmpty()) {
+            ops += EditOp(block = "output", index = 0, content = after.output)
+        }
     }
 
     if (after.tools.size != before.tools.size) {
         throw EditDocException(
             0,
             "工具块不能增删：这一条有 ${before.tools.size} 个工具调用，框里有 ${after.tools.size} 个。\n" +
-                "一条调用必须和它的结果按 call_id 配对，凭空多一条会让下一轮请求直接 400。",
+                "一条调用必须和它的结果配对，凭空多一条会让下一轮请求直接 400。",
         )
     }
 
@@ -142,21 +139,11 @@ internal fun opsBetween(before: EditDocument, after: EditDocument): List<EditOp>
                 "工具名不能改（第 ${index + 1} 个：${was.name} → ${tool.name}）：名字决定这一块怎么解释。",
             )
         }
-        // 有 part id 就按块定位（删一个调用不会让后面的块错位）；老文档退回序号轴。
-        val part = tool.part ?: was.part
         if (tool.input != was.input) {
-            ops += if (part != null) {
-                EditOp.OnPart(part = part, content = tool.input, output = false)
-            } else {
-                EditOp.OnIndex(block = "tool", index = index, content = tool.input)
-            }
+            ops += EditOp(block = "tool", index = index, content = tool.input)
         }
         if (tool.result() != was.result()) {
-            ops += if (part != null) {
-                EditOp.OnPart(part = part, content = tool.result(), output = true)
-            } else {
-                EditOp.OnIndex(block = "tool_result", index = index, content = tool.result())
-            }
+            ops += EditOp(block = "tool_result", index = index, content = tool.result())
         }
     }
     return ops
@@ -168,17 +155,8 @@ internal fun opsBetween(before: EditDocument, after: EditDocument): List<EditOp>
  * 放在这里（而不是 `MessageEditDoc`）是因为它要 `org.json`：那份文件是纯逻辑，
  * 本机单测要能编过。这一份只被界面调用，不参与本机单测。
  */
-internal fun EditOp.toJson(): JSONObject = when (this) {
-    is EditOp.OnPart -> JSONObject()
-        .put("action", "set")
-        .put("block", "part")
-        .put("id", part)
-        .apply { if (output) put("output", true) }
-        .put("content", content)
-
-    is EditOp.OnIndex -> JSONObject()
-        .put("action", "set")
-        .put("block", block)
-        .apply { if (block == "tool" || block == "tool_result") put("index", index) }
-        .put("content", content)
-}
+internal fun EditOp.toJson(): JSONObject = JSONObject()
+    .put("action", "set")
+    .put("block", block)
+    .apply { if (block == "tool" || block == "tool_result") put("index", index) }
+    .put("content", content)

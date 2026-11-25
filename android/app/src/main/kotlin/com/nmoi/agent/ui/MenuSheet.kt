@@ -67,11 +67,16 @@ internal fun MenuSheet(
     onHint: (String) -> Unit,
     onDismiss: () -> Unit,
     /**
-     * 紧凑档（消息「更多」那张）：行高 52 → 44，**字少的项两列并排**。
+     * 紧凑档（消息「更多」那张）：行高 52 → 44，**一律两列**。
      *
      * 为什么要这一档：消息那张有九到十项，52dp 一路排下去必然超出一屏，用户得滑一下
-     * 才看得到「删除这条消息」——而那一项是最该被一眼看见的。两列之后它进了五到六行。
-     * 别的面板（会话 / 助手 / 文件）项数没这么密，保持原样，免得一排两个长句子反而更难读。
+     * 才看得到「删除这条消息」——而那一项是最该被一眼看见的。两列之后它进了五行。
+     * 别的面板（会话 / 助手 / 文件）项数没这么密，保持原样——那几张里一排两个长句子
+     * 反而更难读，所以这是一个显式开关，不是全局新风格。
+     *
+     * 一律两列的前提是**标签短**：括号里的功能说明不写在这里（用户 2026-11-26
+     * 的原话是"功能说明都能写到文档里面"）。标签长了这一档就会截断，那时该改标签，
+     * 不是回头去猜"这一项算不算长"。
      */
     compact: Boolean = false,
 ) {
@@ -87,7 +92,7 @@ internal fun MenuSheet(
                     SheetRow(item = item, onHint = onHint, onDismiss = onDismiss)
                 }
             } else {
-                compactRows(items).forEach { row ->
+                items.chunked(2).forEach { row ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -95,47 +100,20 @@ internal fun MenuSheet(
                         row.forEach { item ->
                             CompactRow(
                                 item = item,
+                                // 两项时各占一半；**落单的那一项占满整行**——只占半格的话，
+                                // 右半边是空白却点不动，点了没反应会以为这一项坏了
+                                // （用户 2026-11-26 报的正是这个）。
                                 modifier = Modifier.weight(1f),
                                 onHint = onHint,
                                 onDismiss = onDismiss,
                             )
                         }
-                        // 单列那一行只占一格：补一个空权重，免得它自己撑满整行看起来像两列错位。
-                        if (row.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             }
         }
     }
 }
-
-/**
- * 两列排行的规则：**相邻的两项都短，才并排**。
- *
- * 判据只看"这一行念出来多长"（[shortEnough]），不看有没有图标——图标都是 18dp，
- * 不影响宽度。带 `value` / `trailing` 的项不并排：那两样一挤就被截掉，
- * 而它们恰好是"2/13"这种不能读错的数。
- */
-private fun compactRows(items: List<SheetItem>): List<List<SheetItem>> {
-    val rows = mutableListOf<List<SheetItem>>()
-    var index = 0
-    while (index < items.size) {
-        val item = items[index]
-        val next = items.getOrNull(index + 1)
-        if (next != null && shortEnough(item) && shortEnough(next)) {
-            rows += listOf(item, next)
-            index += 2
-        } else {
-            rows += listOf(item)
-            index += 1
-        }
-    }
-    return rows
-}
-
-/** 短到什么程度可以两列并排：8 个字以内（一个汉字按一个字算）。 */
-private fun shortEnough(item: SheetItem): Boolean =
-    item.value == null && item.trailing == null && item.label.length <= 8
 
 /**
  * 紧凑行：44dp、图标 18、正文 15。

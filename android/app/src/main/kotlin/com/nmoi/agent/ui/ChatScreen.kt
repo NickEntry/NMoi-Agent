@@ -989,34 +989,10 @@ internal fun ChatScreen(
         }
     }
 
-    // 「更多 → 复制为新版本」：**临时探针**。
-    // `turn_run` 还没接，重新生成产不出版本，而版本 UI 没有数据就没法验。
-    // 这条把当前正文再存一版，专门用来验 D137 那一套；接上 turn_run 就删掉它。
-    val saveVersionProbe: (ChatMessage) -> Unit = { message ->
-        scope.launch {
-            // **所见即所得**（D153）：复制的必须是屏幕上现在显示的那一份——
-            // 切在红就复制改后的，切在蓝就复制原文，他改过的字也要在。
-            // 所以源文本现读（`versions().shown`），不用列表快照。
-            val existing = ChatRepository.versions(databasePath, message.id).getOrNull()
-            val source = existing?.shown?.takeIf { it.isNotEmpty() } ?: message.content
-            // 这条消息还没有任何版本时，一次「复制」要落**两条**：
-            // 先把现在显示的正文落成第 1 版，再把复制品落成第 2 版。
-            // 只落一条的话 count=1，而界面按设计只在 count>1 时才显示 `n/n`——
-            // 于是"点一次没反应、点两次才出 2/2"（2026-10-26 报的正是这个）。
-            val needSeed = (existing?.count ?: 0) <= 0
-            if (needSeed) {
-                ChatRepository.saveVersion(databasePath, message.id, source)
-                    .onFailure { notice = "存版本失败：${it.message}" }
-            }
-            ChatRepository.saveVersion(databasePath, message.id, source).fold(
-                onSuccess = {
-                    reloadKey += 1
-                    notice = if (needSeed) "已复制为新版本（临时探针，两版）" else "已复制为新版本（临时探针）"
-                },
-                onFailure = { notice = "存版本失败：${it.message}" },
-            )
-        }
-    }
+    // 这里原来有一支「复制为新版本（临时探针）」：`turn_run` 没接之前用它给版本 UI 造数据。
+    // 2026-11-26 按用户要求删掉——菜单一行只放短标签，而且"临时"两个字不该出现在
+    // 用户每天点的菜单里。`ChatRepository.saveVersion` 还在（重试失败那条路用它留残文），
+    // 重新生成接上之后版本自然会有数据。
 
     val saveEdit: (ChatMessage, Long, String, String) -> Unit = { message, versionNo, text, before ->
         val trimmed = text.trim()
@@ -2557,7 +2533,7 @@ internal fun ChatScreen(
                         null
                     } else {
                         SheetItem(
-                            label = if (shown.isUser) "续话（让它回一条）" else "续话（接着往下写）",
+                            label = "续话",
                             icon = ActionIcons.ArrowRight,
                             onClick = { continueTurn(shown) },
                         )
@@ -2571,7 +2547,6 @@ internal fun ChatScreen(
                         selecting = true
                         selected = setOf(sheetMessage.id)
                     },
-                    onSaveVersion = { saveVersionProbe(sheetMessage) },
                     onEdit = {
                         // 版号与预填都取**面板确认过的那个**，不是列表里的：
                         // 这就是"编辑 2/2 却改到 1/2"和"看着改后、编辑框里是原文"的病根。
@@ -6077,7 +6052,6 @@ private fun messageSheetItems(
     continueItem: SheetItem? = null,
     onShare: () -> Unit,
     onSelectOnly: () -> Unit,
-    onSaveVersion: () -> Unit,
     onEdit: () -> Unit,
     onOpenEditor: () -> Unit,
     onDeleteThis: () -> Unit,
@@ -6093,8 +6067,10 @@ private fun messageSheetItems(
         ),
         // 重试 / 续话排在最前：它们是对这一条最常见的动作，也是仅有的两条会真的再发请求的。
         *listOfNotNull(retryItem, continueItem).toTypedArray(),
+        // 「编辑」是**这一版正文**的行内编辑（改的是当前显示的那一份）；
+        // 「编辑整条消息」是整页的块编辑器。两个都叫"编辑"分不出谁是谁，所以前一个写"正文"。
         SheetItem(
-            label = "编辑",
+            label = "编辑正文",
             icon = ActionIcons.Pencil,
             onClick = onEdit,
         ),
@@ -6102,14 +6078,14 @@ private fun messageSheetItems(
         // 模型改消息走工具调用（`edit_unit`，0.14y 叫 `edit_message`），不在这张表里。
         //
         // 「整条消息」这四个字是用户 2026-11-26 定的：一次编辑的范围就是**屏幕上那一个红框**
-        // （工具块 + 正文），不是框里那段正文。所以标签与页面标题都写"整条消息"，
-        // 别让"编辑消息"看起来像"编辑正文"的另一种叫法。
+        // （工具块 + 正文），不是框里那段正文。所以页头写清"整轮 N 条消息"，
+        // 别让"编辑整条消息"看起来像"编辑正文"的另一种叫法。
         //
         // 入口走 `onEditMessage`（MainActivity 那边 push `Route.MessageEdit`）。
         // 以前这里接的是旧的"问模型改"弹窗：那个入口在 0.14x 之后就没有意义了，
         // 而且它让整页编辑器**在真机上一个入口都没有**（2026-10-29 找出来的）。
         SheetItem(
-            label = "编辑整条消息（正文 / 思考 / 工具参数）",
+            label = "编辑整条消息",
             icon = ActionIcons.Wrench,
             onClick = onOpenEditor,
         ),
@@ -6122,13 +6098,6 @@ private fun messageSheetItems(
             label = "选择消息",
             icon = ActionIcons.Check,
             onClick = onSelectOnly,
-        ),
-        // 临时探针：`turn_run` 未接，重新生成产不出版本；
-        // 没有它，版本 UI 在真机上永远没有数据可看。接上 turn_run 就删掉这一项。
-        SheetItem(
-            label = "复制为新版本（临时探针）",
-            icon = ActionIcons.Copy,
-            onClick = onSaveVersion,
         ),
         SheetItem(
             label = "创建分支",
@@ -6146,10 +6115,10 @@ private fun messageSheetItems(
             onClick = onDeleteThis,
         )
     }
-    // 这一项删的是**整条消息**（正文一起没，D152）：所以只要有消息就给，不限版本数，
-    // 而且文案把"含所有版本"写出来——`hint` 面板不画，写在里面等于没写。
+    // 这一项删的是**整条消息**（正文连所有版本一起没，D152）：只要有消息就给，不限版本数。
+    // "含所有版本"这句不写在标签里（菜单一行只放短标签），确认卡里会写清删掉什么。
     items += SheetItem(
-        label = "删除这条消息（含所有版本）",
+        label = "删除这条消息",
         icon = ActionIcons.Trash2,
         onClick = onDeleteAll,
     )

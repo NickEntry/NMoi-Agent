@@ -1,18 +1,29 @@
 package com.nmoi.agent.ui
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 单框编辑器的解析器（0.15g / D179）。
+ * 单框编辑器的解析器（0.15g / D179；2026-11-26 去掉包装）。
  *
  * 这一层的判据只有一条：**用户手里的那段文本，能原样变成库里的几块，再原样回到文本**。
  * 凡是做不到的，必须报出行号——"格式不对"这四个字在这里等于没报。
+ *
+ * 2026-11-26 去掉的三样（都是为了少打字）：
+ * - 文件头尾 `[□{<nmoi-edit v="3">` / `</nmoi-edit>}□]`；
+ * - 消息 id（`<nmoi:message id="…">` 换成一行 `---`）；
+ * - 工具块的 `part="p1"` 与 `stderr` 那一栏。
  */
 class MessageEditDocTest {
+
+    private fun tool(
+        index: Int = 0,
+        name: String = "System-Shell",
+        input: String = """{"command":"ls"}""",
+        stdout: String? = "a.txt",
+    ) = EditToolBlock(index = index, name = name, input = input, stdout = stdout)
 
     private fun doc(
         output: String = "正文第一段\n\n第二段",
@@ -22,359 +33,220 @@ class MessageEditDocTest {
 
     @Test
     fun round_trip_keeps_every_block() {
-        val original = EditDocument(
-            output = "改过的正文",
-            thinking = "换个思路",
-            tools = listOf(
-                EditToolBlock(
-                    index = 0,
-                    name = "read_file",
-                    input = """{"path":"a.txt"}""",
-                    stdout = "文件内容",
-                    stderr = null,
+        val original = EditTurn(
+            listOf(
+                EditDocument(
+                    output = "改过的正文",
+                    thinkings = listOf("换个思路"),
+                    tools = listOf(tool(input = """{"path":"a.txt"}""", stdout = "文件内容")),
                 ),
             ),
         )
-        val text = serializeEditDocument(original)
-        val parsed = parseEditDocument(text)
-        assertEquals(original, parsed)
+        assertEquals(original, parseEditTurn(serializeEditTurn(original)))
     }
 
-    /** v2：工具块按 part id 定位，写出来的文档里带 `part="p3"`。 */
+    /** 正文不包标签：写出来的就是那几行字，一个 `<nmoi:output>` 都没有。 */
     @Test
-    fun tool_blocks_use_part_ids_in_v2() {
-        val original = EditDocument(
-            output = "正文",
-            thinking = null,
-            tools = listOf(
-                EditToolBlock(
-                    index = 0,
-                    part = "p3",
-                    name = "read_file",
-                    input = """{"path":"a.txt"}""",
-                    stdout = "文件内容",
-                    stderr = null,
-                ),
+    fun the_body_carries_no_tags() {
+        val text = serializeEditTurn(EditTurn(listOf(doc(output = "就这一行", thinking = null))))
+        assertEquals("就这一行\n", text)
+        assertTrue("不该有 output 标签", !text.contains("<nmoi:output>"))
+    }
+
+    /** 整份文档没有头尾：第一行就是内容，最后一行也是内容。 */
+    @Test
+    fun there_is_no_header_or_footer() {
+        val text = serializeEditTurn(EditTurn(listOf(doc(output = "正文", thinking = "想"))))
+        assertTrue(text, !text.contains("nmoi-edit"))
+        assertTrue(text, !text.contains("[□{"))
+        assertEquals(doc(output = "正文", thinking = "想"), parseEditTurn(text).docs.single())
+    }
+
+    /** 工具块：名字写在标签上，没有 `part=`，也没有 `stderr`。 */
+    @Test
+    fun a_tool_block_is_one_tag_plus_two_sections() {
+        val text = serializeEditTurn(
+            EditTurn(listOf(doc(output = "正文", thinking = null, tools = listOf(tool())))),
+        )
+        assertTrue(text, text.contains("""<nmoi:tool name="System-Shell">"""))
+        assertTrue(text, !text.contains("part="))
+        assertTrue(text, !text.contains("stderr"))
+        assertEquals(doc(output = "正文", thinking = null, tools = listOf(tool())), parseEditTurn(text).docs.single())
+    }
+
+    /** 两段之间一行 `---`：段数就是消息条数。 */
+    @Test
+    fun the_separator_splits_messages() {
+        val turn = EditTurn(
+            listOf(
+                doc(output = "第一条", thinking = null),
+                doc(output = "第二条", thinking = null),
             ),
         )
-        val text = serializeEditDocument(original)
-        assertTrue(text, text.contains("""<nmoi:tool part="p3">"""))
-        assertTrue(text, text.contains("""v="2""""))
-        assertEquals(original, parseEditDocument(text))
+        val text = serializeEditTurn(turn)
+        assertTrue(text, text.contains("---\n"))
+        assertEquals(2, parseEditTurn(text).docs.size)
+        assertEquals(turn, parseEditTurn(text))
     }
 
-    /** 旧文档（v1，按序号）还要能读：草稿里存的就是它。 */
+    /** 正文里出现 `---` **不是**分隔：只有独占一行的才算。 */
     @Test
-    fun v1_documents_still_parse() {
+    fun a_separator_inside_a_line_is_just_text() {
+        val text = "上面\n--- 这一行不是分隔\n下面\n"
+        val docs = parseEditTurn(text).docs
+        assertEquals(1, docs.size)
+        assertEquals("上面\n--- 这一行不是分隔\n下面", docs.single().output)
+    }
+
+    // ---------------------------------------------------------------------
+    // 思考块：想写几个写几个（2026-11-26 用户提的）
+    // ---------------------------------------------------------------------
+
+    /** 一条消息里两个思考块：解析出来是两块，序列化再写回两块。 */
+    @Test
+    fun two_thinking_blocks_are_allowed() {
         val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
+            <nmoi:thinking>
+            先想想
+            </nmoi:thinking>
+            <nmoi:thinking>
+            再想想
+            </nmoi:thinking>
             正文
-            </nmoi:output>
-            <nmoi:tool index="0">
-            <nmoi:name>read_file</nmoi:name>
-            <nmoi:input>{"path":"a"}</nmoi:input>
-            </nmoi:tool>
-            </nmoi-edit>}□]
         """.trimIndent()
-        val parsed = parseEditDocument(text)
-        assertEquals(1, parsed.tools.size)
-        assertNull(parsed.tools[0].part)
-        assertEquals(0, parsed.tools[0].index)
+        val doc = parseEditTurn(text).docs.single()
+        assertEquals(listOf("先想想", "再想想"), doc.thinkings)
+        assertEquals("正文", doc.output)
+        assertEquals(doc, parseEditTurn(serializeEditTurn(EditTurn(listOf(doc)))).docs.single())
     }
 
-    /** v2 文档里写 index 会删一个就全错位，直接拒。 */
+    /** 落库时接起来：空行分隔，一个字都不丢（库里 `reasoning` 只有一个字符串）。 */
     @Test
-    fun v2_document_refuses_index_tags() {
+    fun thinking_blocks_are_joined_on_save() {
+        val doc = EditDocument(output = "正文", thinkings = listOf("一", "二"), tools = emptyList())
+        assertEquals("一\n\n二", doc.thinking)
+    }
+
+    /** 全空 = 没有思考块（不是"空字符串"）。 */
+    @Test
+    fun empty_thinking_means_no_block() {
+        val doc = EditDocument(output = "正文", thinkings = listOf(""), tools = emptyList())
+        assertEquals(null, doc.thinking)
+    }
+
+    /** 空思考块也要写出来：写出来才看得见"删掉这一块"这个动作。 */
+    @Test
+    fun an_empty_thinking_block_survives_as_empty() {
+        val doc = EditDocument(output = "正文", thinkings = listOf(""), tools = emptyList())
+        val text = serializeEditTurn(EditTurn(listOf(doc)))
+        assertTrue(text, text.contains("<nmoi:thinking>\n\n</nmoi:thinking>"))
+        assertEquals(listOf(""), parseEditTurn(text).docs.single().thinkings)
+    }
+
+    // ---------------------------------------------------------------------
+    // 报错：带行号
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun an_unclosed_block_names_the_opening_line() {
         val text = """
-            [□{<nmoi-edit v="2">
-            <nmoi:output>
-            正文
-            </nmoi:output>
-            <nmoi:tool index="0">
-            <nmoi:name>read_file</nmoi:name>
-            <nmoi:input>{}</nmoi:input>
-            </nmoi:tool>
-            </nmoi-edit>}□]
+            <nmoi:thinking>
+            想
         """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
-        assertTrue(error.message, error.message.orEmpty().contains("part"))
-    }
-
-    @Test
-    fun round_trip_keeps_blank_lines_and_trailing_newline() {
-        // 正文尾随的空行是用户写的，不能因为"看起来多余"被 trim 掉。
-        val original = doc(output = "第一行\n\n\n最后一行\n", thinking = null)
-        val parsed = parseEditDocument(serializeEditDocument(original))
-        assertEquals(original.output, parsed.output)
-    }
-
-    @Test
-    fun thinking_absent_round_trips() {
-        val original = doc(thinking = null)
-        val text = serializeEditDocument(original)
-        assertTrue("没有思考块时不该写出 thinking 段", !text.contains("<nmoi:thinking>"))
-        assertNull(parseEditDocument(text).thinking)
-    }
-
-    @Test
-    fun empty_thinking_block_survives_as_empty_string() {
-        // 空串 ≠ 没有：空串是"这一块在，但内容为空"，落库时才算删掉。
-        val parsed = parseEditDocument(serializeEditDocument(doc(thinking = "")))
-        assertEquals("", parsed.thinking)
-    }
-
-    @Test
-    fun unknown_tag_reports_the_line() {
-        val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
-            正文
-            </nmoi:output>
-            <nmoi:note>
-            这是什么
-            </nmoi:note>
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
-        assertEquals(5, error.line)
-        assertTrue(error.reason.contains("不是能认的块开头"))
-    }
-
-    @Test
-    fun missing_close_names_the_opening_line() {
-        val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
-            正文
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
-        assertEquals(2, error.line)
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
+        assertEquals(1, error.line)
         assertTrue(error.reason.contains("没闭合"))
     }
 
     @Test
-    fun duplicate_output_is_rejected() {
+    fun an_unknown_tag_reports_the_line() {
         val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
-            一
-            </nmoi:output>
-            <nmoi:output>
-            二
-            </nmoi:output>
-            </nmoi-edit>}□]
+            正文
+            <nmoi:note>
+            这是什么
+            </nmoi:note>
         """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
-        assertEquals(5, error.line)
-        assertTrue(error.reason.contains("只能有一块"))
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
+        assertEquals(2, error.line)
+        assertTrue(error.reason.contains("不认"))
+    }
+
+    /** 连续两个 `---`：中间那一段是空的，说清楚是哪一段。 */
+    @Test
+    fun an_empty_segment_is_refused() {
+        val error = assertThrows(EditDocException::class.java) {
+            parseEditTurn("一\n---\n---\n二\n")
+        }
+        assertTrue(error.message, error.message.orEmpty().contains("这一段是空的"))
     }
 
     @Test
-    fun tool_index_must_be_continuous() {
+    fun an_empty_document_says_so() {
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn("   ") }
+        assertTrue(error.message, error.message.orEmpty().contains("文档是空的"))
+    }
+
+    /** 工具块没有名字：报开头那一行，别让它静默成"工具 #0"。 */
+    @Test
+    fun a_tool_block_without_a_name_is_refused() {
         val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
             正文
-            </nmoi:output>
-            <nmoi:tool index="1">
-            <nmoi:name>read_file</nmoi:name>
+            <nmoi:tool name="">
             <nmoi:input>{}</nmoi:input>
             </nmoi:tool>
-            </nmoi-edit>}□]
         """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
-        assertEquals(5, error.line)
-        assertTrue(error.reason.contains("要从 0 连续排"))
-    }
-
-    @Test
-    fun text_outside_blocks_is_rejected() {
-        val text = """
-            [□{<nmoi-edit v="1">
-            这句话在块外面
-            <nmoi:output>
-            正文
-            </nmoi:output>
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
         assertEquals(2, error.line)
+        assertTrue(error.reason.contains("没有名字"))
     }
+
+    /** 工具块没有参数：调用发不出去，当场拒。 */
+    @Test
+    fun a_tool_block_without_input_is_refused() {
+        val text = """
+            <nmoi:tool name="System-Shell">
+            </nmoi:tool>
+        """.trimIndent()
+        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
+        assertTrue(error.reason.contains("没有参数"))
+    }
+
+    // ---------------------------------------------------------------------
+    // 单行形：手写短块时很常见
+    // ---------------------------------------------------------------------
 
     @Test
-    fun empty_output_is_rejected() {
+    fun one_line_blocks_are_accepted() {
         val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
-            </nmoi:output>
-            </nmoi-edit>}□]
+            <nmoi:thinking>一行思考</nmoi:thinking>
+            一行正文
+            <nmoi:tool name="read_file">
+            <nmoi:input>{"path":"a.txt"}</nmoi:input>
+            <nmoi:stdout>结果</nmoi:stdout>
+            </nmoi:tool>
         """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditDocument(text) }
-        assertTrue(error.reason.contains("正文是空的"))
+        val doc = parseEditTurn(text).docs.single()
+        assertEquals("一行正文", doc.output)
+        assertEquals(listOf("一行思考"), doc.thinkings)
+        assertEquals("read_file", doc.tools.single().name)
+        assertEquals("结果", doc.tools.single().stdout)
     }
 
+    /** 生成一份自己都解析不回来的文档，等于把问题推给用户。 */
     @Test
     fun serialize_refuses_content_that_looks_like_a_tag() {
-        // 生成一份自己都解析不回来的文档，等于把问题推给用户。
         val error = assertThrows(EditDocException::class.java) {
-            serializeEditDocument(doc(output = "看到 </nmoi:output> 就结束了"))
+            serializeEditTurn(EditTurn(listOf(doc(output = "看到 </nmoi:thinking> 就结束了"))))
         }
         assertTrue(error.reason.contains("分块标记撞"))
     }
 
+    /** 纯工具那一轮：没有正文也合法（屏幕上只有工具卡）。 */
     @Test
-    fun tool_subsections_are_parsed_and_joined() {
-        val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>
-            正文
-            </nmoi:output>
-            <nmoi:tool index="0">
-            <nmoi:name>System-Shell</nmoi:name>
-            <nmoi:input>{"command":"uname -a"}</nmoi:input>
-            <nmoi:stdout>
-            Linux
-            </nmoi:stdout>
-            <nmoi:stderr>
-            warning: x
-            </nmoi:stderr>
-            </nmoi:tool>
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val parsed = parseEditDocument(text)
-        assertEquals(1, parsed.tools.size)
-        val tool = parsed.tools[0]
-        assertEquals("System-Shell", tool.name)
-        assertEquals("""{"command":"uname -a"}""", tool.input)
-        assertEquals("Linux", tool.stdout)
-        assertEquals("warning: x", tool.stderr)
-        assertEquals("Linux\nwarning: x", tool.result())
-    }
-
-    @Test
-    fun one_line_blocks_are_accepted() {
-        // 手写短块时几乎都会写成一行：`<nmoi:output>正文</nmoi:output>`。
-        // 要求"结束标签必须单独一行"会把这种写法直接判死——那是难用，不是严格。
-        val text = """
-            [□{<nmoi-edit v="1">
-            <nmoi:output>一行正文</nmoi:output>
-            <nmoi:thinking>一行思考</nmoi:thinking>
-            <nmoi:tool index="0">
-            <nmoi:name>read_file</nmoi:name>
-            <nmoi:input>{"path":"a.txt"}</nmoi:input>
-            <nmoi:stdout>结果</nmoi:stdout>
-            </nmoi:tool>
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val parsed = parseEditDocument(text)
-        assertEquals("一行正文", parsed.output)
-        assertEquals("一行思考", parsed.thinking)
-        assertEquals(1, parsed.tools.size)
-        assertEquals("read_file", parsed.tools[0].name)
-        assertEquals("结果", parsed.tools[0].stdout)
-    }
-
-    @Test
-    fun header_line_must_come_first() {
-        val error = assertThrows(EditDocException::class.java) {
-            parseEditDocument("<nmoi:output>\n正文\n</nmoi:output>")
-        }
-        assertTrue(error.reason.contains("开头必须是"))
-        assertEquals(1, error.line)
-    }
-
-    // -----------------------------------------------------------------------
-    // v3：一整轮（几条消息）—— 2026-11-26
-    // -----------------------------------------------------------------------
-
-    private fun round(id: String, output: String, tools: List<EditToolBlock> = emptyList()) =
-        EditRound(
-            messageId = id,
-            doc = EditDocument(output = output, thinking = null, tools = tools),
-        )
-
-    /** 两段消息来回一趟：id 与内容都还在，顺序不动。 */
-    @Test
-    fun turn_round_trips_two_messages() {
-        val turn = EditTurn(
-            listOf(
-                round(
-                    "s:2",
-                    "（这一段没有正文）",
-                    listOf(
-                        EditToolBlock(
-                            index = 0,
-                            part = "p1",
-                            name = "System-Shell",
-                            input = """{"command":"ls"}""",
-                            stdout = "a.txt",
-                            stderr = null,
-                        ),
-                    ),
-                ),
-                round("s:3", "跑完了"),
-            ),
-        )
-        val text = serializeEditTurn(turn)
-        assertTrue(text, text.contains("""v="3""""))
-        assertTrue(text, text.contains("""<nmoi:message id="s:2">"""))
-        assertTrue(text, text.contains("""<nmoi:message id="s:3">"""))
-        assertEquals(turn, parseEditTurn(text))
-    }
-
-    /** 段 id 是保存时的定位手段：两段同 id 必须拒（不然会写两遍同一条）。 */
-    @Test
-    fun duplicate_message_segments_are_refused() {
-        val text = """
-            [□{<nmoi-edit v="3">
-            <nmoi:message id="s:2">
-            <nmoi:output>一</nmoi:output>
-            </nmoi:message>
-            <nmoi:message id="s:2">
-            <nmoi:output>二</nmoi:output>
-            </nmoi:message>
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
-        assertTrue(error.message, error.message.orEmpty().contains("出现了两段"))
-    }
-
-    /** v3 里一段都没有（手抖删光了）：说清是"一段都没有"，不是"正文是空的"。 */
-    @Test
-    fun an_empty_turn_says_so() {
-        val text = """
-            [□{<nmoi-edit v="3">
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
-        assertTrue(error.message, error.message.orEmpty().contains("一段消息都没有"))
-    }
-
-    /** v3 里块外有字（多半是少写了一个结束标签）：带行号报出来。 */
-    @Test
-    fun text_between_segments_is_refused() {
-        val text = """
-            [□{<nmoi-edit v="3">
-            <nmoi:message id="s:2">
-            <nmoi:output>一</nmoi:output>
-            </nmoi:message>
-            这句话在段外面
-            </nmoi-edit>}□]
-        """.trimIndent()
-        val error = assertThrows(EditDocException::class.java) { parseEditTurn(text) }
-        assertEquals(5, error.line)
-        assertTrue(error.reason.contains("每一段都要以"))
-    }
-
-    /** 老形状（v1 / v2）读出来是"一条消息"，id 为空，由调用方补。 */
-    @Test
-    fun a_v2_document_is_a_single_segment() {
-        val text = serializeEditDocument(doc(thinking = null))
-        val turn = parseEditTurn(text)
-        assertEquals(1, turn.rounds.size)
-        assertEquals("", turn.rounds[0].messageId)
-        assertEquals(doc(thinking = null).output, turn.rounds[0].doc.output)
+    fun a_tool_only_message_has_no_body() {
+        val doc = EditDocument(output = "", thinkings = emptyList(), tools = listOf(tool()))
+        val text = serializeEditTurn(EditTurn(listOf(doc)))
+        assertTrue(text, text.startsWith("""<nmoi:tool name="System-Shell">"""))
+        assertEquals(doc, parseEditTurn(text).docs.single())
     }
 }

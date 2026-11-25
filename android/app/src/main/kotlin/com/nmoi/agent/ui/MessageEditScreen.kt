@@ -63,7 +63,7 @@ internal fun MessageEditScreen(
     val scope = rememberCoroutineScope()
 
     var loaded by remember(messageId) { mutableStateOf(false) }
-    var original by remember(messageId) { mutableStateOf<EditTurn?>(null) }
+    var original by remember(messageId) { mutableStateOf<LoadedTurn?>(null) }
     var text by remember(messageId) { mutableStateOf("") }
     var notice by remember(messageId) { mutableStateOf<String?>(null) }
     var noticeIsError by remember(messageId) { mutableStateOf(false) }
@@ -76,34 +76,35 @@ internal fun MessageEditScreen(
      * 框里到底有哪几块。写成一行"整轮 2 条消息：正文 · 思考 · 运行命令 #0 · 正文"，
      * 用户不用先往下翻才知道工具块也在里面（他 2026-11-26 的判据是"红框那一片"）。
      */
-    val scopeLine = original?.let { turn ->
-        val blocks = turn.rounds.flatMap { round ->
+    val scopeLine = original?.let { loadedTurn ->
+        val docs = loadedTurn.turn.docs
+        val blocks = docs.flatMap { doc ->
             buildList {
-                add("正文")
-                if (round.doc.thinking != null) add("思考")
-                round.doc.tools.forEachIndexed { index, tool ->
+                doc.thinkings.indices.forEach { add("思考 #${it + 1}") }
+                if (doc.output.isNotBlank()) add("正文")
+                doc.tools.forEachIndexed { index, tool ->
                     add("${tool.name.ifEmpty { "工具" }} #$index")
                 }
             }
         }
-        "整轮 ${turn.rounds.size} 条消息：${blocks.joinToString(" · ")}"
+        "整轮 ${docs.size} 条消息：${blocks.joinToString(" · ")}"
     }
 
     LaunchedEffect(messageId) {
         val snapshot = withContext(Dispatchers.IO) {
             ChatRepository.load(databasePath, sessionId, limit = 400)
         }
-        val turn = turnAround(snapshot.page?.units.orEmpty(), messageId)
-        if (turn == null) {
+        val loadedTurn = turnAround(snapshot.page?.units.orEmpty(), messageId)
+        if (loadedTurn == null) {
             loaded = true
             blocked = true
             notice = "读不到这条消息（${snapshot.note ?: "可能已经被删了"}）"
             noticeIsError = true
             return@LaunchedEffect
         }
-        original = turn
+        original = loadedTurn
         try {
-            text = serializeEditTurn(turn)
+            text = serializeEditTurn(loadedTurn.turn)
         } catch (error: EditDocException) {
             // 不假装成功：把原因写出来，并把按钮灰掉。放一份"半截文档"进去更糟——
             // 用户会以为这条消息本来就只剩这些。
@@ -124,11 +125,11 @@ internal fun MessageEditScreen(
             errorLine = error.line.takeIf { it > 0 }
             return
         }
-        // 段与库里那几条一一对应：段数变了就说不清"这一段的正文该写回哪一条"。
-        val beforeIds = before.rounds.map { it.messageId }
-        val afterIds = parsed.rounds.map { it.messageId }
-        if (beforeIds != afterIds) {
-            notice = "这一轮有 ${beforeIds.size} 条消息，框里是 ${afterIds.size} 段：" +
+        // 段与库里那几条按**下标**一一对应（段里不再写消息 id，省得正文里躺着 uuid）：
+        // 段数变了就说不清"这一段的正文该写回哪一条"。
+        val ids = before.messageIds
+        if (parsed.docs.size != ids.size) {
+            notice = "这一轮有 ${ids.size} 条消息，框里是 ${parsed.docs.size} 段：" +
                 "段不能增删（每段对应库里一条消息）。\n" +
                 "只改内容就好，别删掉整段或复制一段。"
             noticeIsError = true
@@ -138,12 +139,14 @@ internal fun MessageEditScreen(
 
         val edits = JSONArray()
         val failed = try {
-            before.rounds.zip(parsed.rounds).forEach { (was, now) ->
-                val ops = opsBetween(was.doc, now.doc)
+            before.turn.docs.zip(parsed.docs).forEachIndexed { position, (was, now) ->
+                val ops = opsBetween(was, now)
                 if (ops.isNotEmpty()) {
                     val array = JSONArray()
                     ops.forEach { array.put(it.toJson()) }
-                    edits.put(JSONObject().put("message_id", was.messageId).put("ops", array))
+                    edits.put(
+                        JSONObject().put("message_id", ids[position]).put("ops", array),
+                    )
                 }
             }
             null
