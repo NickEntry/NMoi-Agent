@@ -4920,3 +4920,32 @@ edit_unit             core=true  kotlin=false
 - 判据：ffi 侧 `tool_names_carry_the_workspace_flag_from_capabilities` 拿注册表自己再算一遍
   逐条对上（**先把它改成回空数组验过会红**）；Kotlin 侧 `ToolGroupsTest` 三条
   （缺列退化、工作区那批只出现在 workspaceOnly、陌生名字不丢）。
+
+## D420 浮层的遮罩只能有一层：交给窗口的 dim（2026-11-25 晚）
+
+用户 2026-11-25（原话）：「侧边栏拉出来是正常的，但是底部呼出的这个好像不太一样」
+「我的意思是底部呼出的这个弹窗界面，这个状态下的状态栏颜色和下面的对不上」。
+
+**真机上量出来的账**（浅色主题，窗口底色 `#F7F7FA`）：
+
+| 位置 | 实测 | 算式 |
+|---|---|---|
+| 状态栏那一条 | `#63`（99） | `247 × 0.4` —— 只被**系统那层 dim 0.6** 压了一次 |
+| 面板后面的页面 | `#43`（67） | `247 × 0.4 × 0.68` —— 系统 dim **再叠**自画的 0.32 |
+
+两层遮罩，一层盖到状态栏、一层没盖到，差值 32 级灰就是用户看到的"对不上"。
+
+- **抽屉为什么正常**：它不是 `Dialog`，遮罩画在 Activity 窗口里、同一个坐标系，整屏一起压。
+- **底部面板为什么不正常**：`Dialog` 是**另一个窗口**，它自带系统 dim；而面板里自画的那层
+  `Color.Black(0.32)` 只盖对话框内容区，对话框窗口的坐标从状态栏下面才开始。
+- 改法：`ui/OverlayWindow.kt` 把两者收口。浮层不再自画遮罩，只留一个**透明的点击区**；
+  浓度交给窗口的 `setDimAmount(0.32)`——那本来就是整屏的，状态栏与页面必然同色。
+  同一个函数里再设一次状态栏图标深浅（浮层是另一个窗口，系统按最上面那个窗口的请求画图标）。
+- 顺手统一：`SheetFrame`、抽屉的 `OverlayCardBox`、`ConfirmDialog`、供应商页 `OverlayCard`、
+  工具的 `ConfirmShellDialog` / `ConfirmEnvirShellDialog`、语音页两个、安全页三个、
+  `SendQueueSheet`、聊天页的 `EditVersionDialog` / `StopPromptDialog` / `RegenFailureDialog` /
+  `ConfirmDeleteDialog` —— 全部走同一份，`OVERLAY_SCRIM` 改一处全跟着变。
+  以前每个文件各写一遍 `0.32f`，语音/安全页甚至漂成了 0.55。
+- `ConfirmDialog` 这一类**从"就地铺"改成窗口**：以前它铺在页面容器里，遮罩只盖到容器；
+  现在和别的浮层同一个形制。代价是它自己也吃一层 dim（本来就是这样）。
+- 本机：kotlinc 全量只剩 9 条 `R`；Kotlin 单测 118；真机 **V181**。

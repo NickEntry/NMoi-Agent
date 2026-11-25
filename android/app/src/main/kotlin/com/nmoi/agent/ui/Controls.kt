@@ -721,50 +721,44 @@ internal fun ConfirmDialog(
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(onClick = onCancel),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = detail,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
+    // 这一层现在也是 `Dialog`（D420）：它以前就地铺在页面里，遮罩只盖到页面容器，
+    // 而且从侧边栏里调用时宽度被父布局卡住。窗口化之后遮罩与别的浮层一致。
+    OverlayWindow(onDismiss = onCancel, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ChipButton(label = "取消", primary = false, onClick = onCancel)
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.clickable(onClick = onConfirm),
                     ) {
-                        ChipButton(label = "取消", primary = false, onClick = onCancel)
-                        Spacer(Modifier.width(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.clickable(onClick = onConfirm),
-                        ) {
-                            Text(
-                                text = confirmLabel,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onError,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-                            )
-                        }
+                        Text(
+                            text = confirmLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onError,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                        )
                     }
                 }
             }

@@ -25,7 +25,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -55,18 +54,9 @@ internal fun SendQueueSheet(
     val items = remember(tick, sessionId) { SendQueue.items(sessionId) }
     val blocked = remember(tick, sessionId) { SendQueue.isBlocked(sessionId) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // 遮罩：点它关掉这一层（和别处的面板一致，0.32 的黑）。
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClose,
-                ),
-        )
+    // 遮罩交给窗口的 dim（D420）：自己再画一层会跟系统那层叠起来，
+    // 而系统那层盖整屏、自己画的只到内容区，状态栏与页面就差了半档。
+    OverlayWindow(onDismiss = onClose, contentAlignment = Alignment.BottomCenter) {
         Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
             Surface(
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),

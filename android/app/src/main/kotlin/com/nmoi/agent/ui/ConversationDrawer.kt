@@ -1119,29 +1119,15 @@ private fun ConfirmSheet(
 private fun OverlayCardBox(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     // 与 `SheetFrame` 同一个理由（D413 / D416）：就地铺一层的话宽度跟着父布局走，
     // 从侧边栏里长出来的确认卡会被卡在侧边栏那么宽。`Dialog` 以窗口为基准。
-    androidx.compose.ui.window.Dialog(
-        onDismissRequest = onDismiss,
-        properties = androidx.compose.ui.window.DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-        ),
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f))
-                    .clickable(onClick = onDismiss),
-            )
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) { content() }
-                }
-            }
+    // 遮罩同样交给窗口的 dim（D420）：自己再画一层会跟系统的叠起来，
+    // 而系统那层盖整屏、自己画的只到内容区——状态栏与页面就差了半档。
+    OverlayWindow(onDismiss = onDismiss, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) { content() }
         }
     }
 }

@@ -27,7 +27,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -309,31 +308,23 @@ internal fun VoiceScreen(onBack: () -> Unit) {
     }
 
     notice?.let { text ->
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f))
-                    .clickable { notice = null },
-            )
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = text,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                            horizontalArrangement = Arrangement.End,
-                        ) {
-                            ChipButton("知道了", primary = true) { notice = null }
-                        }
+        OverlayWindow(onDismiss = { notice = null }, contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        ChipButton("知道了", primary = true) { notice = null }
                     }
                 }
             }
@@ -354,45 +345,37 @@ internal fun VoiceScreen(onBack: () -> Unit) {
 
     confirmDelete?.let { id ->
         val bank = banks.firstOrNull { it.id == id }
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f))
-                    .clickable { confirmDelete = null },
-            )
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "删掉「${bank?.name ?: id}」？",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "会删掉这个声库的 ${if (bank != null) mb(bank.bytes) else "全部文件"}，" +
-                                "已经渲染出来的音频不受影响。要再用就重新装一次。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                            horizontalArrangement = Arrangement.End,
-                        ) {
-                            ChipButton("取消", primary = false) { confirmDelete = null }
-                            Spacer(Modifier.size(8.dp))
-                            ChipButton("删除", primary = true) {
-                                VoiceBankRepository.uninstall(context, id).onFailure {
-                                    notice = it.message
-                                }
-                                confirmDelete = null
-                                refresh()
+        OverlayWindow(onDismiss = { confirmDelete = null }, contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "删掉「${bank?.name ?: id}」？",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "会删掉这个声库的 ${if (bank != null) mb(bank.bytes) else "全部文件"}，" +
+                            "已经渲染出来的音频不受影响。要再用就重新装一次。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        ChipButton("取消", primary = false) { confirmDelete = null }
+                        Spacer(Modifier.size(8.dp))
+                        ChipButton("删除", primary = true) {
+                            VoiceBankRepository.uninstall(context, id).onFailure {
+                                notice = it.message
                             }
+                            confirmDelete = null
+                            refresh()
                         }
                     }
                 }

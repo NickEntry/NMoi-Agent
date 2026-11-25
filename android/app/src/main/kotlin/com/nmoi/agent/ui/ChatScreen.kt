@@ -4541,56 +4541,44 @@ private fun AssistantHeader(createdAt: Long) {
 @Composable
 private fun EditVersionDialog(initial: String, onCancel: () -> Unit, onSave: (String) -> Unit) {
     var text by remember(initial) { mutableStateOf(initial) }
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onCancel,
-                ),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "编辑这一版",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
+    OverlayWindow(onDismiss = onCancel, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "编辑这一版",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "改的是现在显示的那一组（原文 / AI 改后各存一份，互不覆盖）；颜色不变。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                ) {
+                    NativeEditText(
+                        value = text,
+                        onValueChange = { text = it },
+                        hint = "编辑后的正文",
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    Text(
-                        text = "改的是现在显示的那一组（原文 / AI 改后各存一份，互不覆盖）；颜色不变。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                    ) {
-                        NativeEditText(
-                            value = text,
-                            onValueChange = { text = it },
-                            hint = "编辑后的正文",
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        DialogAction(label = "取消", primary = false, onClick = onCancel)
-                        Spacer(Modifier.width(8.dp))
-                        DialogAction(label = "保存", primary = true, onClick = { onSave(text) })
-                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DialogAction(label = "取消", primary = false, onClick = onCancel)
+                    Spacer(Modifier.width(8.dp))
+                    DialogAction(label = "保存", primary = true, onClick = { onSave(text) })
                 }
             }
         }
@@ -4680,68 +4668,61 @@ private fun StopPromptDialog(
     onKeepBoth: () -> Unit,
 ) {
     var mode by remember(stopped) { mutableStateOf(KeepMode.Previous) }
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f)),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "已停止",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "你按了停止，这一轮写到一半就收了尾。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Text(
-                        text = "这一版已经存进库里（正文 ${stopped.length} 字，工具与思考也一起），上一版还在。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    KeepChoice(
-                        title = "保留上一版",
-                        note = "回到停止之前那一版，这次写到的内容不留。",
-                        selected = mode == KeepMode.Previous,
-                        enabled = true,
-                        onPick = { mode = KeepMode.Previous },
-                    )
-                    KeepChoice(
-                        title = "保留这一版",
-                        note = "只留这次写到的（${stopped.length} 字正文，工具与思考也在里面），上一版删掉。",
-                        selected = mode == KeepMode.This,
-                        enabled = true,
-                        onPick = { mode = KeepMode.This },
-                    )
-                    KeepChoice(
-                        title = "都保留",
-                        note = "两版都留着，当前显示这一版，可以切回上一版。",
-                        selected = mode == KeepMode.Both,
-                        enabled = true,
-                        onPick = { mode = KeepMode.Both },
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        DialogAction(label = "确定", primary = true) {
-                            when (mode) {
-                                KeepMode.Previous -> onKeepPrevious()
-                                KeepMode.This -> onKeepThis()
-                                KeepMode.Both -> onKeepBoth()
-                            }
+    OverlayWindow(onDismiss = null, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "已停止",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "你按了停止，这一轮写到一半就收了尾。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Text(
+                    text = "这一版已经存进库里（正文 ${stopped.length} 字，工具与思考也一起），上一版还在。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Spacer(Modifier.height(10.dp))
+                KeepChoice(
+                    title = "保留上一版",
+                    note = "回到停止之前那一版，这次写到的内容不留。",
+                    selected = mode == KeepMode.Previous,
+                    enabled = true,
+                    onPick = { mode = KeepMode.Previous },
+                )
+                KeepChoice(
+                    title = "保留这一版",
+                    note = "只留这次写到的（${stopped.length} 字正文，工具与思考也在里面），上一版删掉。",
+                    selected = mode == KeepMode.This,
+                    enabled = true,
+                    onPick = { mode = KeepMode.This },
+                )
+                KeepChoice(
+                    title = "都保留",
+                    note = "两版都留着，当前显示这一版，可以切回上一版。",
+                    selected = mode == KeepMode.Both,
+                    enabled = true,
+                    onPick = { mode = KeepMode.Both },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    DialogAction(label = "确定", primary = true) {
+                        when (mode) {
+                            KeepMode.Previous -> onKeepPrevious()
+                            KeepMode.This -> onKeepThis()
+                            KeepMode.Both -> onKeepBoth()
                         }
                     }
                 }
@@ -4769,81 +4750,73 @@ private fun RegenFailureDialog(
 ) {
     val empty = failure.text.isBlank()
     var mode by remember(failure) { mutableStateOf(KeepMode.Previous) }
-    Box(modifier = Modifier.fillMaxSize()) {
-        // 遮罩不吃点击：这一层没有"点外面取消"（必须处理）。
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f)),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "重试失败",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = failure.reason,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Text(
-                        text = if (empty) {
-                            "这一轮一个字都没收到。"
-                        } else {
-                            "这一轮收到了 ${failure.text.length} 字，还没存进库里。"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    KeepChoice(
-                        title = "保留上一版",
-                        note = "回到重试之前那一版，这次收到的内容不留。",
-                        selected = mode == KeepMode.Previous,
-                        enabled = true,
-                        onPick = { mode = KeepMode.Previous },
-                    )
-                    KeepChoice(
-                        title = "保留这一版",
-                        note = if (empty) {
-                            "这一版是空的"
-                        } else {
-                            "把这次收到的 ${failure.text.length} 字存成一版，删掉上一版。"
-                        },
-                        selected = mode == KeepMode.This,
-                        enabled = !empty,
-                        onPick = { mode = KeepMode.This },
-                    )
-                    KeepChoice(
-                        title = "都保留",
-                        note = if (empty) {
-                            "这一版是空的"
-                        } else {
-                            "两版都留着，当前显示这一版，可以切回上一版。"
-                        },
-                        selected = mode == KeepMode.Both,
-                        enabled = !empty,
-                        onPick = { mode = KeepMode.Both },
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        DialogAction(label = "确定", primary = true) {
-                            when (mode) {
-                                KeepMode.Previous -> onKeepPrevious()
-                                KeepMode.This -> onKeepThis()
-                                KeepMode.Both -> onKeepBoth()
-                            }
+    OverlayWindow(onDismiss = null, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "重试失败",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = failure.reason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Text(
+                    text = if (empty) {
+                        "这一轮一个字都没收到。"
+                    } else {
+                        "这一轮收到了 ${failure.text.length} 字，还没存进库里。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Spacer(Modifier.height(10.dp))
+                KeepChoice(
+                    title = "保留上一版",
+                    note = "回到重试之前那一版，这次收到的内容不留。",
+                    selected = mode == KeepMode.Previous,
+                    enabled = true,
+                    onPick = { mode = KeepMode.Previous },
+                )
+                KeepChoice(
+                    title = "保留这一版",
+                    note = if (empty) {
+                        "这一版是空的"
+                    } else {
+                        "把这次收到的 ${failure.text.length} 字存成一版，删掉上一版。"
+                    },
+                    selected = mode == KeepMode.This,
+                    enabled = !empty,
+                    onPick = { mode = KeepMode.This },
+                )
+                KeepChoice(
+                    title = "都保留",
+                    note = if (empty) {
+                        "这一版是空的"
+                    } else {
+                        "两版都留着，当前显示这一版，可以切回上一版。"
+                    },
+                    selected = mode == KeepMode.Both,
+                    enabled = !empty,
+                    onPick = { mode = KeepMode.Both },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    DialogAction(label = "确定", primary = true) {
+                        when (mode) {
+                            KeepMode.Previous -> onKeepPrevious()
+                            KeepMode.This -> onKeepThis()
+                            KeepMode.Both -> onKeepBoth()
                         }
                     }
                 }
@@ -4930,61 +4903,48 @@ private fun ConfirmDeleteDialog(
     versionCount: Int,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onCancel,
-                ),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+) {    OverlayWindow(onDismiss = onCancel, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "删除这条消息？",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = if (versionCount > 1) {
+                        "正文、全部 $versionCount 个版本，以及它的工具往返一起删掉，收不回来。"
+                    } else {
+                        "正文、版本记录，以及它的工具往返一起删掉，收不回来。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                if (preview.isNotBlank()) {
                     Text(
-                        text = "删除这条消息？",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = if (versionCount > 1) {
-                            "正文、全部 $versionCount 个版本，以及它的工具往返一起删掉，收不回来。"
-                        } else {
-                            "正文、版本记录，以及它的工具往返一起删掉，收不回来。"
+                        text = preview.trim().take(80).let {
+                            if (preview.trim().length > 80) "$it…" else it
                         },
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
                     )
-                    if (preview.isNotBlank()) {
-                        Text(
-                            text = preview.trim().take(80).let {
-                                if (preview.trim().length > 80) "$it…" else it
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 10.dp),
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        DialogAction(label = "取消", primary = false, onClick = onCancel)
-                        Spacer(Modifier.width(8.dp))
-                        DialogAction(label = "删除", primary = false, danger = true, onClick = onConfirm)
-                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DialogAction(label = "取消", primary = false, onClick = onCancel)
+                    Spacer(Modifier.width(8.dp))
+                    DialogAction(label = "删除", primary = false, danger = true, onClick = onConfirm)
                 }
             }
         }

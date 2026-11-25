@@ -2566,25 +2566,15 @@ private fun ConfirmProviderDelete(
 /** 居中的自绘卡片（不用系统 `AlertDialog`：那套在这两套主题下都对不齐）。 */
 @Composable
 private fun OverlayCard(onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss,
-                ),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) { content() }
-            }
+    // 遮罩交给窗口的 dim（D420）：自己再画一层会跟系统那层叠起来，
+    // 而系统那层盖整屏、自己画的只到内容区，状态栏与页面就差了半档。
+    OverlayWindow(onDismiss = onDismiss, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) { content() }
         }
     }
 }

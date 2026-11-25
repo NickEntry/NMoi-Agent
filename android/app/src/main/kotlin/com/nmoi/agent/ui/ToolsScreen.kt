@@ -27,7 +27,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -366,40 +365,33 @@ private fun ToolSwitchRow(
 /** 打开原生命令前的确认。**红色实心**留给"收不回来的删除"，这里用主色就够。 */
 @Composable
 private fun ConfirmShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(onClick = onCancel),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "允许模型跑原生命令？",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "命令跑在这个 App 的身份下：工作区以外、只要 App 有权限的地方它也能碰。" +
-                            "删目录、改系统设置这类事收不回来。你随时可以在这一页关掉。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        DialogChip("取消", onClick = onCancel)
-                        Spacer(Modifier.size(8.dp))
-                        DialogChip("打开", primary = true, onClick = onConfirm)
-                    }
+    // 遮罩交给窗口的 dim（D420），自己不画：两层叠起来状态栏与页面会差一档。
+    OverlayWindow(onDismiss = onCancel, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "允许模型跑原生命令？",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "命令跑在这个 App 的身份下：工作区以外、只要 App 有权限的地方它也能碰。" +
+                        "删目录、改系统设置这类事收不回来。你随时可以在这一页关掉。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    DialogChip("取消", onClick = onCancel)
+                    Spacer(Modifier.size(8.dp))
+                    DialogChip("打开", primary = true, onClick = onConfirm)
                 }
             }
         }
@@ -410,40 +402,32 @@ private fun ConfirmShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
  *  容器里动什么都不影响手机，共享的只有工作区。 */
 @Composable
 private fun ConfirmEnvirShellDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(onClick = onCancel),
-        )
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "允许模型在容器里跑命令？",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "命令跑在容器里的 Ubuntu 里：装包、改容器的 /、删容器里的东西都只影响那份 rootfs。" +
-                            "**工作区在容器里是 /chat**——在里面 rm 掉的东西，手机上也没了（新会话各有自己的 /chat，老会话是那个共享目录）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        DialogChip("取消", onClick = onCancel)
-                        Spacer(Modifier.size(8.dp))
-                        DialogChip("打开", primary = true, onClick = onConfirm)
-                    }
+    OverlayWindow(onDismiss = onCancel, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "允许模型在容器里跑命令？",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "容器是一个隔离的 rootfs：里面动的文件不影响手机，共享的只有这个工作区。" +
+                        "第一次跑要装环境，可能要几分钟。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    DialogChip("取消", onClick = onCancel)
+                    Spacer(Modifier.size(8.dp))
+                    DialogChip("打开", primary = true, onClick = onConfirm)
                 }
             }
         }

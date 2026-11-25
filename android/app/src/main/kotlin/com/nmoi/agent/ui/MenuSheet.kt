@@ -33,7 +33,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
@@ -109,27 +108,13 @@ internal fun SheetFrame(
     // 就地铺的话，宽度跟着父布局走：侧边栏里长出来的面板会被卡在侧边栏那么宽
     // （截图里那个"重命名 / 详细信息 / 置顶…"的菜单只有半屏）。
     // `Dialog` 以**窗口**为基准，所以无论从哪儿调用都是整屏宽，遮罩也盖住整屏。
-    // `usePlatformDefaultWidth = false` 是必须的：默认它会给窗口留一圈边距。
-    androidx.compose.ui.window.Dialog(
-        onDismissRequest = onDismiss,
-        properties = androidx.compose.ui.window.DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-        ),
+    //
+    // 遮罩交给窗口的 dim，不再自己画（D420）：自己画的那层只盖对话框内容区，
+    // 系统那层盖整屏，两层叠起来状态栏与页面差一截——用户看到的就是"对不上"。
+    OverlayWindow(
+        onDismiss = onDismiss,
+        contentAlignment = Alignment.BottomCenter,
     ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        // 遮罩：比抽屉那层淡，面板本身是"临时的一层"，不该看着像换了页面。
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.32f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss,
-                ),
-        )
-
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -169,7 +154,6 @@ internal fun SheetFrame(
                 }
             }
         }
-    }
     }
 }
 
