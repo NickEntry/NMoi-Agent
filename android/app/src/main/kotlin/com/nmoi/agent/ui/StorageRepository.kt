@@ -131,20 +131,59 @@ internal object StorageRepository {
     /**
      * 删掉一组文件（多选删除）。**返回真的删掉了几个**。
      *
+     * # 图片与文件这两项必须连库里的行一起删
+     *
+     * 它们是 `attachments` 表里的记录。只删盘上那份，库里会留下一行指向不存在文件的
+     * 附件——消息气泡上那块芯片还在，点开什么都没有。那正是铁律②要挡的
+     * "库里每样东西都要能在界面上指出来"被反过来破坏的样子。
+     *
+     * 所以这两项走 `delete_attachment`（行与文件一起删）；表里查不到的那份是孤儿文件
+     * （写库与落盘之间断过），直接删盘上的就行。
+     *
      * 不删目录：目录里的文件由调用方逐个传进来。这样"删了一半"是可数的，
      * 而不是一句"删掉了 3 个目录"然后盘上还留着空壳。
      */
-    suspend fun delete(context: Context, relatives: List<String>): Result<Int> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                var removed = 0
-                for (relative in relatives) {
-                    val file = absolute(context, relative) ?: continue
-                    // 库文件不在这里拦：`kindOf` 已经把 `nmoi.db` 归到「聊天记录」，
-                    // 而那一项在界面上不给删除按钮。这里再加一道会掩盖界面上的错。
-                    if (file.isFile && file.delete()) removed += 1
-                }
-                removed
+    suspend fun delete(
+        context: Context,
+        kind: StorageKind,
+        relatives: List<String>,
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (kind == StorageKind.Images || kind == StorageKind.Files) {
+                return@runCatching deleteWithLibrary(context, relatives)
+            }
+            var removed = 0
+            for (relative in relatives) {
+                val file = absolute(context, relative) ?: continue
+                // 库文件不在这里拦：`kindOf` 已经把 `nmoi.db` 归到「聊天记录」，
+                // 而那一项在界面上不给删除按钮。这里再加一道会掩盖界面上的错。
+                if (file.isFile && file.delete()) removed += 1
+            }
+            removed
+        }
+    }
+
+    /** 图 Attachments 表里那条记录走 `delete_attachment`；查不到就按孤儿文件删。 */
+    private suspend fun deleteWithLibrary(
+        context: Context,
+        relatives: List<String>,
+    ): Int {
+        val databasePath = ProviderRepository.databasePath(context)
+        val byPath = AttachmentStore.listAll(databasePath).getOrElse {
+            // 读不到库时**不猜**：按孤儿文件删会把"有记录的附件"删成孤儿。
+            error("读不到附件清单，删不了（${it.message}）")
+        }.mapNotNull { row -> row.path?.let { path -> path to row.id } }.toMap()
+
+        var removed = 0
+        for (relative in relatives) {
+            val file = absolute(context, relative) ?: continue
+            val id = byPath[file.absolutePath]
+            if (id != null) {
+                if (AttachmentStore.delete(databasePath, id).getOrDefault(false)) removed += 1
+            } else if (file.isFile && file.delete()) {
+                removed += 1
             }
         }
+        return removed
+    }
 }

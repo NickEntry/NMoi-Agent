@@ -327,7 +327,7 @@ internal fun StorageDetailScreen(
                     confirmDelete = emptyList()
                     scope.launch {
                         val removed = withContext(Dispatchers.IO) {
-                            StorageRepository.delete(context, targets)
+                            StorageRepository.delete(context, kind, targets)
                         }
                         notice = removed.fold(
                             onSuccess = { count -> "已删掉 $count 个文件" },
