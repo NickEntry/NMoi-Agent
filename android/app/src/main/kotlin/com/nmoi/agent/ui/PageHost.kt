@@ -143,19 +143,22 @@ internal fun PageHost(
     // **输入法要一起并进来**：edge-to-edge 之后窗口不再为键盘缩小，
     // 只留 `systemBarsPadding` 的话，键盘弹起时输入框就压在键盘底下——
     // 敲字的时候看不见自己敲的是什么。取并集（不是相加）：键盘开着时它自己就含了导航栏那一段。
+    val pageInsets = Modifier.windowInsetsPadding(
+        WindowInsets.systemBars.union(WindowInsets.ime),
+    )
     val probe = Modifier
         .fillMaxSize()
-        .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
+        .then(pageInsets)
         .onGloballyPositioned { laidOut = true }
 
+    // 外框铺页面底色（两套分支都要）：`pageInsets` 让开之后，那一圈由这一层盖住——
+    // 不然会透出窗口底色。**预渲染那一支以前没有这一层**，于是非聊天页（设置、供应商…）
+    // 只要从抽屉里进来，状态栏那一条露的就是抽屉的白 + 遮罩的灰：用户看到的是
+    // "设置页的状态栏还是主页那一条"（D421）。
+    val frame = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+
     if (!preview) {
-        // 外框铺页面底色：`probe` 让开状态栏之后，那一圈由这一层盖住——
-        // 不然会透出窗口底色，深色主题下看着像"状态栏比页面亮一截"。
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-        ) {
+        Box(modifier = frame) {
             key(pageKey, attempt) {
                 Box(modifier = probe) {
                     content()
@@ -206,7 +209,7 @@ internal fun PageHost(
         gaveUp = true
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = frame) {
         // 位置 0：当前页。窗口里透明、被旧页盖住。
         Box(modifier = Modifier.fillMaxSize().alpha(if (pending) 0f else 1f)) {
             key(pageKey, attempt) {
@@ -216,9 +219,14 @@ internal fun PageHost(
             }
         }
         // 位置 1：旧页，压在上面（后画的在上层）——输入归它。
+        //
+        // **旧页也要让开 insets**（D421）：以前这里是裸的 `fillMaxSize()`，
+        // 于是切页的头两帧里，旧页的内容（标题栏那一条）会被顶到状态栏下面去，
+        // 下一帧新页带着边距出现、它就"往下跳"一下——用户看到的是
+        // "刚打开的时候上面没有边距，标题在上面显示了一帧才往下移"。
         if (pending) {
             key(shownKey) {
-                Box(modifier = Modifier.fillMaxSize()) { shownContent() }
+                Box(modifier = Modifier.fillMaxSize().then(pageInsets)) { shownContent() }
             }
         }
         // 切换已经发生、数据还没到：一块与背景同色的板 + 一个小圈，盖住页面的

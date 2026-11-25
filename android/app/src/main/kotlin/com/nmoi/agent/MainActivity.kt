@@ -237,23 +237,28 @@ class MainActivity : ComponentActivity() {
             // 抽屉挂在最外层：任何页面都能滑出来，而不是只有聊天页有。
             // 声明在这里（而不是更下面）：状态栏压暗要读它。
             var drawerOpen by remember { mutableStateOf(false) }
+            // 路由栈：返回 = 回上一级。子页面以后（模型详情、世界书编辑…）同样只需 push，
+            // 不用每页各写一个返回逻辑。根是聊天页，它不接管返回键。
+            var backStack by remember {
+                mutableStateOf(listOf<Route>(Route.Chat(NEW_CHAT_TITLE, null)))
+            }
+            val route = backStack.last()
+            // 抽屉只在**聊天页**真正看得见：别的路由压在它上面（`contentAboveDrawer`），
+            // 那半屏的白跟遮罩都被盖住了。所以状态栏的取色只在聊天页跟着抽屉走（D421）——
+            // 以前不分路由，只要抽屉还开着（从抽屉进设置页时它不收回），
+            // 设置页的状态栏就还按抽屉的白算，跟页面对不上。
+            val drawerVisible = drawerOpen && route is Route.Chat
             // 状态栏那一块（D416）：edge-to-edge 之后它是应用自己画的。
             // 抽屉开着时左边那半是抽屉的白，所以图标要按"白底用深色图标"来定——
             // 这就是之前"状态栏和背景不适合"的根源：那时按主题算，浅色主题下拉出抽屉，
             // 底色暗了图标还是深色。
             SystemBarsForTheme(
                 dark = dark,
-                dim = if (drawerOpen) 0.60f else 0f,
+                dim = if (drawerVisible) 0.60f else 0f,
                 // 抽屉宽 300dp 上下，屏幕普遍 390dp 宽 → 覆盖过半，按抽屉底色算。
-                drawerCoverage = if (drawerOpen) 1f else 0f,
+                drawerCoverage = if (drawerVisible) 1f else 0f,
             )
             NMoiTheme(dark = dark) {
-                // 路由栈：返回 = 回上一级。子页面以后（模型详情、世界书编辑…）同样只需 push，
-                // 不用每页各写一个返回逻辑。根是聊天页，它不接管返回键。
-                var backStack by remember {
-                    mutableStateOf(listOf<Route>(Route.Chat(NEW_CHAT_TITLE, null)))
-                }
-                val route = backStack.last()
                 var iconChoice by remember { mutableStateOf(AppIconSwitcher.load(context)) }
                 var iconWarning by remember { mutableStateOf<String?>(null) }
                 // 日志摘要给设置索引页那一行用；三种通道各自的开关在「日志 → 齿轮」里。
