@@ -85,6 +85,14 @@ internal object NativeBridge {
     external fun sevenzWriteJson(spec: String): String
 
     /**
+     * 备份到 `dest`，**验证通过才发布**（D48）。回 `{path, verified, problems}`。
+     *
+     * `verified=false` 时目标位置那份**旧备份一点没动**——所以调用方要读这个字段，
+     * 不能拿到 ok 就当备份成功。
+     */
+    external fun storageBackupJson(handle: Long, dest: String): String
+
+    /**
      * 终端里跑一条命令（D395）。`config` 是
      * `{"root":"<工作区绝对路径>","command":"…","timeout_ms":600000}`。
      *

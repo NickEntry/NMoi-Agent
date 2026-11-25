@@ -5,6 +5,7 @@ package com.nmoi.agent.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,6 +92,25 @@ internal fun StorageDetailScreen(
         PageReady.notifyReadyAfterFrame()
     }
 
+    // 备份：聊天记录那一页专用（D424）。库不给删，只给备份。
+    val backupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        if (uri == null) {
+            busy = null
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            busy = "正在备份…"
+            val result = withContext(Dispatchers.IO) { StorageExport.backupTo(context, uri) }
+            busy = null
+            notice = result.fold(
+                onSuccess = { it },
+                onFailure = { "备份失败：${it.message}" },
+            )
+        }
+    }
+
     // 导出：先让用户选目标位置，再交给 FFI 打 7z。
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/x-7z-compressed"),
@@ -147,6 +167,21 @@ internal fun StorageDetailScreen(
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!selecting && kind == StorageKind.Chat) {
+                    Text(
+                        text = "备份",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable {
+                                busy = "准备备份…"
+                                backupLauncher.launch(
+                                    StorageExport.suggestedBackupName(),
+                                )
+                            }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
                 }
                 if (!selecting && items.isNotEmpty()) {
@@ -455,8 +490,51 @@ private fun SheetAction(
  */
 internal object StorageExport {
 
+    /** 备份的默认文件名：`nmoi-backup-20261125.db`。日期不带时分，重复备份会让系统自己加序号。 */
+    fun suggestedBackupName(): String {
+        val now = java.time.LocalDate.now()
+        val text = "%04d%02d%02d".format(now.year, now.monthValue, now.dayOfMonth)
+        return "nmoi-backup-$text.db"
+    }
+
     /** 建议的文件名：`nmoi-图片-12项.7z`。带项数是因为用户常常连导几次。 */
     fun suggestedName(kind: StorageKind, count: Int): String = "nmoi-${kind.title}-${count}项.7z"
+
+    /**
+     * 备份库到 `uri`（D424 提速之后这条路才敢放在界面上）。
+     *
+     * 中间那份临时库落在 `cacheDir`：SQLite 的备份 API 要一个可读写的路径，
+     * 而 SAF 给的是流。成功后整份拷进 `uri`，临时文件无论成败都删——
+     * 留着会在缓存里堆出用户看不见的库副本（那里面全是聊天记录）。
+     */
+    suspend fun backupTo(
+        context: android.content.Context,
+        uri: android.net.Uri,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (!NativeBridge.loaded) error("原生层没加载")
+            val databasePath = ProviderRepository.databasePath(context)
+            val temp = File(context.cacheDir, "nmoi-backup-${System.currentTimeMillis()}.db")
+            try {
+                val report = withStorageHandle(databasePath) { handle ->
+                    NmoiFfi.backup(handle, temp.absolutePath)
+                }.getOrElse { error("备份失败：${it.message}") }
+                if (!report.optBoolean("verified", false)) {
+                    val problems = report.optJSONArray("problems")
+                    val first = problems?.optString(0).orEmpty()
+                    error("副本没通过校验，没有发布（旧备份还在原处）${if (first.isEmpty()) "" else "：$first"}")
+                }
+                val bytes = temp.length()
+                val out = context.contentResolver.openOutputStream(uri)
+                    ?: error("打不开目标文件")
+                out.use { stream -> temp.inputStream().use { it.copyTo(stream) } }
+                "已备份 ${formatBytes(bytes)}（校验通过）"
+            } finally {
+                // 这份临时文件里是全部聊天记录，删迟一步就是一份明文副本留在缓存里。
+                if (temp.exists()) temp.delete()
+            }
+        }
+    }
 
     /**
      * 导出到 `uri`。

@@ -2002,3 +2002,28 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_sevenzWriteJson<'loca
     });
     to_jstring(&mut env, text)
 }
+
+/// `NativeBridge.storageBackupJson(handle, dest)`：备份到 `dest`，验证通过才发布（D48）。
+///
+/// 提速的判据在 `crates/storage/src/backup.rs`（D424）：步长与 `journal_mode` 两处，
+/// 246 MB 的库 14.6 s → 2.3 s。这一层只是转发，不参与参数选择。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_storageBackupJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    dest: JString<'local>,
+) -> jstring {
+    let dest = read_string(&mut env, &dest);
+    let text = guarded(move || match dest {
+        Some(dest) => match c_string(dest, "dest") {
+            Ok(c_dest) => take_json(crate::storage::nmoi_storage_backup_json(
+                handle as u64,
+                c_dest.as_ptr(),
+            )),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

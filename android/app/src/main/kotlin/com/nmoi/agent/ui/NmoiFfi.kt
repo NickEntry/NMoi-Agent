@@ -164,6 +164,15 @@ internal object NmoiFfi {
         call("delete_attachment") { NativeBridge.deleteAttachmentJson(handle, id) }
 
     /**
+     * 备份库到 `dest`（D48 / D424）。
+     *
+     * 返回体里 `verified` 才是判据：`verified=false` 表示副本没通过完整性检查、
+     * **没有发布**（旧备份还在原处）。拿到 ok 就报"备份成功"是错的。
+     */
+    suspend fun backup(handle: Long, dest: String): Result<JSONObject> =
+        call("backup") { NativeBridge.storageBackupJson(handle, dest) }
+
+    /**
      * 校验子助手名单（D176）。**不需要存储句柄**：它是一条纯检查，
      * 保存助手配置之前调它，撞名当场红字，而不是等发请求时才 400。
      */
