@@ -76,6 +76,15 @@ internal object NativeBridge {
     external fun workspaceWriteJson(handle: Long, path: String, content: String): String
 
     /**
+     * 把一组文件打成一份 7z（D425）。`spec` 是
+     * `{"dest":"<包路径>","entries":[{"name":"<包内路径>","path":"<盘上路径>"}]}`。
+     *
+     * 压缩在 core 那一份里做（`nmoi_core::sevenz`）：它跟 `7z` 命令行对得上，
+     * 界面上再写一份会让"有时能开、有时不能开"变成常态。
+     */
+    external fun sevenzWriteJson(spec: String): String
+
+    /**
      * 终端里跑一条命令（D395）。`config` 是
      * `{"root":"<工作区绝对路径>","command":"…","timeout_ms":600000}`。
      *

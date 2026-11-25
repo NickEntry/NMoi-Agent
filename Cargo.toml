@@ -41,6 +41,9 @@ tiktoken-rs = "=0.5.9"
 # 而工作区 MSRV 是 1.75（D10），所以做成 nmoi-ffi 的可选 feature、默认关。
 # 注意：这意味着这一层在本机（1.75）**没法本地验证**，只能看 CI。
 jni = "=0.21.1"
+# 7z 的 LZMA2 编解码（D425）。**不是 zip 系 crate**，那条禁令管的是 zip 容器。
+# 0.1.7 是能在 rustc 1.75 上编过的版本，已实测；只有 `encoder` 这个 feature 用得上。
+lzma-rust = { version = "=0.1.7", default-features = false, features = ["encoder"] }
 
 nmoi-core = { path = "crates/core" }
 nmoi-storage = { path = "crates/storage" }

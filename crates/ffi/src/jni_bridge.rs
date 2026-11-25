@@ -1981,3 +1981,24 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_terminalCancelJson<'l
     });
     to_jstring(&mut env, text)
 }
+
+/// `NativeBridge.sevenzWriteJson(spec)`：把一组文件打成一份 7z（D425）。
+///
+/// 形状与其它 JSON 函数一致：参数是一个 JSON 文本，返回也是 JSON 文本。
+/// 打包本身在 `nmoi_core::sevenz` 里（与 `7z` 命令行逐字节对过），这一层只做转发。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_sevenzWriteJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    spec: JString<'local>,
+) -> jstring {
+    let spec = read_string(&mut env, &spec);
+    let text = guarded(move || match spec {
+        Some(spec) => match c_string(spec, "spec") {
+            Ok(c_spec) => take_json(crate::sevenz::nmoi_sevenz_write_json(c_spec.as_ptr())),
+            Err(message) => take_json(crate::json::err_json("bad_argument", &message)),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}

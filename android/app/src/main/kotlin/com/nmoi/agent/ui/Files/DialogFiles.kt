@@ -19,7 +19,12 @@ internal enum class DialogFileSide {
     Output,
 }
 
-/** 会话 `chat/` 目录里的一个文件（盘上那一份）。`path` 是相对 `chat/` 的路径。 */
+/**
+ * 会话 `chat/` 目录里的一个文件（盘上那一份）。
+ *
+ * `path` 是**相对 `chat/` 的整段路径**（D423）：用户发来的在 `attachments/` 那一层，
+ * AI 写的在根上或它自己建的子目录里。`name` 只是文件名，显示用。
+ */
 internal data class ChatFile(
     val path: String,
     val name: String,
@@ -27,11 +32,18 @@ internal data class ChatFile(
     val modifiedMs: Long,
 )
 
-/** 库里的一条附件记录（只取判归属要用的字段）。 */
+/**
+ * 库里的一条附件记录（只取判归属要用的字段）。
+ *
+ * `path` 是盘上那份的**相对 `chat/` 路径**（D423），由绝对路径与 chat 根算出来；
+ * 老行（BLOB 那批、或还没落盘的）是 `null`。判归属时它是第一条判据——
+ * 比"名字像不像"硬得多。
+ */
 internal data class AttachmentRef(
     val id: String,
     val name: String,
     val kind: String,
+    val path: String? = null,
 )
 
 internal object DialogFiles {
@@ -71,11 +83,13 @@ internal object DialogFiles {
     /**
      * 把盘上的文件分成两堆。
      *
-     * 两级判据：
-     * 1. **精确**：落盘名等于 [diskName] 算出来的那一份；
-     * 2. **退一步**：盘上名是 `<8 位十六进制>-<库里某个原名>` 这个形状，也算附件。
-     *    这一条兜的是"落盘时原名被 `sanitize_file_name` 改过"（去掉了控制字符），
-     *    而库里存的是改之前的名字——那种情况下精确比对不上，但形状还在。
+     * 判据按硬度排：
+     * 1. **路径**（D423）：库里 `attachments.path` 与盘上那一份的相对路径逐字相等。这是
+     *    `put_file_attachment` 自己写下去的，不靠任何反推，所以它排第一。
+     * 2. **落盘名**：`<附件 id 后 8 位>-<原名>`。给没有 `path` 的老行兜底
+     *    （BLOB 那批、或写库与落盘之间断过的行）。
+     * 3. **形状**：盘上名是 `<8 位十六进制>-<库里某个原名>`，也算附件——兜的是
+     *    "落盘时原名被 `sanitize_file_name` 改过"那一类。
      *
      * 都对不上的一律归输出。**宁可把一份用户文件误判成输出，也不要把一份 AI 写的文件
      * 藏进附件里**——前者只是分类不准（两个页签在同一屏上，用户还看得到它），
@@ -86,13 +100,21 @@ internal object DialogFiles {
         attachments: List<AttachmentRef>,
     ): Map<DialogFileSide, List<ChatFile>> {
         // 只有 `kind = file` 的才落到 `chat/`；图片在 `images/`，不该拿来对名字。
-        val files = attachments.filter { it.kind == "file" && it.name.isNotBlank() }
-        val exact = files.map { diskName(it.id, it.name) }.toSet()
+        val files = attachments.filter { it.kind == "file" }
+        val byPath = files.mapNotNull { it.path?.takeIf(String::isNotBlank) }.toSet()
+        val exact = files
+            .filter { it.name.isNotBlank() }
+            .map { diskName(it.id, it.name) }
+            .toSet()
         // 库里的原名与"按落盘规则洗过一遍"的那一份都收进来：落盘时原名会被
         // `sanitize_file_name` 改一遍（非法字符换 `_`），两边对不上时退到这一份。
-        val names = files.flatMap { listOf(it.name, sanitizeName(it.name)) }.toSet()
+        val names = files
+            .filter { it.name.isNotBlank() }
+            .flatMap { listOf(it.name, sanitizeName(it.name)) }
+            .toSet()
 
         fun isAttachment(file: ChatFile): Boolean {
+            if (file.path in byPath) return true
             if (file.name in exact) return true
             // `<8 位十六进制>-<原名>`：前缀那 8 位就是 id 的后 8 位，全是小写十六进制。
             val dash = file.name.indexOf('-')

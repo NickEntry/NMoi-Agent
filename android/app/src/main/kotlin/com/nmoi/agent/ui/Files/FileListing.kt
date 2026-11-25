@@ -1,5 +1,7 @@
 package com.nmoi.agent.ui.Files
 
+import com.nmoi.agent.ui.formatBytes
+
 /** 工作区列表里的一行。`modifiedMs` 为 0 = 拿不到时间（旧接口 / 权限不够）。 */
 internal data class FileRow(
     val name: String,
@@ -108,13 +110,14 @@ internal object FileListing {
     }
 }
 
-/** 字节数 → 人话。工作区那一栏要的是"大概多大"，不是精确到个位。 */
-internal fun humanFileSize(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
-    bytes < 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
-    else -> String.format(java.util.Locale.US, "%.2f GB", bytes / 1024.0 / 1024.0 / 1024.0)
-}
+/**
+ * 字节数 → 人话。工作区那一栏要的是"大概多大"，不是精确到个位。
+ *
+ * 实现转发到 [formatBytes]（`ui/Bytes.kt`）：同一件事原来有三份实现，
+ * 而三份里的档位不一样（这一份有 GB、`formatBytes` 没有），于是同一个数在不同页面上
+ * 显示成两种样子。名字留着是因为调用点很多，改名字只会让 diff 变大。
+ */
+internal fun humanFileSize(bytes: Long): String = formatBytes(bytes)
 
 /**
  * 时间 → `11月16日 14:04`；跨年给 `2025年11月16日`。

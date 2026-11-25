@@ -382,6 +382,8 @@ pub extern "C" fn nmoi_storage_list_attachments_json(
                         "mime": info.mime,
                         "size": info.size,
                         "kind": info.kind,
+                        // D423：界面按这条路径判"用户发来的还是 AI 写的"。没落盘的行是 null。
+                        "path": info.path,
                     })
                 })
                 .collect();

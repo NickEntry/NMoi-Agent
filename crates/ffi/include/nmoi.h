@@ -377,6 +377,21 @@ char *nmoi_icons_rules_json(uint64_t handle, const char *pack_id);
  */
 char *nmoi_icons_resolve_json(uint64_t handle, const char *rules_json, const char *subject);
 
+/* ---- 7z 打包（D425）------------------------------------------------------ */
+
+/*
+ * 把一组文件打成一个 7z（LZMA2、标准压缩等级 -mx5 的等价参数）。**不加密、不固实**。
+ *
+ *   spec：{"dest":"<包路径>","entries":[{"name":"<包内路径>","path":"<盘上路径>"}]}
+ *
+ * name 会做安全检查：绝对路径、`..`、控制字符一律拒绝（kind=sevenz）。整包**全成或全不成**：
+ * 有一条打不开就失败，不会写出一个少了几条的包。写的时候先落 `<dest>.tmp`，
+ * 成功才 rename——中途被杀不会破坏目标位置那份旧包。
+ *
+ * 出参：{dest, entries, bytes_in, bytes_out}
+ */
+char *nmoi_sevenz_write_json(const char *spec);
+
 /* ---- 文本 ---------------------------------------------------------------- */
 
 /* 脱敏。命中记录只给 kind 与 matched_len，**不回显原文**。 */

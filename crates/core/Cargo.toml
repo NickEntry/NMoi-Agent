@@ -24,6 +24,8 @@ libc.workspace = true
 rustls = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 tiktoken-rs = { workspace = true, optional = true }
+# 7z 写入器（D425）：只有 LZMA2 编码器，解压不需要（这一版只写不读）。
+lzma-rust = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true

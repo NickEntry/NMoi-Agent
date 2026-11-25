@@ -16,8 +16,12 @@ class DialogFilesTest {
     private fun chat(name: String, size: Long = 10) =
         ChatFile(path = name, name = name, sizeBytes = size, modifiedMs = 1_000L)
 
-    private fun ref(id: String, name: String, kind: String = "file") =
-        AttachmentRef(id = id, name = name, kind = kind)
+    /** 带子目录的那一种：`path` 是相对 `chat/` 的整段，`name` 只是文件名。 */
+    private fun chatAt(path: String) =
+        ChatFile(path = path, name = path.substringAfterLast('/'), sizeBytes = 10, modifiedMs = 1_000L)
+
+    private fun ref(id: String, name: String, kind: String = "file", path: String? = null) =
+        AttachmentRef(id = id, name = name, kind = kind, path = path)
 
     private val id = "018f0a3c-6c2e-7b41-9a55-1c2d3e4f5a6b"
 
@@ -124,5 +128,54 @@ class DialogFilesTest {
         assertTrue(DialogFiles.emptyHint(DialogFileSide.Output).contains("写"))
         assertNull(DialogFiles.badge(0))
         assertEquals("3", DialogFiles.badge(3))
+    }
+
+    // ---- D423：落盘分层之后的三条 ----
+
+    @Test
+    fun `attachments 那一层的文件按路径判成附件`() {
+        // 落盘名与库里名字故意写得对不上：只有 path 这一条判据能认出来。
+        val onDisk = listOf(chatAt("attachments/3e4f5a6b-改过名.txt"), chatAt("notes.md"))
+        val attachments = listOf(
+            ref(id, "原名.txt", path = "attachments/3e4f5a6b-改过名.txt"),
+        )
+        val split = DialogFiles.split(onDisk, attachments)
+        assertEquals(
+            listOf("3e4f5a6b-改过名.txt"),
+            split[DialogFileSide.Attachment]?.map { it.name },
+        )
+        assertEquals(listOf("notes.md"), split[DialogFileSide.Output]?.map { it.name })
+    }
+
+    @Test
+    fun `没有 path 的老行退回按落盘名判`() {
+        // 老行（BLOB 那批 / 写库与落盘之间断过）path 是 null，名字仍要对得上。
+        val onDisk = listOf(chat("3e4f5a6b-a.txt"), chat("b.txt"))
+        val attachments = listOf(ref(id, "a.txt", path = null))
+        val split = DialogFiles.split(onDisk, attachments)
+        assertEquals(listOf("3e4f5a6b-a.txt"), split[DialogFileSide.Attachment]?.map { it.name })
+        assertEquals(listOf("b.txt"), split[DialogFileSide.Output]?.map { it.name })
+    }
+
+    @Test
+    fun `子目录里的 AI 输出也算输出`() {
+        // 递归之后 `path` 带子目录：`attachments/` 底下的附件不许因为前缀相同被误认。
+        val onDisk = listOf(
+            chatAt("attachments/3e4f5a6b-a.txt"),
+            chatAt("attachments/我自己建的.md"),
+            chatAt("src/main.rs"),
+        )
+        val attachments = listOf(ref(id, "a.txt", path = "attachments/3e4f5a6b-a.txt"))
+        val split = DialogFiles.split(onDisk, attachments)
+        assertEquals(
+            listOf("3e4f5a6b-a.txt"),
+            split[DialogFileSide.Attachment]?.map { it.name },
+        )
+        assertEquals(
+            listOf("main.rs", "我自己建的.md"),
+            split[DialogFileSide.Output]?.map { it.name },
+        )
+        // 不重叠也不漏：三份都各自归了一边。
+        assertEquals(onDisk.size, split.values.sumOf { it.size })
     }
 }

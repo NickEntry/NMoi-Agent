@@ -60,6 +60,8 @@ import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
+import com.nmoi.agent.ui.StorageDetailScreen
+import com.nmoi.agent.ui.StorageKind
 import com.nmoi.agent.ui.StorageScreen
 import com.nmoi.agent.ui.SecurityScreen
 import com.nmoi.agent.ui.ShellRulesScreen
@@ -94,6 +96,14 @@ private sealed interface Route {
 
     /** 设置的分组子页（外观 / 调试 各自有自己的实现，其余走 GroupScreen）。 */
     data class SettingsGroupRoute(val group: SettingsGroup) : Route
+
+    /**
+     * 存储空间的一项（D426）：图片 / 文件 / 聊天记录 / … 各自的子页。
+     *
+     * **挂在设置分组下面**，不是独立路由：它只有一个入口（设置 → 存储），
+     * 独立路由会让返回栈上同一屏有两个名字。
+     */
+    data class StorageDetail(val kind: StorageKind) : Route
 
     /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
     data object Envir : Route
@@ -821,6 +831,11 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        is Route.StorageDetail -> StorageDetailScreen(
+                            kind = route.kind,
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         is Route.SettingsGroupRoute -> when (val group = route.group) {
                             // 外观与调试已有真实现，其余组先给"还没接线"的清单。
                             // 应用设置（0.15m）：默认上下文窗口 + 重试是否留新版本。
@@ -866,6 +881,7 @@ class MainActivity : ComponentActivity() {
 
                             SettingsGroup.Storage -> StorageScreen(
                                 onBack = { backStack = backStack.dropLast(1) },
+                                onOpen = { kind -> backStack = backStack + Route.StorageDetail(kind) },
                             )
 
                             SettingsGroup.Debug -> DebugScreen(
@@ -931,8 +947,9 @@ private fun waitsForData(route: Route): Boolean = when (route) {
 
     is Route.ProviderEdit, is Route.AssistantEdit -> true
 
-    // 存储页挂在设置分组下，不是独立路由。
+    // 存储页挂在设置分组下，不是独立路由；它的子页也要等扫完盘。
     is Route.SettingsGroupRoute -> route.group == SettingsGroup.Storage
+    is Route.StorageDetail -> true
 
     else -> false
 }
@@ -942,6 +959,7 @@ private fun routeKeyOf(route: Route): String = when (route) {
     is Route.WorkspaceFiles -> "wsfiles:${route.id}"
     is Route.Terminal -> "terminal:${route.workspaceId}"
     is Route.SettingsGroupRoute -> "group:${route.group.name}"
+    is Route.StorageDetail -> "storage:${route.kind.name}"
     is Route.AssistantEdit -> "assistant:${route.id}"
     is Route.MessageEdit -> "edit:${route.sessionId}:${route.messageId}"
     is Route.ProviderEdit -> "provider:${route.id ?: "new"}:${route.focusModel ?: ""}"

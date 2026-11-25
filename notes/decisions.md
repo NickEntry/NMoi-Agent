@@ -4989,3 +4989,86 @@ edit_unit             core=true  kotlin=false
   而圆角半径本身就有二三十 dp；三段键盘导航的机器上那一段又偏大。
 - 顺手把 `SheetFrame` 里那句 `windowInsetsPadding(navigationBars ∪ ime)` 撤了——
   现在由 `OverlayWindow` 统一给，两处都算就是双倍。
+
+## D423 用户发来的文件落 `chat/attachments/`，判归属改用路径（2026-11-25 夜）
+
+D401 那条「没做（下一批）」的收尾。原来 `put_file_attachment` 把文件平铺在
+`sessions/<id>/chat/` 根上，界面靠"落盘名是不是 `<8 位 id>-<原名>`"反推它是谁发来的——
+那是个**反推**，不是判据：AI 写一个叫 `3e4f5a6b-a.txt` 的文件就会被认成用户发的。
+
+- **落盘位置改成 `chat/attachments/`**：谁的，在盘上就分得开。
+- **`attachments.path` 里已写好的老路径照旧认**（`files_for` 按 `chat_dir` 前缀现算相对路径，
+  老的平铺行算出裸文件名、新的算出 `attachments/<名>`）。**不迁库、不改历史正文**——
+  迁库要动已经发出去的消息，而"读的时候两种都认"一行代码就够了。
+- **`attachments` 清单多回一列 `path`**（`nmoi_storage_list_attachments_json`）：
+  界面拿它跟盘上的相对路径逐字比，比按名字反推硬。没有 `path` 的老行仍退回按名字判。
+- **`DialogFilesRepository.onDisk` 改成递归**：`attachments/` 是一个子目录，
+  只看根上那一层的话，里面每一份都会变成"盘上有、两个页签都看不见"（铁律②）。
+  环由 `canonicalPath` 的已访问集合挡住。
+- 判据：`legacy_flat_file_attachment_keeps_its_relative_name`（老行仍然读到裸文件名）、
+  `attachments_live_on_disk_under_the_session`（新行落在 `attachments/` 下）、
+  `attachments/ 那一层的文件按路径判成附件`（Kotlin 侧 14 条）。
+
+## D424 备份提速：步长 64 页 + 每步睡 10 ms → 8192 页不睡（2026-11-25 夜）
+
+`backup_to` 原来是 `run_to_completion(64, Duration::from_millis(10))`——照着 SQLite 文档里
+"不要长时间占着源库读锁"的示例抄的。代价很直白：**246 MB 的库要 14.6 秒**，
+其中绝大部分是睡掉的。
+
+- 步长改 **8192 页**（32 MiB）、`Duration::ZERO`。同一份库实测 **1.5 秒**（拷贝）；
+  加上验证与发布，整条 `Storage::backup` 是 **2.3 秒**（9.4 倍 → 6.4 倍）。
+- 副本连接上 `journal_mode=OFF`、`synchronous=OFF`：它是临时文件，发布动作是 rename，
+  而 rename 之前还会重新打开它读一遍做验证。这一条又省掉约三分之一。
+- **验证一步没省**：`integrity_check` + `foreign_key_check` 照跑（那两个加起来 0.8 秒，
+  已经不是瓶颈）。"没人验证的备份是希望"这条不动。
+- 判据：`backup_of_empty_database_still_verifies`、`roundtrip` 那两条照旧绿；
+  246 MB 库的实测数字记在这里（见 D424 的时间）。
+
+## D425 导出用 7z：自己写写入器，只引 `lzma-rust` 一个编码器（2026-11-25 夜）
+
+用户原话：「导出的话是依旧是标准压缩等级 7z」。
+
+仓库那条禁令是"不用 Rust 的 zip 系 crate，要打包解包就自己写最小实现"。7z 是同一类东西，
+走同一条规矩：`crates/core/src/sevenz.rs` **只写不读**（这一版没有一处要读别人的 7z）。
+
+- **只写非固实**（每文件一条流、一条 folder）。多选导出是几十 MB、几十个文件，
+  非固实换来"单个文件坏掉不连累其余"，实现也小到能一眼看完。
+- **压缩等级 = `-mx5` 的等价参数**（`LZMA2Options::with_preset(5)`，字典 8 MiB）。
+  不为省体积换档。
+- **流式写**（`write_to`）：签名头在最前、条目头在最后，而签名头里那三个数要等写完才知道，
+  所以先让开 32 字节 → 流式写 payload → 写头 → 回头补签名头。内存只过一块 64 KiB 缓冲，
+  导出 9.86 GB 的工作区与导出 1 MB 时占用一样。
+- **两个坑值得记**（都是拿 `7z` 命令行逐字节对出来的）：
+  1. **7z 的 UINT64 不是 LEB128**：首字节高位是"后面还有几个字节"，数值的低位在后面那些字节里。
+     写反了 7z 只报 `Headers Error`，不告诉你哪一段错了。
+  2. **位图高位在前**：第 0 个条目是首字节的 `0x80` 位。写反了不报错，
+     它只是把空文件当成目录，解出来是一堆空文件夹。
+     （还有一处：folder 的 coder 前面那个 flags 字节不是方法 ID，漏了会 Headers Error。）
+- **判据**：`scripts/check_sevenz.sh`（core 层，`7z t` + 清单 + 逐字节）、
+  `scripts/check_sevenz_abi.sh`（C ABI 层，含"连跑两遍哈希一致"与"越界名字被拒绝"）。
+  **先拿坏实现验过会红**：把 `put_u64` 退回 LEB128，单测 1 条红、`7z t` 直接报 Headers Error。
+
+## D426 存储空间分成十项账本，长按出「多选 / 删除 / 导出」（2026-11-25 夜）
+
+用户 2026-11-25 给了 12 张截图，原话：
+「存储空间管理里面的子页，还有主页截图，以及设置」「只不过不要照抄，然后适当加点功能，
+比如长按菜单『多选/删除/导出』，多选可以删除，或者多选导出」。
+
+不照抄的地方（都在 `notes/design/storage-management.md` §1 的对照表里）：
+
+- **图例只列前五项**，其余并进「其他」：十项图例在手机上一屏放不下，第二行会被切。
+- **「可清理」那个数能点**，点它直接进缓存页。放在那儿不能点等于装饰。
+- **每行不给"清理"小按钮**：一屏十个按钮会把这一页变成控制板，而它其实是"看一眼再决定进哪一项"。
+- **聊天记录那一项不给删除**：删了聊天记录就没了，卡上写清"要留档请用备份"。
+
+关键落点：
+
+- `StorageUsage`（纯逻辑，9 条单测）：十项分类 + 占比 + 图例合并 + 可清理。
+  **不变量**：十项之和 == 总和（认不出的归「其他」，不丢）。
+- `StorageRepository`：`File.listFiles()` 递归扫 `filesDir` 与 `cacheDir`，
+  符号链接不跟（`envir/lib/` 那两个指回 `nativeLibraryDir`，跟过去会把 APK 算成沙箱环境）。
+- `StorageScreen`：根页（占比条 + 十行）；`StorageDetailScreen`：一项一页，按 `kind` 换数据源。
+- **导出走 `nmoi_sevenz_write_json`**：中间落一份 `cacheDir` 里的临时包再拷进 SAF
+  （7z 写入要 `Seek`，而 SAF 给的是流），成功失败都删临时包。
+- **顺手收掉三份字节格式化**：`formatBytes` / `humanFileSize` / `humanBytes` 三处各写一遍，
+  其中一处没有 GB 档。现在只有 `ui/Bytes.kt` 一份，另两个转发。

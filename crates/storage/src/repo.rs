@@ -56,6 +56,13 @@ pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 /// 它只落盘；真正的限制是界面那一步读进内存的量。16 MB 够覆盖常见文档与代码包。
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 
+/// 用户发来的文件在会话 `chat/` 里的那一层（D423）。
+///
+/// 排这一层是为了让\"谁的\"在盘上就分得开：`chat/attachments/` 是用户发来的，
+/// 其余（AI 写的那些）是输出。界面上的两个页签因此有了比\"名字像不像\"更硬的判据。
+/// **老的平铺文件不迁移**：`attachments.path` 里已经写好的老路径照旧算数。
+pub const CHAT_ATTACHMENTS_DIR: &str = "attachments";
+
 /// 落盘用的文件名（D337）：只留可见字符，路径分隔符与控制字符一律换掉。
 ///
 /// 不做这一步的话，一个叫 `../../evil` 的文件会把字节写到会话目录之外——
@@ -76,6 +83,26 @@ fn sanitize_file_name(name: &str) -> String {
         "file".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+/// `attachments.path` 那条绝对路径在会话 `chat/` 里的相对路径（D423）。
+///
+/// 老的平铺行算出裸文件名，新的 `attachments/` 行算出 `attachments/<名>`——模型读的是
+/// `/chat/<相对>`，所以两种形状都得算对。分隔符统一成 `/`（盘上是 `/`，但 Windows 上不是）。
+fn chat_relative(root: &std::path::Path, full: &std::path::Path) -> Option<String> {
+    let rest = full.strip_prefix(root).ok()?;
+    let parts: Vec<String> = rest
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
     }
 }
 
@@ -129,6 +156,9 @@ pub struct AttachmentInfo {
     pub size: u64,
     /// `image` / `file`（D337）。老行是 `image`。
     pub kind: String,
+    /// 盘上那一份的绝对路径（D423）。老的 BLOB 行与还没落盘的行是 `None`——
+    /// 界面按它判\"这个文件是用户发来的还是 AI 写的\"，读不到就算判不出来，不猜。
+    pub path: Option<String>,
 }
 
 /// 存储管理页用的一条附件（D216）：带会话标题与盘上路径。
@@ -467,10 +497,10 @@ impl Storage {
         Ok(id)
     }
 
-    /// 存一份文件（D337）：落到会话自己的 `chat/`，库里只留文件名与路径。
+    /// 存一份文件（D337）：落到会话自己的 `chat/attachments/`（D423），库里只留文件名与路径。
     ///
     /// **原文件名要留**：界面上那块芯片显示的是用户认得出的名字，模型按
-    /// `/chat/<文件名>` 读的也是它。落盘的名字前面加一段附件 id 防重名，
+    /// `/chat/attachments/<落盘名>` 读的也是它。落盘的名字前面加一段附件 id 防重名，
     /// 后面保留原名的可见部分（去掉路径分隔符与控制字符——文件名里带 `/`
     /// 会写进别的目录，那是这一层唯一的安全边界）。
     pub fn put_file_attachment(
@@ -515,7 +545,7 @@ impl Storage {
         let id = Uuid::now_v7().to_string();
         let short = &id[id.len().saturating_sub(8)..];
         let relative = format!("{short}-{name}");
-        let dir = self.chat_dir(session);
+        let dir = self.chat_dir(session).join(CHAT_ATTACHMENTS_DIR);
         std::fs::create_dir_all(&dir)?;
         let file = dir.join(relative);
         std::fs::write(&file, bytes)?;
@@ -543,7 +573,11 @@ impl Storage {
     }
 
     /// 一条消息带的文件（D337）：只给元数据，内容由文件工具按 `/chat` 读。
+    ///
+    /// `relative` 是**相对会话 `chat/` 的整段路径**（D423）：新附件算出 `attachments/<名>`，
+    /// 老的平铺行算出裸文件名。两种都认，所以不必迁库、也不必改历史正文。
     pub fn files_for(&self, message: &MessageId) -> Result<Vec<FileAttachment>, StorageError> {
+        let root = self.chat_dir(message.session());
         let mut stmt = self.conn.prepare(
             "SELECT id, COALESCE(name, ''), mime, size, path FROM attachments
              WHERE message_id = ?1 AND kind = 'file'
@@ -563,8 +597,7 @@ impl Storage {
             let (id, name, mime, size, path) = row?;
             let relative = path
                 .as_deref()
-                .and_then(|full| std::path::Path::new(full).file_name())
-                .map(|file| file.to_string_lossy().to_string())
+                .and_then(|full| chat_relative(&root, std::path::Path::new(full)))
                 .unwrap_or_else(|| name.clone());
             out.push(FileAttachment {
                 id,
@@ -580,7 +613,7 @@ impl Storage {
     /// 一个会话里所有附件的元数据（不带字节）：消息区画缩略图前先知道"哪条有几个"。
     pub fn attachments_of(&self, session: SessionId) -> Result<Vec<AttachmentInfo>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, message_id, COALESCE(name, ''), mime, size, kind FROM attachments
+            "SELECT id, message_id, COALESCE(name, ''), mime, size, kind, path FROM attachments
              WHERE conv_id = ?1 ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([session.to_string()], |row| {
@@ -591,11 +624,12 @@ impl Storage {
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, message, name, mime, size, kind) = row?;
+            let (id, message, name, mime, size, kind, path) = row?;
             out.push(AttachmentInfo {
                 id,
                 message: MessageId::from_str_value(&message).map_err(StorageError::Inconsistent)?,
@@ -603,6 +637,7 @@ impl Storage {
                 mime,
                 size: size as u64,
                 kind,
+                path,
             });
         }
         Ok(out)
@@ -749,10 +784,10 @@ impl Storage {
         self.session_dir(session).join("images")
     }
 
-    /// 会话自己的 `/chat`（D337）：用户发来的文件落这儿，文件工具按 `/chat/<文件名>` 读。
+    /// 会话自己的 `/chat`（D337）：用户发来的文件落 `attachments/` 那一层（D423），
+    /// 模型能写的输出落这一层下面的别处；文件工具按 `/chat/<相对路径>` 读写。
     ///
-    /// 与 `images` 同级，删会话时整目录一起删；工具那边是**只读**，
-    /// 写文件仍然走工作区与 `/tmp`。
+    /// 与 `images` 同级，删会话时整目录一起删。
     pub fn chat_dir(&self, session: SessionId) -> std::path::PathBuf {
         self.session_dir(session).join("chat")
     }

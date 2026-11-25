@@ -40,6 +40,8 @@ mod json;
 pub mod preset;
 mod proxy;
 mod settings;
+/// 7z 打包（D425）：界面上「导出」那一颗按钮的落点。
+pub mod sevenz;
 // `pub`：集成测试（crates/ffi/tests/versions_abi.rs）要走真实 C ABI 调这一组动词，
 // 模块私有的话外部 crate 拿不到路径。函数本身早就是 `pub extern "C"`。
 pub mod storage;

@@ -482,6 +482,7 @@ mod tests {
     use nmoi_core::ids::MessageId;
     use nmoi_core::message::{AtomicUnit, Message, Role};
     use nmoi_core::source::SourceTag;
+    use rusqlite::params;
 
     fn open_ready(path: &Path) -> Storage {
         match Storage::open(path).expect("open 不应失败") {
@@ -786,7 +787,7 @@ mod tests {
         assert!(storage.all_attachments().unwrap().is_empty());
     }
 
-    /// 文件附件（D337）：落会话 `chat/`、保留原文件名、不走图片那条 base64 路。
+    /// 文件附件（D337）：落会话 `chat/attachments/`（D423）、保留原文件名、不走图片那条 base64 路。
     #[test]
     fn file_attachments_land_in_chat_and_keep_their_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -799,7 +800,7 @@ mod tests {
             .put_file_attachment(session, &message, "../报告.md", "text/markdown", &bytes)
             .unwrap();
 
-        // 名字里的 `..` 与目录分隔符都被换掉了，落点在 `chat/` 里。
+        // 名字里的 `..` 与目录分隔符都被换掉了，落点在 `chat/attachments/` 里。
         let listed = storage.attachments_of(session).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].kind, "file");
@@ -811,18 +812,26 @@ mod tests {
             })
             .unwrap();
         assert!(
-            std::path::Path::new(&path).starts_with(storage.chat_dir(session)),
+            std::path::Path::new(&path).starts_with(storage.chat_dir(session).join("attachments")),
             "{path}"
         );
         assert!(!path.contains(".."), "{path}");
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // 清单里也带上路径（D423）：界面按它判"用户发来的还是 AI 写的"。
+        assert_eq!(listed[0].path.as_deref(), Some(path.as_str()));
 
-        // 文件工具看到的相对名与元数据。
+        // 文件工具看到的相对名与元数据。相对 `chat/` 的那一段要带 `attachments/` 前缀，
+        // 否则模型拿到的 `/chat/<名字>` 指向一个不存在的文件。
         let files = storage.files_for(&message).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "报告.md");
         assert_eq!(files[0].mime, "text/markdown");
         assert_eq!(files[0].size, bytes.len() as u64);
+        assert!(
+            files[0].relative.starts_with("attachments/"),
+            "{}",
+            files[0].relative
+        );
         assert!(path.ends_with(&files[0].relative), "{path}");
 
         // **图片那条路不许把它当成图**：否则文件会被 base64 编进请求体。
@@ -831,6 +840,43 @@ mod tests {
         // 删会话：chat 目录跟着走。
         assert!(storage.delete_conversation(session).unwrap());
         assert!(!std::path::Path::new(&path).exists());
+    }
+
+    /// 老的平铺文件（D423 之前落的）仍然算数：`relative` 是裸文件名，路径就是 `chat/<名>`。
+    ///
+    /// 这一条钉的是"不迁库也不改历史正文"：老行读出来的相对名必须还是模型手上那个。
+    #[test]
+    fn legacy_flat_file_attachment_keeps_its_relative_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open_ready(&dir.path().join("app.db"));
+        let (session, unit) = seed(&mut storage);
+        let message = unit.messages[0].id.clone();
+
+        // 手工造一条老行：直接落在 `chat/` 根上，形状与 D423 之前一模一样。
+        let chat = storage.chat_dir(session);
+        std::fs::create_dir_all(&chat).unwrap();
+        let file = chat.join("1234-旧报告.md");
+        std::fs::write(&file, b"old").unwrap();
+        let id = "018f0a3c-6c2e-7b41-9a55-1c2d3e4f5a6b";
+        storage
+            .conn
+            .execute(
+                "INSERT INTO attachments(id, conv_id, message_id, name, mime, bytes, path, size, created_at, kind)
+                 VALUES (?1, ?2, ?3, '旧报告.md', 'text/markdown', NULL, ?4, 3, ?5, 'file')",
+                params![
+                    id,
+                    session.to_string(),
+                    message.to_string(),
+                    file.to_string_lossy().to_string(),
+                    crate::validate::now_ms(),
+                ],
+            )
+            .unwrap();
+
+        let files = storage.files_for(&message).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative, "1234-旧报告.md");
+        assert!(storage.attachments_of(session).unwrap()[0].path.is_some());
     }
 
     /// 认不出的 `image/*` 用子类型当扩展名（D339）：`image/avif` → `.avif`，不再一律 `.bin`。

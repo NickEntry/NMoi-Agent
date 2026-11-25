@@ -978,6 +978,73 @@ int main(void) {
         }
     }
 
+    printf("[sevenz]\n");
+    {
+        /* 造两个文件：一个有内容、一个是空。空的那个走 empty-stream 位，是最容易写错的一段。 */
+        char body_path[512];
+        char empty_path[512];
+        join_path(body_path, sizeof(body_path), work_dir, "sz-body.txt");
+        join_path(empty_path, sizeof(empty_path), work_dir, "sz-empty.txt");
+        FILE *body = fopen(body_path, "wb");
+        check(body != NULL, "建样本文件", body_path);
+        if (body) {
+            for (int i = 0; i < 500; i++) fputs("hello world\n", body);
+            fclose(body);
+        }
+        FILE *empty = fopen(empty_path, "wb");
+        check(empty != NULL, "建空样本文件", empty_path);
+        if (empty) fclose(empty);
+
+        char archive_path[512];
+        join_path(archive_path, sizeof(archive_path), work_dir, "sz-out.7z");
+        char spec[2048];
+        snprintf(spec, sizeof(spec),
+                 "{\"dest\":\"%s\",\"entries\":["
+                 "{\"name\":\"a.txt\",\"path\":\"%s\"},"
+                 "{\"name\":\"sub/empty.txt\",\"path\":\"%s\"}]}",
+                 archive_path, body_path, empty_path);
+        char *packed = take(nmoi_sevenz_write_json(spec), "sevenz_write");
+        check(contains(packed, "\"entries\":2"), "两条都进了包", packed);
+        check(contains(packed, "\"bytes_in\":6000"), "bytes_in 是原文总字节", packed);
+        check(contains(packed, "\"bytes_out\":"), "回了包大小", packed);
+        nmoi_string_free(packed);
+
+        FILE *archive = fopen(archive_path, "rb");
+        check(archive != NULL, "包文件落在盘上", archive_path);
+        if (archive) {
+            unsigned char magic[6] = {0};
+            size_t read = fread(magic, 1, 6, archive);
+            fclose(archive);
+            /* 头四字节是 7z 的魔数。这一条比"函数返回 ok"值钱：它说明盘上那份真是 7z。 */
+            check(read == 6 && magic[0] == 0x37 && magic[1] == 0x7a && magic[2] == 0xbc &&
+                      magic[3] == 0xaf,
+                  "盘上那份是 7z（魔数对）", NULL);
+        }
+
+        /* 越界名字必须被拒，而且不留下半个包。 */
+        char evil_path[512];
+        join_path(evil_path, sizeof(evil_path), work_dir, "sz-evil.7z");
+        char evil_spec[1024];
+        snprintf(evil_spec, sizeof(evil_spec),
+                 "{\"dest\":\"%s\",\"entries\":[{\"name\":\"../escape.txt\",\"path\":\"%s\"}]}",
+                 evil_path, body_path);
+        char *refused = take_error(nmoi_sevenz_write_json(evil_spec), "sevenz_write(越界)");
+        check(is_error(refused) && contains(refused, "\"kind\":\"sevenz\""),
+              "越界名字被拒绝", refused);
+        nmoi_string_free(refused);
+        /* 两头都要看：目标包**和**它的 `.tmp`。
+         * 只查目标包会漏掉"写到一半失败、临时文件留在原地"那一类——第一版就是这么漏的，
+         * 把删除 `.tmp` 那一行删掉，这条断言照样绿。 */
+        FILE *leaked = fopen(evil_path, "rb");
+        check(leaked == NULL, "被拒绝的那一次没有留下包", NULL);
+        if (leaked) fclose(leaked);
+        char evil_tmp[600];
+        snprintf(evil_tmp, sizeof(evil_tmp), "%s.tmp", evil_path);
+        FILE *leaked_tmp = fopen(evil_tmp, "rb");
+        check(leaked_tmp == NULL, "被拒绝的那一次没有留下 .tmp", evil_tmp);
+        if (leaked_tmp) fclose(leaked_tmp);
+    }
+
     printf("[handles]\n");
     {
         char *closed = take(nmoi_workspace_close_json(workspace_handle), "workspace_close");

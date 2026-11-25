@@ -177,3 +177,17 @@ Google 的 Material Design 3 **规范文档**不是随包分发的软件，不�
 同一个许可已经有全文的，不要再放第二份：引一个新的 **Apache-2.0** 依赖时，
 只在 §3 表里加一行（组件 / 版本 / 是否进包），全文仍是 `LICENSES/Apache-2.0.txt`。
 **换成 MIT / BSD / OFL 这类才需要新开一份全文**，并在 §1/§2 那种表里写清来源版本。
+
+## 7. `lzma-rust`（D425，进包）
+
+| | |
+|---|---|
+| 来源 | [lzma-rust](https://crates.io/crates/lzma-rust) 0.1.7 |
+| 许可 | **Apache-2.0** |
+| 全文 | `LICENSES/Apache-2.0.txt`（与仓库里其它 Apache-2.0 组件共用一份） |
+| 用途 | 7z 导出包里的 LZMA2 压缩（`crates/core/src/sevenz.rs`）。**只有编码器**：`default-features = false, features = ["encoder"]`，解码器不编进去 |
+| 我们的改动 | 无 |
+
+选它的理由写在 `notes/decisions.md` D425：7z 容器是我们自己写的（禁令：不用 Rust 的 zip 系 crate），
+压缩那一步不自己写——一条 LZMA2 编码器不是"最小实现"该碰的东西，而这一份是纯 Rust、
+无 C 依赖、MSRV 1.75 能编。

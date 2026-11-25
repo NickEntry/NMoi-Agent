@@ -37,6 +37,16 @@ jobs:
       - name: C 侧 ABI 验收（P6.1）
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/ffi_smoke.sh
+      # 7z 写入器的外部验收（D425）：只证明"我们自己解得开"是不够的，
+      # 用户拿别的解压器解——所以这里真调一次 7z 命令行。
+      - name: 7z 写入器（外部解压器验收）
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+          ./scripts/check_sevenz.sh
+          ./scripts/check_sevenz_abi.sh
 
   # 内存与资源回归（0.16c / D319）。用户 2026-11-10 明确要求放在 GitHub 工作流里。
   #

@@ -42,13 +42,7 @@ internal data class Workspace(
 
     /** 界面上那一行副标题：`3 个文件 · 12.4 KB`。 */
     val summary: String
-        get() = if (files == 0) "空目录" else "$files 个文件 · ${humanBytes(bytes)}"
-}
-
-private fun humanBytes(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
-    else -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
+        get() = if (files == 0) "空目录" else "$files 个文件 · ${formatBytes(bytes)}"
 }
 
 internal object WorkspaceRepository {

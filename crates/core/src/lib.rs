@@ -47,6 +47,7 @@ pub mod scanner;
 pub mod session;
 pub mod settings;
 pub mod settle;
+pub mod sevenz;
 pub mod shell;
 pub mod shellask;
 pub mod shellguard;

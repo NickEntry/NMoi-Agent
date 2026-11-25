@@ -1,29 +1,26 @@
 package com.nmoi.agent.ui
 
-import android.graphics.Bitmap
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,8 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,64 +40,54 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 存储管理（D216）：**图片附件现在在盘上**，这一页把它们列出来，能看、能导出、能删。
+ * 存储空间（D426）：一页看见"这台设备的空间都被谁占了"。
  *
- * 三条口径：
- * - **按会话分组**：附件的归属是会话，用户找图时先想起的是"哪个会话里的那张"，不是 id。
- * - **路径要写出来**：`sessions/<会话>/images/<id>.jpg` 是工作区文件工具能直接读的地方，
- *   用户得知道它到底在哪。
- * - **删除是收不回来的**：走确认；删完立刻从列表里消失，不做"看着还在"的假删除。
+ * 用户 2026-11-25 给的那批截图里，这一页是十项账本 + 一段占比条。这里不照抄的几处：
+ *
+ * - 图例只列前五项，其余并进「其他」——十项图例在手机上一屏放不下，第二行会被切；
+ * - 「可清理」那个数字**能点**，点它直接进清理动作；放在那儿不能点等于装饰；
+ * - 每一行右边是大小 + 箭头，不给"清理"小按钮：一屏十个按钮会把这一页变成控制板，
+ *   而它其实是"看一眼，再决定进哪一项"。
+ *
+ * 数据在 IO 线程现算，算完 `PageReady`——不报的话切页会先看到一屏 0 再跳。
  */
 @Composable
-internal fun StorageScreen(onBack: () -> Unit) {
+internal fun StorageScreen(
+    onBack: () -> Unit,
+    onOpen: (StorageKind) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val databasePath = remember(context) { ProviderRepository.databasePath(context) }
 
-    var rows by remember { mutableStateOf<List<StoredAttachment>>(emptyList()) }
+    var scan by remember { mutableStateOf<StorageRepository.Scan?>(null) }
     var loading by remember { mutableStateOf(true) }
     var notice by remember { mutableStateOf<String?>(null) }
-    var reload by remember { mutableStateOf(0) }
-    var confirmDelete by remember { mutableStateOf<StoredAttachment?>(null) }
-    var exporting by remember { mutableStateOf<StoredAttachment?>(null) }
 
-    LaunchedEffect(reload) {
+    suspend fun reload() {
         loading = true
-        rows = withContext(Dispatchers.IO) {
-            AttachmentStore.listAll(databasePath).getOrElse { failure ->
-                notice = "读不到附件：${failure.message}"
-                emptyList()
-            }
+        val result = withContext(Dispatchers.IO) {
+            runCatching { StorageRepository.scan(context) }
         }
+        result.fold(
+            onSuccess = { scan = it },
+            onFailure = {
+                notice = "量不出来：${it.message}"
+                scan = StorageRepository.Scan(emptyList(), emptyList())
+            },
+        )
         loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        reload()
         PageReady.notifyReadyAfterFrame()
     }
 
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("*/*"),
-    ) { uri ->
-        val target = exporting
-        exporting = null
-        if (uri == null || target == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                AttachmentStore.bytes(databasePath, target.id)
-            }
-            bytes.fold(
-                onSuccess = { data ->
-                    val ok = withContext(Dispatchers.IO) {
-                        runCatching {
-                            context.contentResolver.openOutputStream(uri)?.use { out ->
-                                out.write(data)
-                            } ?: error("打不开目标文件")
-                        }
-                    }
-                    notice = if (ok.isSuccess) "已导出 ${data.size / 1024} KB" else "导出失败：${ok.exceptionOrNull()?.message}"
-                },
-                onFailure = { notice = "导出失败：${it.message}" },
-            )
-        }
-    }
+    val current = scan
+    val buckets = current?.buckets.orEmpty()
+    val total = current?.total ?: 0L
+    val legend = StorageUsage.legend(buckets)
+    val reclaimable = StorageUsage.reclaimable(buckets)
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -111,208 +97,255 @@ internal fun StorageScreen(onBack: () -> Unit) {
             ) {
                 BackButton(onBack = onBack)
                 Text(
-                    text = "存储",
+                    text = "存储空间",
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f).padding(start = 4.dp),
                 )
                 Text(
-                    text = if (loading) "读取中…" else "${rows.size} 张 · ${sizeText(rows.sumOf { it.size })}",
+                    text = if (loading) "统计中…" else "刷新",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable(enabled = !loading) {
+                            scope.launch { reload() }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                 )
             }
 
-            val line = notice
-            if (line != null) {
+            notice?.let { line ->
                 Text(
                     text = line,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
                 )
             }
 
-            if (!loading && rows.isEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 40.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                // ---- 总占用卡 ----
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                 ) {
-                    Text(
-                        text = "还没有图片附件",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "在聊天页「＋ → 图片」发一张，它就会出现在这里。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
-            } else {
-                // 按会话分组（D217）：用户找图时先想起的是"哪个会话里的那张"。
-                // 每组一行小标题（标题 · N 张 · 大小），下面才是条目。
-                val grouped = rows.groupBy { it.conversation }
-                LazyColumn(modifier = Modifier.weight(1f).padding(horizontal = 24.dp)) {
-                    grouped.forEach { (_, itemsInGroup) ->
-                        item(key = "group:${itemsInGroup.first().conversation}") {
-                            Row(
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "已用空间",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = if (loading && current == null) "—" else formatBytes(total),
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        UsageBar(segments = StorageUsage.segments(buckets, total), total = total)
+                        Spacer(Modifier.height(10.dp))
+                        Legend(
+                            rows = legend,
+                            total = total,
+                            onOpen = onOpen,
+                        )
+                        if (reclaimable > 0) {
+                            Spacer(Modifier.height(10.dp))
+                            // 能点：直接进「缓存」那一页（可清理的两项里缓存通常最大）。
+                            // 不写成"清理缓存与日志"——那是两个动作合成一句，点下去删什么说不清。
+                            Text(
+                                text = "可清理 ${formatBytes(reclaimable)} ›",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 8.dp, end = 8.dp, top = 14.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = itemsInGroup.first().title.ifBlank { "（没有标题的会话）" },
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Text(
-                                    text = "${itemsInGroup.size} 张 · ${sizeText(itemsInGroup.sumOf { it.size })}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                                )
-                            }
-                        }
-                        items(itemsInGroup, key = { it.id }) { row ->
-                            StorageRow(
-                                row = row,
-                                databasePath = databasePath,
-                                onExport = {
-                                    exporting = row
-                                    exportLauncher.launch("nmoi-${row.id.take(8)}.${extensionOf(row.mime)}")
-                                },
-                                onDelete = { confirmDelete = row },
+                                    .clickable { onOpen(StorageKind.Cache) }
+                                    .padding(vertical = 4.dp),
                             )
                         }
                     }
                 }
+
+                // ---- 十项账本 ----
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                ) {
+                    Column {
+                        buckets.forEachIndexed { index, bucket ->
+                            if (index > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 52.dp, end = 16.dp)
+                                        .height(1.dp)
+                                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                )
+                            }
+                            BucketRow(bucket = bucket, onClick = { onOpen(bucket.kind) })
+                        }
+                    }
+                }
+
+                // 跳过的那些要说出来：不跟符号链接是对的，但"看见了却没算"得让人知道。
+                val skipped = current?.skipped.orEmpty()
+                if (skipped.isNotEmpty()) {
+                    Text(
+                        text = "跳过了 ${skipped.size} 个链接或特殊文件（不重复计入）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
+                    )
+                }
+
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
+}
 
-    val target = confirmDelete
-    if (target != null) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = null },
-            title = { Text("删掉这张图？") },
-            text = {
-                Text(
-                    "文件会从盘上删掉，收不回来。这条消息本身还在，只是不再有这张图。",
-                    style = MaterialTheme.typography.bodyMedium,
+/** 一段占比条。零字节的项不画（一段 0 宽的颜色块看着像缝隙）。 */
+@Composable
+private fun UsageBar(segments: List<UsageBucket>, total: Long) {
+    val empty = MaterialTheme.colorScheme.surfaceContainerHighest
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(10.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(empty),
+    ) {
+        if (total <= 0L) {
+            // 一点东西都没有时整条留灰：画一段假的颜色会让人以为有东西。
+            Spacer(Modifier.fillMaxWidth().fillMaxHeight())
+            return@Row
+        }
+        for (segment in segments) {
+            val share = segment.share(total)
+            // 极小的一段至少给 2dp：否则"有 300 KB 缓存"这件事在条子上完全看不见。
+            Box(
+                modifier = Modifier
+                    .weight(share.coerceAtLeast(0.0001f))
+                    .fillMaxHeight()
+                    .background(Color(segment.kind.argb)),
+            )
+        }
+    }
+}
+
+/** 图例：每行一项，点它进对应的子页。 */
+@Composable
+private fun Legend(
+    rows: List<UsageBucket>,
+    total: Long,
+    onOpen: (StorageKind) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (row in rows) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpen(row.kind) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(row.kind.argb)),
                 )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = null
-                    scope.launch {
-                        val deleted = withContext(Dispatchers.IO) {
-                            AttachmentStore.delete(databasePath, target.id)
-                        }
-                        notice = deleted.fold(
-                            onSuccess = { ok -> if (ok) "已删除" else "这张图已经不在了" },
-                            onFailure = { "删除失败：${it.message}" },
-                        )
-                        reload += 1
-                    }
-                }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = null }) { Text("取消") }
-            },
+                Text(
+                    text = row.kind.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = formatBytes(row.bytes),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = " ${(row.share(total) * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    modifier = Modifier.width(44.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 账本里的一行：图标 + 名字 + 副标题，右边大小与箭头。 */
+@Composable
+private fun BucketRow(bucket: UsageBucket, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.size(28.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = storageIcon(bucket.kind),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+        Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+            Text(
+                text = bucket.kind.title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            Text(
+                text = when {
+                    bucket.bytes == 0L -> "空"
+                    bucket.files == 0 -> formatBytes(bucket.bytes)
+                    else -> "${bucket.files} 个文件 · ${formatBytes(bucket.bytes)}"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = formatBytes(bucket.bytes),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Icon(
+            imageVector = ActionIcons.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.padding(start = 6.dp).size(16.dp),
         )
     }
 }
 
-@Composable
-private fun StorageRow(
-    row: StoredAttachment,
-    databasePath: String,
-    onExport: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    var bitmap by remember(row.id) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(row.id) {
-        bitmap = AttachmentStore.bitmap(databasePath, row.id)
-    }
-
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val image = bitmap
-            if (image != null) {
-                Image(
-                    bitmap = image.asImageBitmap(),
-                    contentDescription = "附件缩略图",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("读不出", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = row.title.ifBlank { "（没有标题的会话）" },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = "${row.mime} · ${sizeText(row.size)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-                // 路径写出来：工作区文件工具读的就是这个文件。
-                Text(
-                    text = row.path?.substringAfterLast("/sessions/")?.let { "sessions/$it" }
-                        ?: "还在库里（第一次查看时会搬到盘上）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            TextAction(label = "导出", onClick = onExport)
-            TextAction(label = "删除", danger = true, onClick = onDelete)
-        }
-    }
-}
-
-private fun sizeText(bytes: Long): String = when {
-    bytes >= 1024 * 1024 -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
-    bytes >= 1024 -> "${bytes / 1024} KB"
-    else -> "$bytes B"
-}
-
-private fun extensionOf(mime: String): String = when (mime) {
-    "image/jpeg", "image/jpg" -> "jpg"
-    "image/png" -> "png"
-    "image/webp" -> "webp"
-    "image/gif" -> "gif"
-    "image/heic" -> "heic"
-    "image/heif" -> "heif"
-    "image/bmp" -> "bmp"
-    else -> "bin"
+/** 每一项给一颗图标。语义牵强的宁可给同一个，不要给错的。 */
+private fun storageIcon(kind: StorageKind) = when (kind) {
+    StorageKind.Images -> ActionIcons.Image
+    StorageKind.Files -> ActionIcons.Paperclip
+    StorageKind.Chat -> ActionIcons.Database
+    StorageKind.Cache -> ActionIcons.RotateCcw
+    StorageKind.Logs -> ActionIcons.FileCode
+    StorageKind.Other -> ActionIcons.Folder
+    StorageKind.Workspace -> ActionIcons.Folder
+    StorageKind.Envir -> ActionIcons.Cpu
+    StorageKind.Skills -> ActionIcons.Wrench
+    StorageKind.SessionFiles -> ActionIcons.Folder
 }
