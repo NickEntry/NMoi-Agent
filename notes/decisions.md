@@ -4975,3 +4975,17 @@ edit_unit             core=true  kotlin=false
 改成 `Box(Modifier.fillMaxSize().then(pageInsets))`，与位置 0 用同一份 insets。
 
 - 判据：真机 **V182**。两条都不能在沙箱里看见（状态栏是窗口层的、切页只有真机有手感）。
+
+## D422 贴底浮层统一抬底：圆角不再切字（2026-11-25 深夜）
+
+用户 2026-11-25（原话）：「就是抬高还没做吧？就那些从底部弹出来的窗口什么的，加一点底部边距，
+因为现在手机很多都是四个角是圆角的，如果不抬高一点的话，底部边缘的字可能有部分被遮挡」。
+
+- **只在 `OverlayWindow` 这一层做**（`BOTTOM_CORNER_LIFT = 12.dp`），不往二十几个面板里各写一遍：
+  漏一个就是一处被切，而这种事真机上要翻到那一屏才看得见。
+- **贴底与居中分两套让位**：`contentAlignment == BottomCenter` 时
+  `navigationBars ∪ ime` 再加 12dp；居中的只 `imePadding()`（它本来不挨着底边）。
+- **insets 之外再加固定值**，因为两头都不够准：手势导航下那一段只有二十来 dp，
+  而圆角半径本身就有二三十 dp；三段键盘导航的机器上那一段又偏大。
+- 顺手把 `SheetFrame` 里那句 `windowInsetsPadding(navigationBars ∪ ime)` 撤了——
+  现在由 `OverlayWindow` 统一给，两处都算就是双倍。

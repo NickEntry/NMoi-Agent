@@ -7,7 +7,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -15,12 +21,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import com.nmoi.agent.ui.theme.dimBackground
 import com.nmoi.agent.ui.theme.isLight
+
+/**
+ * 贴底浮层再往上抬的一点（D422）。
+ *
+ * 全面屏的四个角是圆角，紧贴屏幕底边画的那一行字会被圆角切掉一角。
+ * 光靠 `navigationBars` 不够：手势导航下那一段只有二十来 dp，
+ * 而圆角半径本身就有二三十 dp；三段键盘导航的机器上又反过来偏大。
+ * 所以**在 insets 之外再加一个固定值**，两头都不赌。
+ */
+internal val BOTTOM_CORNER_LIFT = 12.dp
 
 /**
  * 浮层的遮罩浓度（D420）。底部面板、居中确认卡、抽屉里那几张卡共用这一个数。
@@ -57,6 +74,7 @@ internal fun OverlayWindow(
 ) {
     val view = LocalView.current
     val background = androidx.compose.material3.MaterialTheme.colorScheme.background.toArgb()
+    val bottomAligned = contentAlignment == Alignment.BottomCenter
     Dialog(
         onDismissRequest = { onDismiss?.invoke() },
         properties = DialogProperties(
@@ -100,14 +118,25 @@ internal fun OverlayWindow(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    // 浮层里有输入框（编辑这一版、重命名文件）时，键盘弹起来不能把它盖住。
-                    // 对话框窗口开了 `decorFitsSystemWindows = false`，窗口不再自己让位，
-                    // 所以让位这一步得在这一层做。
+                    // 让位分两种（D422）：
                     //
-                    // `imePadding()` 会给子层**消费掉**这一段，所以下面面板里那句
-                    // `windowInsetsPadding(navigationBars ∪ ime)` 只会再加导航栏那一段，
-                    // 不会把键盘高度算两遍。
-                    .imePadding(),
+                    // - **贴底**：导航栏与键盘取并集（不是相加），再加一个固定值
+                    //   [BOTTOM_CORNER_LIFT]——圆角会把贴着底边的字切掉一角，
+                    //   而手势导航那一段只有二十来 dp，不够。
+                    // - **居中**：只让键盘。居中的卡片本来就不挨着底边。
+                    //
+                    // 加在这一层而不是各个面板里：面板有二十几个，漏一个就是一处被切。
+                    .then(
+                        if (bottomAligned) {
+                            Modifier
+                                .windowInsetsPadding(
+                                    WindowInsets.navigationBars.union(WindowInsets.ime),
+                                )
+                                .padding(bottom = BOTTOM_CORNER_LIFT)
+                        } else {
+                            Modifier.imePadding()
+                        },
+                    ),
                 contentAlignment = contentAlignment,
             ) {
                 content()

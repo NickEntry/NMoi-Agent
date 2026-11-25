@@ -5,16 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -115,43 +109,32 @@ internal fun SheetFrame(
         onDismiss = onDismiss,
         contentAlignment = Alignment.BottomCenter,
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                // 让开导航栏与键盘，再往上抬一点（D417）：
-                // 全面屏四角是圆角，贴着底边画的内容会被切掉一角；
-                // 面板里有输入框（重命名、新建文件）时，键盘一弹起来不能把它盖住。
-                .windowInsetsPadding(
-                    WindowInsets.navigationBars.union(WindowInsets.ime),
-                )
-                .padding(bottom = 8.dp),
-            contentAlignment = Alignment.BottomCenter,
+        // 让位（导航栏 / 键盘 / 圆角那一抬）由 `OverlayWindow` 统一做（D422）：
+        // 这里只管面板自己的形状，不再各算一遍 insets——两处都算就是双倍。
+        Surface(
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            Surface(
-                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(bottom = 24.dp)) {
-                    // 抓手：告诉人"这一层是可以往下收的"（收的方式现在只有点遮罩/返回）。
-                    Box(
-                        modifier = Modifier
-                            .padding(top = 10.dp, bottom = 8.dp)
-                            .size(width = 36.dp, height = 4.dp)
-                            .background(
-                                MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(999.dp),
-                            )
-                            .align(Alignment.CenterHorizontally),
-                    )
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 6.dp),
-                    )
-                    content()
-                }
+            Column(modifier = Modifier.padding(bottom = 24.dp)) {
+                // 抓手：告诉人"这一层是可以往下收的"（收的方式现在只有点遮罩/返回）。
+                Box(
+                    modifier = Modifier
+                        .padding(top = 10.dp, bottom = 8.dp)
+                        .size(width = 36.dp, height = 4.dp)
+                        .background(
+                            MaterialTheme.colorScheme.outlineVariant,
+                            RoundedCornerShape(999.dp),
+                        )
+                        .align(Alignment.CenterHorizontally),
+                )
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 6.dp),
+                )
+                content()
             }
         }
     }
