@@ -832,7 +832,15 @@ mod tests {
             "{}",
             files[0].relative
         );
-        assert!(path.ends_with(&files[0].relative), "{path}");
+        // `relative` 里的分隔符一律是 `/`（模型看到的是 `/chat/attachments/x`），
+        // 而盘上路径在 Windows 上是 `\`。所以比之前先把盘上那一份也归一化——
+        // 不归一化的话这条断言只在 Linux 上成立，而那种"只在 CI 的某个 job 上红"
+        // 的测试会被当成环境问题，不被人当回事。
+        assert!(
+            path.replace('\\', "/").ends_with(&files[0].relative),
+            "{path} vs {}",
+            files[0].relative
+        );
 
         // **图片那条路不许把它当成图**：否则文件会被 base64 编进请求体。
         assert!(storage.attachments_for(&message).unwrap().is_empty());
