@@ -86,6 +86,12 @@ internal fun AssistantEditScreen(
     var speed by remember(assistantId) { mutableStateOf("") }
     /** 这个助手用哪几册世界书（D314 起默认空集：一册都不带）。 */
     var books by remember(assistantId) { mutableStateOf(listOf<String>()) }
+    /**
+     * 这个助手自己的系统提示词（D435）。
+     *
+     * 三层里的最后一层（全局 → 这一段），发请求前与全局那段拼起来。空 = 这一层不加东西。
+     */
+    var systemPrompt by remember(assistantId) { mutableStateOf("") }
     var temperature by remember(assistantId) { mutableStateOf("") }
     var maxOutput by remember(assistantId) { mutableStateOf("") }
     /** 读完了没有：没读完不许自动落库，否则空表单会盖掉库里那一份。 */
@@ -162,9 +168,16 @@ internal fun AssistantEditScreen(
         subSession = loaded.subAgent.session
         subProviderId = loaded.subAgent.providerId
         subModelId = loaded.subAgent.modelId
-        thinking = loaded.thinking
+        // 思考强度优先读**模型那一格**（D435），没有才用助手行上那份老数据。
+        thinking = ModelPrefs.resolveThinking(
+            context,
+            loaded.providerId,
+            loaded.modelId,
+            loaded.thinking,
+        )
         speed = loaded.speed
         books = loaded.lorebooks
+        systemPrompt = loaded.system
         temperature = numberText(loaded.temperature) ?: ""
         maxOutput = loaded.maxTokens?.toString().orEmpty()
         loadedOnce = true
@@ -180,6 +193,7 @@ internal fun AssistantEditScreen(
         thinking = thinking,
         speed = speed,
         lorebooks = books,
+        system = systemPrompt,
         temperature = temperature.trim().toDoubleOrNull()?.takeIf { it >= 0.0 },
         maxTokens = maxOutput.trim().toIntOrNull()?.takeIf { it > 0 },
         subAgent = SubAgentSpec(
@@ -239,7 +253,7 @@ internal fun AssistantEditScreen(
     }
 
     LaunchedEffect(
-        name, streamOn, workspaceId, thinking, speed, books, temperature, maxOutput,
+        name, streamOn, workspaceId, thinking, speed, books, systemPrompt, temperature, maxOutput,
         subEnabled, subId, subDescription, subSession, subProviderId, subModelId, loadedOnce,
     ) {
         val base = entry ?: return@LaunchedEffect
@@ -256,6 +270,14 @@ internal fun AssistantEditScreen(
     val ownModel = choices.firstOrNull {
         it.first.id == entry?.providerId && it.second.id == entry?.modelId
     }?.second
+    /** 思考强度写在哪一格（D435）：显示用，「哪个模型的那一档」。空 = 还没选模型。 */
+    val ownModelTarget = ownModel?.let { model ->
+        val provider = choices.firstOrNull {
+            it.first.id == entry?.providerId && it.second.id == entry?.modelId
+        }?.first
+        val providerName = provider?.name?.ifBlank { provider.id } ?: entry?.providerId.orEmpty()
+        "${providerName.ifBlank { "供应商" }} / ${model.displayName}"
+    }
     val ownLevels = THINKING_LEVELS.filter { (wire, _) ->
         when {
             wire == "auto" -> true
@@ -346,17 +368,39 @@ internal fun AssistantEditScreen(
                     )
                 }
 
-                // —— 思考强度（D314）——
+                // —— 思考强度（D314 / D435）——
+                //
+                // 它**跟着模型走**（用户 2026-11-26）：换模型就是换一格，不再从助手身上搬过去。
+                // 这一页仍然能改——改的是"这个模型的"那一格，所以标题下面写清是哪个模型。
                 Card {
                     Text(
                         text = "思考强度",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
+                    Text(
+                        text = ownModelTarget?.let { "跟着模型走：$it" }
+                            ?: "先选模型：还没选的时候这一档不生效",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                     LevelSlider(
                         labels = ownLevels.map { shortLevelName(it.first) },
                         index = ownLevels.indexOfFirst { it.first == thinking }.coerceAtLeast(0),
-                        onPick = { at -> ownLevels.getOrNull(at)?.let { thinking = it.first } },
+                        onPick = { at ->
+                            ownLevels.getOrNull(at)?.let { (wire, _) ->
+                                thinking = wire
+                                // 当场写进模型那一格：这一页没有「保存」按钮，
+                                // 停在内存里的话，退出去再回来就变回旧档。
+                                ModelPrefs.setThinking(
+                                    context,
+                                    entry?.providerId.orEmpty(),
+                                    entry?.modelId.orEmpty(),
+                                    wire,
+                                )
+                            }
+                        },
                     )
                     // 速度（D402）：与聊天页那一份是同一个字段，档位按这个助手的模型现算。
                     val speedChoices = SpeedLevels.forModel(
@@ -406,7 +450,8 @@ internal fun AssistantEditScreen(
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            text = "${books.count { id -> availableBooks.any { it.id == id } }}" +
+                            // 内置册永远算一册：它不由勾选决定（2026-11-26）。
+                            text = "${LorebookStore.activeCount(availableBooks, books)}" +
                                 "/${availableBooks.size}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -419,6 +464,28 @@ internal fun AssistantEditScreen(
                             books = if (on) books + id else books - id
                         },
                         modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
+                // —— 系统提示词（D435）——
+                //
+                // 三层里的最后一层：发请求时 `全局那段 → 这一段` 拼起来（拼法只有
+                // `TurnRepository` 那一处）。框右上角两颗按钮：放大、从文件导入。
+                Card {
+                    Text(
+                        text = "系统提示词",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "只对这个助手生效；排在「所有角色」那段之后，所以它压得过那段。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+                    )
+                    AssistantPromptField(
+                        value = systemPrompt,
+                        onChange = { systemPrompt = it },
                     )
                 }
 

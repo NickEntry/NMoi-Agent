@@ -150,6 +150,35 @@ internal object ActionIcons {
         stroke("m14 17 2-2-2-2")
     }
 
+    /**
+     * Lucide `expand.svg`：把一个输入框放大到整屏（D435）。
+     *
+     * 形状就是用户描述的那个：「一个叉号，然后四段都是箭头」——从中心往四个斜角伸出去。
+     * 用 `expand` 而不是 `maximize`：后者是四角折线，看不出"可以往外撑"。
+     */
+    val Expand: ImageVector = buildVector("expand") {
+        stroke("m21 21-6-6")
+        stroke("M21 21v-4.8")
+        stroke("M21 21h-4.8")
+        stroke("M3 3l6 6")
+        stroke("M3 3v4.8")
+        stroke("M3 3h4.8")
+        stroke("M21 3l-6 6")
+        stroke("M21 3v4.8")
+        stroke("M21 3h-4.8")
+        stroke("M3 21l6-6")
+        stroke("M3 21v-4.8")
+        stroke("M3 21h4.8")
+    }
+
+    /** Lucide `file-up.svg`：从文件导入（D435）。箭头朝上 = 把文件里的东西搬进来。 */
+    val FileUp: ImageVector = buildVector("file-up") {
+        stroke("M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z")
+        stroke("M14 2v6h6")
+        stroke("M12 18v-6")
+        stroke("m9 15 3-3 3 3")
+    }
+
     /** Lucide `check.svg`：选中态 / 复制成功。 */
     val Check: ImageVector = buildVector("check") {
         stroke("M20 6 9 17l-5-5")

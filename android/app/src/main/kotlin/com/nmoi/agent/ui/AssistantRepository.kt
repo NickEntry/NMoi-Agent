@@ -44,6 +44,13 @@ internal data class AssistantEntry(
      * 老数据没有这个字段，读出来就是空集：世界书从此要自己勾。
      */
     val lorebooks: List<String> = emptyList(),
+    /**
+     * 这个助手自己的系统提示词（D435）。
+     *
+     * 拼法只有一处（`TurnRepository`）：全局那段 → 这一段，然后按站位字符串填。
+     * 空串 = 这一层不加东西（老行为一字不变）。
+     */
+    val system: String = "",
 ) {
     val isRunnable: Boolean get() = providerId.isNotBlank() && modelId.isNotBlank()
 }
@@ -234,6 +241,7 @@ internal object AssistantRepository {
                 .put("stream", entry.stream)
                 .put("workspace_id", entry.workspaceId.ifBlank { WorkspaceRepository.DEFAULT_ID })
                 .put("lorebooks", org.json.JSONArray(entry.lorebooks))
+                .put("system", entry.system)
                 .also { row ->
                     entry.temperature?.let { row.put("temperature", it) }
                     entry.maxTokens?.let { row.put("max_tokens", it) }
@@ -380,6 +388,7 @@ internal object AssistantRepository {
                     }
                 }
             }.orEmpty(),
+            system = safe.optString("system", ""),
         )
     }
 

@@ -483,7 +483,7 @@ private fun RolePromptSheet(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = "${ownBooks.count { id -> books.any { it.id == id } }}/${books.size}",
+                        text = "${LorebookStore.activeCount(books, ownBooks)}/${books.size}",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -572,14 +572,8 @@ private fun GlobalSystemSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
         ) {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onChange,
-                placeholder = { Text("例如：只输出结果，不复述要求") },
-                minLines = 4,
-                maxLines = 8,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            // 与助手页那一格是同一个组件（D435）：框右上角放大 + 从文件导入。
+            AssistantPromptField(value = value, onChange = onChange)
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,

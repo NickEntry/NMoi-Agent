@@ -28,6 +28,13 @@ internal fun DebugScreen(
     nativeStatus: NativeStatus,
     onOpenLogs: () -> Unit,
     onBack: () -> Unit,
+    /**
+     * 启动对账那一行（D435）。空串 = 还在跑。
+     *
+     * 放在这一页而不是弹提示：它是"启动时检查过一遍"的证据，
+     * 平时不看，出问题时第一眼就要能翻到。
+     */
+    startupReport: String = "",
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -94,6 +101,26 @@ internal fun DebugScreen(
                     } else {
                         "原生层没连上：先看上面那句是「没打进包」还是「符号对不上」，两种修法不一样。"
                     },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+
+                Text(
+                    text = "启动对账",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 4.dp),
+                )
+                Text(
+                    text = startupReport.ifBlank { "还在跑…" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                )
+                Text(
+                    text = "先读供应商与模型，再清掉对不上的模型设置；助手指向的模型不在了只报出来，" +
+                        "不替你改归属。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 24.dp),

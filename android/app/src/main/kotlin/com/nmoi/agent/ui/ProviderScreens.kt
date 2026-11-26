@@ -380,10 +380,12 @@ internal fun ProviderEditScreen(
         if (activeModel.isBlank()) activeModel = added.first().id
     }
 
-    /** 批量删：与单条删除同一条口径（sources、activeModel 一起收拾）。 */
+    /** 批量删：与单条删除同一条口径（sources、activeModel、模型设置一起收拾）。 */
     fun removeModels(ids: List<String>) {
         if (ids.isEmpty()) return
         val gone = ids.toSet()
+        // 跟着模型走的设置一起清（D435），与单条删除同一条规矩。
+        gone.forEach { modelId -> ModelPrefs.clearModel(context, id, modelId) }
         models = models.filterNot { it.id in gone }
         sources = sources - gone
         if (activeModel in gone) activeModel = models.firstOrNull()?.id.orEmpty()
@@ -792,6 +794,9 @@ internal fun ProviderEditScreen(
                                         }
                                         else -> {
                                             val count = modelSelected.size
+                                            modelSelected.forEach { gone ->
+                                                ModelPrefs.clearModel(context, id, gone)
+                                            }
                                             models = models.filterNot { it.id in modelSelected }
                                             sources = sources - modelSelected
                                             if (activeModel in modelSelected) {
@@ -887,6 +892,9 @@ internal fun ProviderEditScreen(
                                         if (activeModel == model.id) {
                                             activeModel = models.firstOrNull()?.id.orEmpty()
                                         }
+                                        // 跟着模型走的设置一起清（D435）：留着它，
+                                        // 以后同名模型回来会继承一个用户没选过的档位。
+                                        ModelPrefs.clearModel(context, id, model.id)
                                         notice = "删掉了 ${model.id}"
                                         persist()
                                     },
@@ -1058,6 +1066,10 @@ internal fun ProviderEditScreen(
             onConfirm = {
                 confirmDelete = false
                 scope.launch {
+                    // 这一家底下的模型设置一起清（D435）：供应商没了，那些键永远对不上，
+                    // 留着只会让启动那次对账每次都删一遍。
+                    val cleared = ModelPrefs.clearProvider(context, id)
+                    if (cleared > 0) NLog.i("Provider", "删供应商 $id：清了 $cleared 条模型设置")
                     ProviderRepository.delete(context, databasePath, id).fold(
                         onSuccess = { onDeleted() },
                         onFailure = { notice = "删除失败：${it.message}" },

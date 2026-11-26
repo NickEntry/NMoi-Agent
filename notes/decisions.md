@@ -5328,3 +5328,100 @@ a.txt
 
 **产物位置**：`/workspace/自我认知V5-261126/`（主体 + plan + 四册 + dupcheck）。
 不进仓库——提示词那套早就出口了，仓库里不重建。
+
+## D434 存储子页：十项是三种东西（2026-11-26）
+
+用户 2026-11-25 深夜给的那批原话已经写进 `notes/design/storage-tree-plan.md`，
+这一条只记**落地时改了什么、判据钉在哪**。
+
+**形状分派**：`StorageKind.shape`（`StorageTree.kt`，纯枚举）把十项分到
+`Tree`（沙箱 / 技能 / 工作区文件 / 会话文件）、`Cards`（缓存 / 日志 / 其他 / 聊天记录）、
+`Flat`（图片 / 文件）。`StorageDetailScreen` 只剩分派，三种形状各一个文件：
+`StorageTreeScreen` / `StorageCardsScreen` / `StorageFlatScreen`（后者是原来那个平铺页，
+搬过去只改了入口名与文件头）。共用的行组件与 `EmptyKind` / `StorageExport` 留在
+`StorageDetailScreen.kt`。
+
+**判据钉在 `StorageTreeTest`**（10 条）：上一层报的数 == 这一层条目之和、
+`标题 · 短id` 能分开两条同名会话、沙箱只读、技能只在一级删、会话内部只删文件、
+十项都归了形状。其中"大小之和"那条用真临时目录跑（`File.createTempFile` + `mkdirs`）。
+
+**会话文件一级的名字**是 `标题 · 短id`（`StorageTree.sessionLabel`）。标题从哪来：
+新加了一个 JNI 入口 `listAllConversationsJson(handle, limit, offset)`，**不过滤助手**——
+C 那一层本来就有"NULL = 不过滤"的口子（`nmoi_storage_list_conversations_json` 的注释里
+写明是给导出/核对用的），这次只是把那个口子接到 Kotlin。**不能用空串复用**：
+空串是一次过滤（`assistant_id = ''`），只会得到 0 条，而那个错看起来像"库里没有会话"。
+
+**会话里面只列 `chat/` 与 `tmp/`**，`images/` 与 `archive/` 不出现（前者归「图片」页，
+后者是上下文原文）。界面上有一行字直说这件事——不说的话，下一轮会有人"顺手补全"，
+补全之后同一个文件在「图片」页与这里会有两个入口。
+
+**缓存卡**清的是 `cacheDir` 的**内容**，不删目录本身：7z 导出的临时包、备份的临时库
+都 `File(cacheDir, …)`，目录没了不会自动重建，下一步会直接失败。
+`StorageRepository.clearCache` 用 `deleteTreeNoFollow`（符号链接不跟）。
+
+**其他卡**只有「本地模型」一张，灰着。`files/vault`、`files/voice` 也归「其他」，
+但不进卡片——它们是 App 自己的零件，只计进大小。
+
+**日志卡**的「查看」进已有的 `LogChannelScreen`，不另写一个查看器。
+为此 `StorageDetailScreen` 多一个 `onOpenLog` 参数，`MainActivity` 把它接到 `Route.LogChannel`。
+
+## D435 内置册强制生效、思考强度跟着模型走、启动对账、系统提示词输入框（2026-11-26）
+
+用户这一轮四句话，四条各自落地：
+
+**1. 「内置册怎么现在可开关？这玩意不是应该默认在合适的地方强制生效吗」**
+
+对。它从"一册普通世界书"改回"应用自带的那几条"：
+
+- `LorebookStore.filterBy` 把 `builtin` 无条件并进 `keep`——勾不勾都注入。
+- `bookRows` 里内置册不看册级 `enabled`（收起它等于让"内置"两个字变成假的）。
+- `LorebookBookList` 的行加 `forced`：**不给点**（点了也不会变，摆成可点是在骗人），
+  旁边挂一个「强制生效」徽标。
+- 三处计数（＋ 的世界书面板、助手设置、角色面板）统一走新加的
+  `LorebookStore.activeCount`——内置册永远算一册。三处各算一遍的话，其中一处迟早
+  显示"1/2"而实际注入了两册。
+
+**2. 「为什么有思考强度，我应该说过思考强度的设置数据存储跟着模型走」**
+
+以前它挂在 `AssistantEntry.thinking` 上。挂在助手上的后果：换一个模型之后那一档原样
+搬过去，给一个没有 reasoning 的模型留着 `xhigh`，界面照着显示"极高"，而请求里那个
+字段根本不认——**看着生效、实际不发**。
+
+- 新文件 `ModelPrefs.kt`：`SharedPreferences` 一张 `thinking.<provider>/<model>` 的小表。
+  不进库，因为它不是内容，是设备的本地偏好（与 `ThemeStore` / `FilePrefs` 同一档）。
+- `resolveThinking(provider, model, fallback)`：模型那一格优先，没有才退回助手行上
+  那一份。**兜底必须留着**——不然升级上来的助手会突然从「极高」掉回「自动」。
+  参数散着传、不收 `AssistantEntry`，是为了这一层不依赖助手仓库、本机单测能钉住。
+- 写入点三处：聊天页那个思考面板、助手设置页、启动迁移。
+
+**3. 「模型删除的时候应该一起清掉这样的数据，然后启动的时候，应该也先加载供应商和模型数据然后检查一遍」**
+
+- 删模型（单条 / 批量 / 上膛那条）与删供应商都当场清（`clearModel` / `clearProvider`）。
+  留着的话，同名模型回来会继承一个用户没选过的档位。
+- 启动时那一遍在 `StartupCheck.run`：**先读供应商与模型，再动任何东西**。
+  顺序反了，一次读失败会被当成"一个模型都没有"，那一次启动就把用户所有设置清空，
+  而且不报任何异常。四步：算 alive → 迁移老数据 → `prune` → 报失效的助手。
+- **迁移**（`StartupPlan.migrations`）：把助手行上那份搬进模型那一格。三条规矩：
+  已有那一格的绝不覆盖（新版本里选过的优先）、`auto` 不搬（它等于没设置过）、
+  模型已删的不搬。不搬的话，"换模型那一档跟过去"这件事等于没修。
+- 失效的助手**只报不改**：静默把助手的模型换成"第一个能用的"，比不换更坏。
+- 结论一行写进「调试 → 启动对账」，平时不看，出问题时第一眼能翻到。
+
+**4. 「助手设置里面记得把系统提示词的输入框放好，输入框右上方两个按钮」**
+
+新文件 `AssistantPromptField.kt`：框内右上角两颗按钮（热区 32 / 视觉 16）——
+左边 `ActionIcons.Expand`（叉号 + 四段朝外的箭头，就是用户描述的那个形状），
+右边 `ActionIcons.FileUp`。
+
+- 放大进整屏编辑，用的是 `MessageEditField`（原生 `EditText`）——与编辑消息那页同一份，
+  不重写第二个编辑器。系统提示词常常几十行，在 4 行的框里改是折磨。
+- 导入走 `GetContent("text/*")`，**已经有内容时先问一句**（"我点了导入，写了一半的那段没了"
+  是收不回来的）。上限 256 KB，超了报清多少 KB，不截断——截一半的提示词比没导入更难发现。
+- 这一层以前只有角色那一级（`ModelRolesScreen` 里的 `GlobalSystemSheet` 与角色面板）。
+  助手自己那一级是新加的：`AssistantEntry.system` 存进 `settings(assistant,<id>)` 的
+  `system` 字段，`TurnRepository` 拼 `全局 → 助手` 后发出去。拼法只有那一处。
+- `ModelRolesScreen` 的全局提示词面板也换成同一个组件（两处长一样，不维护两份）。
+
+**没验的**：这一轮所有 UI 都只过了本机 kotlinc 类型检查（非 R 错误 0，R 错误 9 条），
+真机一次没跑。存储三种形状、内置册徽标、放大页的 IME 行为、导入那一下的 SAF 选择器，
+都要真机看。

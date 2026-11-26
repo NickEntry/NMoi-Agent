@@ -139,6 +139,15 @@ internal object NativeBridge {
      */
     external fun listConversationsJson(handle: Long, limit: Long, offset: Long, assistant: String): String
 
+    /**
+     * **不带助手过滤**的会话列表（存储页的「会话文件」用）。
+     *
+     * 与 [listConversationsJson] 的差别只有一个：那一层传的是 `NULL` 而不是空串。
+     * 空串是一次过滤（`assistant_id = ''`），只会得到 0 条——看起来像"库里没有会话"，
+     * 而实际是"过滤错了一个空值"。所以这两个入口必须分开，不能靠传空串复用。
+     */
+    external fun listAllConversationsJson(handle: Long, limit: Long, offset: Long): String
+
     /** 读会话的原子单元（消息区）。limit ≤ 0 = 全给。 */
     external fun loadUnitsJson(handle: Long, session: String, limit: Long): String
 

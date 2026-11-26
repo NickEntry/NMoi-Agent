@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * 把 App 私有目录里有什么读出来（D426）。
@@ -126,6 +127,79 @@ internal object StorageRepository {
             return File(context.cacheDir, clean.removePrefix("cache/"))
         }
         return File(context.filesDir, clean)
+    }
+
+    /** 一次分页取多少会话：C 那一层的硬上限就是 200。 */
+    private const val SESSION_PAGE = 200L
+
+    /**
+     * 会话 id → 标题。**不带助手过滤**（存储页的会话不属于某一个助手）。
+     *
+     * 读不到就回空表：界面那边会退回「（没有标题） · 短id」。这不是兜底掩盖错误——
+     * 会话目录在盘上、名字读不出来时，用户仍然要能点进去看它有哪些文件。
+     * 但**不编名字**：编一个「未知会话」会让两条不同的会话看起来像同一条。
+     */
+    suspend fun sessionTitles(databasePath: String): Map<String, String> =
+        withContext(Dispatchers.IO) {
+            withStorageHandle(databasePath) { handle ->
+                runCatching {
+                    val titles = mutableMapOf<String, String>()
+                    var offset = 0L
+                    while (true) {
+                        val page = JSONObject(
+                            NativeBridge.listAllConversationsJson(handle, SESSION_PAGE, offset),
+                        )
+                        if (!page.ok()) error(page.errorText())
+                        val items = page.optJSONArray("items") ?: break
+                        for (index in 0 until items.length()) {
+                            val row = items.optJSONObject(index) ?: continue
+                            val id = row.optString("id")
+                            if (id.isNotEmpty()) titles[id] = row.optString("title")
+                        }
+                        // 取回条数不足一页就是最后一页；到这儿还没完就继续翻。
+                        if (items.length() < SESSION_PAGE) break
+                        offset += SESSION_PAGE
+                    }
+                    titles
+                }
+            }.getOrElse { emptyMap() }
+        }
+
+    /** 缓存目录当前占多少（**不含目录本身**，只算内容）。清空之后这里会变 0。 */
+    suspend fun cacheBytes(context: Context): Long = withContext(Dispatchers.IO) {
+        var bytes = 0L
+        val pending = ArrayDeque<File>()
+        context.cacheDir.listFiles().orEmpty().forEach { pending.addLast(it) }
+        while (pending.isNotEmpty()) {
+            val file = pending.removeLast()
+            when {
+                file.isDirectory -> file.listFiles().orEmpty().forEach { pending.addLast(it) }
+                file.isFile -> bytes += runCatching { file.length() }.getOrDefault(0L)
+            }
+        }
+        bytes
+    }
+
+    /**
+     * 清空缓存目录的**内容**，不删目录本身。
+     *
+     * 目录本身要留着：7z 导出的临时包、备份的临时库都 `File(cacheDir, …)`，
+     * 目录没了不会"自动重建"，下一步会直接失败。（`cacheDir` 由系统建，但删掉之后
+     * 到系统重建之间有一个窗口，而这个窗口正好是导出与备份在用的那一段。）
+     *
+     * 返回清掉了多少字节。**符号链接不跟**：用 `deleteTreeNoFollow` 与 `File.delete`。
+     */
+    suspend fun clearCache(context: Context): Result<Long> = withContext(Dispatchers.IO) {
+        runCatching {
+            var freed = 0L
+            for (child in context.cacheDir.listFiles().orEmpty()) {
+                val size = if (child.isDirectory) StorageTree.measure(child).bytes
+                else runCatching { child.length() }.getOrDefault(0L)
+                if (child.isDirectory) deleteTreeNoFollow(child) else child.delete()
+                freed += size
+            }
+            freed
+        }
     }
 
     /**

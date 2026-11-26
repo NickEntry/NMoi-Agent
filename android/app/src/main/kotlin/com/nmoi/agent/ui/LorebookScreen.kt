@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -1660,20 +1661,33 @@ internal fun LorebookBookList(
     ) {
         rows.forEachIndexed { index, row ->
             if (index > 0) RowDivider(leading = 12.dp)
-            BookListRow(row = row, selected = row.id in active) {
-                onToggle(row.id, row.id !in active)
+            // 内置册：永远在、不能取消（用户 2026-11-26）。点了什么都不发生，
+            // 也不画勾选框的"可点"样子——它旁边写着「强制生效」。
+            val forced = LorebookStore.isBuiltin(row.id)
+            BookListRow(
+                row = row,
+                selected = forced || row.id in active,
+                forced = forced,
+            ) {
+                if (!forced) onToggle(row.id, row.id !in active)
             }
         }
     }
 }
 
 @Composable
-private fun BookListRow(row: BookRow, selected: Boolean, onClick: () -> Unit) {
+private fun BookListRow(
+    row: BookRow,
+    selected: Boolean,
+    forced: Boolean = false,
+    onClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(BOOK_ROW_HEIGHT)
-            .clickable(onClick = onClick)
+            // `forced` 的行不给点：点了也不会变，摆成可点是在骗人。
+            .clickable(enabled = !forced, onClick = onClick)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1692,13 +1706,30 @@ private fun BookListRow(row: BookRow, selected: Boolean, onClick: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = bookLine(row),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = bookLine(row),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (forced) {
+                    Text(
+                        text = "强制生效",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .padding(start = 6.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                shape = RoundedCornerShape(6.dp),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
+            }
         }
         if (selected) {
             Icon(
@@ -1733,7 +1764,8 @@ internal fun LorebookPickerSheet(
     onToggle: (String, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val on = active.count { id -> books.any { it.id == id } }
+    // 内置册永远算一册（它不在勾选里，但每轮都注入）。
+    val on = LorebookStore.activeCount(books, active)
     SheetFrame(title = "世界书（$on/${books.size}）", onDismiss = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 12.dp)) {
             LorebookBookList(rows = books, active = active.toSet(), onToggle = onToggle)

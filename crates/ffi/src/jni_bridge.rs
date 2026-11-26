@@ -170,6 +170,32 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listConversationsJson
     to_jstring(&mut env, text)
 }
 
+/// `Native.listAllConversationsJson(handle, limit, offset)`：**不过滤助手**的会话列表。
+///
+/// 存储页的「会话文件」按会话列目录，它不属于任何一个助手——按助手过滤会把别人的会话
+/// 藏起来，那正是铁律②要挡的"存了但看不见"。C 那一层本来就有"NULL = 不过滤"的口子
+/// （`nmoi_storage_list_conversations_json` 的注释里写明是给导出/核对用的），
+/// 这里只是把那个口子接到 Kotlin：**传空指针**，不是传空串（空串是一次过滤，
+/// 只会得到 0 条，而那个错看起来像"库里没有会话"）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAllConversationsJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    limit: jlong,
+    offset: jlong,
+) -> jstring {
+    let text = guarded(move || {
+        take_json(crate::storage::nmoi_storage_list_conversations_json(
+            handle as u64,
+            limit,
+            offset,
+            std::ptr::null(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 这个会话欠着什么（D323）：索引待补几条、哪几条消息没说完。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_storageInterruptsJson<'local>(

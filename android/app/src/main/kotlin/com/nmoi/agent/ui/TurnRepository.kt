@@ -347,7 +347,16 @@ internal object TurnRepository {
                     // 语音现状（0.17c）：`Voice-Caps` 只读这一段。没配就不发——
                     // core 那边"没这一段"= 不声明这个工具。
                     .also { row -> VoiceRepository.turnJson(context)?.let { row.put("voice", it) } }
-                    .put("thinking", assistant.thinking)
+                    // 思考强度：**跟着模型走**（D435）。模型那一格优先，老数据退回助手行上那一份。
+                    .put(
+                        "thinking",
+                        ModelPrefs.resolveThinking(
+                            context,
+                            assistant.providerId,
+                            assistant.modelId,
+                            assistant.thinking,
+                        ),
+                    )
                     // 速度（D402）：空 = 一个字段都不注。写进去的 wire 值由 FFI 按端口再判一次。
                     .put("speed", assistant.speed)
                     .also { row ->
@@ -444,6 +453,12 @@ internal object TurnRepository {
                         )
                     }
 
+                // 系统提示词（D435）：全局那段 → 这个助手自己的那段，拼好再发。
+                // 空着一律不发——发一个空 system，有的上游会把它当成"清空系统提示"。
+                .also { row ->
+                    PromptVars.compose(null, AppSettings.globalSystem(context), assistant.system)
+                        ?.let { row.put("system", it) }
+                }
                 // 世界书（D280）：整份 JSON 递进去，core 那边按关键词激活、按位置注入。
                 // 没导入就不发这个字段——省一次解析，也省得 core 判空串。
                 .also { row ->

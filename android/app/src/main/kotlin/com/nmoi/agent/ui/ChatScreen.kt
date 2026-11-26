@@ -541,10 +541,16 @@ internal fun ChatScreen(
             .orEmpty()
         SpeedLevels.forModel(kind, assistant.modelId)
     }
-    val thinkingLabel = remember(assistant.thinking, thinkingLevels) {
-        val known = THINKING_LEVELS.firstOrNull { it.first == assistant.thinking }?.second
-            ?: assistant.thinking
-        val supported = thinkingLevels.any { it.first == assistant.thinking }
+    val effectiveThinking = ModelPrefs.resolveThinking(
+        context,
+        assistant.providerId,
+        assistant.modelId,
+        assistant.thinking,
+    )
+    val thinkingLabel = remember(effectiveThinking, thinkingLevels) {
+        val known = THINKING_LEVELS.firstOrNull { it.first == effectiveThinking }?.second
+            ?: effectiveThinking
+        val supported = thinkingLevels.any { it.first == effectiveThinking }
         if (supported) known else "$known（这个模型不支持）"
     }
     /** 速度的显示名：空 = 跟随默认；这个模型没有这根轴时也按"跟随默认"显示。 */
@@ -1889,8 +1895,8 @@ internal fun ChatScreen(
                     onModel = { modelSheet = true },
                     onThinking = { thinkingSheet = true },
                     thinkingLabel = thinkingLabel,
+                    thinkingWire = effectiveThinking,
                     speedLabel = speedLabel,
-                    thinkingWire = assistant.thinking,
                     starSpec = speedStarSpec,
                     thinkingReady = assistantReady,
                     onEditTextReady = { editTextRef.value = it },
@@ -2219,10 +2225,21 @@ internal fun ChatScreen(
         if (thinkingSheet) {
             ThinkingSpeedSheet(
                 levels = thinkingLevels,
-                selected = assistant.thinking,
+                // 选中态读**模型那一格**（D435）：换模型之后要显示那个模型自己的档。
+                selected = ModelPrefs.resolveThinking(
+                    context,
+                    assistant.providerId,
+                    assistant.modelId,
+                    assistant.thinking,
+                ),
                 speedLevels = speedChoices,
                 speedSelected = assistant.speed,
                 onThinking = { wire ->
+                    // 思考强度**跟着模型走**（D435）：写的是这个模型那一格，不是助手那一行。
+                    // 助手行上那份仍然一起写（老数据要能读回来），但它只是兜底。
+                    val providerId = assistant.providerId
+                    val modelId = assistant.modelId
+                    ModelPrefs.setThinking(context, providerId, modelId, wire)
                     scope.launch {
                         val next = assistant.copy(thinking = wire)
                         AssistantRepository.save(databasePath, next).fold(

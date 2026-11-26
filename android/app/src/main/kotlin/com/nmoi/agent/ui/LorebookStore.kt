@@ -224,14 +224,20 @@ internal object LorebookStore {
     }
 
     /**
-     * 这一轮真正参与注入的册：`ids` 是勾选结果，空集 = 一册都不带。
+     * 这一轮真正参与注入的册：`ids` 是勾选结果，空集 = 一册普通的世界书都不带。
      *
      * 册级 `enabled` 只管"要不要出现在「＋」的清单里"，真正生效的是助手 / 角色身上这一份
      * （用户 2026-11-08 定的三层语义）。**没有"没设置过就全带"这一档了**（2026-11-10）：
      * 那个默认值让"什么都不选"和"全选"长得一样。
+     *
+     * # 内置册不受勾选影响（用户 2026-11-26）
+     *
+     * 原话是「内置册怎么现在可开关？这玩意不是应该默认在合适的地方强制生效吗」。
+     * 它不是用户导入的一份设定，是应用自带的那几条（工具定义覆写 + 自制条目），
+     * 所以**永远带上**：勾不勾都进，界面上也不给勾。
      */
     fun filterBy(root: JSONObject, ids: List<String>): JSONObject {
-        val keep = ids.toSet()
+        val keep = ids.toSet() + BUILTIN_ID
         val books = books(root)
         val kept = JSONArray()
         for (index in 0 until books.length()) {
@@ -252,7 +258,8 @@ internal object LorebookStore {
         val out = ArrayList<BookRow>(books.length())
         for (index in 0 until books.length()) {
             val book = books.optJSONObject(index) ?: continue
-            if (!book.optBoolean("enabled", true)) continue
+            // 内置册不看册级开关：它强制生效，收起它等于让"内置"这两个字变成假的。
+            if (!book.optBoolean("enabled", true) && !isBuiltin(book.optString("id"))) continue
             val list = entries(book)
             var on = 0
             for (i in 0 until list.length()) {
@@ -270,6 +277,15 @@ internal object LorebookStore {
         }
         return out
     }
+
+    /**
+     * 界面上那句「生效几册」的分母分子。**内置册永远算一册**——它不由勾选决定。
+     *
+     * 三处（＋ 的世界书面板、助手设置、角色面板）共用这一份：各算一遍的话，
+     * 其中一处迟早会显示"1/2"而实际注入了两册。
+     */
+    fun activeCount(rows: List<BookRow>, ids: Collection<String>): Int =
+        rows.count { isBuiltin(it.id) || it.id in ids }
 
     /** 按 id 放一册进去：同 id 就整册换掉（§10.2），没有就追加。 */
     fun putBookObject(root: JSONObject, book: JSONObject): JSONObject {

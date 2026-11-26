@@ -60,6 +60,7 @@ import com.nmoi.agent.ui.SettingsGroup
 import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
+import com.nmoi.agent.ui.StartupCheck
 import com.nmoi.agent.ui.StorageDetailScreen
 import com.nmoi.agent.ui.StorageKind
 import com.nmoi.agent.ui.StorageScreen
@@ -299,6 +300,8 @@ class MainActivity : ComponentActivity() {
                 var listReload by remember { mutableStateOf(0) }
                 // "编辑消息"存完之后让消息区重读（铁律 ①：以库里那份为准）。
                 var messageReload by remember { mutableStateOf(0) }
+                /** 启动对账的结论（D435）：一行字，给设置页看。空 = 还没跑完。 */
+                var startupReport by remember { mutableStateOf("") }
                 // 当前助手（D174）：抽屉里的列表和"新建会话归谁"都看它。
                 // 它跟着 `listReload` 重读——切了助手就是一次列表刷新。
                 val assistantList by produceState<AssistantList?>(initialValue = null, listReload) {
@@ -311,6 +314,16 @@ class MainActivity : ComponentActivity() {
                     Start.mark("助手列表", from)
                 }
                 val activeAssistantId = assistantList?.activeId ?: AssistantRepository.DEFAULT_ID
+                // 启动对账（D435）：**先加载供应商与模型，再清跟着模型走的设置**。
+                // 顺序不能反——读失败被当成"一个模型都没有"，那一次启动就会把用户设过的
+                // 思考强度全清掉（`ModelPrefs.prune` 的 alive 是空集），而且不报任何异常。
+                // 它不阻塞首屏：在 IO 上跑，结论只进日志与设置页那行提示。
+                LaunchedEffect(Unit) {
+                    val from = Start.now()
+                    val report = StartupCheck.run(context, databasePath)
+                    startupReport = report.summary()
+                    Start.mark("启动对账", from)
+                }
                 // 开库和列表读盘都碰磁盘，不许在主线程上做。
                 val snapshot by produceState<ConversationSnapshot?>(
                     initialValue = null,
@@ -833,7 +846,11 @@ class MainActivity : ComponentActivity() {
 
                         is Route.StorageDetail -> StorageDetailScreen(
                             kind = route.kind,
+                            databasePath = databasePath,
                             onBack = { backStack = backStack.dropLast(1) },
+                            // 「日志」那一页的三张卡点「查看」时进已有的通道页：
+                            // 那里有查看/复制/导出/清除四个动作，不在存储页重写一个查看器。
+                            onOpenLog = { logKind -> backStack = backStack + Route.LogChannel(logKind) },
                         )
 
                         is Route.SettingsGroupRoute -> when (val group = route.group) {
@@ -889,6 +906,7 @@ class MainActivity : ComponentActivity() {
                                 nativeStatus = nativeStatus,
                                 onOpenLogs = { backStack = backStack + Route.Logs },
                                 onBack = { backStack = backStack.dropLast(1) },
+                                startupReport = startupReport,
                             )
 
                             else -> GroupScreen(
