@@ -72,14 +72,15 @@ bash scripts/target_usage.sh --force     # 不管多大都清
 
 ```text
 路径      /workspace/NMoi-Agent-debug.apk
-字节      19,794,861
-sha256   1416d24636bec4c44bdcd6fd4dab3342（前 32）
-commit   e3f8db7（D430：工具块可增删改名；test1 验过模型侧提示词）
-CI run   45716550375（七 job 全绿）
+字节      19,812,845
+sha256   b2f531d9a458c696bebaea8d0ce09572（前 32）
+commit   127edfb（D431/D432：模型侧三个工具落地；压缩闸补空草稿与"缺哪一项"）
+CI run   45727619573（七 job 全绿）
 schema   v21（未动）
 JNI      75 个（符号没变；applyUnitEditsJson 的 spec 多收一种形状）
 
-上一份      19,789,233 / e95d40096c9805f0c4487e87826e5195 / 4e98ac5（run 45703171369，D429）
+上一份      19,794,861 / 1416d24636bec4c44bdcd6fd4dab3342 / e3f8db7（run 45716550375，D430）
+再上一份    19,789,233 / e95d40096c9805f0c4487e87826e5195 / 4e98ac5（run 45703171369，D429）
 再上一份    19,797,165 / cfd5f6d9440e7904394c40d4c671523d / 4e32258（run 45664890099，D428）
 再上一份    19,774,525 / 0f7c9bdd146de604c29ff8b22f1cf416 / aeabcb2（run 45629683436，D423–D426）
 再上一份    19,772,933 / 27bf2e9d88daa660c5f9c0468e3e0d69 / 95b20a8（run 45626061239，D424 备份入口）
