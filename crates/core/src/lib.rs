@@ -17,6 +17,7 @@ pub mod config;
 pub mod degenerate;
 pub mod divider;
 pub mod edit;
+pub mod editmsg;
 pub mod engine;
 pub mod events;
 pub mod facts;

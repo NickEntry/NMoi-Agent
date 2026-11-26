@@ -483,23 +483,48 @@ pub struct CoverageReport {
     pub checked: usize,
     /// 一条事实都抽不出来的消息条数。
     pub skipped: usize,
+    /// 草稿是空的（或只有空白）。
+    ///
+    /// 为什么要单独记（2026-11-26 验出来的）：`is_complete` 原来只看"硬事实缺没缺"，
+    /// 而一段**没有硬事实**的历史配上**空草稿**，缺的列表是空的 → 被判成"压过了"。
+    /// 真端点实测过模型回空串（第二次压缩 0 字），那条路会把整段上下文换成"（空）"。
+    pub blank: bool,
 }
 
 impl CoverageReport {
     pub fn is_complete(&self) -> bool {
-        self.missing.is_empty()
+        // 空草稿永远不算压过：那不是"压得干净"，是"什么都没了"。
+        !self.blank && self.missing.is_empty()
     }
 
     /// 给模型看的一句话。
     pub fn summary(&self) -> String {
+        if self.blank {
+            return "草稿是空的：要写一段摘要，不是留空".to_string();
+        }
+        // 缺的是**哪几项**要说出来（2026-11-26 验出来的）：只写"缺 1 项"，
+        // 模型下一轮只能瞎猜，而它猜的那一项常常不是我们查的那一项。
+        let missing_keys: Vec<&str> = self
+            .missing
+            .iter()
+            .take(3)
+            .map(|fact| fact.key.as_str())
+            .collect();
         let base = if self.required.is_empty() {
             format!("没有硬事实要校验（跳过 {} 条）", self.skipped)
-        } else {
+        } else if missing_keys.is_empty() {
             format!(
-                "硬事实 {}/{} 项覆盖，缺 {} 项；跳过 {} 条",
+                "硬事实 {}/{} 项覆盖；跳过 {} 条",
                 self.required.len() - self.missing.len(),
                 self.required.len(),
-                self.missing.len(),
+                self.skipped
+            )
+        } else {
+            format!(
+                "硬事实 {}/{} 项覆盖，缺：{}；跳过 {} 条",
+                self.required.len() - self.missing.len(),
+                self.required.len(),
+                missing_keys.join("、"),
                 self.skipped
             )
         };
@@ -560,6 +585,7 @@ pub fn check_coverage(above: &[AtomicUnit], draft: &str) -> CoverageReport {
         soft_missing: verdict.soft_missing,
         checked,
         skipped,
+        blank: draft.trim().is_empty(),
     }
 }
 
@@ -1142,6 +1168,65 @@ mod tests {
         let id = MessageId::new(session, seq);
         let message = Message::text(id, role, source, text, tokens, 0, LogicalClock::new(seq));
         AtomicUnit::turn(message).unwrap()
+    }
+
+    /// 2026-11-26：真端点（test1）实测出来的两件事，一条被闸拦住、一条是**缺口**。
+    ///
+    /// **拦住的**：模型会把硬事实（这里是一条路径）顺手省掉。`check_coverage` 认这个，
+    /// 缺了就把草稿退回去重写——下面第一条就是这个。
+    ///
+    /// **缺口（没拦）**：它把 `127.0.0.1` 这种绑定地址省掉了（实测那版摘要写的是
+    /// "端口 8790 处于监听状态"，而"只听本机"和"对外"是两件事）。
+    /// `facts::extract` 只把**路径 / 命令 / 错误码**算硬事实，IPv4 不在里面，
+    /// 所以这种丢失是静默的。要补就得动 `facts` 的抽取规则（会牵动所有覆盖率判据），
+    /// 单独一轮做。这里把它**记成已知缺口**，不假装拦住了。
+    #[test]
+    fn a_summary_that_drops_a_path_is_refused() {
+        let session = SessionId::new();
+        let above = vec![turn(
+            session,
+            1,
+            Role::Assistant,
+            SourceTag::History,
+            "LISTEN 127.0.0.1:8790 pid 4182，`/v1/chat/completions` 返回 200，/health 返回 404",
+            120,
+        )];
+        // 实测那一版摘要：路径都在，但把绑定地址省了（那是缺口，不是这里要验的）。
+        let dropped = "store.py 已在运行：端口 8790 处于监听状态，/health 返回 404。";
+        let report = check_coverage(&above, dropped);
+        assert!(!report.is_complete(), "路径丢了就该拒：{report:?}");
+        assert!(
+            report.summary().contains("/v1/chat/completions"),
+            "退回时要说清缺哪一条：{}",
+            report.summary()
+        );
+
+        // 补上之后就算过（长度与软事实不拦）。
+        let fixed = "store.py 在 8790 上监听；`/v1/chat/completions` 返回 200，/health 返回 404。";
+        assert!(
+            check_coverage(&above, fixed).is_complete(),
+            "补上硬事实就该过：{:?}",
+            check_coverage(&above, fixed)
+        );
+    }
+
+    /// 空草稿不是摘要：它会把整段上下文变成"（空）"。
+    #[test]
+    fn an_empty_draft_is_never_a_valid_summary() {
+        let session = SessionId::new();
+        let above = vec![turn(
+            session,
+            1,
+            Role::Assistant,
+            SourceTag::History,
+            "端口 8790，pid 4182",
+            40,
+        )];
+        assert!(!check_coverage(&above, "").is_complete(), "空串不算压过");
+        assert!(
+            !check_coverage(&above, "   \n  ").is_complete(),
+            "只有空白也不算"
+        );
     }
 
     fn history() -> (SessionId, Vec<AtomicUnit>) {

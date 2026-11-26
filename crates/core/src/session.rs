@@ -1927,8 +1927,16 @@ fn apply_pending_edits<S: HistoryStore>(
 ) -> Vec<EditReport> {
     let mut reports = Vec::new();
     for record in calls {
+        if !record.ok {
+            continue;
+        }
+        // 整条重写（D431）：一条消息、整份内容 + 一句自留摘要。
+        if record.name == "edit_message" {
+            reports.extend(apply_message_edit(store, record, history));
+            continue;
+        }
         // 工具自己拒掉的（块名不合法、目标被锁定、序号越界）不进落库队列。
-        if (record.name != "edit_unit" && record.name != "edit_message") || !record.ok {
+        if record.name != "edit_unit" {
             continue;
         }
         let parsed = serde_json::from_str::<serde_json::Value>(&record.arguments)
@@ -2016,6 +2024,183 @@ fn apply_pending_edits<S: HistoryStore>(
         }
     }
     reports
+}
+
+/// 报告里的时间戳：`2026-11-26 22:41`。自己算，不引 chrono（core 没有它，也不该为一行字引）。
+fn stamp_label() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|span| span.as_secs())
+        .unwrap_or(0);
+    let (year, month, day, hour, minute) = civil_from_unix(now);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// Unix 秒 → 年月日时分（UTC）。闰年那套照 Howard Hinnant 的算法，别自己发明。
+fn civil_from_unix(secs: u64) -> (i64, u32, u32, u32, u32) {
+    let days = (secs / 86_400) as i64;
+    let rest = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if month <= 2 { y + 1 } else { y };
+    let hour = (rest / 3600) as u32;
+    let minute = ((rest % 3600) / 60) as u32;
+    (year, month, day, hour, minute)
+}
+
+/// `edit_message` 落库：整条重写 + 把 before/after 写进 `/chat/outputs/edit-<seq>.md`。
+///
+/// 报告为什么要写文件（用户 2026-11-26）：那几行"改了哪几块、前后各多长"如果留在上下文里，
+/// 一轮改三次就多三段谁也不再看的字。现在工具只回一句模型自己写的 `note` + 路径，
+/// 详细的那份落盘，要用的时候 `read_outputs` 去读。
+///
+/// 报告是**追加**的：同一条消息被改多次，"它经历过什么"本来就是一整份。
+fn apply_message_edit<S: HistoryStore>(
+    store: &mut S,
+    record: &ToolRecord,
+    history: &[Message],
+) -> Vec<EditReport> {
+    let parsed = serde_json::from_str::<serde_json::Value>(&record.arguments)
+        .ok()
+        .and_then(|value| crate::editmsg::parse_message_edit(&value).ok());
+    let Some(call) = parsed else {
+        return vec![EditReport {
+            target: record.arguments.clone(),
+            block: "整条".into(),
+            ok: false,
+            message: "参数解析不出来，这一条没有落库".into(),
+        }];
+    };
+    let target = match crate::tools::resolve_edit_target(&call.target, history) {
+        Ok(id) => id,
+        Err(message) => {
+            return vec![EditReport {
+                target: call.target.clone(),
+                block: "整条".into(),
+                ok: false,
+                message,
+            }]
+        }
+    };
+    let before = history.iter().find(|message| message.id == target).cloned();
+
+    match store.apply_turn_edits(&[call.to_turn_edit(target.clone())]) {
+        Ok(outcome) => {
+            write_edit_report(store, &target, &call, before.as_ref(), &outcome);
+            if outcome.blocks.is_empty() && outcome.unchanged.is_empty() {
+                return vec![EditReport {
+                    target: target.to_string(),
+                    block: "整条".into(),
+                    ok: false,
+                    message: "和现在一样，没有写".into(),
+                }];
+            }
+            let mut reports = Vec::new();
+            for block in &outcome.blocks {
+                reports.push(EditReport {
+                    target: target.to_string(),
+                    block: block.clone(),
+                    ok: true,
+                    message: format!(
+                        "已落库（{}）",
+                        crate::editmsg::MessageEdit::report_path(target.seq())
+                    ),
+                });
+            }
+            for block in &outcome.unchanged {
+                reports.push(EditReport {
+                    target: target.to_string(),
+                    block: block.clone(),
+                    ok: false,
+                    message: "和现在一样，没有写".into(),
+                });
+            }
+            reports
+        }
+        Err(error) => vec![EditReport {
+            target: target.to_string(),
+            block: "整条".into(),
+            ok: false,
+            message: error,
+        }],
+    }
+}
+
+/// 把这次改动写进 `/chat/outputs/edit-<seq>.md`（追加）。
+///
+/// 写不进去**不算失败**：库里已经改好了，报告只是给下一次的自己看的。
+/// 但要说出来——静默丢一份报告，下次它就只剩下那句 `note`。
+fn write_edit_report<S: HistoryStore>(
+    store: &S,
+    target: &crate::ids::MessageId,
+    call: &crate::editmsg::MessageEdit,
+    before: Option<&Message>,
+    outcome: &UnitEditResult,
+) {
+    use std::io::Write;
+    let Some(chat) = store.chat_dir(target.session()) else {
+        return;
+    };
+    let dir = chat.join("outputs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("edit-{}.md", target.seq()));
+    let stamp = stamp_label();
+    let mut section = String::new();
+    section.push_str(&format!("\n## {stamp}\n\n"));
+    section.push_str(&format!("note：{}\n\n", call.note));
+    let before_text = before.map(|message| message.content()).unwrap_or_default();
+    if let Some(after) = &call.text {
+        section.push_str(&format!(
+            "- 正文：{} 字 → {} 字\n",
+            before_text.chars().count(),
+            after.chars().count()
+        ));
+        section.push_str(&format!(
+            "\n<details><summary>改之前</summary>\n\n```\n{}\n```\n\n</details>\n",
+            clip(&before_text)
+        ));
+        section.push_str(&format!(
+            "\n<details><summary>改之后</summary>\n\n```\n{}\n```\n\n</details>\n",
+            clip(after)
+        ));
+    }
+    for block in &outcome.blocks {
+        if call.text.is_some() && block == "正文" {
+            continue;
+        }
+        section.push_str(&format!("- {block}：已改\n"));
+    }
+    for block in &outcome.unchanged {
+        section.push_str(&format!("- {block}：未变\n"));
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = file.write_all(section.as_bytes());
+}
+
+/// 报告里的片段：太长就截，附一句"截了"。
+fn clip(text: &str) -> String {
+    const CAP: usize = 1500;
+    if text.chars().count() <= CAP {
+        text.to_string()
+    } else {
+        let head: String = text.chars().take(CAP).collect();
+        format!("{head}\n…（截断，原文更长）")
+    }
 }
 
 /// 一堆单元一共占多少 token。**走估算器**，和面板、和判据同一档（D97 的"同一口径"）。
@@ -3817,6 +4002,8 @@ mod tests {
     struct EditStore {
         units: Vec<AtomicUnit>,
         applied: Mutex<Vec<(MessageId, BlockSelector, String)>>,
+        /// 报告往哪儿写（`edit_message` 落库时那一步）。`None` = 这个假库没有会话目录。
+        chat: Option<std::path::PathBuf>,
         /// `replace_turn` 的调用记录（D263 的整轮替换）：换掉了 `after` 之后几条、新的几条。
         replaced: Mutex<Vec<(MessageId, usize, usize)>>,
     }
@@ -3825,6 +4012,10 @@ mod tests {
         fn append_unit(&mut self, _session: SessionId, unit: &AtomicUnit) -> Result<(), String> {
             self.units.push(unit.clone());
             Ok(())
+        }
+
+        fn chat_dir(&self, _session: SessionId) -> Option<std::path::PathBuf> {
+            self.chat.clone()
         }
 
         fn load_units(&self, _session: SessionId) -> Result<Vec<AtomicUnit>, String> {
@@ -3939,6 +4130,91 @@ mod tests {
                 removed: 0,
             })
         }
+    }
+
+    /// `edit_message` 落库（D431）：库里改了，报告也写进 `/chat/outputs/`，而工具回给模型的
+    /// 只有"一句 note + 一条路径"——那两行才是留在上下文里的东西。
+    #[test]
+    fn edit_message_lands_and_writes_a_report() {
+        let (dir, workspace, policy) = setup();
+        let session = SessionId::new();
+        let chat = dir.path().join("chat");
+
+        let head = Message::text(
+            MessageId::new(session, 1),
+            Role::Assistant,
+            SourceTag::History,
+            "这次改成一条等到完再发下一条",
+            3,
+            0,
+            LogicalClock::new(1),
+        );
+        let mut store = EditStore {
+            units: vec![AtomicUnit::turn(head.clone()).unwrap()],
+            chat: Some(chat.clone()),
+            ..EditStore::default()
+        };
+
+        let arguments = json!({
+            "message_id": "last_assistant",
+            "text": "这次改成了一条等到完再发下一条",
+            "note": "改了一句措辞"
+        });
+        let transport = Scripted::new(vec![
+            calls_body(&[("call_1", "edit_message", &arguments.to_string())]),
+            text_body("改好了"),
+        ]);
+        let client = ChatClient::new(transport.clone());
+        let registry = ToolRegistry::workspace_defaults();
+
+        let turn = run_session_turn(
+            &client,
+            &base_request(),
+            &mut store,
+            session,
+            "把那句措辞改一下",
+            &registry,
+            &policy,
+            Some(&workspace),
+            &SessionConfig::default(),
+            2_000,
+        )
+        .unwrap();
+
+        // 1) 工具回给模型的就是"note + 路径"，没有逐块报告。
+        let outcome = &turn.report.tool_calls[0].outcome;
+        assert!(outcome.contains("改了一句措辞"), "{outcome}");
+        assert!(outcome.contains("/chat/outputs/edit-1.md"), "{outcome}");
+        assert!(
+            !outcome.contains("已排队"),
+            "不该再回'已排队'那种账：{outcome}"
+        );
+
+        // 2) 库里改了。
+        let applied = store.applied.lock().unwrap().clone();
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert_eq!(applied[0].2, "这次改成了一条等到完再发下一条");
+
+        // 3) 报告落盘了，里面有 note 与前后两段。
+        let report = std::fs::read_to_string(chat.join("outputs/edit-1.md")).unwrap();
+        assert!(report.contains("改了一句措辞"), "{report}");
+        assert!(
+            report.contains("这次改成一条等到完再发下一条"),
+            "改之前那段要在：{report}"
+        );
+        assert!(
+            report.contains("这次改成了一条等到完再发下一条"),
+            "改之后那段要在：{report}"
+        );
+
+        // 4) 落库报告也在，且是成功的那一条。
+        assert!(
+            turn.edits
+                .iter()
+                .any(|edit| edit.ok && edit.block == "正文"),
+            "{:?}",
+            turn.edits
+        );
     }
 
     /// D177 / 0.14y：模型调一次 `edit_message` → **这一轮收尾时**三块都落库。

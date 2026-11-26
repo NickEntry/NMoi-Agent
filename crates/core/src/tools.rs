@@ -453,6 +453,13 @@ impl ToolRegistry {
         registry.register(Box::new(crate::shell::EnvirShellTool));
         // 模型改消息（D177 / 0.14y）：与 `edit_file` 同档能力，但改的是会话不是磁盘。
         registry.register(Box::new(EditUnitTool));
+        // 整条重写（D431）：模型看得见全文，它要的是"照我看到的这样写一遍"，
+        // 而不是去背 part / block / index。落盘只有一句自己写的 `note` + 报告路径。
+        registry.register(Box::new(crate::editmsg::EditMessageTool));
+        // 找消息（id 不随请求发出去，它得先按关键词/正文开头找）。
+        registry.register(Box::new(crate::editmsg::FindMessagesTool));
+        // 读报告：改完只留一句摘要，要核对就去读 /chat/outputs/。
+        registry.register(Box::new(crate::editmsg::ReadOutputsTool));
         // 别的会话的 `/tmp` 与 `/chat`（D295）：`Capability::CrossSessionRead` 门控，
         // 默认关——关着时**不声明**，模型连它会去试的机会都没有。
         registry.register(Box::new(SessionFilesTool));
@@ -2701,9 +2708,10 @@ mod tests {
         let registry = ToolRegistry::workspace_defaults();
         let names = registry.names();
         // 六个文件工具 + 两把 shell（`System-Shell` D159、`WorkSpace-EnvirShell` D172）
-        // + 模型改消息（`edit_unit` D177）+ 把图拉进上下文（`View-Image` D248）。
+        // + 模型改消息（`edit_unit` D177 / `edit_message` D431）+ 找消息与读报告（D431）
+        // + 把图拉进上下文（`View-Image` D248）。
         // 两把 shell 的**声明**另有门控，这里只验"注册表里有、描述齐全"。
-        assert_eq!(names.len(), 13, "{names:?}");
+        assert_eq!(names.len(), 16, "{names:?}");
         for name in [
             "System-Shell",
             "WorkSpace-EnvirShell",
@@ -2711,6 +2719,9 @@ mod tests {
             "Voice-Caps",
             "Speak",
             "edit_unit",
+            "edit_message",
+            "find_messages",
+            "read_outputs",
         ] {
             assert!(names.contains(&name), "缺少 {name}");
         }
@@ -2725,7 +2736,7 @@ mod tests {
             assert!(names.contains(&name), "缺少 {name}");
         }
         let specs = registry.specs();
-        assert_eq!(specs.len(), 13);
+        assert_eq!(specs.len(), 16);
         assert!(specs.iter().all(|spec| spec.description.is_some()));
         assert_eq!(specs[0].parameters["type"], json!("object"));
     }
