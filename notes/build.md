@@ -72,16 +72,16 @@ bash scripts/target_usage.sh --force     # 不管多大都清
 
 ```text
 路径      /workspace/NMoi-Agent-debug.apk
-字节      19,905,417
-sha256   9aa81da987120ef27aed4e709b12fa95（前 32）
-          全：9aa81da987120ef27aed4e709b12fa95b4371b58463eeaa40bfddc4877a1b8ba
-commit   a7585e6（D436：内置册只在设置里可见；子页手势与上下文管理计划）
-CI run   45971588765（七 job 全绿）
+字节      19,908,509
+sha256   2363d55f8e4d272ad3d6c7ca8869d549（前 32）
+commit   39e6363（D437：tokenizer 条目 + 设计稿；旧估算归档）
+CI run   45985724232（七 job 全绿）
 schema   v21（未动）
 JNI      76 个（未变）
 四样      字节 / sha256 / arm64 .so 里 76 个 Java_ 符号 / assets/presets 五份在
 
-上一份      19,906,801 / 5f3c7c6527339c9dfe5f160bc1effaaa / 231cd3a（run 45901738649，D434/D435）
+上一份      19,905,417 / 9aa81da987120ef27aed4e709b12fa95 / a7585e6（run 45971588765，D436）
+再上一份    19,906,801 / 5f3c7c6527339c9dfe5f160bc1effaaa / 231cd3a（run 45901738649，D434/D435）
 再上一份    19,812,997 / 8cec218912837baf1cb0efb048beef29 / e06c6fe（run 45736109901，D433）
 再上一份    19,812,845 / b2f531d9a458c696bebaea8d0ce09572 / 127edfb（run 45727619573，D431/D432）
 再上一份    19,794,861 / 1416d24636bec4c44bdcd6fd4dab3342 / e3f8db7（run 45716550375，D430）
