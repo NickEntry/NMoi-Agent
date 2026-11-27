@@ -252,14 +252,24 @@ internal object LorebookStore {
      *
      * 只列册级 `enabled` 的（收起的不出现在这里），并带上**每册的条目数**：
      * 界面上要写「已启用 5/5 · 简介」，光有名字看不出这册是不是空的。
+     *
+     * # 内置册**不在这份清单里**（D436）
+     *
+     * 用户 2026-11-26 的原话是「不是应该 1/2，而是应该在世界书选择页面隐藏内置世界书，
+     * 这个内置世界书只在设置-世界书能看」。它不是"一册可以勾的世界书"，
+     * 是应用自带的那几条——摆进选择页就会出现一个勾不掉的行（勾不掉的行比不出现更费解）。
+     * 它在设置 → 世界书那一页由 `BuiltinCard` 单独画，那里能看能改，但不能关。
+     *
+     * 注意：**注入时仍然带上它**（[filterBy] 无条件并入 `builtin`）。
+     * "不显示"与"不生效"是两件事，这里只做前者。
      */
     fun bookRows(root: JSONObject): List<BookRow> {
         val books = books(root)
         val out = ArrayList<BookRow>(books.length())
         for (index in 0 until books.length()) {
             val book = books.optJSONObject(index) ?: continue
-            // 内置册不看册级开关：它强制生效，收起它等于让"内置"这两个字变成假的。
-            if (!book.optBoolean("enabled", true) && !isBuiltin(book.optString("id"))) continue
+            if (isBuiltin(book.optString("id"))) continue
+            if (!book.optBoolean("enabled", true)) continue
             val list = entries(book)
             var on = 0
             for (i in 0 until list.length()) {
@@ -279,13 +289,13 @@ internal object LorebookStore {
     }
 
     /**
-     * 界面上那句「生效几册」的分母分子。**内置册永远算一册**——它不由勾选决定。
+     * 界面上那句「生效几册」的分子：`rows` 里被勾上的那些。
      *
-     * 三处（＋ 的世界书面板、助手设置、角色面板）共用这一份：各算一遍的话，
-     * 其中一处迟早会显示"1/2"而实际注入了两册。
+     * 内置册不在 `rows` 里（见 [bookRows]），所以这里不需要为它特判——
+     * 它既不出现在分母里，也不出现在分子里，用户看到的就是他真能勾的那几册。
      */
     fun activeCount(rows: List<BookRow>, ids: Collection<String>): Int =
-        rows.count { isBuiltin(it.id) || it.id in ids }
+        rows.count { it.id in ids }
 
     /** 按 id 放一册进去：同 id 就整册换掉（§10.2），没有就追加。 */
     fun putBookObject(root: JSONObject, book: JSONObject): JSONObject {
