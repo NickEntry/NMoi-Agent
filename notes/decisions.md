@@ -5587,3 +5587,30 @@ Rust 侧验证只能交给 CI；而且 onig 是 C 库，交叉编译到 android 
 我倾向 2，理由：不牵动 MSRV、不牵动交叉编译，而"对不对"有硬判据。这一轮没动手——
 它是几百行，要单独一轮。第 3 步（usage 落库 + 消息尾部 tokens）不依赖它，
 可以随时提到前面。
+
+## D440 各家词表从哪来：BPE 三种、Gemini 走 Gemma 词表（2026-11-26）
+
+用户点名 qwen / deepseek / gpt / claude / gemini / glm / kimi / doubao 都要适配，
+并让我去查不公开词表的那两家。查证结果：
+
+- **Qwen / DeepSeek / GLM / Kimi / Doubao**：HF 上直接发 `tokenizer.json`（BPE + ByteLevel）。
+  注意 DeepSeek 那份的预切分是**显式写在 JSON 里的 `Split` 正则**（`\p{N}{1,3}`、`[一-龥]+`、
+  一条标点/字母混合、`\s+(?!\S)`），不是 GPT-2 内置那一条——所以要**读 JSON 里的正则**，
+  不能写死。`merges` 有 `"a b"` 字符串与 `["a","b"]` 数组两种写法，都要收。
+- **Claude**：`Xenova/claude-tokenizer`（HF，约 1.7 MB / 65k 词表，README 说是从
+  anthropic-sdk-python 导出的）。形态就是普通 tokenizer.json，走同一条路。
+  但它是**社区导出**，不是官方发布——所以条目的 `source` 要能分清 official / community / user。
+- **Gemini**：没有 tokenizer.json，但有确定答案——所有 Gemini 模型共用
+  **Gemma 3 的 SentencePiece 词表（262,144 token）**，官方 Python SDK 的 `LocalTokenizer`
+  与 Rust 的 `gemini-tokenizer` crate 都是这一份。**Gemma 词表受 Gemma Terms of Use 约束，
+  不是 MIT**，只能用户自备导入，不能随包带。
+- **GPT**：发的是 `.tiktoken` 不是 `tokenizer.json`。这一格**我们本来就有**
+  （包里已编 o200k / cl100k），将来把 tiktoken 降级成一条"内置条目"就统一了，
+  不必让用户去导 HF 版。
+
+**对路二的影响**：实现范围从"只做 BPE"扩到三种 `model.type`——
+BPE（大多数）、**Unigram**（Gemini / Gemma、部分中文模型）、WordPiece（BERT 系备用）。
+Unigram 那边 262k 词表不能每步全表扫，要按首字符分桶。`model.type` 不认识就**拒绝导入**
+并写清只认这三种，不能让它在计数时静默出错。
+
+这一轮只做了查证与设计（§11），没有写实现。

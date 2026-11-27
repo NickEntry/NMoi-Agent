@@ -269,3 +269,83 @@ match(modelId):
 3. **§6 usage 落库**（schema v22）+ **§5 消息尾部那一行**。
 4. **§8 退役**：压缩判据切到新路径，然后删旧的那三级。
 5. 拖拽排序（可选的体验项，单独一轮）。
+
+---
+
+## 11. 各家词表从哪来（2026-11-26 查证）
+
+用户点名了这一批：qwen / deepseek / gpt / claude / gemini / glm / kimi / doubao。
+分类只有三种情况，处理方式各不相同。
+
+### 11.1 有 HuggingFace `tokenizer.json` 的（BPE，我们的主路）
+
+Qwen、DeepSeek、GLM、Kimi、Doubao 都在 HF 上直接发 `tokenizer.json`（BPE + ByteLevel，
+6–7 MB，128k 上下词表）。**这就是 §7 要写的那条路**，`/tmp/ds.json` 已经验过结构：
+
+```json
+pre_tokenizer: Sequence[ Split(\p{N}{1,3}), Split([一-龥぀-ゟ゠-ヿ]+),
+                        Split([!...][A-Za-z]+|...|\s+(?!\S)|\s+), ByteLevel(use_regex=false) ]
+model.type: BPE, merges: ["Ġ t", "Ġ a", ...]   ← 空格分隔的字符串形式
+```
+
+两点要注意：**预切分是显式写在 JSON 里的 `Split` 正则**（不是 GPT-2 内置那一条），
+所以我们的实现要**读 JSON 里的正则**而不是写死一份；`merges` 有「`"a b"` 字符串」与
+「`["a","b"]` 数组」两种写法，都要收。
+
+### 11.2 Claude：社区导出的 `tokenizer.json`（可用，但来源要标清）
+
+`Xenova/claude-tokenizer`（HF）是 Claude 词表的 HF 兼容版，**约 1.7 MB / 65k 词表**，
+README 写明"adapted from anthropics/anthropic-sdk-python"，`encode('hello world') == [9381, 2253]`。
+形态就是普通 `tokenizer.json`，走我们同一条路即可。
+
+风险要说清：**它是社区从官方 SDK 里导出的，不是 Anthropic 发布的一份词表**。
+所以条目里的 `source` 字段要能区分「官方发布 / 社区导出 / 用户自备」——
+三者的许可风险不一样，而用户导进来之后责任是他的。
+
+### 11.3 Gemini：没有 tokenizer.json，但有一个确定的答案
+
+查到的结论比"没有"更有用：
+
+- Google 官方 Python SDK 里有 `google.genai.local_tokenizer.LocalTokenizer`（离线计数）。
+- Rust 侧有 `gemini-tokenizer` crate，文档写明：**所有 Gemini 模型共用同一个分词器——
+  Gemma 3 的 SentencePiece 词表，262,144 个 token**，它把那份词表嵌进 crate。
+- 也就是说 Gemini 这一格不是"猜不到"，是"词表不在公开的 tokenizer.json 里，
+  而在 Gemma 3 的 SentencePiece 模型里"。
+
+**许可要单独看**：Gemma 词表受 Gemma Terms of Use 约束（不是 MIT），内嵌或再分发有额外条件。
+所以它只能走"用户自己导入"，不能随包带。
+
+### 11.4 GPT：格式不一样（这条是坑）
+
+OpenAI 发的是 `.tiktoken`（BPE rank 表），**不是 `tokenizer.json`**。三种处理：
+
+1. 复用现有 `tiktoken-rs`（已经编在包里，o200k / cl100k）——GPT 这一格**本来就有**，
+   只是它不在"条目"这一层里。将来把它降级成一条"内置条目"就统一了。
+2. 让用户导 HF 版（`Xenova/gpt-4o` 这类社区导出）。
+3. 我们自己也读 `.tiktoken`——多一种格式，收益不大。
+
+倾向 1：GPT 走内置的两份 tiktoken 词表，不占用户的条目列表。
+
+### 11.5 对实现范围的影响（这一条改计划）
+
+原来 §7 只写了 BPE。按这一批模型，**必须再加两种**：
+
+| model.type | 谁 | 实现要点 |
+|---|---|---|
+| **BPE** | Qwen / DeepSeek / GLM / Kimi / Doubao / Claude / GPT(HF 版) | 按 rank 合并；预切分读 JSON 里的 `Split` 正则 |
+| **Unigram** | Gemini（Gemma 3）、部分中文模型 | Viterbi 最大概率切分；262k 词表不能每步全表扫，要按首字符分桶 |
+| **WordPiece** | BERT 系（备用） | 最长匹配 + `##` 续词 |
+
+再加一个**格式判别**：`model.type` 不认识就拒绝导入并写清"只认 BPE / Unigram / WordPiece"，
+不要让它在计数时静默出错。
+
+### 11.6 于是 `source` 字段要分三档
+
+```text
+official   厂商自己发布的词表（DeepSeek / Qwen / GLM / Kimi / Doubao 的 HF 仓库）
+community  社区从官方 SDK 里导出的（Claude 的 Xenova 版）
+user       用户自己准备的（Gemini 的 Gemma 词表、其它）
+```
+
+界面上在卡片副标题里写一句来源，导入时把 URL / 文件名存进 `source`。
+这一栏不参与匹配，只用来回答"这份东西的许可该找谁"。
