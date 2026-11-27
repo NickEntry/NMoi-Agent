@@ -62,6 +62,8 @@ private enum class SettingsSection(val title: String) {
 internal fun AppSettingsScreen(
     context: Context,
     onBack: () -> Unit,
+    /** 进「tokenizer 词表」那一页（D438）。一页一件事：那一页只管条目与词表。 */
+    onOpenTokenizers: () -> Unit = {},
 ) {
     var allowNewVersion by remember { mutableStateOf(AppSettings.allowNewVersion(context)) }
     var regenOld by remember { mutableStateOf(AppSettings.regenOldMessage(context)) }
@@ -280,6 +282,33 @@ internal fun AppSettingsScreen(
                 }
 
                 if (section == SettingsSection.Context) {
+                SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenTokenizers)
+                            .padding(start = 14.dp, end = 12.dp, top = 14.dp, bottom = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "tokenizer 词表",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "按模型家族各用一份词表；没命中就用内置那份",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 SettingsCard(modifier = Modifier.padding(top = 10.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         Text(

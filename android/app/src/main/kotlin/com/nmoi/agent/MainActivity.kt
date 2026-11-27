@@ -61,6 +61,7 @@ import com.nmoi.agent.ui.SettingsIndexScreen
 import com.nmoi.agent.ui.EnvirRepository
 import com.nmoi.agent.ui.EnvirScreen
 import com.nmoi.agent.ui.StartupCheck
+import com.nmoi.agent.ui.TokenizerProfilesScreen
 import com.nmoi.agent.ui.StorageDetailScreen
 import com.nmoi.agent.ui.StorageKind
 import com.nmoi.agent.ui.StorageScreen
@@ -105,6 +106,9 @@ private sealed interface Route {
      * 独立路由会让返回栈上同一屏有两个名字。
      */
     data class StorageDetail(val kind: StorageKind) : Route
+
+    /** tokenizer 词表条目（D438）：从「设置 → 应用设置 → 上下文」进，一个入口。 */
+    data object Tokenizers : Route
 
     /** 隔离环境（D165）：安装 / 状态 / 删除 / 自检。入口在「工具与工作区」里。 */
     data object Envir : Route
@@ -844,6 +848,10 @@ class MainActivity : ComponentActivity() {
                             onBack = { backStack = backStack.dropLast(1) },
                         )
 
+                        Route.Tokenizers -> TokenizerProfilesScreen(
+                            onBack = { backStack = backStack.dropLast(1) },
+                        )
+
                         is Route.StorageDetail -> StorageDetailScreen(
                             kind = route.kind,
                             databasePath = databasePath,
@@ -859,6 +867,7 @@ class MainActivity : ComponentActivity() {
                             SettingsGroup.App -> AppSettingsScreen(
                                 context = context,
                                 onBack = { backStack = backStack.dropLast(1) },
+                                onOpenTokenizers = { backStack = backStack + Route.Tokenizers },
                             )
 
                             SettingsGroup.Defaults -> ModelRolesScreen(
@@ -968,6 +977,8 @@ private fun waitsForData(route: Route): Boolean = when (route) {
     // 存储页挂在设置分组下，不是独立路由；它的子页也要等扫完盘。
     is Route.SettingsGroupRoute -> route.group == SettingsGroup.Storage
     is Route.StorageDetail -> true
+    // 读一次索引（很小，但它在盘上）。
+    Route.Tokenizers -> true
 
     else -> false
 }

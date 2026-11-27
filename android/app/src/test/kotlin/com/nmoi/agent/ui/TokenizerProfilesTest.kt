@@ -124,4 +124,43 @@ class TokenizerProfilesTest {
         assertFalse(profile("t1", "Qwen", TokenizerMatch.Keyword, "qwen", bytes = 0).usable)
         assertTrue(profile("t1", "Qwen", TokenizerMatch.Keyword, "qwen").usable)
     }
+
+    @Test
+    fun `上移下移改的是顺序，也就是优先级`() {
+        val a = profile("t1", "A", TokenizerMatch.Keyword, "a")
+        val b = profile("t2", "B", TokenizerMatch.Keyword, "b")
+        val c = profile("t3", "C", TokenizerMatch.Keyword, "c")
+
+        val moved = TokenizerProfileStore.move(listOf(a, b, c), "t3", up = true)
+        assertEquals(listOf("t1", "t3", "t2"), moved.map { it.id })
+
+        val back = TokenizerProfileStore.move(moved, "t3", up = false)
+        assertEquals(listOf("t1", "t2", "t3"), back.map { it.id })
+    }
+
+    @Test
+    fun `移到头顶或队尾就停住，不绕回去`() {
+        val a = profile("t1", "A", TokenizerMatch.Keyword, "a")
+        val b = profile("t2", "B", TokenizerMatch.Keyword, "b")
+        assertEquals(listOf("t1", "t2"), TokenizerProfileStore.move(listOf(a, b), "t1", up = true).map { it.id })
+        assertEquals(listOf("t1", "t2"), TokenizerProfileStore.move(listOf(a, b), "t2", up = false).map { it.id })
+        // 不存在的 id：原样返回，不抛。
+        assertEquals(listOf("t1", "t2"), TokenizerProfileStore.move(listOf(a, b), "t9", up = true).map { it.id })
+    }
+
+    @Test
+    fun `顺序真的会改变匹配结果`() {
+        val wide = profile("t1", "Qwen", TokenizerMatch.Keyword, "qwen")
+        val narrow = profile("t2", "Qwen2.5", TokenizerMatch.Keyword, "qwen2.5")
+        // 宽规则在上 → 它先吃掉。
+        assertEquals(
+            TokenizerPick.Profile(wide),
+            TokenizerProfiles.pick("qwen2.5", listOf(wide, narrow)),
+        )
+        // 把窄的提上来 → 命中窄的。这就是那两个箭头的意义。
+        assertEquals(
+            TokenizerPick.Profile(narrow),
+            TokenizerProfiles.pick("qwen2.5", TokenizerProfileStore.move(listOf(wide, narrow), "t2", up = true)),
+        )
+    }
 }
