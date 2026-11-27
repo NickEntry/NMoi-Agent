@@ -5563,3 +5563,27 @@ D437 只落了匹配算法，这一条把它接成能用的东西：`TokenizerPr
 
 **页面上那句实话**：这一版只做到"导入与匹配"，真正拿词表数 token 的接线还没接，
 所以词表页底部写着这一句。不写的话，用户导完会发现数字没变，那比什么都不能做更糟。
+
+## D439 tokenizers crate 在 MSRV 1.75 上装不进来（2026-11-26）
+
+计划 §10 第 2 步是"把 HF `tokenizers` 接进 core"。先在 `/tmp/toktest` 里单独试
+（**没动仓库**），结论是**装不进来**，而且不是"钉一个版本"能解决的：
+
+- `tokenizers 1.0-rc`：依赖树里要 `edition2024`，Cargo 1.75 拒绝解析；
+- `tokenizers 0.20.3`（fancy-regex）：`rayon-core 1.13` 要 1.80 → 钉 1.12.1 →
+  `unicode-segmentation 1.13` 要 1.85 → 钉 1.11.0 → `monostate 0.1.18` 要 1.79 →
+  钉 0.1.14 → 编到本体报 `undeclared crate or module onig`；
+- 换默认特性走 onig：`onig 6.5` 用了 `&raw const`（rustc **1.82** 起）→ 15 个错误。
+
+本机只有 1.75、没有 rustup，所以任何"抬 MSRV"的选择都意味着**这一侧本地一条也编不出来**，
+Rust 侧验证只能交给 CI；而且 onig 是 C 库，交叉编译到 android 还要 NDK 的 CC。
+
+给用户的两条路（要他拍板，我不替他改 MSRV）：
+
+1. 抬 MSRV 到 1.82+，接受"本地不能编、只能 CI 验"；
+2. 自己写一个最小 BPE（不加依赖），拿 `/tmp/ds.json` + Python `tokenizers` 做**逐 id 对账**
+   （差一个就是没做完，比"两个估算差 3%"硬）。
+
+我倾向 2，理由：不牵动 MSRV、不牵动交叉编译，而"对不对"有硬判据。这一轮没动手——
+它是几百行，要单独一轮。第 3 步（usage 落库 + 消息尾部 tokens）不依赖它，
+可以随时提到前面。

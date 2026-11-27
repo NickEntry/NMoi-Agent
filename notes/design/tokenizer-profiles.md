@@ -178,6 +178,44 @@ match(modelId):
 
 ## 7. 计算层怎么做（Rust 侧）
 
+> **2026-11-26 先卡住了（实测，见 §7.0）**：`tokenizers` 这个 crate 在 MSRV 1.75 上装不进来。
+> 在解决之前，这一节是"计划"，不是"现状"。
+
+### 7.0 实测：tokenizers 装不进来（2026-11-26）
+
+在 `/tmp/toktest` 里单独建了一个 crate 试，**没有动仓库**：
+
+| 试到哪一步 | 结果 |
+|---|---|
+| `tokenizers = "1.0.0-rc.5"` | 依赖树里有包要求 `edition2024`，Cargo 1.75 直接拒绝解析 |
+| `tokenizers = "0.20.3"`（`fancy-regex`） | `rayon-core 1.13.0` 要求 rustc 1.80 |
+| 手动钉 `rayon 1.10.0` + `rayon-core 1.12.1` | `unicode-segmentation 1.13.3` 要求 rustc 1.85 |
+| 再钉 `unicode-segmentation 1.11.0` | `monostate 0.1.18` 要求 rustc 1.79 |
+| 钉 `monostate 0.1.14` | 编到 tokenizers 本体，报 `use of undeclared crate or module onig`（`fancy-regex` 那条路在这个版本里不完整） |
+| 换默认特性（走 onig） | `onig 6.5` 用了 `&raw const`（`unsafe` 的 raw-ref 语法，**rustc 1.82 起**）→ 15 个编译错误 |
+
+也就是说：**不是"钉一个版本"能解决的**，卡点在两条线上——`onig` 要 1.82+，
+`tokenizers` 的依赖树里还有几个包要 1.79–1.85。而本机只装了 1.75，`rustup` 也没有。
+
+两条路，**都要人拍板**：
+
+1. **抬 MSRV 到 1.82+**（`Cargo.toml` 的 `rust-version`，D10 定的是 1.75）。
+   代价：本机这个沙箱仍然只有 1.75 → **本地一条也编不出来**，所有 Rust 侧的验证只能交给 CI。
+   而且 onig 是 C 库，交叉编译到 `aarch64-linux-android` 还要 NDK 的 CC，
+   CI 上大概率要再调一轮。
+2. **自己写一个最小 BPE**（不加任何新依赖）：解析 tokenizer.json 的
+   `model.vocab` + `model.merges` + `pre_tokenizer`（ByteLevel / Metaspace），
+   按 HF 的规则切分并做合并。
+   代价：这是**真的要在我们这边实现一遍分词**，正确性风险集中在"预切分正则"与
+   "byte-level 映射表"两处。好处是**可以逐 token 对账**——`/tmp/ds.json` 与 Python
+   `tokenizers` 就在手边，同一段文本输出 ids，我们那份必须**逐个相等**，
+   差一个就算没做完。这条对账比"两个估算值差 3%"硬得多。
+
+我倾向 2：它不牵动 MSRV、不牵动跨平台编译，而"对不对"有硬判据。
+但它是几百行的实现，得单独一轮——**这一轮没有动手**。
+
+### 7.1 其它（原计划）
+
 `crates/core/src/tokens/` 现在是 tiktoken 那套。新的这一层要：
 
 - **按条目加载**：`Tokenizer::from_file`（HF `tokenizers` crate）。懒加载 + 进程内缓存
