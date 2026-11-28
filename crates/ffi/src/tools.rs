@@ -111,6 +111,41 @@ pub extern "C" fn nmoi_tool_specs_json(workspace_handle: u64, read_only: i32) ->
     })
 }
 
+/// 工具声明占多少 token：`[{name, tokens}]`。
+///
+/// 面板上「内置工具 / MCP 工具」那两行要它。**按与真实请求同一份声明算**——
+/// 拿工具名列表自己估一遍，估出来的数与发出去的差一截，而面板上那个数就是
+/// "这一轮到底送了多少"，差一截等于说谎。
+///
+/// `workspace_handle` 传 0 = 没绑工作区：那时要盘的工具不声明，数会小一截，
+/// 这与真实请求一致（不是估算偏差）。
+#[no_mangle]
+pub extern "C" fn nmoi_tool_definition_tokens_json(workspace_handle: u64) -> *mut c_char {
+    run_json(|| {
+        let policy = policy_for(workspace_handle, 0);
+        let registry = ToolRegistry::workspace_defaults();
+        let rows: Vec<Value> = registry
+            .specs_for(&policy)
+            .into_iter()
+            .map(|spec| {
+                // 声明 = 名字 + 描述 + 参数 schema 的 JSON 文本。
+                // 用同一个序列化形态算，与发出去的那一份对齐。
+                let body = serde_json::json!({
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.parameters,
+                })
+                .to_string();
+                json!({
+                    "name": spec.name,
+                    "tokens": nmoi_core::tokens::estimate_tokens(&body),
+                })
+            })
+            .collect();
+        Ok(json!({ "tools": rows, "count": rows.len() }))
+    })
+}
+
 /// 关掉一条正在跑的工具调用（0.15ak / D246）。
 ///
 /// 入参 `{"session": "...", "call_id": "..."}`，回 `{"cancelled": bool, "found": bool}`。

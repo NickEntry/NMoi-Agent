@@ -1328,6 +1328,13 @@ struct BreakdownExtra {
     world_book: Option<u64>,
     workspace: Option<u64>,
     draft: Option<u64>,
+    /// **原文**（而不是数）：界面那边拿不到与 core 同一套词表，自己估一遍必然
+    /// 与面板别的行不同口径。递文本进来，这里用同一个估算器算——一行数字只有一个来源。
+    system_prompt_text: Option<String>,
+    skills_text: Option<String>,
+    world_book_text: Option<String>,
+    workspace_text: Option<String>,
+    draft_text: Option<String>,
     #[serde(default)]
     tool_definitions: Vec<ToolDefTokens>,
 }
@@ -1389,16 +1396,42 @@ pub extern "C" fn nmoi_context_breakdown_json(
 
             // 库里没有的那几行，只认调用方给的数。`Some(0)` 也算一条：
             // "注入了但因为开关关着是 0"和"没注入"在面板上不是一回事。
+            // 数直接给就用数；只给了原文就用**同一个估算器**算——两处各估一遍，
+            // 面板上就会出现"同一页里两种口径"的数字。
+            let estimate = |text: &Option<String>| -> Option<u64> {
+                text.as_deref()
+                    .filter(|it| !it.is_empty())
+                    .map(|it| u64::from(estimate_tokens(it)))
+            };
             let mut add = |segment: Segment, tokens: Option<u64>| {
                 if let Some(tokens) = tokens {
                     breakdown.add_segment(segment, tokens, 1);
                 }
             };
-            add(Segment::SystemPrompt, extra.system_prompt);
-            add(Segment::Skills, extra.skills);
-            add(Segment::WorldBook, extra.world_book);
-            add(Segment::Workspace, extra.workspace);
-            add(Segment::Draft, extra.draft);
+            add(
+                Segment::SystemPrompt,
+                extra
+                    .system_prompt
+                    .or_else(|| estimate(&extra.system_prompt_text)),
+            );
+            add(
+                Segment::Skills,
+                extra.skills.or_else(|| estimate(&extra.skills_text)),
+            );
+            add(
+                Segment::WorldBook,
+                extra
+                    .world_book
+                    .or_else(|| estimate(&extra.world_book_text)),
+            );
+            add(
+                Segment::Workspace,
+                extra.workspace.or_else(|| estimate(&extra.workspace_text)),
+            );
+            add(
+                Segment::Draft,
+                extra.draft.or_else(|| estimate(&extra.draft_text)),
+            );
             for def in &extra.tool_definitions {
                 breakdown.add_tool(&def.name, def.tokens);
             }

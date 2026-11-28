@@ -196,6 +196,71 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAllConversationsJ
     to_jstring(&mut env, text)
 }
 
+/// `Native.contextBreakdownJson(handle, session, extra)`：上下文管理面板的八行用量。
+///
+/// `extra` 是**库里没有的那几行**（系统提示词 / 技能 / 世界书 / 工作区 / 草稿 /
+/// 工具声明），由 Kotlin 侧算好递进来——库看不见编排层拼了什么，猜一个数只会更糟。
+/// 空串 = 只算库里有的。
+///
+/// 出参里 `level` 是这一批数字的来源（`l1` = 本地词表 + 校准，`l0` = 字符近似），
+/// `estimated: true` 恒为真：这些数不是端点的账单。界面据此标（预估）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_contextBreakdownJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    session: JString<'local>,
+    extra: JString<'local>,
+) -> jstring {
+    let session = read_string(&mut env, &session);
+    let extra = read_string(&mut env, &extra);
+    let text = guarded(move || {
+        let Some(session) = session else {
+            return bad_string();
+        };
+        let Ok(c_session) = CString::new(session) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数 `session` 含 NUL 字节",
+            ));
+        };
+        let extra = extra.unwrap_or_default();
+        let Ok(c_extra) = CString::new(extra) else {
+            return take_json(crate::json::err_json(
+                "bad_argument",
+                "参数 `extra` 含 NUL 字节",
+            ));
+        };
+        take_json(crate::storage::nmoi_context_breakdown_json(
+            handle as u64,
+            c_session.as_ptr(),
+            c_extra.as_ptr(),
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.toolDefinitionTokensJson(workspaceHandle)`：工具声明占多少 token。
+///
+/// 面板上「内置工具 / MCP 工具」那两行要它。`workspace_handle` 传 0 = 没绑工作区
+/// （那时要盘的工具不声明，数会小一截——与真实请求一致，不是估算偏差）。
+///
+/// 返回 `[{name, tokens}]`：名字要给出去，因为 MCP 与内置是按名字前缀分的
+/// （`mcp__` / `mcp.`），在 Kotlin 里再判一遍就会长出两套规矩。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_toolDefinitionTokensJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    workspace_handle: jlong,
+) -> jstring {
+    let text = guarded(move || {
+        take_json(crate::tools::nmoi_tool_definition_tokens_json(
+            workspace_handle as u64,
+        ))
+    });
+    to_jstring(&mut env, text)
+}
+
 /// 这个会话欠着什么（D323）：索引待补几条、哪几条消息没说完。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_storageInterruptsJson<'local>(

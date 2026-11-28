@@ -336,6 +336,23 @@ internal object NativeBridge {
     /** 注册表里的全部工具名（0.17e）：面板上的逐项开关按它渲染。 */
     external fun toolNamesJson(): String
 
+    /**
+     * 上下文管理面板的八行用量（D443）。
+     *
+     * `extra` 是**库里没有的那几行**的原文（系统提示词 / 技能 / 世界书 / 工作区 / 草稿），
+     * 由界面把"我注入了什么"递进来——库看不见编排层拼了什么，猜一个数只会更糟。
+     * 空串 = 只算库里有的。
+     */
+    external fun contextBreakdownJson(handle: Long, session: String, extra: String): String
+
+    /**
+     * 工具声明占多少 token（D443）：`[{name, tokens}]`。
+     *
+     * 按与真实请求**同一份**声明算。拿工具名列表自己估一遍，估出来的数与发出去的
+     * 差一截，而面板上那个数就是"这一轮到底送了多少"。
+     */
+    external fun toolDefinitionTokensJson(workspaceHandle: Long): String
+
     /** 预设列表 + 四态（0.14t / D178）。`assets` = 从 APK 读出来的预设原文。 */
     external fun presetsJson(handle: Long, assets: String): String
 

@@ -446,6 +446,24 @@ internal object NmoiFfi {
     suspend fun toolNames(): Result<JSONObject> = call("tool_names") { NativeBridge.toolNamesJson() }
 
     /**
+     * 上下文管理面板的八行用量（D443）。
+     *
+     * `extra` 只放**库里没有的那几行**的原文；给数也行（`*_tokens`），但两边都算
+     * 就会双倍——所以这一层只递原文，算数在 core 里做一次。
+     */
+    suspend fun contextBreakdown(
+        handle: Long,
+        session: String,
+        extra: JSONObject,
+    ): Result<JSONObject> = call("context_breakdown") {
+        NativeBridge.contextBreakdownJson(handle, session, extra.toString())
+    }
+
+    /** 工具声明占多少 token（D443）：`{tools:[{name,tokens}], count}`。 */
+    suspend fun toolDefinitionTokens(workspaceHandle: Long): Result<JSONObject> =
+        call("tool_tokens") { NativeBridge.toolDefinitionTokensJson(workspaceHandle) }
+
+    /**
      * 这一轮会注入什么（自检用）。真正跑一轮时 `turn_run` 在里面算同一份，
      * 所以这里的结果与请求里的那一段不会各说各话。
      */

@@ -433,6 +433,8 @@ internal fun ChatScreen(
      */
     var pendingFiles by remember { mutableStateOf(listOf<PendingFile>()) }
     var compressOpen by remember { mutableStateOf(false) }
+    /** 真正跑压缩那一层（D443）：面板里按「上下文压缩」才进来。 */
+    var compressSheet by remember { mutableStateOf(false) }
     var suggestions by remember(sessionId) { mutableStateOf(listOf<String>()) }
     // 已经为哪一轮生成过建议：不记的话，打完字删光会再请求一次（每一次都要钱）。
     var suggestFor by remember(sessionId) { mutableStateOf(-1) }
@@ -1968,7 +1970,13 @@ internal fun ChatScreen(
         if (plusMenu) {
             AddSheet(
                 lorebookValue = lorebookCount(bookOptions, assistant?.lorebooks.orEmpty()),
-                compressLabel = if (sessionId != null && contextPercent != null) "$contextPercent%" else null,
+                // 「＋」里那一行叫**上下文管理**（D443）：点开是面板，不是直接压缩。
+                // 有会话才出现（没有会话时它没有任何东西可管）。
+                compressLabel = if (sessionId != null) {
+                    contextPercent?.let { "$it%" } ?: "—"
+                } else {
+                    null
+                },
                 onCompress = {
                     plusMenu = false
                     compressOpen = true
@@ -1995,13 +2003,60 @@ internal fun ChatScreen(
         }
 
         if (compressOpen && sessionId != null) {
+            // 上下文管理（D443）：先看窗口里都是什么，再决定压不压。
+            ContextPanelSheet(
+                databasePath = databasePath,
+                sessionId = sessionId,
+                provider = choices.firstOrNull { it.first.id == assistant?.providerId }?.first,
+                modelId = assistant?.modelId.orEmpty(),
+                imageCount = contextImages.size,
+                imageLimit = AppSettings.imageLimit(context),
+                compacted = snapshot?.page?.compacted == true,
+                covered = snapshot?.page?.covered ?: 0,
+                onCompress = {
+                    compressOpen = false
+                    compressSheet = true
+                },
+                onOpenImages = {
+                    compressOpen = false
+                    contextImagesOpen = true
+                },
+                onClearContext = {
+                    // 「清空上下文」= 手动压一次，与自动压缩走**同一条**流程
+                    // （`CompressRunner.run` → `nmoi_compress_run_json`），不为手动另开一条。
+                    compressOpen = false
+                    compressSheet = true
+                },
+                onRestore = {
+                    val divider = snapshot?.page?.dividerId
+                    if (divider == null) {
+                        notice = "没有可还原的那条线"
+                    } else {
+                        scope.launch {
+                            withStorageHandle(databasePath) { handle ->
+                                NmoiFfi.deleteDivider(handle, divider)
+                            }.fold(
+                                onSuccess = {
+                                    notice = "已还原：上面那些重新进请求"
+                                    reloadKey += 1
+                                },
+                                onFailure = { notice = "还原失败：${it.message}" },
+                            )
+                        }
+                    }
+                },
+                onDismiss = { compressOpen = false },
+            )
+        }
+
+        if (compressSheet && sessionId != null) {
             CompressSheet(
                 databasePath = databasePath,
                 sessionId = sessionId,
                 provider = choices.firstOrNull { it.first.id == assistant?.providerId }?.first,
                 modelId = assistant?.modelId.orEmpty(),
                 onDone = { reloadKey += 1 },
-                onDismiss = { compressOpen = false },
+                onDismiss = { compressSheet = false },
             )
         }
 
@@ -7811,7 +7866,7 @@ private fun AddSheet(
             AddRow(ActionIcons.GitBranch, "技能", null) { onHint("技能待接（P5.5）") }
             if (compressLabel != null) {
                 RowDivider(leading = 20.dp)
-                AddRow(ActionIcons.RotateCcw, "压缩上下文", compressLabel) { onCompress() }
+                AddRow(ActionIcons.RotateCcw, "上下文管理", compressLabel) { onCompress() }
             }
             RowDivider(leading = 20.dp)
             AddRow(ActionIcons.Database, "世界书", lorebookValue) { onOpenLorebook() }
@@ -8120,21 +8175,29 @@ private fun CompactedBanner(covered: Int, summaryChars: Int, onOpen: () -> Unit)
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = ActionIcons.RotateCcw,
+                // 分隔语义（用户 2026-11-26：「用『清除上下文』标记隔开这样的」）。
+                // 不用 RotateCcw：那是"撤销"，与这条线的意思正好相反。
+                imageVector = ActionIcons.ChevronDown,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
             Text(
-                text = "已移走 $covered 条 · 摘要 $summaryChars 字",
+                text = "清除上下文",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f).padding(start = 10.dp),
             )
             Text(
+                text = "$covered 条 · $summaryChars 字",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
                 text = "›",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp),
             )
         }
     }
@@ -8160,7 +8223,7 @@ private fun CompactedSheet(
     var busy by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
 
-    SheetFrame(title = "压缩", onDismiss = onDismiss) {
+    SheetFrame(title = "清除上下文", onDismiss = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
