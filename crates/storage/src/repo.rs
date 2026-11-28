@@ -643,6 +643,46 @@ impl Storage {
         Ok(out)
     }
 
+    /// **一条消息**的附件（D446）：删消息之前要先记下它们的路径。
+    ///
+    /// 为什么不复用 `attachments_of(session)` 再过滤：那个按会话查全部附件，
+    /// 一条消息一条地删时会变成"每删一条扫一遍全表"。这一条走 `message_id` 索引。
+    pub fn attachments_of_message(
+        &self,
+        message: &MessageId,
+    ) -> Result<Vec<AttachmentInfo>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, message_id, COALESCE(name, ''), mime, size, kind, path FROM attachments
+             WHERE message_id = ?1 ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([message.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, message_text, name, mime, size, kind, path) = row?;
+            out.push(AttachmentInfo {
+                id,
+                message: MessageId::from_str_value(&message_text)
+                    .map_err(StorageError::Inconsistent)?,
+                name,
+                mime,
+                size: size as u64,
+                kind,
+                path,
+            });
+        }
+        Ok(out)
+    }
+
     /// 全部附件（带会话标题）：存储管理页用（D216）。
     pub fn all_attachments(&self) -> Result<Vec<StoredAttachment>, StorageError> {
         let mut stmt = self.conn.prepare(
@@ -744,12 +784,40 @@ impl Storage {
         let Some(path) = found else {
             return Ok(false);
         };
+        // **行先删**：它才是"这个附件还在不在"的真源。盘上那份可能早就没了
+        // （工作区模式下模型可以用工具直接清掉文件），那一行留着就成了
+        // "界面上有芯片、点开什么都没有"——正是铁律②要挡的那种。
         self.conn
             .execute("DELETE FROM attachments WHERE id = ?1", [id])?;
         if let Some(path) = path {
-            let _ = std::fs::remove_file(path);
+            // 盘上那份**先看再删**（D446）：不存在就不调 `remove_file`。
+            // 不存在有两种来路，都正常：模型用工作区工具删过；或者这个会话
+            // 从没落过盘（老库的 BLOB 行）。这两种情况下"删一个不存在的文件"
+            // 不是错误，但**也不该被算成删掉了什么**。
+            remove_file_if_exists(&path);
         }
         Ok(true)
+    }
+
+    /// **只摘掉库里那一行，不动盘上的文件**（D446）。
+    ///
+    /// 为什么需要这一支：`allow_new_version` 开着时，编辑消息会**留一个旧版本**，
+    /// 而旧版本仍然引用着这份附件。这时把文件删掉，切回旧版本就会看到
+    /// "芯片在、点开什么都没有"——那比不删更糟。
+    ///
+    /// 所以两种语义分开：
+    ///
+    /// | `allow_new_version` | 调用 | 结果 |
+    /// |---|---|---|
+    /// | 开 | 本函数 | 行没了（这一版不再带它），文件还在（旧版本还能用） |
+    /// | 关 | [`Storage::delete_attachment`] | 行与文件一起没（真的删掉了） |
+    ///
+    /// 返回是否真的删掉了一行。
+    pub fn detach_attachment(&mut self, id: &str) -> Result<bool, StorageError> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM attachments WHERE id = ?1", [id])?;
+        Ok(changed > 0)
     }
 
     /// 一条消息的图片（base64），发请求时用。
@@ -2173,6 +2241,22 @@ pub(crate) fn load_tail_messages(
         }
     }
     Ok(messages)
+}
+
+/// 盘上那份还在就删，不在就当已经删过（D446）。
+///
+/// 为什么要有这一步：工作区模式下模型可以用工具把附件文件直接删掉，
+/// 而库里那一行还在。此时再 `remove_file` 会得到一个 `NotFound`——
+/// 那**不是错误**，但把它当成"删掉了"就是在说谎（界面上会写"已删掉 N 个"）。
+///
+/// 返回 `true` = 真的删掉了一个文件。调用方可以据此数出"实际删了几个"。
+pub fn remove_file_if_exists(path: &str) -> bool {
+    let file = std::path::Path::new(path);
+    // `is_file()` 而不是 `exists()`：路径变成目录时不该走删除（那会失败并且看着像 bug）。
+    if !file.is_file() {
+        return false;
+    }
+    std::fs::remove_file(file).is_ok()
 }
 
 fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {

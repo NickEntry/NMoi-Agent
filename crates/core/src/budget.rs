@@ -637,6 +637,15 @@ impl Breakdown {
         self.items[index] = self.items[index].saturating_add(items);
     }
 
+    /// 把某一行的 token 直接设成某个值（D445）。
+    ///
+    /// 存在的理由只有一个：**把一段内容从一行挪到另一行**。
+    /// 「附件路径」从历史挪到附件那一行之后，历史那一行必须扣掉，
+    /// 否则同一段内容算两次，而两个数都会看起来合理。
+    pub fn set_segment(&mut self, segment: Segment, tokens: u64) {
+        self.tokens[segment.index()] = tokens;
+    }
+
     pub fn tokens_of(&self, segment: Segment) -> u64 {
         self.tokens[segment.index()]
     }

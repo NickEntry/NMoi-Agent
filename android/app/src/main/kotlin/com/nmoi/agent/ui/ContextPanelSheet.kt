@@ -70,6 +70,15 @@ internal fun ContextPanelSheet(
     window: Long,
     /** 输入框里现在打的字：它就是「草稿」那一行。 */
     draft: String,
+    /**
+     * 这一轮生效的世界书（**已经按助手勾选筛过**，不含内置册）。
+     *
+     * 传整册 JSON 而不是数：哪几条生效要按关键词/常驻现算，而匹配用 core 的
+     * `lorebook::plan`——界面这边没有同一份实现。
+     */
+    lorebookJson: String,
+    /** 这一轮要进上下文的技能块（只有 name + description）。 */
+    skillsBlock: String,
     onCompress: () -> Unit,
     onOpenImages: () -> Unit,
     onClearContext: () -> Unit,
@@ -89,11 +98,39 @@ internal fun ContextPanelSheet(
     var failure by remember { mutableStateOf<String?>(null) }
     var autoCompress by remember { mutableStateOf(AppSettings.autoCompress(context)) }
 
+    /**
+     * 重算的周期（D447）。
+     *
+     * 用户要的是"除了会话之外的那几行实时判断并计算"。全量重算要读盘（世界书文件、
+     * 技能目录）+ 走一次 FFI，几百毫秒到一秒。所以：
+     *
+     * - **草稿**：只受输入框影响，单独一条路，`draft` 变了就重算（不碰盘）。
+     * - **其余几行**：2.5 秒一次，且**只在这张面板开着的时候**跑
+     *   （`LaunchedEffect` 跟着组合走，面板关掉就停）。
+     *
+     * 为什么不做到"每次改动立刻算"：世界书与技能块要读盘，而它们的输入（勾选）
+     * 不会一秒变十次。2.5 秒是"用户改完能看见"与"别把 IO 打满"之间的取舍。
+     */
+    val tick = remember { mutableStateOf(0) }
     LaunchedEffect(sessionId) {
-        loading = true
+        while (true) {
+            kotlinx.coroutines.delay(2_500)
+            tick.value += 1
+        }
+    }
+
+    LaunchedEffect(sessionId, tick.value, draft) {
+        loading = rows.isEmpty()
         val result = withContext(Dispatchers.IO) {
             runCatching {
-                val extra = buildExtra(context, draft, imageCount, window)
+                val extra = buildExtra(
+                    context = context,
+                    draft = draft,
+                    imageCount = imageCount,
+                    window = window,
+                    lorebookJson = lorebookJson,
+                    skillsBlock = skillsBlock,
+                )
                 withStorageHandle(databasePath) { handle ->
                     NmoiFfi.contextBreakdown(handle, sessionId, extra)
                 }.getOrThrow()
@@ -367,25 +404,24 @@ private fun buildExtra(
     draft: String,
     imageCount: Int,
     window: Long,
+    lorebookJson: String,
+    skillsBlock: String,
 ): JSONObject {
     val doc = JSONObject()
     val system = PromptVars.compose(null, AppSettings.globalSystem(context), null)
     system?.let { doc.put("system_prompt_text", it) }
     if (draft.isNotBlank()) doc.put("draft_text", draft)
-    // 图片：**每张按固定值算**。图片的 token 与字节不成正比（与分辨率、模型有关），
-    // 所以给一个可解释的常数比按字节折算更实在。1200 是常见视觉模型一张中等图的量级。
-    if (imageCount > 0) doc.put("attachments", imageCount * PER_IMAGE_TOKENS)
+    // 世界书与技能块：**递原文**，让 core 用同一个估算器算（D444）。
+    // 不递的话这两行永远是 0——上一版就是这样，"世界书明明加载了却显示 0"。
+    if (lorebookJson.isNotBlank()) doc.put("lorebook", lorebookJson)
+    if (skillsBlock.isNotBlank()) doc.put("skills_block", skillsBlock)
     if (window > 0) doc.put("window", window)
+    // 图片**不算进附件**（用户 2026-11-26 改的口径）：附件那一行只算
+    // "上下文里带的附件路径"（`/chat/<文件名>` 那几行），那是从历史里挪出来的。
+    // 图片的 token 与字节不成正比，而它也不在附件路径那一段里。
     return doc
 }
 
-/**
- * 一张图按多少 token 算。
- *
- * 视觉模型对一张中等分辨率图的计费大致在 1000–1600 之间（各家不同）。
- * 这里取 1200：**可解释**比"看起来精确"重要——面板上那一行标着（预估）。
- */
-private const val PER_IMAGE_TOKENS = 1200L
 
 /** 分段条：按 token 数分权重，零的行不画。 */
 @Composable

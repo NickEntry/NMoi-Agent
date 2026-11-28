@@ -435,6 +435,25 @@ pub extern "C" fn nmoi_storage_delete_attachment_json(
     })
 }
 
+/// 只摘掉库里那一行，**不动盘上的文件**（D446）。
+///
+/// 用在"编辑消息时删附件"这条路：`allow_new_version` 开着时旧版本还引用着这份文件，
+/// 删了它切回旧版本就是"芯片在、点开什么都没有"。关掉时才走
+/// `nmoi_storage_delete_attachment_json`（行与文件一起没）。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_detach_attachment_json(
+    handle: u64,
+    attachment: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let id = read_str(attachment, "attachment")?;
+        let detached = with_storage(handle, |storage| {
+            storage.detach_attachment(id).map_err(storage_error)
+        })?;
+        Ok(json!({ "detached": detached }))
+    })
+}
+
 /// 单独一条而不是塞进 `create_conversation`：用户常常先建会话、再挑模型，
 /// 而 `create` 的签名一动，C 侧所有调用点都得跟着改。
 ///
@@ -832,14 +851,37 @@ pub extern "C" fn nmoi_storage_delete_message_json(
         let message_text = read_str(message, "message")?;
         let message_id = parse_message(message_text)?;
         with_storage(handle, |storage| {
+            // 删消息**连附件文件一起删**（D446）：库里那一行有 `ON DELETE CASCADE`
+            // 会跟着走，但盘上那份不会——不主动删就会留下没人认领的文件，
+            // 而它在存储页里会被算进「图片 / 文件」，用户看不出它已经没有主人了。
+            //
+            // 先记下路径再删库：删完就查不到这条消息的附件了。
+            let orphans = attachment_paths_of(storage, &message_id).unwrap_or_default();
             let removed = storage.delete_message(&message_id).map_err(storage_error)?;
+            // 盘上那份**先看再删**：工作区模式下模型可能已经用工具清掉了，
+            // 那时"删一个不存在的文件"不该被算成删掉了什么（D446）。
+            let files = orphans
+                .iter()
+                .filter(|path| nmoi_storage::repo::remove_file_if_exists(path))
+                .count();
             Ok(json!({
                 "message": message_id.to_string(),
                 "deleted": true,
                 "removed": removed,
+                // 真的从盘上删掉了几个文件（不存在的不算）。
+                "files": files,
             }))
         })
     })
+}
+
+/// 一条消息的附件在盘上的绝对路径（D446）。删消息之前先记下来。
+///
+/// 只取 `Some(path)` 的：老库的 BLOB 行与还没落盘的行没有路径，
+/// 它们的字节在库里，`ON DELETE CASCADE` 会一起走。
+fn attachment_paths_of(storage: &Storage, message: &MessageId) -> Option<Vec<String>> {
+    let rows = storage.attachments_of_message(message).ok()?;
+    Some(rows.into_iter().filter_map(|info| info.path).collect())
 }
 
 /// 一条压缩线在界面上要的字段（D324 / D355）。
@@ -863,6 +905,25 @@ fn divider_json(
     })
 }
 
+/// **全部**分界线，带"线上有几个单元"（D445）。
+///
+/// 与 `effective_divider` 的区别：那个只给"生效的那一条"（最后一条），
+/// 而用户可能插了好几条——界面要能画每一条、也要能单独删某一条。
+fn dividers_of(storage: &Storage, session: SessionId) -> FfiResult<Vec<Value>> {
+    let units = storage.load_units(session).map_err(storage_error)?;
+    let lines = storage.load_dividers(session).map_err(storage_error)?;
+    Ok(lines
+        .iter()
+        .map(|line| {
+            let covered = units
+                .iter()
+                .filter(|unit| unit.last_message().id.seq() <= line.after_seq)
+                .count();
+            divider_json(line, covered, 0)
+        })
+        .collect())
+}
+
 /// 把一段单元序列化成界面那一份 JSON（正文 / 思考 / 工具 / 版本 / 附件都在这里）。
 ///
 /// `start_abs` 是这段在整条会话里的起点（第几个单元），`window_start` 是压缩线位置：
@@ -881,6 +942,8 @@ fn units_envelope(
     next_before: Option<i64>,
     has_newer: bool,
     next_after: Option<i64>,
+    // **全部**分界线（D445）：界面要能画每一条、也要能单独删某一条。
+    dividers: Vec<Value>,
 ) -> FfiResult<Value> {
     // 版本概要一次查完（不是每条消息一次：那是 N+1，滚动会顿）。
     let versions = storage.version_index(session).map_err(storage_error)?;
@@ -1033,6 +1096,9 @@ fn units_envelope(
         "window_start": window_start,
         "summary": summary,
         "divider": divider,
+        // **全部**分界线（D445）：界面要能画每一条、也要能单独删某一条。
+        // `divider` 只给"生效的那一条"（最后一条），而用户可能插了好几条。
+        "dividers": dividers,
         // 分页（D355 / D365）：两个方向各一对。老的接口（整条读）给 false/null。
         "has_more": has_more,
         "next_before": next_before,
@@ -1096,6 +1162,7 @@ pub extern "C" fn nmoi_storage_load_units_json(
                 None,
                 false,
                 None,
+                dividers_of(storage, session_id)?,
             )
         })
     })
@@ -1156,6 +1223,7 @@ pub extern "C" fn nmoi_storage_load_units_page_json(
                 page.next_before,
                 page.has_newer,
                 page.next_after,
+                dividers_of(storage, session_id)?,
             )
         })
     })
@@ -1214,6 +1282,7 @@ pub extern "C" fn nmoi_storage_load_units_after_json(
                 page.next_before,
                 page.has_newer,
                 page.next_after,
+                dividers_of(storage, session_id)?,
             )
         })
     })
@@ -1359,6 +1428,44 @@ struct ToolDefTokens {
     tokens: u64,
 }
 
+/// 上下文里「附件路径」那几行占多少 token（D445）。
+///
+/// 用户 2026-11-26 的口径：附件那一行算的是**上下文里带的附件路径**
+/// （`【这一轮带的文件】` 那一段里的 `/chat/<文件名>`），不是图片。
+/// 它们本来算在历史里，现在单独一行。
+///
+/// 识别方式：历史里每一段的正文里，以 `- ` 开头且含 ` → /chat/` 的行
+/// （`attach_file_hints` 生成的就是这个形状）。**认形状而不认整段**：
+/// 整段里还有"需要内容就调 read_file"那句提示，它属于系统提示而不是附件。
+///
+/// `explicit` 给了就用它（调用方自己算好了），否则按形状算。
+fn attachment_path_tokens(
+    units: &[nmoi_core::message::AtomicUnit],
+    explicit: Option<u64>,
+) -> Option<u64> {
+    if let Some(value) = explicit {
+        return Some(value);
+    }
+    let mut total: u64 = 0;
+    let mut found = false;
+    for unit in units {
+        for message in unit.messages.iter() {
+            for line in message.content().lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("- ") && trimmed.contains(" → /chat/") {
+                    total += u64::from(nmoi_core::tokens::estimate_tokens(trimmed));
+                    found = true;
+                }
+            }
+        }
+    }
+    if found {
+        Some(total)
+    } else {
+        None
+    }
+}
+
 /// 这一轮**真正生效**的世界书占多少 token。
 ///
 /// 用 `lorebook::plan` 现算（关键词/正则命中、常驻才算），而不是把整册正文加起来——
@@ -1450,6 +1557,13 @@ pub extern "C" fn nmoi_context_breakdown_json(
                 .map(|model| Estimator::new(model, &calibrations));
             let level = estimator.as_ref().map_or(Level::L0, |it| it.level());
             let mut breakdown = nmoi_core::budget::breakdown_of_units(&units, estimator.as_ref());
+            // 附件路径那几行已经从历史里挪到「附件」了，这里把它的 token 扣掉——
+            // 不扣的话同一段内容算两次，而两个数都会看起来合理（D445）。
+            let moved = attachment_path_tokens(&units, None).unwrap_or(0);
+            if moved > 0 {
+                let history = breakdown.tokens_of(Segment::History);
+                breakdown.set_segment(Segment::History, history.saturating_sub(moved));
+            }
 
             // 库里没有的那几行，只认调用方给的数。`Some(0)` 也算一条：
             // "注入了但因为开关关着是 0"和"没注入"在面板上不是一回事。
@@ -1493,10 +1607,13 @@ pub extern "C" fn nmoi_context_breakdown_json(
                 Segment::Workspace,
                 extra.workspace.or_else(|| estimate(&extra.workspace_text)),
             );
-            add(
-                Segment::Attachments,
-                extra.attachments.filter(|value| *value > 0),
-            );
+            // 附件（D445）：**上下文里带的附件路径**那几行（`/chat/<文件名>` 那种），
+            // 不是图片。它们本来算在历史里，现在挪出来单独一行。
+            //
+            // 算法：把历史里每一段的"附件路径段"取出来算 token，同时从历史那一行扣掉。
+            // 不扣的话同一个东西被算两次，而两个数都会看起来"合理"。
+            let attachments = attachment_path_tokens(&units, extra.attachments);
+            add(Segment::Attachments, attachments.filter(|value| *value > 0));
             add(
                 Segment::Draft,
                 extra.draft.or_else(|| estimate(&extra.draft_text)),
@@ -1534,6 +1651,56 @@ pub extern "C" fn nmoi_context_breakdown_json(
                 "window": extra.window,
                 "remaining": remaining,
                 "rows": rows,
+            }))
+        })
+    })
+}
+
+/// 在**某条消息之后**插一条用户分界线（D445）。
+///
+/// 入参 `{"session":"…","after_seq":N}`，回 `{divider:{id,after_seq,kind,created_at}}`。
+///
+/// 这是「清空上下文」那个动作：它不删原文、不调模型，只画一条线——
+/// 线上面的不再进请求。与压缩的区别只有一个：压缩会把上面那段换成摘要，它不会。
+/// 所以它比压缩快得多，也不花钱。
+///
+/// **同一个位置只留一条**：连点两次不该叠出两条线（叠了之后删一条还剩一条，
+/// 用户会以为"删不掉"）。已有一条就原样返回它。
+#[no_mangle]
+pub extern "C" fn nmoi_storage_insert_divider_json(
+    handle: u64,
+    spec: *const c_char,
+) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(spec, "spec")?;
+        let root: Value = serde_json::from_str(text).map_err(|error| {
+            FfiError::new("bad_argument", format!("spec 不是合法 JSON：{error}"))
+        })?;
+        let session = parse_session(
+            root.get("session")
+                .and_then(Value::as_str)
+                .ok_or_else(|| FfiError::new("bad_argument", "缺少 session"))?,
+        )?;
+        let after_seq = root
+            .get("after_seq")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| FfiError::new("bad_argument", "缺少 after_seq"))?;
+        with_storage(handle, |storage| {
+            let existing = storage.load_dividers(session).map_err(storage_error)?;
+            if let Some(line) = existing.iter().find(|line| {
+                line.after_seq == after_seq && line.kind == nmoi_core::divider::DividerKind::User
+            }) {
+                return Ok(json!({
+                    "divider": divider_json(line, after_seq as usize, 0),
+                    "created": false,
+                }));
+            }
+            let line =
+                nmoi_core::divider::Divider::user(session, after_seq, nmoi_core::engine::now_ms());
+            storage.insert_divider(&line).map_err(storage_error)?;
+            Ok(json!({
+                "divider": divider_json(&line, after_seq as usize, 0),
+                "created": true,
             }))
         })
     })

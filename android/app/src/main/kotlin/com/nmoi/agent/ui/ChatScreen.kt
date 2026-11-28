@@ -433,6 +433,15 @@ internal fun ChatScreen(
      */
     var pendingFiles by remember { mutableStateOf(listOf<PendingFile>()) }
     var compressOpen by remember { mutableStateOf(false) }
+    /**
+     * 面板要递进去的世界书 JSON 与技能块（D445）。
+     *
+     * **打开面板时现读一次**：这两样会随勾选与输入变，而它们各自要读盘
+     * （世界书文件、技能目录），放在每次重组里读就是每秒几十次 IO。
+     * 面板一开就是"此刻的账"，之后改勾选要重开面板才刷新——这比"数字在眼前跳"好。
+     */
+    var panelLorebook by remember { mutableStateOf("") }
+    var panelSkills by remember { mutableStateOf("") }
     /** 真正跑压缩那一层（D443）：面板里按「上下文压缩」才进来。 */
     var compressSheet by remember { mutableStateOf(false) }
     var suggestions by remember(sessionId) { mutableStateOf(listOf<String>()) }
@@ -1845,6 +1854,25 @@ internal fun ChatScreen(
                             shareOpen = true
                         },
                         onOpenCompacted = { showCompacted = true },
+                        onRemoveCompacted = {
+                            // 删线 = 还原：线上那些重新进请求（D324 的判据没变）。
+                            val divider = snapshot?.page?.dividerId
+                            if (divider == null) {
+                                notice = "没有可删的那条线"
+                            } else {
+                                scope.launch {
+                                    withStorageHandle(databasePath) { handle ->
+                                        NmoiFfi.deleteDivider(handle, divider)
+                                    }.fold(
+                                        onSuccess = {
+                                            notice = "已删除分界线：上面那些重新进请求"
+                                            reloadKey += 1
+                                        },
+                                        onFailure = { notice = "没删成：${it.message}" },
+                                    )
+                                }
+                            }
+                        },
                     )
                     // 压缩线的详情与还原（D324）：压在列表之上，跟别的面板同一层。
                     // 放这里而不是放 MessageArea 里，是因为"删线"要写库，而那一层只负责画。
@@ -1980,6 +2008,28 @@ internal fun ChatScreen(
                 onCompress = {
                     plusMenu = false
                     compressOpen = true
+                    // 现读一次世界书与技能块（见 `panelLorebook` 的注释）。
+                    scope.launch {
+                        val books = assistant?.lorebooks.orEmpty()
+                        panelLorebook = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val text = LorebookStore.text(context)
+                                if (text.isBlank()) return@runCatching ""
+                                LorebookStore.filterBy(LorebookStore.parse(text), books).toString()
+                            }.getOrDefault("")
+                        }
+                        panelSkills = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val root = java.io.File(context.filesDir, "skills")
+                                if (!root.isDirectory) return@runCatching ""
+                                val useAll = ToolingRepository.skillsUseAll(context)
+                                val picked = ToolingRepository.skillsPicked(context).toList()
+                                if (!useAll && picked.isEmpty()) return@runCatching ""
+                                NmoiFfi.skillsBlock(root.absolutePath, useAll, picked)
+                                    .getOrNull()?.optString("text").orEmpty()
+                            }.getOrDefault("")
+                        }
+                    }
                 },
                 onPickFiles = {
                     plusMenu = false
@@ -2015,6 +2065,10 @@ internal fun ChatScreen(
                 window = currentModel?.contextWindow?.toLong()
                     ?: AppSettings.defaultContextWindow(context).toLong(),
                 draft = draft,
+                // 世界书与技能块（D444/D445）：**递原文**，让 core 用同一个估算器算。
+                // 不递的话这两行永远是 0——"世界书明明加载了却显示 0"就是这么来的。
+                lorebookJson = panelLorebook,
+                skillsBlock = panelSkills,
                 compacted = snapshot?.page?.compacted == true,
                 covered = snapshot?.page?.covered ?: 0,
                 onCompress = {
@@ -2026,10 +2080,27 @@ internal fun ChatScreen(
                     contextImagesOpen = true
                 },
                 onClearContext = {
-                    // 「清空上下文」= 手动压一次，与自动压缩走**同一条**流程
-                    // （`CompressRunner.run` → `nmoi_compress_run_json`），不为手动另开一条。
+                    // 「清空上下文」（D445）：**只在最新消息之后插一条分界线**，
+                    // 不调模型、不删原文。与压缩的区别只有一个——压缩会把上面那段
+                    // 换成摘要，它不会。所以它快得多，也不花钱。
                     compressOpen = false
-                    compressSheet = true
+                    scope.launch {
+                        val last = allMessages.lastOrNull()?.seq ?: 0L
+                        if (last <= 0L) {
+                            notice = "还没有消息，没有可分界的"
+                            return@launch
+                        }
+                        withStorageHandle(databasePath) { handle ->
+                            NmoiFfi.insertDivider(handle, sessionId, last)
+                        }.fold(
+                            onSuccess = { result ->
+                                val created = result.optBoolean("created", false)
+                                notice = if (created) "已在这里清空上下文" else "这里已经有一条分界线了"
+                                reloadKey += 1
+                            },
+                            onFailure = { notice = "没插上：${it.message}" },
+                        )
+                    }
                 },
                 onRestore = {
                     val divider = snapshot?.page?.dividerId
@@ -2650,6 +2721,34 @@ internal fun ChatScreen(
                     },
                     onDeleteAll = { confirmDelete = sheetMessage },
                     onTranslate = { translateMessage(sheetMessage) },
+                    // 「插入上下文分界线」（D445）：在这条消息之后画一条线，
+                    // 线上的不再进请求。不调模型、不删原文，所以它比压缩快得多也不花钱。
+                    insertDividerItem = if (sessionId == null) {
+                        null
+                    } else {
+                        SheetItem(
+                            label = "插入上下文分界线",
+                            icon = ActionIcons.Minus,
+                            onClick = {
+                                moreForId = null
+                                scope.launch {
+                                    withStorageHandle(databasePath) { handle ->
+                                        NmoiFfi.insertDivider(handle, sessionId, sheetMessage.seq)
+                                    }.fold(
+                                        onSuccess = { result ->
+                                            notice = if (result.optBoolean("created", false)) {
+                                                "已在这里插入分界线"
+                                            } else {
+                                                "这里已经有一条分界线了"
+                                            }
+                                            reloadKey += 1
+                                        },
+                                        onFailure = { notice = "没插上：${it.message}" },
+                                    )
+                                }
+                            },
+                        )
+                    },
                 ),
                 onHint = { notice = it },
                 onDismiss = { moreForId = null },
@@ -3189,6 +3288,8 @@ private fun MessageArea(
     onRetryMessage: (String) -> Unit = {},
     /** 点顶上那行"已移走 N 条"（D324）：摘要正文与还原在上一层，这里只管举手。 */
     onOpenCompacted: () -> Unit = {},
+    /** 点那个圆圈叉号删线（D445）：删线 = 还原，原文一条都没删。 */
+    onRemoveCompacted: () -> Unit = {},
     /** 每条**消息**的行起点（D363）：位置键按消息跳，不按行走。 */
     onMessageStarts: (List<Int>) -> Unit = {},
     /** 点变更芯片（D381）。`null` = 这一屏不接。 */
@@ -3385,6 +3486,7 @@ private fun MessageArea(
                     covered = page?.covered ?: 0,
                     summaryChars = page?.summary?.length ?: 0,
                     onOpen = onOpenCompacted,
+                    onRemove = onRemoveCompacted,
                 )
             }
         }
@@ -6167,6 +6269,11 @@ private fun messageSheetItems(
     onDeleteThis: () -> Unit,
     onDeleteAll: () -> Unit,
     onTranslate: () -> Unit,
+    /**
+     * 在这条消息之后插一条「清空上下文」分界线（D445）。`null` = 不给这一项
+     * （会话还没落库时没有 seq 可插）。
+     */
+    insertDividerItem: SheetItem? = null,
 ): List<SheetItem> {
     val items = mutableListOf(
         // 翻译（D306）：旁路跑一次，结果只在弹层里看，不落库（D158 的理由）。
@@ -6214,6 +6321,7 @@ private fun messageSheetItems(
             icon = ActionIcons.GitBranch,
             hint = "创建分支待接：要先把「从某条消息开始的新会话」建模",
         ),
+        *listOfNotNull(insertDividerItem).toTypedArray(),
     )
     // 多版：两个都给。只有一版：只给"删除所有版本"——它是**清空版本记录**
     // （连这一版一起删、正文不动，D151），所以单版也能用；"删除此版本"删到零版等于删消息，
@@ -8165,7 +8273,13 @@ private data class TranslateResult(val source: String, val text: String)
  * 摘要正文与还原都在点开之后那一层：铺在聊天里，会把一句答案变成三屏。
  */
 @Composable
-private fun CompactedBanner(covered: Int, summaryChars: Int, onOpen: () -> Unit) {
+private fun CompactedBanner(
+    covered: Int,
+    summaryChars: Int,
+    onOpen: () -> Unit,
+    /** 删掉这条线 = 还原（D324/D445）。左边那个圆圈叉号就是它。 */
+    onRemove: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -8178,14 +8292,23 @@ private fun CompactedBanner(covered: Int, summaryChars: Int, onOpen: () -> Unit)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                // 分隔语义（用户 2026-11-26：「用『清除上下文』标记隔开这样的」）。
-                // 不用 RotateCcw：那是"撤销"，与这条线的意思正好相反。
-                imageVector = ActionIcons.ChevronDown,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+            // 左边那个圆圈叉号（用户 2026-11-26）：「清空上下文」这个标记的删除键。
+            // 单独一个热区，点它删线；点其余部分才是展开摘要。
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = ActionIcons.Close,
+                    contentDescription = "删除这条分界线",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
             Text(
                 text = "清除上下文",
                 style = MaterialTheme.typography.labelMedium,

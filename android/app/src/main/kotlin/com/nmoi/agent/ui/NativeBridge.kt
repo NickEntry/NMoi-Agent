@@ -337,6 +337,21 @@ internal object NativeBridge {
     external fun toolNamesJson(): String
 
     /**
+     * **只摘掉库里那一行，不动盘上的文件**（D446）。
+     *
+     * 用在"编辑消息时删附件"：`allow_new_version` 开着时旧版本还引用着这份文件，
+     * 删了它切回旧版本就是"芯片在、点开什么都没有"。
+     */
+    external fun detachAttachmentJson(handle: Long, attachment: String): String
+
+    /**
+     * 在某条消息之后插一条用户分界线（D445）：`{divider:{…}, created:bool}`。
+     *
+     * 这是「清空上下文」那个动作：不删原文、不调模型，只画一条线。
+     */
+    external fun insertDividerJson(handle: Long, spec: String): String
+
+    /**
      * 扫一遍技能目录（D444）：`{skills:[{name,description,version,path}], count, root}`。
      *
      * 目录不存在给空表，不报错——技能是可选的。

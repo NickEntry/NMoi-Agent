@@ -445,6 +445,19 @@ internal object NmoiFfi {
     /** 注册表里的全部工具名（0.17e）。面板按它渲染，不在 Kotlin 里另列一份。 */
     suspend fun toolNames(): Result<JSONObject> = call("tool_names") { NativeBridge.toolNamesJson() }
 
+    /** **只摘掉库里那一行**，不动盘上的文件（D446）。 */
+    suspend fun detachAttachment(handle: Long, id: String): Result<JSONObject> =
+        call("attachment_detach") { NativeBridge.detachAttachmentJson(handle, id) }
+
+    /** 在某条消息之后插一条用户分界线（D445）。 */
+    suspend fun insertDivider(handle: Long, session: String, afterSeq: Long): Result<JSONObject> =
+        call("divider_insert") {
+            NativeBridge.insertDividerJson(
+                handle,
+                JSONObject().put("session", session).put("after_seq", afterSeq).toString(),
+            )
+        }
+
     /** 扫一遍技能目录（D444）。 */
     suspend fun skillsList(root: String): Result<JSONObject> =
         call("skills_list") { NativeBridge.skillsListJson(root) }

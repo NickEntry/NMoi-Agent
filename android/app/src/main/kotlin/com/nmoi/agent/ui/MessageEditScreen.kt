@@ -60,6 +60,7 @@ internal fun MessageEditScreen(
     /** 存好了：外层要重读这一轮（铁律 ①：以库里那份为准）。 */
     onSaved: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
 
     var loaded by remember(messageId) { mutableStateOf(false) }
@@ -71,6 +72,17 @@ internal fun MessageEditScreen(
     var errorLine by remember(messageId) { mutableStateOf<Int?>(null) }
     /** 拼不出文档（内容里有跟分块标记撞的串）时置真：这时保存必然失败，按钮要灰着。 */
     var blocked by remember(messageId) { mutableStateOf(false) }
+    /**
+     * 这一轮带的附件（D446）：`消息 id → 附件行`。
+     *
+     * 它们**不在编辑框里**：框里是文字，附件是另一层东西（芯片）。
+     * 所以"删附件"是单独的动作，不靠改文档。
+     */
+    var attachments by remember(messageId) { mutableStateOf<Map<String, List<ChatFile>>>(emptyMap()) }
+    /** 已经点了叉、还没保存的那些（保存时一起摘）。 */
+    var doomed by remember(messageId) { mutableStateOf<Set<String>>(emptySet()) }
+    /** 「允许生成新版本」开着没有：决定"摘掉"要不要连文件一起删（D446）。 */
+    var keepOldVersion by remember { mutableStateOf(AppSettings.allowNewVersion(context)) }
 
     /**
      * 框里到底有哪几块。写成一行"整轮 2 条消息：正文 · 思考 · 运行命令 #0 · 正文"，
@@ -103,6 +115,12 @@ internal fun MessageEditScreen(
             return@LaunchedEffect
         }
         original = loadedTurn
+        // 这一轮带的附件：按消息 id 归组。只取这一轮的那几条（不是整个会话）。
+        val wanted = loadedTurn.messageIds.toSet()
+        attachments = snapshot.page?.units.orEmpty()
+            .flatMap { it.messages }
+            .filter { it.id in wanted && it.files.isNotEmpty() }
+            .associate { it.id to it.files }
         try {
             text = serializeEditTurn(loadedTurn.turn)
         } catch (error: EditDocException) {
@@ -188,6 +206,26 @@ internal fun MessageEditScreen(
                 ChatRepository.applyTurnEdits(databasePath, edits)
             }
             busy = false
+            // 附件摘除（D446）：与正文改动一起提交。
+            // `allow_new_version` 开着 → 只摘行（旧版本还引用着那份文件）；
+            // 关着 → 行与文件一起删（真的删掉了）。
+            if (doomed.isNotEmpty()) {
+                val ids = doomed.toList()
+                val detachOnly = keepOldVersion
+                withContext(Dispatchers.IO) {
+                    withStorageHandle(databasePath) { handle ->
+                        for (id in ids) {
+                            if (detachOnly) {
+                                NmoiFfi.detachAttachment(handle, id)
+                            } else {
+                                NmoiFfi.deleteAttachment(handle, id)
+                            }
+                        }
+                        Result.success(Unit)
+                    }
+                }
+                doomed = emptySet()
+            }
             result.onSuccess { envelope ->
                 val written = envelope.optInt("written", 0)
                 val removed = envelope.optInt("removed", 0)
@@ -236,6 +274,59 @@ internal fun MessageEditScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             )
+
+            // 附件（D446）：一条消息一块芯片，右上角一个叉。点叉 = 这次保存时摘掉它。
+            // 框里只有文字，所以这一层必须单独摆——塞进框里会让用户以为
+            // "删掉那行字就等于删了附件"。
+            val shown = attachments.filterKeys { it in (original?.messageIds ?: emptyList()) }
+            if (shown.isNotEmpty()) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 6.dp)) {
+                    shown.forEach { (owner, files) ->
+                        files.forEach { file ->
+                            val dropped = file.id in doomed
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = file.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (dropped) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = if (dropped) "保存后移除" else "×",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (dropped) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    },
+                                    modifier = Modifier
+                                        .clickable {
+                                            doomed = if (dropped) {
+                                                doomed - file.id
+                                            } else {
+                                                doomed + file.id
+                                            }
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = if (keepOldVersion) {
+                            "「允许生成新版本」开着：只从这一版里去掉，文件本身留着（旧版本还要用）"
+                        } else {
+                            "「允许生成新版本」关着：文件本身也会删掉"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             scopeLine?.let { line ->
                 Text(

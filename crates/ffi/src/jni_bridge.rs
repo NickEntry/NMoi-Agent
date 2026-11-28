@@ -196,6 +196,56 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAllConversationsJ
     to_jstring(&mut env, text)
 }
 
+/// `Native.detachAttachmentJson(handle, id)`：只摘掉库里那一行，不动盘上的文件（D446）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_detachAttachmentJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    attachment: JString<'local>,
+) -> jstring {
+    let attachment = read_string(&mut env, &attachment);
+    let text = guarded(move || match attachment {
+        Some(id) => match CString::new(id) {
+            Ok(c_id) => take_json(crate::storage::nmoi_storage_detach_attachment_json(
+                handle as u64,
+                c_id.as_ptr(),
+            )),
+            Err(_) => take_json(crate::json::err_json(
+                "bad_argument",
+                "参数 `attachment` 含 NUL 字节",
+            )),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.insertDividerJson(handle, spec)`：在某条消息之后插一条用户分界线（D445）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_insertDividerJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    handle: jlong,
+    spec: JString<'local>,
+) -> jstring {
+    let spec = read_string(&mut env, &spec);
+    let text = guarded(move || match spec {
+        Some(spec) => match CString::new(spec) {
+            Ok(c_spec) => take_json(crate::storage::nmoi_storage_insert_divider_json(
+                handle as u64,
+                c_spec.as_ptr(),
+            )),
+            Err(_) => take_json(crate::json::err_json(
+                "bad_argument",
+                "参数 `spec` 含 NUL 字节",
+            )),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.skillsListJson(root)`：扫一遍技能目录。
 #[no_mangle]
 pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_skillsListJson<'local>(
