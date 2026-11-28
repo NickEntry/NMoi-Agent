@@ -17,6 +17,7 @@ mod bpe;
 mod calibrate;
 mod class;
 mod estimate;
+pub mod hf;
 
 pub use bpe::{available, vocab_for_model, warm, Vocab};
 pub use calibrate::{build_key, parse_key, Calibration};

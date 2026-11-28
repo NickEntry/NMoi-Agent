@@ -482,3 +482,9 @@
      5. 点「上移」把窄规则提到上面 → 匹配结果跟着变（这里是这一页唯一能验到优先级的地方）。
      6. 删一条 → 卡片消失，`files/tokenizers/<id>.json` 也没了（用文件管理器看不到）。
      7. 手动把某条的词表文件删掉再回这一页 → 那一行显示「词表不见了」并且是红的。
+
+122. **词表解析与 Python 逐 id 一致**（V204 / D441，本机已跑）。这条不需要真机：
+     `cargo run -q -p nmoi-core --example hf_tokenize -- <tokenizer.json> "<文本>"`
+     的输出，与 Python `tokenizers` 的 `encode(text).ids` **逐个相等**。
+     已验的六段：中英混排、纯英文、前导空格、中文标点、带缩进的 Python 片段、
+     带 tab/空行/尾随空格、emoji+数字。

@@ -5614,3 +5614,52 @@ Unigram 那边 262k 词表不能每步全表扫，要按首字符分桶。`model
 并写清只认这三种，不能让它在计数时静默出错。
 
 这一轮只做了查证与设计（§11），没有写实现。
+
+## D441 自己写一份 HF tokenizer（BPE / Unigram / WordPiece），与 Python 逐 id 对账（2026-11-26）
+
+路二落地：`crates/core/src/tokens/hf.rs`，**零新依赖**（只用已有的 `serde_json` + `regex`）。
+不做解码、不做 padding/truncation、不碰 chat template——只做"编码成 id 数出来几个"。
+
+**支持三种 `model.type`**：`BPE`（Qwen / DeepSeek / GLM / Kimi / Doubao / Claude 社区版 /
+GPT 的 HF 版）、`Unigram`（Gemini 的 Gemma 3 词表、部分中文模型）、`WordPiece`（BERT 系备用）。
+认不出的 `model.type` 与认不出的 normalizer（NFC/NFKC 那些要 `unicode-normalization`）
+一律**报错不猜**——猜出来的分词会让所有 token 数系统性偏一截，而界面上那个数看起来照常。
+
+**三处"差一个而看不出"的地方，都是实测对出来的**（拿 `/tmp/ds.json` 与 Python `tokenizers`
+逐 id 比，差一个就算没过）：
+
+1. **`\s+(?!\S)` 的 lookaround**。Rust `regex` 不支持，所以先剥掉 lookaround 再编；
+   然后在 `Split` 里补一条：整段是空白、后面紧跟非空白时，**最后一个字符不消费**
+   （游标退回去），让下一条候选把它吃进词里。
+   少了"退一格"，`"    return"` 会切成 `"    "` + `"return"`，实测 token 从
+   `…361,1354…` 变成 `…290,3916…`——差一个，界面上看不出。
+2. **退一格只对空格/制表有效**。换行走的是更前面的 `\s*[\r\n]+`，`"\n\n"` 要整段合成
+   一个 `ĊĊ`；退一格会变成两个 `Ċ`。实测第二条对账就是在这里错的。
+3. **`find_iter` 退不了**。它内部位置只往前走，所以"游标退一格"必须用 `find_at` 手写循环。
+   第一版用 `find_iter` + 改 `cursor` 变量，等于没改。
+
+**`merges` 两种写法都收**（`"a b"` 字符串 / `["a","b"]` 数组）；**`added_tokens` 按长度降序**
+先匹配（`<|end▁of▁sentence|>` 不能被更短的抢先）。
+
+**对账工具**：`crates/core/examples/hf_tokenize.rs`，`cargo run -p nmoi-core --example hf_tokenize
+-- /tmp/ds.json "文本"` 打逗号分隔的 id，直接跟 Python `tokenizers` 比。
+
+**实测结果**（DeepSeek-V4.1-Flash-1017 的 128k 词表）：
+
+```text
+hello 你好 世界   → 33310,223,30594,223,3427        ✓ 与 Python 一致
+hello world        → 33310,2058                      ✓
+" a"               → 260                             ✓
+"你好，世界！"      → 30594,303,3427,1175              ✓
+带缩进的 Python 片段 → 3465,285,4042,3395,361,1354,1527,940,223,19,201  ✓（这条错了两轮）
+680 字中文段落      → 400 token                      ✓
+带 tab/空行/尾随空格的串 → ✓（这条错了一轮）
+emoji + 数字       → ✓
+```
+
+性能：解析 3.5 s（128k 词表，含 127,741 条 merges 建表），编码 680 字中文 100 ms 上下。
+解析慢是**一次性**的（懒加载 + 进程内缓存），不是每次都要付。
+
+**这一轮没做**：把它接进 `Estimator` / 压缩判据 / 界面（计划 §10 第 2 步的后半），
+以及 usage 落库与消息尾部那一行（第 3 步）。core 测试 912 条全绿（新增 14 条），
+clippy `-D warnings` 干净。
