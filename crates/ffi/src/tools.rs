@@ -111,6 +111,95 @@ pub extern "C" fn nmoi_tool_specs_json(workspace_handle: u64, read_only: i32) ->
     })
 }
 
+/// 扫一遍技能目录：`{skills:[{name, description, version, path, enabled}], count}`。
+///
+/// 界面要的只有 name + description（进上下文的就是这两样），但 `path` 也要给出去——
+/// 用户点一行会想知道"这是哪个目录里的"。
+///
+/// `enabled` 在这里**恒为 true**：启用与否是助手/会话那一级的设置（`SkillSelection`），
+/// 技能目录本身没有这个状态。给一个假的 false 会让界面出现一个改不动的开关。
+///
+/// 目录不存在给空表，不报错：技能是可选的。
+#[no_mangle]
+pub extern "C" fn nmoi_skills_list_json(root: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let root = read_str(root, "root")?;
+        let registry = nmoi_core::skills::SkillRegistry::discover(root)
+            .map_err(|error| FfiError::new("skills", error.to_string()))?;
+        let rows: Vec<Value> = registry
+            .all()
+            .into_iter()
+            .map(|skill| {
+                json!({
+                    "name": skill.name,
+                    "description": skill.description,
+                    "version": skill.version,
+                    "path": skill.relative_path,
+                })
+            })
+            .collect();
+        Ok(json!({ "skills": rows, "count": rows.len(), "root": root }))
+    })
+}
+
+/// 这一轮要进上下文的技能块：**只有 name + description**。
+///
+/// 入参 `{"root":"…","use_all":bool,"names":["…"]}`，回 `{"text":"## 可用技能…","count":N}`。
+/// `text` 为空串 = 这一轮没有技能进上下文（一个都没勾 / 目录里没有）。
+///
+/// 为什么由 core 拼而不是界面拼：这一段的措辞与"要读 SKILL.md 全文"那句提醒
+/// 必须与 `context_block` 同一份，界面另拼一遍迟早两边不一样。
+#[no_mangle]
+pub extern "C" fn nmoi_skills_block_json(input: *const c_char) -> *mut c_char {
+    run_json(|| {
+        let text = read_str(input, "input")?;
+        let root: Value = serde_json::from_str(text).map_err(|error| {
+            FfiError::new("bad_argument", format!("input 不是合法 JSON：{error}"))
+        })?;
+        let root_dir = root
+            .get("root")
+            .and_then(Value::as_str)
+            .ok_or_else(|| FfiError::new("bad_argument", "缺少 root"))?;
+        let use_all = root
+            .get("use_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let names: Vec<String> = root
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let registry = nmoi_core::skills::SkillRegistry::discover(root_dir)
+            .map_err(|error| FfiError::new("skills", error.to_string()))?;
+        let selection = nmoi_core::settings::SkillSelection { use_all, names };
+        let visible = nmoi_core::gate::visible_skills(registry.all(), &selection);
+        if visible.is_empty() {
+            return Ok(json!({ "text": "", "count": 0 }));
+        }
+        // `context_block` 用的是 registry 里"已启用"的那一批，而这里的可见集合是
+        // 按助手/会话的勾选算出来的——所以自己拼，但格式照抄它（同一份措辞）。
+        let mut out = String::from("## 可用技能\n\n");
+        for skill in &visible {
+            let description = nmoi_core::archive::truncate_chars(
+                &skill.description,
+                nmoi_core::skills::DEFAULT_DESCRIPTION_CHARS,
+            );
+            out.push_str(&format!("- **{}**：{}\n", skill.name, description));
+        }
+        out.push_str("\n以上只是技能索引：需要用到某个技能时，先读取它的 SKILL.md 全文再动手。\n");
+        out.push_str(&format!(
+            "技能目录在 `{}/<技能名>/SKILL.md`。\n",
+            root_dir.trim_end_matches('/')
+        ));
+        Ok(json!({ "text": out, "count": visible.len() }))
+    })
+}
+
 /// 工具声明占多少 token：`[{name, tokens}]`。
 ///
 /// 面板上「内置工具 / MCP 工具」那两行要它。**按与真实请求同一份声明算**——

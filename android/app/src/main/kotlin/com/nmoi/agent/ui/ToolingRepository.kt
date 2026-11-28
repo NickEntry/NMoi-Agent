@@ -125,6 +125,9 @@ internal object ToolingRepository {
             .onFailure { NLog.w("Tools", "解绑工作区失败：${it.message}") }
     }
 
+    private const val KEY_SKILLS_USE_ALL = "skills.use_all"
+    private const val KEY_SKILLS_PICKED = "skills.picked"
+
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -152,6 +155,29 @@ internal object ToolingRepository {
 
     fun setFoldedGroups(context: Context, names: Set<String>) {
         prefs(context).edit().putStringSet(KEY_FOLDED_GROUPS, names).apply()
+    }
+
+    /**
+     * 技能选择（D444）：**全部 / 点名**。
+     *
+     * 与工具那两级开关是两件事：工具关掉 = 不声明（模型够不着）；
+     * 技能关掉 = 不告诉模型它存在（文件照样能读，D80）。
+     * 所以技能用的是 `use_all + names` 这一对，不是一串 `off`。
+     */
+    fun skillsUseAll(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SKILLS_USE_ALL, true)
+
+    fun setSkillsUseAll(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SKILLS_USE_ALL, value).apply()
+        NLog.i("Skills", "使用全部技能：$value")
+    }
+
+    /** `use_all` 为假时点名启用的那些。空集 + `use_all=false` = 一个都不带。 */
+    fun skillsPicked(context: Context): Set<String> =
+        prefs(context).getStringSet(KEY_SKILLS_PICKED, emptySet()).orEmpty().toSet()
+
+    fun setSkillsPicked(context: Context, names: Set<String>) {
+        prefs(context).edit().putStringSet(KEY_SKILLS_PICKED, names).apply()
     }
 
     fun setToolOff(context: Context, name: String, off: Boolean) {

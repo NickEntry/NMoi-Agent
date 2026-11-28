@@ -196,6 +196,48 @@ pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_listAllConversationsJ
     to_jstring(&mut env, text)
 }
 
+/// `Native.skillsListJson(root)`：扫一遍技能目录。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_skillsListJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    root: JString<'local>,
+) -> jstring {
+    let root = read_string(&mut env, &root);
+    let text = guarded(move || match root {
+        Some(root) => match CString::new(root) {
+            Ok(c_root) => take_json(crate::tools::nmoi_skills_list_json(c_root.as_ptr())),
+            Err(_) => take_json(crate::json::err_json(
+                "bad_argument",
+                "参数 `root` 含 NUL 字节",
+            )),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
+/// `Native.skillsBlockJson(input)`：这一轮要进上下文的技能块（只有 name + description）。
+#[no_mangle]
+pub extern "system" fn Java_com_nmoi_agent_ui_NativeBridge_skillsBlockJson<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    input: JString<'local>,
+) -> jstring {
+    let input = read_string(&mut env, &input);
+    let text = guarded(move || match input {
+        Some(input) => match CString::new(input) {
+            Ok(c_input) => take_json(crate::tools::nmoi_skills_block_json(c_input.as_ptr())),
+            Err(_) => take_json(crate::json::err_json(
+                "bad_argument",
+                "参数 `input` 含 NUL 字节",
+            )),
+        },
+        None => bad_string(),
+    });
+    to_jstring(&mut env, text)
+}
+
 /// `Native.contextBreakdownJson(handle, session, extra)`：上下文管理面板的八行用量。
 ///
 /// `extra` 是**库里没有的那几行**（系统提示词 / 技能 / 世界书 / 工作区 / 草稿 /

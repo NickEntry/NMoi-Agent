@@ -64,6 +64,8 @@ internal fun AppSettingsScreen(
     onBack: () -> Unit,
     /** 进「tokenizer 词表」那一页（D438）。一页一件事：那一页只管条目与词表。 */
     onOpenTokenizers: () -> Unit = {},
+    /** 进「技能」那一页（D444）。 */
+    onOpenSkills: () -> Unit = {},
 ) {
     var allowNewVersion by remember { mutableStateOf(AppSettings.allowNewVersion(context)) }
     var regenOld by remember { mutableStateOf(AppSettings.regenOldMessage(context)) }
@@ -298,6 +300,32 @@ internal fun AppSettingsScreen(
                             )
                             Text(
                                 text = "按模型家族各用一份词表；没命中就用内置那份",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    RowDivider(leading = 14.dp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenSkills)
+                            .padding(start = 14.dp, end = 12.dp, top = 14.dp, bottom = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "技能",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "哪些技能要主动告诉模型；全文由它自己按需读取",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

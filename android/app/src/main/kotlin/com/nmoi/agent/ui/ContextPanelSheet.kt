@@ -66,6 +66,10 @@ internal fun ContextPanelSheet(
     /** 这一轮会发出去的图（其他模态）：只数张数，字节不进这一页。 */
     imageCount: Int,
     imageLimit: Int,
+    /** 当前上下文窗口（token）。0 = 不知道，那一行「剩余空间」就不出。 */
+    window: Long,
+    /** 输入框里现在打的字：它就是「草稿」那一行。 */
+    draft: String,
     onCompress: () -> Unit,
     onOpenImages: () -> Unit,
     onClearContext: () -> Unit,
@@ -79,6 +83,7 @@ internal fun ContextPanelSheet(
 
     var rows by remember { mutableStateOf<List<ContextRow>>(emptyList()) }
     var total by remember { mutableStateOf(0L) }
+    var remaining by remember { mutableStateOf<Long?>(null) }
     var level by remember { mutableStateOf("l0") }
     var loading by remember { mutableStateOf(true) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -88,7 +93,7 @@ internal fun ContextPanelSheet(
         loading = true
         val result = withContext(Dispatchers.IO) {
             runCatching {
-                val extra = buildExtra(context)
+                val extra = buildExtra(context, draft, imageCount, window)
                 withStorageHandle(databasePath) { handle ->
                     NmoiFfi.contextBreakdown(handle, sessionId, extra)
                 }.getOrThrow()
@@ -98,6 +103,11 @@ internal fun ContextPanelSheet(
             onSuccess = { envelope ->
                 rows = parseRows(envelope)
                 total = envelope.optLong("total", 0L)
+                remaining = if (envelope.isNull("remaining")) {
+                    null
+                } else {
+                    envelope.optLong("remaining", 0L)
+                }
                 level = envelope.optString("level", "l0")
                 failure = null
             },
@@ -139,6 +149,16 @@ internal fun ContextPanelSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
             )
+            // 九行各是什么，一句话讲清（用户 2026-11-26 逐条给的定义）。
+            // 不写这段的话，「内置工具」会被当成"工具跑出来的东西"，
+            // 而它其实只是请求里那几十条 schema。
+            Text(
+                text = "历史＝上下文里这些消息（含思考与工具往返）；内置/MCP 工具＝请求里 tool 的 JSON；" +
+                    "技能＝技能索引；世界书＝这一轮匹配上的条目；附件＝直接进上下文的图片；草稿＝输入框里这段字",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                modifier = Modifier.padding(top = 4.dp),
+            )
             Spacer(Modifier.height(10.dp))
             SegmentBar(rows = rows, total = total)
             Spacer(Modifier.height(12.dp))
@@ -173,6 +193,33 @@ internal fun ContextPanelSheet(
                     )
                     Text(
                         text = formatTokens(row.tokens),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // 剩余空间（用户 2026-11-26 点名要的一行）：窗口减已用。
+            // 不知道窗口就不出这一行——猜一个窗口比不显示更糟。
+            remaining?.let { left ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    )
+                    Text(
+                        text = "剩余空间",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f).padding(start = 10.dp),
+                    )
+                    Text(
+                        text = formatTokens(left),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -315,17 +362,30 @@ private fun parseRows(envelope: JSONObject): List<ContextRow> {
  * 递原文而不是数：core 那边用同一个估算器算，面板上八行才是同一口径。
  * 界面自己估一遍的话，"系统提示词 3.9k"与"历史 382.1k"会来自两套算法。
  */
-private fun buildExtra(context: android.content.Context): JSONObject {
+private fun buildExtra(
+    context: android.content.Context,
+    draft: String,
+    imageCount: Int,
+    window: Long,
+): JSONObject {
     val doc = JSONObject()
-    val system = PromptVars.compose(
-        null,
-        AppSettings.globalSystem(context),
-        // 助手那一层这里拿不到（面板只关心"这一轮送了什么"），全局那段是最稳的那一半。
-        null,
-    )
+    val system = PromptVars.compose(null, AppSettings.globalSystem(context), null)
     system?.let { doc.put("system_prompt_text", it) }
+    if (draft.isNotBlank()) doc.put("draft_text", draft)
+    // 图片：**每张按固定值算**。图片的 token 与字节不成正比（与分辨率、模型有关），
+    // 所以给一个可解释的常数比按字节折算更实在。1200 是常见视觉模型一张中等图的量级。
+    if (imageCount > 0) doc.put("attachments", imageCount * PER_IMAGE_TOKENS)
+    if (window > 0) doc.put("window", window)
     return doc
 }
+
+/**
+ * 一张图按多少 token 算。
+ *
+ * 视觉模型对一张中等分辨率图的计费大致在 1000–1600 之间（各家不同）。
+ * 这里取 1200：**可解释**比"看起来精确"重要——面板上那一行标着（预估）。
+ */
+private const val PER_IMAGE_TOKENS = 1200L
 
 /** 分段条：按 token 数分权重，零的行不画。 */
 @Composable

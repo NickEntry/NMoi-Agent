@@ -1335,6 +1335,20 @@ struct BreakdownExtra {
     world_book_text: Option<String>,
     workspace_text: Option<String>,
     draft_text: Option<String>,
+    /// 直接进上下文的非文本（图片）占多少：字节数除以一个经验系数，或者界面直接给数。
+    /// 图片的 token 与字节不成正比（与分辨率、模型有关），所以这里**收一个数**，
+    /// 由界面按"每张图固定占多少"给——那种估法至少是可解释的。
+    attachments: Option<u64>,
+    /// 这一轮生效的世界书（**已经筛过**：只留助手勾了的那几册，且不含内置册）。
+    ///
+    /// 递 JSON 而不是数：哪几条生效要按关键词/常驻现算（用户 2026-11-26：
+    /// 「生效的条目，意思是关键词/正则匹配上，或者常驻条目，才算做生效」），
+    /// 而匹配用的是 `lorebook::plan`，界面那边没有同一份实现。
+    lorebook: Option<String>,
+    /// 技能块（name + description 那一段）的原文。空 = 这一轮没有技能进上下文。
+    skills_block: Option<String>,
+    /// 这一轮的上下文窗口（token）。给了才算「剩余空间」；不给就不出那一行。
+    window: Option<u64>,
     #[serde(default)]
     tool_definitions: Vec<ToolDefTokens>,
 }
@@ -1345,6 +1359,49 @@ struct ToolDefTokens {
     tokens: u64,
 }
 
+/// 这一轮**真正生效**的世界书占多少 token。
+///
+/// 用 `lorebook::plan` 现算（关键词/正则命中、常驻才算），而不是把整册正文加起来——
+/// 后者会把"没命中的条目"也算进去，而用户看这一行是想知道"这一轮到底塞了多少设定"。
+///
+/// 历史行取自库里的单元（`plan` 按 `scan_depth` 只看最后几条），与真实注入同一份输入。
+fn world_book_tokens(text: &str, units: &[nmoi_core::message::AtomicUnit]) -> Option<u64> {
+    use nmoi_core::lorebook::{HistoryLine, Library};
+    let library = Library::import(text).ok()?;
+    let book = library.merged();
+    if !book.enabled || book.entries.is_empty() {
+        return Some(0);
+    }
+    // `HistoryLine` 借的是 `&str`，所以先把文本摊平成 owned 再借出去。
+    let flattened: Vec<(nmoi_core::message::Role, String)> = units
+        .iter()
+        .flat_map(|unit| unit.messages.iter())
+        .map(|message| {
+            let mut body = message.content();
+            if let Some(reasoning) = message.reasoning() {
+                if !reasoning.is_empty() {
+                    body.push('\n');
+                    body.push_str(&reasoning);
+                }
+            }
+            (message.role, body)
+        })
+        .collect();
+    let lines: Vec<HistoryLine<'_>> = flattened
+        .iter()
+        .map(|(role, text)| HistoryLine::new(*role, text.as_str()))
+        .collect();
+    let injections = nmoi_core::lorebook::plan(&book, &lines);
+    if injections.is_empty() {
+        return Some(0);
+    }
+    let tokens: u64 = injections
+        .iter()
+        .map(|injection| u64::from(nmoi_core::tokens::estimate_tokens(&injection.content)))
+        .sum();
+    Some(tokens)
+}
+
 fn parse_breakdown_extra(text: Option<&str>) -> FfiResult<BreakdownExtra> {
     match text {
         None | Some("") => Ok(BreakdownExtra::default()),
@@ -1353,11 +1410,11 @@ fn parse_breakdown_extra(text: Option<&str>) -> FfiResult<BreakdownExtra> {
     }
 }
 
-/// 上下文窗口面板的八行用量。
+/// 上下文窗口面板的九行用量。
 ///
 /// 入参：`session` 必填；`extra` 可选（NULL 或空串 = 只算库里有的）。
 /// 出参：`{"ok":true,"session":"…","model":"…"|null,"level":"l1"|"l0","estimated":true,"total":1234,"rows":[…]}`，
-/// `rows` 恒为 8 行，顺序固定，含 0 行——色块与图例位置不该随数据跳动。
+/// `rows` 恒为 9 行，顺序固定，含 0 行——色块与图例位置不该随数据跳动。
 ///
 /// `level` 是这一批线上数字的来源：`l1` = 本地 BPE + 校准过的因子，`l0` = 字符近似。
 /// 会话没有模型名（还没跑过）或二进制没编 `bpe` 时都是 `l0`，面板该据此说"这是粗估"。
@@ -1416,17 +1473,29 @@ pub extern "C" fn nmoi_context_breakdown_json(
             );
             add(
                 Segment::Skills,
-                extra.skills.or_else(|| estimate(&extra.skills_text)),
-            );
-            add(
-                Segment::WorldBook,
                 extra
-                    .world_book
-                    .or_else(|| estimate(&extra.world_book_text)),
+                    .skills
+                    .or_else(|| estimate(&extra.skills_block))
+                    .or_else(|| estimate(&extra.skills_text)),
             );
+            // 世界书：**只有生效的那几条**（关键词/正则命中，或者常驻）。
+            // 用 core 的 `lorebook::plan` 现算——在界面里另写一遍匹配，迟早与真实
+            // 注入的那几条不一致，而"面板说 18k、实际注入了 40k"这种差看不出来。
+            let world_book = match extra.world_book {
+                Some(value) => Some(value),
+                None => match extra.lorebook.as_deref().filter(|text| !text.is_empty()) {
+                    Some(text) => world_book_tokens(text, &units),
+                    None => estimate(&extra.world_book_text),
+                },
+            };
+            add(Segment::WorldBook, world_book);
             add(
                 Segment::Workspace,
                 extra.workspace.or_else(|| estimate(&extra.workspace_text)),
+            );
+            add(
+                Segment::Attachments,
+                extra.attachments.filter(|value| *value > 0),
             );
             add(
                 Segment::Draft,
@@ -1449,12 +1518,21 @@ pub extern "C" fn nmoi_context_breakdown_json(
                     })
                 })
                 .collect();
+            // 剩余空间：窗口减去已用。窗口从**这一轮的请求**来（界面递 `window`），
+            // 没给就不出这一行——猜一个窗口比不显示更糟（用户会按错的数去压缩）。
+            let used = breakdown.total();
+            let remaining = extra
+                .window
+                .filter(|window| *window > used)
+                .map(|window| window - used);
             Ok(json!({
                 "session": session_id.to_string(),
                 "model": model.as_deref(),
                 "level": level.as_str(),
                 "estimated": true,
-                "total": breakdown.total(),
+                "total": used,
+                "window": extra.window,
+                "remaining": remaining,
                 "rows": rows,
             }))
         })

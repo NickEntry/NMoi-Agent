@@ -131,6 +131,30 @@ internal data class Interrupts(
     val isEmpty: Boolean get() = summaries == 0 && incomplete.isEmpty()
 }
 
+
+/**
+ * 这一轮要进上下文的技能块（D444）：**只有 name + description**。
+ *
+ * 全文不进上下文——模型知道有这么个技能，需要时自己去读 `SKILL.md`（D80 的约定）。
+ * 拼法在 core（`nmoi_skills_block_json`）：那几句措辞必须与 `context_block` 同一份，
+ * 界面另拼一遍迟早两边不一样。
+ *
+ * 读不出来就给 null（不发这一段），并把原因写进日志：技能是可选的，
+ * 它坏了不该让整轮发不出去。
+ */
+private suspend fun skillsBlock(context: android.content.Context): String? {
+    val root = java.io.File(context.filesDir, "skills")
+    if (!root.isDirectory) return null
+    val useAll = ToolingRepository.skillsUseAll(context)
+    val picked = ToolingRepository.skillsPicked(context).toList()
+    if (!useAll && picked.isEmpty()) return null
+    return NmoiFfi.skillsBlock(root.absolutePath, useAll, picked)
+        .onFailure { NLog.w("Skills", "技能块拼不出来：${it.message}") }
+        .getOrNull()
+        ?.optString("text")
+        ?.takeIf { it.isNotBlank() }
+}
+
 internal object TurnRepository {
     suspend fun send(
         context: Context,
@@ -453,11 +477,19 @@ internal object TurnRepository {
                         )
                     }
 
-                // 系统提示词（D435）：全局那段 → 这个助手自己的那段，拼好再发。
+                // 系统提示词（D435 / D444）：全局那段 → 这个助手自己的那段 → **技能块**。
                 // 空着一律不发——发一个空 system，有的上游会把它当成"清空系统提示"。
+                //
+                // 技能块排最后：它讲的是"有哪些能力可用"，属于能力说明，
+                // 排在用户的设定之后读起来才顺；而它随时会因为勾选变化，
+                // 放在前面会打掉更多前缀缓存。
                 .also { row ->
-                    PromptVars.compose(null, AppSettings.globalSystem(context), assistant.system)
-                        ?.let { row.put("system", it) }
+                    val skills = skillsBlock(context)
+                    PromptVars.compose(
+                        null,
+                        AppSettings.globalSystem(context),
+                        PromptVars.compose(assistant.system, skills, null),
+                    )?.let { row.put("system", it) }
                 }
                 // 世界书（D280）：整份 JSON 递进去，core 那边按关键词激活、按位置注入。
                 // 没导入就不发这个字段——省一次解析，也省得 core 判空串。

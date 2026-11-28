@@ -477,12 +477,14 @@ pub enum Segment {
     SystemPrompt,
     WorldBook,
     Workspace,
+    /// 直接进上下文的**非文本**（图片等）。用户 2026-11-26 点名要的一行。
+    Attachments,
     Draft,
 }
 
 impl Segment {
     /// 顺序 = 面板上的顺序，也是分段进度条的堆叠顺序。改这里就是改 UI，别随手调。
-    pub const ALL: [Segment; 8] = [
+    pub const ALL: [Segment; 9] = [
         Segment::History,
         Segment::BuiltinTools,
         Segment::McpTools,
@@ -490,6 +492,7 @@ impl Segment {
         Segment::SystemPrompt,
         Segment::WorldBook,
         Segment::Workspace,
+        Segment::Attachments,
         Segment::Draft,
     ];
 
@@ -502,6 +505,7 @@ impl Segment {
             Segment::SystemPrompt => "system_prompt",
             Segment::WorldBook => "world_book",
             Segment::Workspace => "workspace",
+            Segment::Attachments => "attachments",
             Segment::Draft => "draft",
         }
     }
@@ -519,6 +523,7 @@ impl Segment {
             Segment::SystemPrompt => "系统提示词",
             Segment::WorldBook => "世界书",
             Segment::Workspace => "工作区",
+            Segment::Attachments => "附件",
             Segment::Draft => "草稿",
         }
     }
@@ -532,7 +537,8 @@ impl Segment {
             Segment::SystemPrompt => 4,
             Segment::WorldBook => 5,
             Segment::Workspace => 6,
-            Segment::Draft => 7,
+            Segment::Attachments => 7,
+            Segment::Draft => 8,
         }
     }
 }
@@ -544,8 +550,8 @@ impl Segment {
 /// | 标签 | 行 | 理由 |
 /// |---|---|---|
 /// | `System` / `InstructionInjection` / `Memory` | 系统提示词 | 都是常驻注入的指令，随每轮一起发 |
-/// | `History` / `ModelThinking` / `BrokenBlock` / `VisionBridge` | 历史消息 | 都是历史里某条消息的一部分，拆开算会让"历史"这一行对不上用户看到的条数 |
-/// | `ToolDefinition` / `ToolCall` / `ToolResult` / `Search` | 内置工具 | 声明、调用、结果、外部检索都是工具这一层的开销；MCP 由名字前缀再分出去 |
+/// | `History` / `ModelThinking` / `BrokenBlock` / `VisionBridge` / `ToolCall` / `ToolResult` / `Search` | 历史消息 | 都是这一轮上下文里"对话那部分"；拆开算会让"历史"这一行对不上用户看到的内容 |
+/// | `ToolDefinition` | 内置工具 / MCP 工具 | **只有声明**算工具那一层（每轮都要发的固定开销）；MCP 由名字前缀再分出去 |
 /// | `WorldBook` / `Skills` / `Workspace` | 各自的行 | 一一对应 |
 ///
 /// 故意不写 `_ =>` 兜底：以后加 `SourceTag`，编译器会在这里拦一次，
@@ -555,14 +561,19 @@ pub fn segment_of(tag: SourceTag) -> Segment {
         SourceTag::System | SourceTag::InstructionInjection | SourceTag::Memory => {
             Segment::SystemPrompt
         }
+        // 工具调用与结果**属于对话**（用户 2026-11-26：「历史消息的意思是当前上下文范围内
+        // 这些消息的上下文，包括思考块，也包括工具块会给 AI 发送的部分」）。
+        // 以前它们落在「内置工具」，于是那一行变成了几百 k，而「内置工具」本该只是
+        // 请求里 tool 的 JSON schema——两件事混在一起，面板就没法看了。
         SourceTag::History
         | SourceTag::ModelThinking
         | SourceTag::BrokenBlock
-        | SourceTag::VisionBridge => Segment::History,
-        SourceTag::ToolDefinition
+        | SourceTag::VisionBridge
         | SourceTag::ToolCall
         | SourceTag::ToolResult
-        | SourceTag::Search => Segment::BuiltinTools,
+        | SourceTag::Search => Segment::History,
+        // 只有**定义**算工具那一层：它是每轮都要发的固定开销。
+        SourceTag::ToolDefinition => Segment::BuiltinTools,
         SourceTag::WorldBook => Segment::WorldBook,
         SourceTag::Skills => Segment::Skills,
         SourceTag::Workspace => Segment::Workspace,
@@ -593,7 +604,7 @@ pub struct BreakdownRow {
 
 /// 分段用量累加器。
 ///
-/// 用 `[u64; 8]` 而不是 `HashMap`：行是固定的，数组保证顺序也保证不会多出第 9 行。
+/// 用 `[u64; 9]` 而不是 `HashMap`：行是固定的，数组保证顺序也保证不会多出第 10 行。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Breakdown {
     tokens: [u64; Segment::ALL.len()],
@@ -652,7 +663,7 @@ impl Breakdown {
         self.tokens_of(segment) as f64 / total as f64
     }
 
-    /// 八行全给，含 0 行。
+    /// 九行全给，含 0 行。
     pub fn rows(&self) -> Vec<BreakdownRow> {
         Segment::ALL
             .iter()
@@ -665,7 +676,7 @@ impl Breakdown {
     }
 }
 
-/// 把库里的一串原子单元折成八行。
+/// 把库里的一串原子单元折成九行。
 ///
 /// 一条消息占多少 token 用 `Message.tokens`；**思考内容在这里补上**：
 /// 落库时 `tokens` 只算了正文与工具参数，而面板要回答的是"这次请求实际送出去多少"，
@@ -982,9 +993,9 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_eight_fixed_and_in_order() {
+    fn rows_are_fixed_and_in_order() {
         let rows = Breakdown::new().rows();
-        assert_eq!(rows.len(), 8);
+        assert_eq!(rows.len(), Segment::ALL.len());
         for (index, row) in rows.iter().enumerate() {
             assert_eq!(row.segment, Segment::ALL[index]);
             assert_eq!(row.tokens, 0);
@@ -995,7 +1006,7 @@ mod tests {
         }
         // 顺序是面板的约定，不是"碰巧这个顺序"。
         assert_eq!(Segment::ALL[0], Segment::History);
-        assert_eq!(Segment::ALL[7], Segment::Draft);
+        assert_eq!(Segment::ALL[Segment::ALL.len() - 1], Segment::Draft);
     }
 
     #[test]

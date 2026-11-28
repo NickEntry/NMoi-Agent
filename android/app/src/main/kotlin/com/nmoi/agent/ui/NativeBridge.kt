@@ -337,6 +337,20 @@ internal object NativeBridge {
     external fun toolNamesJson(): String
 
     /**
+     * 扫一遍技能目录（D444）：`{skills:[{name,description,version,path}], count, root}`。
+     *
+     * 目录不存在给空表，不报错——技能是可选的。
+     */
+    external fun skillsListJson(root: String): String
+
+    /**
+     * 这一轮要进上下文的技能块（D444）：只有 `name + description`，全文让模型自己去读。
+     *
+     * 由 core 拼而不是界面拼：那几句措辞要与 `context_block` 同一份。
+     */
+    external fun skillsBlockJson(input: String): String
+
+    /**
      * 上下文管理面板的八行用量（D443）。
      *
      * `extra` 是**库里没有的那几行**的原文（系统提示词 / 技能 / 世界书 / 工作区 / 草稿），

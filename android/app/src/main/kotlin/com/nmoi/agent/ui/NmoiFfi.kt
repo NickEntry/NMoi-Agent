@@ -445,6 +445,22 @@ internal object NmoiFfi {
     /** 注册表里的全部工具名（0.17e）。面板按它渲染，不在 Kotlin 里另列一份。 */
     suspend fun toolNames(): Result<JSONObject> = call("tool_names") { NativeBridge.toolNamesJson() }
 
+    /** 扫一遍技能目录（D444）。 */
+    suspend fun skillsList(root: String): Result<JSONObject> =
+        call("skills_list") { NativeBridge.skillsListJson(root) }
+
+    /** 这一轮要进上下文的技能块（D444）：`{text, count}`。 */
+    suspend fun skillsBlock(root: String, useAll: Boolean, names: List<String>): Result<JSONObject> =
+        call("skills_block") {
+            NativeBridge.skillsBlockJson(
+                JSONObject()
+                    .put("root", root)
+                    .put("use_all", useAll)
+                    .put("names", org.json.JSONArray(names))
+                    .toString(),
+            )
+        }
+
     /**
      * 上下文管理面板的八行用量（D443）。
      *

@@ -2011,6 +2011,10 @@ internal fun ChatScreen(
                 modelId = assistant?.modelId.orEmpty(),
                 imageCount = contextImages.size,
                 imageLimit = AppSettings.imageLimit(context),
+                // 窗口与草稿：面板要算「剩余空间」与「草稿」那两行。
+                window = currentModel?.contextWindow?.toLong()
+                    ?: AppSettings.defaultContextWindow(context).toLong(),
+                draft = draft,
                 compacted = snapshot?.page?.compacted == true,
                 covered = snapshot?.page?.covered ?: 0,
                 onCompress = {
