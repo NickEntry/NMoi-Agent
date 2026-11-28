@@ -230,7 +230,7 @@ impl HfTokenizer {
                     .collect()
             })
             .unwrap_or_default();
-        added.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        added.sort_by_key(|row| std::cmp::Reverse(row.0.len()));
 
         let pre = parse_pre(root.get("pre_tokenizer"))?;
         let norm = parse_norm(root.get("normalizer"))?;

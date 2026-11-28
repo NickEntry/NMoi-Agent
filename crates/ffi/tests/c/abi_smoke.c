@@ -435,14 +435,17 @@ int main(void) {
             nmoi_string_free(blank);
         }
 
-        /* 上下文窗口面板的分段用量（P6.4）：八行恒在，0 行也给——
-         * 图例位置不该随数据跳动，UI 不该自己维护中文词表。 */
+        /* 上下文窗口面板的分段用量（P6.4 / D444）：**九行**恒在，0 行也给——
+         * 图例位置不该随数据跳动，UI 不该自己维护中文词表。
+         * 九行 = 历史 / 内置工具 / MCP 工具 / 技能 / 系统提示词 / 世界书 / 工作区 /
+         *       附件 / 草稿（D444 加了附件那一行）。 */
         {
             char *breakdown =
                 take(nmoi_context_breakdown_json(storage_handle, session, NULL), "breakdown");
             check(is_ok(breakdown) && balanced(breakdown), "breakdown 是配平的 JSON", breakdown);
-            check(count_of(breakdown, "\"key\":") == 8, "恒为 8 行（含 0 行）", breakdown);
+            check(count_of(breakdown, "\"key\":") == 9, "恒为 9 行（含 0 行）", breakdown);
             check(contains(breakdown, "\"label\":\"历史消息\""), "第一行是历史消息", NULL);
+            check(contains(breakdown, "\"label\":\"附件\""), "有附件那一行", NULL);
             check(contains(breakdown, "\"label\":\"草稿\""), "最后一行是草稿", NULL);
             check(row_has_field(breakdown, "历史消息", "items", 3), "三条消息都进了历史那一行",
                   breakdown);
