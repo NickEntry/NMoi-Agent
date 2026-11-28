@@ -1187,6 +1187,15 @@ fn round_units(
     if let Some(last) = units.last_mut() {
         if let Some(message) = last.messages.last_mut() {
             message.changes = report.changes.clone();
+            // 用量也挂在最后一条上（D442）：工具往返里前面几次的 prompt 都更短，
+            // 拿它们当"这一轮的上下文大小"会低估。
+            //
+            // `turn_end` 单独记：端点没回 usage 时它仍是 true，界面靠它区分
+            // "端点没回（写 unknown tokens）"与"这根本不是最后一轮（不显示）"。
+            message.turn_end = true;
+            if report.usage.prompt_tokens > 0 || report.usage.completion_tokens > 0 {
+                message.usage = Some(report.usage);
+            }
         }
     }
     Ok(units)

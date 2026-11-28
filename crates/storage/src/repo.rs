@@ -1169,7 +1169,8 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                     form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                    locked, revision, tool_call_id, incomplete, changes_json
+                    locked, revision, tool_call_id, incomplete, changes_json,
+                    usage_prompt, usage_completion, usage_cached, usage_end
              FROM messages WHERE conv_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([session.to_string()], row_to_message)?;
@@ -1369,7 +1370,7 @@ impl Storage {
              SELECT m.id, m.unit_id, m.unit_kind, m.unit_closed, m.seq, m.role, m.source,
                     m.form, m.tokens, m.created_at, m.logical_clock, m.archived_ref,
                     m.protected, m.pinned, m.locked, m.revision, m.tool_call_id, m.incomplete,
-                    m.changes_json
+                    m.changes_json, m.usage_prompt, m.usage_completion, m.usage_cached, m.usage_end
                FROM messages m JOIN page p ON p.unit_id = m.unit_id
               WHERE m.conv_id = ?1 ORDER BY m.seq ASC"
         ))?;
@@ -2057,8 +2058,9 @@ pub(crate) fn insert_unit_rows(
             "INSERT INTO messages(
                  id, conv_id, unit_id, unit_kind, unit_closed, seq, role, source,
                  form, tokens, created_at, logical_clock, archived_ref,
-                 protected, pinned, locked, revision, incomplete, changes_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                 protected, pinned, locked, revision, incomplete, changes_json,
+                 usage_prompt, usage_completion, usage_cached, usage_end)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
              ON CONFLICT(id) DO UPDATE SET
                  form = excluded.form,
                  tokens = excluded.tokens,
@@ -2069,6 +2071,10 @@ pub(crate) fn insert_unit_rows(
                  locked = excluded.locked,
                  revision = excluded.revision,
                  incomplete = excluded.incomplete,
+                 usage_prompt = excluded.usage_prompt,
+                 usage_completion = excluded.usage_completion,
+                 usage_cached = excluded.usage_cached,
+                 usage_end = excluded.usage_end,
                  unit_closed = excluded.unit_closed",
             params![
                 message.id.to_string(),
@@ -2096,6 +2102,11 @@ pub(crate) fn insert_unit_rows(
                 } else {
                     serde_json::to_string(&message.changes).unwrap_or_default()
                 },
+                // 用量（D442）：NULL 有含义（端点没回），不是 0。
+                message.usage.map(|usage| usage.prompt_tokens as i64),
+                message.usage.map(|usage| usage.completion_tokens as i64),
+                message.usage.map(|usage| usage.cached_tokens as i64),
+                if message.turn_end { 1 } else { 0 },
             ],
         )?;
         crate::parts::write_parts(tx, message)?;
@@ -2119,7 +2130,8 @@ pub(crate) fn load_tail_messages(
     let mut stmt = tx.prepare(
         "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                 form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                locked, revision, tool_call_id, incomplete, changes_json
+                locked, revision, tool_call_id, incomplete, changes_json,
+                usage_prompt, usage_completion, usage_cached, usage_end
          FROM messages WHERE conv_id = ?1 AND seq > ?2 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map(
@@ -2224,6 +2236,18 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
     if !changes_text.is_empty() {
         message.changes = serde_json::from_str(&changes_text).unwrap_or_else(|_| Vec::new());
     }
+    // 第 19..21 列是用量（D442）。三列都可空，**NULL 有含义**（端点没回 usage），
+    // 所以只有 prompt 那一列非空才算"这一轮有真实用量"——补 0 会把 unknown 变成 0。
+    message.turn_end = row.get::<_, i64>(22)? != 0;
+    let usage_prompt: Option<i64> = row.get(19)?;
+    if let Some(prompt) = usage_prompt {
+        message.usage = Some(nmoi_core::budget::Usage {
+            prompt_tokens: prompt.max(0) as u32,
+            completion_tokens: row.get::<_, Option<i64>>(20)?.unwrap_or(0).max(0) as u32,
+            cached_tokens: row.get::<_, Option<i64>>(21)?.unwrap_or(0).max(0) as u32,
+            reasoning_tokens: 0,
+        });
+    }
     Ok(message)
 }
 
@@ -2269,7 +2293,8 @@ fn load_unit_in(conn: &Connection, unit_id: &UnitId) -> Result<AtomicUnit, Stora
     let mut stmt = conn.prepare(
         "SELECT id, unit_id, unit_kind, unit_closed, seq, role, source,
                 form, tokens, created_at, logical_clock, archived_ref, protected, pinned,
-                locked, revision, tool_call_id, incomplete, changes_json
+                locked, revision, tool_call_id, incomplete, changes_json,
+                usage_prompt, usage_completion, usage_cached, usage_end
          FROM messages WHERE unit_id = ?1 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map([unit_id.to_string()], row_to_message)?;
@@ -2752,6 +2777,66 @@ mod paging_tests {
                 .expect("写单元");
         }
         session
+    }
+
+    /// 用量（D442）：只挂在整轮最后那条上，NULL 表示"端点没回"而不是 0。
+    ///
+    /// 这条钉两件事：
+    /// 1. 一次带工具往返的回答，只有**最后一条**带 usage；
+    /// 2. 没有 usage 的消息读回来仍是 `None`（不是 `Some(0)`）——界面靠它区分
+    ///    "unknown tokens" 与"真的 0"。
+    #[test]
+    fn usage_only_on_the_last_message_and_null_stays_null() {
+        let mut storage = Storage::open_in_memory().expect("内存库");
+        let session = storage
+            .create_conversation("用量", "dev", "default")
+            .expect("建会话");
+        let first = Message::text(
+            MessageId::new(session, 1),
+            Role::Assistant,
+            SourceTag::History,
+            "先调一个工具",
+            3,
+            1_700_000_000_000,
+            LogicalClock::new(1),
+        );
+        storage
+            .append_unit(session, &AtomicUnit::turn(first).unwrap())
+            .expect("写第一条");
+
+        let mut last = Message::text(
+            MessageId::new(session, 2),
+            Role::Assistant,
+            SourceTag::History,
+            "收尾",
+            3,
+            1_700_000_000_001,
+            LogicalClock::new(2),
+        );
+        last.turn_end = true;
+        last.usage = Some(nmoi_core::budget::Usage {
+            prompt_tokens: 641_642,
+            completion_tokens: 120,
+            cached_tokens: 600_000,
+            reasoning_tokens: 0,
+        });
+        storage
+            .append_unit(session, &AtomicUnit::turn(last).unwrap())
+            .expect("写第二条");
+
+        let units = storage.load_units(session).expect("读回来");
+        let messages: Vec<_> = units
+            .iter()
+            .flat_map(|unit| unit.messages.clone())
+            .collect();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].usage.is_none(), "第一条没有用量");
+        assert!(!messages[0].turn_end, "第一条不是这一轮的最后一条");
+        assert!(messages[1].turn_end, "第二条是这一轮的最后一条");
+        let usage = messages[1].usage.expect("第二条有用量");
+        assert_eq!(usage.prompt_tokens, 641_642);
+        assert_eq!(usage.completion_tokens, 120);
+        assert_eq!(usage.cached_tokens, 600_000);
     }
 
     fn seqs(page: &UnitPage) -> Vec<u64> {

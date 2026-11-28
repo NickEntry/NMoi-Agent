@@ -4462,6 +4462,11 @@ private fun AssistantMessage(
         if (showActions) {
             MessageActionRow(
                 mine = false,
+                // 用量（D442）：只在"正常请求结束的那条助手消息"上出现一行。
+                // `turnEnd` 决定有没有这一行；`usage` 决定写数字还是 `unknown tokens`。
+                // 数字是端点报的上下文大小，不是这条消息的字数。
+                usage = message.usage,
+                showUsage = message.turnEnd,
                 onCopy = {
                     putClipboard(context, "消息", message.content)
                     onCopied()
@@ -5030,6 +5035,10 @@ private fun VersionArrow(description: String, rotate: Float, enabled: Boolean, o
 @Composable
 private fun MessageActionRow(
     mine: Boolean,
+    /** 端点报回来的用量（D442）。`null` = 没拿到，写 `unknown tokens`。 */
+    usage: UsageRow? = null,
+    /** 这一条该不该有那一行（D442）：只有整轮最后那条才有。 */
+    showUsage: Boolean = false,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSelect: () -> Unit,
@@ -5089,8 +5098,33 @@ private fun MessageActionRow(
         // 版本控件跟在这一排里、⋯ 的右边，中间空一个图标的宽度（用户 2026-10-24 定的位置）。
         Spacer(Modifier.width(36.dp))
         versionControl()
+        // 用量（D442）：贴在这一排的最右边，与用户给的截图同位置。
+        // 只在"正常请求结束的助手消息"上出现——用户消息、工具往返的中间消息都不带它。
+        if (!mine && showUsage) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = usageLabel(usage),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                maxLines = 1,
+            )
+        }
     }
 }
+
+/**
+ * 那一行用量怎么写（D442）。
+ *
+ * 三种情况，**不许混**：
+ * - 端点回了 → `641642 tokens`（这是**上下文**大小，不是这条消息的字数）；
+ * - 端点没回 → `unknown tokens`，**不拿预估值顶上**——那会让人以为端点回了；
+ * - 没拿到 usage 但这一条不是最后那条（工具往返的中间消息）→ 什么都不写。
+ *
+ * 第三种与第二种在数据上都是 `null`，差别在调用点：中间那些消息根本不传 `usage`
+ * （它们本来就不该有这一行）。所以这里只处理前两种。
+ */
+private fun usageLabel(usage: UsageRow?): String =
+    usage?.let { "${it.prompt} tokens" } ?: "unknown tokens"
 
 /**
  * 思考块：**默认收起**，只显示"思考 · N 字"。展开看全文。

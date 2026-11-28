@@ -954,6 +954,17 @@ fn units_envelope(
                             }))
                             .collect::<Vec<_>>(),
                         "tokens": message.tokens,
+                        // 端点报回来的用量（D442）：`null` = 端点没回（界面写 unknown tokens），
+                        // 与"回了 0"分开。只挂在整轮最后那条助手消息上。
+                        "usage": message.usage.map(|usage| json!({
+                            "prompt": usage.prompt_tokens,
+                            "completion": usage.completion_tokens,
+                            "cached": usage.cached_tokens,
+                        })),
+                        // 这一条是不是这一轮的最后一条（D442）。它跟 `usage` 是两件事：
+                        // `usage` 说"端点回了什么"，这一位说"该不该显示那一行"。
+                        // 两者合起来才分得清 `unknown tokens` 与"这条不该有"。
+                        "turn_end": message.turn_end,
                         "created_at": message.created_at,
                         "incomplete": message.incomplete,
                         "locked": message.locked,

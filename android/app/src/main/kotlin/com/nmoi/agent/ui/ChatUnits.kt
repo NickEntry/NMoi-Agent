@@ -52,6 +52,20 @@ internal data class ChatMessage(
      * 界面那时不画变更卡片。
      */
     val changes: List<ChangeRow> = emptyList(),
+    /**
+     * 端点报回来的用量（D442）。**只有整轮最后那条助手消息有**。
+     *
+     * `null` 有两种情况，界面上都要写 `unknown tokens`（不能拿预估值顶上）：
+     * 端点没回 usage、或者这一条不是"正常请求结束的那条"。
+     */
+    val usage: UsageRow? = null,
+    /**
+     * 这一条是不是**这一轮的最后一条**（D442）。
+     *
+     * 与 [usage] 合起来才分得清三种情况：不是最后一条 → 不显示；
+     * 是最后一条且有用量 → 数字；是最后一条但没用量 → `unknown tokens`。
+     */
+    val turnEnd: Boolean = false,
 ) {
     val isThinking: Boolean get() = source == "model_thinking"
     val isToolCall: Boolean get() = source == "tool_call"
@@ -266,6 +280,23 @@ internal fun parseUnits(envelope: JSONObject): ChatPage {
     )
 }
 
+/** 端点报回来的一次用量（D442）。`null` 在 [ChatMessage.usage] 上表示"没拿到"。 */
+internal data class UsageRow(
+    val prompt: Long,
+    val completion: Long,
+    val cached: Long,
+)
+
+/** 读 `usage` 那一段。**只认 prompt 非零/非空**：补 0 会把 unknown 变成 0。 */
+private fun parseUsage(row: JSONObject?): UsageRow? {
+    if (row == null || row.isNull("prompt")) return null
+    return UsageRow(
+        prompt = row.optLong("prompt", 0L),
+        completion = row.optLong("completion", 0L),
+        cached = row.optLong("cached", 0L),
+    )
+}
+
 private fun parseMessages(array: JSONArray?): List<ChatMessage> {
     if (array == null) return emptyList()
     return buildList {
@@ -292,6 +323,8 @@ private fun parseMessages(array: JSONArray?): List<ChatMessage> {
                     images = parseImages(message.optJSONArray("images")),
                     files = parseFiles(message.optJSONArray("files")),
                     changes = parseChanges(message.optJSONArray("changes")),
+                    usage = parseUsage(message.optJSONObject("usage")),
+                    turnEnd = message.optBoolean("turn_end", false),
                 ),
             )
         }

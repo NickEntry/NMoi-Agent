@@ -606,6 +606,25 @@ pub struct Message {
     /// 这一轮**没说完整**：断流、被掐断、用户点了停止（D21）。
     #[serde(default)]
     pub incomplete: bool,
+    /// 端点报回来的用量（D442）。**只挂在整轮的最后一条**上。
+    ///
+    /// `None` 有两种含义，界面上要分开说：端点没回 usage（很多自建端点不实现），
+    /// 或者这一行不是"正常请求结束的那条"（中间的工具往返）。
+    /// 界面上 `None` 写 `unknown tokens`，**不拿预估值顶上**——那会让人以为端点回了。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::budget::Usage>,
+    /// 这一条是不是**这一轮的最后一条**（D442）。
+    ///
+    /// 它跟 [usage] 是两件事：`usage` 说的是"端点回了什么"，这一位说的是
+    /// "这一行该不该显示那一行用量"。两者合起来才能区分三种情况：
+    ///
+    /// | `turn_end` | `usage` | 界面 |
+    /// |---|---|---|
+    /// | false | — | 不显示（工具往返的中间消息） |
+    /// | true | `Some` | `641642 tokens` |
+    /// | true | `None` | `unknown tokens`（端点没回） |
+    #[serde(default)]
+    pub turn_end: bool,
 }
 
 impl Message {
@@ -645,6 +664,8 @@ impl Message {
             revision: 0,
             changes: Vec::new(),
             incomplete: false,
+            usage: None,
+            turn_end: false,
         }
     }
 

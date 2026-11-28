@@ -5663,3 +5663,40 @@ emoji + 数字       → ✓
 **这一轮没做**：把它接进 `Estimator` / 压缩判据 / 界面（计划 §10 第 2 步的后半），
 以及 usage 落库与消息尾部那一行（第 3 步）。core 测试 912 条全绿（新增 14 条），
 clippy `-D warnings` 干净。
+
+## D442 用量落库 + 消息尾部那行 tokens（2026-11-26）
+
+第 3 步：`usage` 从端点一路走到界面上那一行（用户截图里 `641642 tokens` 那个位置）。
+
+**schema v21 → v22**，四条 `ALTER TABLE messages`：
+
+```text
+usage_prompt INTEGER          -- 上下文大小（就是界面上那个数）
+usage_completion INTEGER
+usage_cached INTEGER
+usage_end INTEGER NOT NULL DEFAULT 0   -- 这一条是不是"这一轮的最后一条"
+```
+
+**为什么要有 `usage_end`**：`usage_prompt IS NULL` 有两个原因——端点没回 usage，
+或者这一行根本不是这一轮的最后一条。界面上前者要写 `unknown tokens`，后者什么都不写。
+**一个 NULL 表达不了两件事**，所以单独存一位。三种情况于是能分开：
+
+| `usage_end` | `usage` | 界面 |
+|---|---|---|
+| 0 | — | 不显示（工具往返的中间消息） |
+| 1 | 有 | `641642 tokens` |
+| 1 | 无 | `unknown tokens` |
+
+**挂在谁身上**：`round_units` 里只给最后那条 `turn_end = true`，`usage` 只在
+`prompt/completion` 有非零值时才写。前面几次工具往返的 prompt 都更短，
+拿它们当"这一轮的上下文大小"会低估。
+
+**NULL 不补 0**：`row_to_message` 只在 `usage_prompt` 非 NULL 时才构造 `Usage`。
+补 0 会把 `unknown` 变成 `0`，而那两个数在界面上是完全不同的两句话。
+
+**界面**：`MessageActionRow` 最右边那一格，只在 `!mine && showUsage` 时出现。
+`usageLabel` 只处理"有数字"与"unknown"两种——第三种（中间消息）根本不传。
+
+**测试**：storage 加一条 `usage_only_on_the_last_message_and_null_stays_null`，
+钉住"第一条没有、第二条有、第一条 `turn_end` 是 false"。core 912 条、storage 全部、
+ffi 72 条全绿；clippy `-D warnings` 干净。

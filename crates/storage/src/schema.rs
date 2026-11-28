@@ -555,3 +555,32 @@ UPDATE messages SET preview = COALESCE((
 pub const SCHEMA_V21: &str = r#"
 ALTER TABLE messages ADD COLUMN changes_json TEXT NOT NULL DEFAULT '';
 "#;
+
+/// v22（D442）：端点报回来的用量，落在**这一轮最后那条助手消息**上。
+///
+/// 三列都可空，与"回了 0"分开：
+///
+/// - `usage_prompt`：`usage.prompt_tokens`——**上下文**的真实大小，也就是界面上那行
+///   `641642 tokens` 要显示的数。工具往返里前面几次的 prompt 更短，只留最后一次。
+/// - `usage_completion`：`usage.completion_tokens`。
+/// - `usage_cached`：`prompt_tokens_details.cached_tokens`（有的端点给，多数不给）。
+///
+/// **NULL 有含义**：端点没回 usage（很多自建端点不实现 `usage`），或者这一行不是
+/// "正常请求结束的那条"。界面上要写 `unknown tokens`，不能拿预估值顶上——
+/// 那会让人以为端点回了。
+///
+/// 只有那条消息写这三列；中间的工具往返消息保持 NULL。判据：一次带 3 次工具调用的
+/// 回答，`messages` 里只有最后那条的 `usage_prompt` 不是 NULL。
+///
+/// # 为什么还要 `usage_end`
+///
+/// `usage_prompt IS NULL` 有两个原因：**端点没回** usage，或者这一行根本不是
+/// "这一轮的最后一条"。界面上前者要写 `unknown tokens`，后者什么都不写——
+/// 一个 NULL 表达不了两件事，所以再存一位：`usage_end = 1` 表示"这一轮的最后一条"。
+/// 于是判据变成：`usage_end = 1 且 usage_prompt 是 NULL` → `unknown tokens`。
+pub const SCHEMA_V22: &str = r#"
+ALTER TABLE messages ADD COLUMN usage_prompt INTEGER;
+ALTER TABLE messages ADD COLUMN usage_completion INTEGER;
+ALTER TABLE messages ADD COLUMN usage_cached INTEGER;
+ALTER TABLE messages ADD COLUMN usage_end INTEGER NOT NULL DEFAULT 0;
+"#;
